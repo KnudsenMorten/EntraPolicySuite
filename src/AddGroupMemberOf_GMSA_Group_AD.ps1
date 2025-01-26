@@ -1,16 +1,25 @@
-Function Get-MgAuthenticationStrengthPolicy {
+Function AddGroupMemberOf_GMSA_Group_AD
+{
     param(
-        [Parameter()]
-        [string]$All
-    )
-    # Replace with actual call to Microsoft Graph API to get authentication strength policies
-    @()
+         [Parameter(Mandatory)]
+         [string]$GroupMemberOf,
+
+         [Parameter(Mandatory)]
+         [string]$GroupName,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Add Members to Group
+        Add-ADGroupMember -Identity $GroupMemberOf -Members $GroupName -Server $DomainController
 }
+
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUsPw01MFNxv5BdmbH3k4uBw3X
-# ow+gghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUlalZ6nm90tH+eresI8ZHAzhm
+# AwigghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -118,16 +127,16 @@ Function Get-MgAuthenticationStrengthPolicy {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQUl4lOaxh7aI9zPJIru7Nz1F1G9SgwDQYJKoZIhvcNAQEB
-# BQAEggIApzGEh2SMN4/h6HnbHCYsEaQvuNvFamAVD78kbBm884nM3U3w8+hgr2g9
-# 6upnOU27jvlAi7tm12sonWWqc/zxHD5dZTyLsfQ1sB2lJuukPql3TqE6Zn9+04xQ
-# ++n4HSfHPPl1w5SEcipI4Akn5zv9TJgIpKtoFJNYoapY24CJq3QRWpY+RJtugpIB
-# vP7eQ2TNU3kCGAtUhL6jZZh9GUsD9N6s27J3I8jadtfbsxY2FVrxltMOoJSKDDZ0
-# hIgOawgPbc+4fym1v16sgiHp6KFV6U19sYZzRmMpEXArJ7Q4eyF7wu6IriPggVVf
-# 24BgFf0d1xC4cwQxJJOYn4mZ1r6yevdLb2owaxQkogQ3OnULQUc/msJ6WqlFcbzj
-# RNTz38VMcocFWkXKkOWgxcESKv/T2FghJ/da/zGqYBKAHYc8V05RdidyYxP+Xlc/
-# Sqb2N+1wZtBBRZI0B1x8ix8n9ToYWdyD3fWJVroxbmPR7qujIVV0zXy672XhkxTg
-# QDF8BmwQnHj4/s52j8szRDWWHkrWgadVWASxL8DWOKxQXqgqhoCb/wjvyp9KMIDN
-# ziDWk2fOaH19hqb8qxwAgT0TncdI75Pfx6k0mqL8cYULZ/KmsJD+X/0cqJ1EwhmM
-# xU4A26FVpVO9T9FcVnwKdvtAphAT83xQrUg3B6E9lwPdl3lkzKM=
+# BgkqhkiG9w0BCQQxFgQURqTUXCpWknn7rXwI/oDDTVATYpYwDQYJKoZIhvcNAQEB
+# BQAEggIAIhotUajmyzwqWB3rYCXWdiGsQzXMBlEgrVQSyD7dtq6p0mVrDMvetwCU
+# hp1GCHELA7NrwNXpjYdhhLrFiWuJF1IB/RkypsQiZO5wDZYx9p7OJkpgqUuRNg1H
+# FDAv3fO12OkMwmWMQj/thDQJTj7bbWP1w8yGu5e6vlog64dA581mUzS7MgLe9UHB
+# yOj2r0QZCGQ2Voa66SSeoA5zLME+/1Qnk6rsL28f92bKLz10YPrC6VX0xC1xUCqk
+# 3jN1z0hPWZ3nvvxbJbwhup7kcJLV1ZrHhd/zAt4faogn+fdGr3ZSyXivPitvucus
+# pdpRp/YiwL9iJiFxkx7UkQfZR9SY6ajPM8xkAE01icg5Foa82JLW/A3bvqSVpmTc
+# Sd/GGnMS36S4S2dsi7Htr1zo2WJyNEuAVoJPFaeG4GGuH+P3FDY8+4y3OISwn/he
+# 6rIjA5vKKSehPtZgcAAt+VjVWt75ysMpVoiF3XvKcKtsXCNoqV2uGZU+GrH+iDx8
+# A0MiKfbBWZWq+mPnPHrIHI+62zvx+C/+hU9dsxsL4R0EI2cHeVuuLEqAz2ldrHpz
+# voqpNjAECv8qWmR1VLN5Q9gFFATmI62CvImvEdLBArsw1REnjL/q3MP49+vEbjJX
+# qDjof6s13E4hGbvTOTzSQNCTu6A9KH7CYoIVjRnhv9iWxJUtx1g=
 # SIG # End signature block

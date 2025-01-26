@@ -1,15 +1,58 @@
-Function New-MgAuthenticationStrengthPolicy {
+function Get-MgGroupMemberRecurse 
+{
     param(
-        [Parameter(Mandatory)]
-        [hashtable]$BodyParameter
-    )
-    # Replace with actual call to Microsoft Graph API to create new authentication strength policies
+            [Parameter()]
+                [string]$GroupUPN,
+            [Parameter()]
+                [string]$GroupId
+        )
+ 
+    $Members = @()
+    
+    if ($GroupUPN)
+        {
+            # find group
+            $Group = Get-MgGroup -Filter "startsWith(userPrincipalName, $GroupUPN)"
+        }
+    ElseIf ($GroupId)
+        {
+            # find group
+            $Group = Get-MgGroup -Filter "id eq '$GroupId'"
+        }
+
+        If ($Group)
+            {
+                $GroupMembers = Get-MgGroupMember -GroupId $Group.Id | select * -ExpandProperty additionalProperties | Select-Object @(
+                    'id'
+                    @{  Name       = 'userPrincipalName'
+                        Expression = { $_.AdditionalProperties["userPrincipalName"] }
+                    }
+                    @{  Name       = 'type'
+                        Expression = { $_.AdditionalProperties["@odata.type"] }
+                    }
+                )
+
+                If ($GroupMembers)
+                    {
+                        ForEach ($Member in $GroupMembers)
+                            {
+                                if ($Member.type -eq "#microsoft.graph.user") {
+                                    $Members += $Member
+                                }
+                                if ($Member.type -eq "#microsoft.graph.group") {
+                                    $Members += @(Get-MgGroupMemberRecurse -GroupUPN $_.userPrincipalName)
+                                }
+                            }
+                    }
+            }
+return $Members
 }
+
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUqL8dJdMrCtHBveTkFbi5ucr7
-# CBigghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUhZn+7obKScabTwgHYvfEhbkQ
+# 2YKgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -117,16 +160,16 @@ Function New-MgAuthenticationStrengthPolicy {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQUR8fieZ2S8OMJVDK7W66EnuWDLwowDQYJKoZIhvcNAQEB
-# BQAEggIAu5EsgXA0JASPA32kw5duf+K8e0ud0W/mLmHqhYAi8SqzhZno1tA5BG42
-# ZTVbhZVtBaA6DoiLB0u4DKXWVk0LukipnTB7o3JkL74eXpk/JA871ZDL6XfWOuk9
-# QY0Z/bOuV8Rj/pN+JTXoFRHlDR+QDedYQP6eFE6DQQrON7NPoTvZzhS8HRxG1Fgy
-# BiDx/Ao9HTqAMCKr0d4kcDlmuv4o6PRQCsHzOQG4L3qUQhMxfdvJY7oxCBwxW7s2
-# 7prGlMPoITPencbnULwt8ZjKpZgUjBPQ/8eSvmjXIVt6t9Ray7ijSMYvtQUIPfC0
-# FMaMew9TXfinmeTKfw2RlyExH8iuth/KJ5P0qxr+Y6OVsasqLkmXpjTHz6Z844Br
-# 8PsQ5SclSqoxnixfb+pbdIYs6Z7Mv3YTAWehvwMAdCkZmkUVZ7xBHpWG0M9vcRht
-# uNninZ464FALE1EhTz8FORisf+uJJCdc5mNPZSHRoCYv4oxMBHkAUCsQtsjTa+2j
-# RHUV7hsXuIXlBnrWMDuTqBzO7OCbsqa9U0qqvk9HrOlRTIa9bnyi/VE6q/ySgeRv
-# RcgHlneHHlWCYUdWAVmgRlP7u18cAkjSaWseGyp8/p0DBf929LepPuyhb/71jnAQ
-# 5qxQTLxWObhsxx8PpTSb4EUlQJOpC958XB9bQllvEjdf6C5Fcc8=
+# BgkqhkiG9w0BCQQxFgQUkQMYvES5Rs3aaJMyir+kC/lhwGcwDQYJKoZIhvcNAQEB
+# BQAEggIAr/Rzu4zwcIkkS8P29bRxVnsjB2pZe45zNX1vwtpZENZlT9QDJhFhpK3h
+# N12ZJTXL0RNpSbtbPiLzCKPhebazJJDW63jExtWWpK4T5HkyJxDlq4eJbn9PL9lJ
+# SldXV0Dw5Q79ATxMEPVyrMn9pt1I1kdWsQ75XiWYm8awH47NQho4OY/4gfZNZDsk
+# H/+klyNwangqM6z9wTT1OrktxYCI83dMmZOv4Pgfdr9BLqYzzf00MuCNEfmD8Lmb
+# /4gP4bCjeHshBfP7St39sqCt4PpONxzPMIIRBEdBCN3N1ot42wwOqy0xwOA8OGEA
+# Yro7c9z2SidZGru2U8NRDoZuaKEHCKeYsZGjIvcM6Hz5UO0oycLAgKsrHKFM/TXB
+# GI7NlopyHVtWI6sHZNj9u2sYg1pMAjLrt7/AW+cYB6TIvMhTrZt7FEETyO82pP1m
+# fQMrlSOFKRV8sR6is8kdvd8ATGtF8MYQlNl/7HxcKriKGr5VDhVcXx/imEp7a6PE
+# O3VcAj0oRR81GBfNwBAy3xPwq64BRjR1otQpF6yznTXbOw+ljMzM19cpk0MRFddA
+# 076IvZaMgnR4zeecD7CCMajN95EnsHVNYnznxf5tZIzYPvRcKRbY8ES5BAtc8DUF
+# PC5BU43HMXp1U5iJW4Pp152rpW5rl31C7O/AJbvRpCGSDVXeXws=
 # SIG # End signature block

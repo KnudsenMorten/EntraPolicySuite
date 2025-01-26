@@ -181,29 +181,7 @@ Function EntraCAPolicy
                 [AllowNull()]
                 [array]$Cond_ClientAppTypes,
 
-    # deviceStates - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevicestates?view=graph-rest-beta
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("all")]
-                [Array]$Cond_DeviceStates_IncludeStates,
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("Compliant","DomainJoined")]
-                [Array]$Cond_DeviceStates_ExcludeStates,
-
     # devices - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("all")]
-                [Array]$Cond_Devices_IncludeDevices,
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("Compliant","DomainJoined")]
-                [Array]$Cond_Devices_ExcludeDevices,
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
@@ -251,7 +229,7 @@ Function EntraCAPolicy
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
-                [ValidateSet("low","medium","high","none","unknownFutureValue")]
+                [ValidateSet("low","medium","high","hidden","none","unknownFutureValue")]
                 [string[]]$Cond_SignInRiskLevels,
 
     # UserRiskLevels - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessconditionset?view=graph-rest-beta
@@ -260,15 +238,15 @@ Function EntraCAPolicy
                 [AllowEmptyString()]
                 [AllowNull()]
                 [ValidateSet("low","medium","high","none","unknownFutureValue")]
-                [Array]$Cond_UserRiskLevels,
+                [string[]]$Cond_UserRiskLevels,
 
     # insiderRiskLevels - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessconditionset?view=graph-rest-beta
 
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
-                [ValidateSet("low","medium","high","none","unknownFutureValue")]
-                [Array]$Cond_InsiderRiskLevels,
+                [ValidateSet("minor","moderate","elevated","none","unknownFutureValue")]
+                [string]$Cond_InsiderRiskLevels,
 
     # grantControls - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessgrantcontrols?view=graph-rest-beta
             [Parameter()]
@@ -1605,208 +1583,6 @@ Function EntraCAPolicy
 
 #endregion
 
-            ###############################################################################
-            # conditions.deviceStates.includeStates (array)
-            ###############################################################################
-
-#region conditions.deviceStates.includeStates (array)
-
-                $InputVariable = $Cond_DeviceStates_IncludeStates
-                $ExistingData  = $CAPolicy.conditions.DeviceStates.IncludeStates
-                $FunctionArg   = 'Cond_DeviceStates_IncludeStates'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devicestates" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.IncludeStates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devicestates | add-member -MemberType NoteProperty -Name "IncludeStates" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.deviceStates.IncludeStates = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.deviceStates.excludeStates (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevicestates?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.deviceStates.excludeStates (array)
-
-                $InputVariable = $Cond_DeviceStates_excludeStates
-                $ExistingData  = $CAPolicy.conditions.DeviceStates.excludeStates
-                $FunctionArg   = 'Cond_DeviceStates_excludeStates'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devicestates" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.ExcludeStates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devicestates | add-member -MemberType NoteProperty -Name "ExcludeStates" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.deviceStates.excludeStates = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.devices.includeDevices (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.devices.includeDevices (array)
-
-                $InputVariable = $Cond_Devices_IncludeDevices
-                $ExistingData  = $CAPolicy.conditions.Devices.IncludeDevices
-                $FunctionArg   = 'Cond_Devices_IncludeDevices'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devices" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.IncludeDevices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devices | add-member -MemberType NoteProperty -Name "IncludeDevices" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.devices.includeDevices = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.devices.excludeDevices (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.devices.excludeDevices (array)
-
-                $InputVariable = $Cond_Devices_excludeDevices
-                $ExistingData  = $CAPolicy.conditions.Devices.excludeDevices
-                $FunctionArg   = 'Cond_Devices_excludeDevices'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devices" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.ExcludeDevices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devices | add-member -MemberType NoteProperty -Name "ExcludeDevices" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.devices.excludeDevices = $InputVariable
-                    }
-
-#endregion
 
             ###############################################################################
             # conditions.devices.deviceFilter.mode (value)
@@ -3015,12 +2791,11 @@ Function EntraCAPolicy
         }
 }
 
-
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUSuUUmXRjaXCQNrHqCWTV3no1
-# AzSgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUMnbZI5a/h2wTLjDXZ0IOt9qG
+# bcOgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -3128,16 +2903,16 @@ Function EntraCAPolicy
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQUMF+MIvk2bXFVweK7zfNVrfAriVswDQYJKoZIhvcNAQEB
-# BQAEggIAWWQvjdh8SQgxZGJlZYBqJ4eFXX2uHdOYx2plLOMY4PZ1h+1eXE1UiMOK
-# KFaLvit/vmfwPPMJHUSX+2YdG04nS+Z4vrQBuv5Fy46ghdrhS5pbDAeeKHJYUP9A
-# f3gvxusbPMsABq0cWpIam16W+b8t4KpA1yB5X82s2P4DdXq1NZ71aMAcV77KzwHR
-# DtsufExHRTyrieZ2nmFmx1VJGaX0j6h5HXe7i8bbaVomQivhuY+q775/aJv7gwHS
-# 5TBgAHZMOJVMV7/hOBJg4Mok2nwD67fYokrlFRa1yyInifQPVD/KpyhMn+eSr2r+
-# Xg1315hz6/do5oDYiIRqyZpY5ByCGqBtGnZTiUqcXIxMo1JU5+c28hMzCz3Me8Nq
-# YqI4CpBA+b93xrZAK42VXPd6SN5UbOMoNe1dcrFfupjP9/ewyI2WzrS8+1nRGyLw
-# UjW8kzOO62ElAGYLUp+s4PjMz4L9pLPlxBU2vijYJZw5F5A8AHjxRsft3mr6dSnl
-# gLsMV5+0q2Sl6SGL0wOUx1gUMgPGDy+rRnVkHPYJRPgolP40sxu3Y7LqEBNBzdoO
-# 3t2qGefXFGn2tDPl6LharFMXMZR5s8Mm8f+lO914aban7lczgYwlJpN6cyUBGHXK
-# d8NoFFp0lj05wNm1mOOCd5XQxNzCdSFR7a39XLKwPcf2ImOG1bI=
+# BgkqhkiG9w0BCQQxFgQUS3jHLHOSZg2whGg5Dgw7pJy6go8wDQYJKoZIhvcNAQEB
+# BQAEggIAGZvNZFiNGW5DKREGevA4Sg2cO3i/D9W33tsI4fKzvBEyfvF3HjiKzLbf
+# 5/nrAUVg96Vudv8p+LBnzkz86ylEgLCXLQfhMcrJjo6hqXLRv75tiFllp98sUjAf
+# NyasgxaYzvMQ8tasZMM///R1hIETvcwB58gjK7UDOpUx+HdpWzBXOUG1TJ6sNQBv
+# ggWqBbGMRWmcm9QElZLimbt6q5G4f1pjPBL4m5n1O1j93yVFEnCWrU/vYXUdrhNk
+# hx8jov1uKTpH6z5dGTwvCw+eOBFk/yO83Q64lOrWaBLvFBtrOEaOcZO5zqAsbzHJ
+# WiC5pLNieuZ4IlHU67mz2JKvhsH6NZ0PaPOcbl3lJGruwjS34cLWrI4f3lBF7UBj
+# jZtrlw8mpuft5xXBRJ0gQ6C/zMYXrzBYZkUNpn3bb/Pq3DUATKK5wfEtIU9yQEjX
+# Sdq4wKnWTHM2GPlfj+MIkjvr24ntgurqZU6iUMgLczuGWJWAMRWRa/okzSDOFf84
+# dCCrvqdPRxiE9TOeeYA52Ub5kUnmZosNi58VCkg6/u7ce2//e+2HY6To5QPTvwws
+# CU3puudTsXdsid9AhgcLjd8+Y+6y+8v+YYvuOwAIm+5cvSSgllKBBjlhV+PRKGnh
+# oSfx70Y2nuuuuDu8UGH4Bym3CVijn6cIdHvCNoXFvNikDLvDRfw=
 # SIG # End signature block

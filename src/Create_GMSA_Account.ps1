@@ -1,86 +1,55 @@
-function EntraAuthenticationStrength {
-    [CmdletBinding()]
+Function Create_GMSA_Account
+{
     param(
-        [Parameter(Mandatory)]
-        [string]$PolicyName,
-        
-        [Parameter()]
-        [string]$Description = "",  # Default to an empty string if not provided
-        
-        [Parameter()]
-        [ValidateSet("MFA", "windowsHelloForBusiness", "fido2", "temporaryAccessPassOneTime")]
-        [array]$AllowedCombinations,
-        
-        [Parameter()]
-        [string[]]$CombinationConfigurations,
-        
-        [Parameter()]
-        [ValidateSet("custom")]
-        [string]$PolicyType,
+         [Parameter(Mandatory)]
+         [string]$AccountName,
 
-        [Parameter()]
-        [ValidateSet("mfa")]
-        [string]$RequirementsSatisfied,
+         [Parameter(Mandatory)]
+         [string]$DNSHostName,
 
-        [Parameter()]
-        [switch]$ViewOnly,
-        
-        [Parameter()]
-        [switch]$CreateOnly,
-        
-        [Parameter()]
-        [switch]$ForceUpdate
-    )
+         [Parameter(Mandatory)]
+         [string]$AccountDescription,
 
-# Get all existing authentication strength policies
-$ExistingPolicies = Get-MgPolicyAuthenticationStrengthPolicy
+         [Parameter(Mandatory)]
+         [int]$AccountPasswordChangeFrequencyDays,
 
-# Check if the policy already exists
-$ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
+         [Parameter(Mandatory)]
+         [string]$OUPathLDAP,
 
-if ($ViewOnly) {
-    return $ExistingPolicy
-}
+         [Parameter(Mandatory)]
+         [string]$GroupPrincipalsAllowedGroupName,
 
-# Building the policy parameters hashtable
-    $PolicyParams = @{
-        displayName = $PolicyName
-    }
+         [Parameter(Mandatory)]
+         [string]$KerberosEncryptionType,
 
-    if ($PSBoundParameters.ContainsKey('Description')) {
-        $PolicyParams.description = $Description
-    }
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
 
-    if ($PSBoundParameters.ContainsKey('RequirementsSatisfied')) {
-        $PolicyParams.requirementsSatisfied = $RequirementsSatisfied
-    }
+    # Create GMSA Account
+    New-ADServiceAccount -Name $AccountName `
+                         -DNSHostName $DNSHostName `
+                         -Description $AccountDescription `
+                         -DisplayName $AccountDescription `
+                         -KerberosEncryptionType $KerberosEncryptionType `
+                         -ManagedPasswordIntervalInDays $AccountPasswordChangeFrequencyDays `
+                         -PrincipalsAllowedToRetrieveManagedPassword @($GroupPrincipalsAllowedGroupName) `
+                         -SamAccountName $AccountName `
+                         -Path $OUPathLDAP `
+                         -Server $DomainController
+                     
 
-    if ($PSBoundParameters.ContainsKey('AllowedCombinations')) {
-        $PolicyParams.allowedCombinations = $AllowedCombinations
-    }
+    Set-ADServiceAccount -Identity $AccountName -Description $AccountDescription -DisplayName $AccountDescription
 
-    if ($PSBoundParameters.ContainsKey('CombinationConfigurations')) {
-        $PolicyParams.combinationConfigurations = $CombinationConfigurations
-    }
-
-    if ($ExistingPolicy) {
-        if ($ForceUpdate) {
-            Write-Host "Updating existing authentication strength policy: $PolicyName"
-            Update-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
-        } else {
-            Write-Host "Policy already exists. Use -ForceUpdate to modify it."
-        }
-    } elseif ($CreateOnly) {
-        Write-Host "Creating new authentication strength policy: $PolicyName"
-        New-MgPolicyAuthenticationStrengthPolicy -BodyParameter $PolicyParams
-    }
+    $AccountInfo = Get-ADServiceAccount -Identity $AccountName -Properties *
+    write-host $AccountInfo
 }
 
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUaIOGhpJwdfCL3bDFkMCx06R7
-# 8qOgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUA6CVjLtoWMDLlU6M/DyVmp9V
+# OYagghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -188,16 +157,16 @@ if ($ViewOnly) {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQU1e6y5ywWg7riVMz8lAPlFDT8OswwDQYJKoZIhvcNAQEB
-# BQAEggIAkpXYIje0XIMtjlgywv5nmozL89aAArA8RK8wO0DkNalivzIx8YmZF5ig
-# 5TeMIlS5z1MkgBKs18N46GvEgBISxmdXK5dwReuz+MvDsnLzAphFqxhvK4F2vJc2
-# bJ8pDl27nOkws0jT4SSPPWppnZOV2DD7pZ1fWpu7hDhacnj8dlI1vO/Dv22oeJAE
-# QMX0hkHNkhLlqGkvdREng9tHW6ey6/SLOQvAEtCH3/LdGaYjztvTKsiyRcR3WKiF
-# jQGmm9wscyTOxIjS06ZR++jmK1krr80bl8duTgfWk+vV8yTuT/yagLEZv8eyLvqu
-# YRBRtB9W2MD7tgqIacbBOLTzbWWJ6Ww/9cemDiHM1gbGf48TTdpuexW5ja84DbBV
-# yKZdNQ13xj3rsfJCUHyEw7LUtPvu4kZOGAYrT88pmKJd1NgT7vhrbkEjdufSCK97
-# 3Iy9wp7Q3cgLQjAdTEc29vafmQNBSAmscISsVomDx+0OmRLOiYRJNtLIJB5UBjGm
-# ha7Q1hHES08s7fH8v9/F0X/qTG9PcmIMh8GO4qMlo5asT4WLxujsfjOzB+w+m1Pg
-# kfRvsrsx4HFqAn7ws0YNUH0RFRK1dl4MhjrTlrVhMmQ9My+p+HeGE/IkZ2WuUBys
-# EMnADzZ22BoJaKwMPdhO9PpRszwgyDNSAxjUiMF8HFhLMO/JaaY=
+# BgkqhkiG9w0BCQQxFgQU4dzby7jaks8Dq7B5wyJgs+W6NUUwDQYJKoZIhvcNAQEB
+# BQAEggIAg0e3fSd2umrNHNdTY9bobR3GbRvdPGMIGmFmqIotxOYpreBkeRnSVgzB
+# wZZLyfo4X1iGfQACSkaNj/Ue8MSo1lZjMDPpuHEakLH7dVF0p50teukyje2xpaGo
+# ncIi1STD61uCF09SRrWeW8NvYMI39O6HGUSi0ORg255T0opt+pyVQCzXxagQjlqs
+# /vT5vMrB+OB85nQnBarviwQ5wD7MhhfEtgUjZr4K6ZKOpYiB+cAxtX9TCG7TOh4y
+# Vo6SB3Qq1DhKnvw0aJ49v7fF2XBzSVM1dlWk7IpPQFmz6HccacI2CbhuPMumkBXP
+# SFfLLMf9XCVkLMfioqLc1sAs/iTlwomZXDopYs/XYiRKBf4dsqFrDMLU6hRREJKG
+# DRP97lZ0RoS25DVMpT/AUykrUKE1NXJnDwhSIYf++B1m7tm05M1n9HVzkcznhK3y
+# 1y8XV+tuWbO4lsJHk2zZ4uqWQkrYf3oGa6aeX4zwtLypHcGh7WamADARondKmJWc
+# bg5S5rkdBlpFzyxEtFDHp+PwVHTSpPrqUp1Z+Qr6dh90nOEAYruYnmVo7dPErlg6
+# S+xtkln2Hod/He/6t/BMwNwwPt9LzLDXW43ufh9s1VWP27LmMk4OQDWSBQrmk3pq
+# KFp1fFu3USjATAHq9hzFA1XM3ZaWAhRcpB97nTTnPoK7uSrSEtQ=
 # SIG # End signature block

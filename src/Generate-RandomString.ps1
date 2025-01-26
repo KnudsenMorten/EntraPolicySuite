@@ -1,86 +1,18 @@
-function EntraAuthenticationStrength {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$PolicyName,
-        
-        [Parameter()]
-        [string]$Description = "",  # Default to an empty string if not provided
-        
-        [Parameter()]
-        [ValidateSet("MFA", "windowsHelloForBusiness", "fido2", "temporaryAccessPassOneTime")]
-        [array]$AllowedCombinations,
-        
-        [Parameter()]
-        [string[]]$CombinationConfigurations,
-        
-        [Parameter()]
-        [ValidateSet("custom")]
-        [string]$PolicyType,
-
-        [Parameter()]
-        [ValidateSet("mfa")]
-        [string]$RequirementsSatisfied,
-
-        [Parameter()]
-        [switch]$ViewOnly,
-        
-        [Parameter()]
-        [switch]$CreateOnly,
-        
-        [Parameter()]
-        [switch]$ForceUpdate
+# Function to generate a random alphanumeric string of specified length
+function Generate-RandomString {
+    param (
+        [int]$Length = 20
     )
-
-# Get all existing authentication strength policies
-$ExistingPolicies = Get-MgPolicyAuthenticationStrengthPolicy
-
-# Check if the policy already exists
-$ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
-
-if ($ViewOnly) {
-    return $ExistingPolicy
-}
-
-# Building the policy parameters hashtable
-    $PolicyParams = @{
-        displayName = $PolicyName
-    }
-
-    if ($PSBoundParameters.ContainsKey('Description')) {
-        $PolicyParams.description = $Description
-    }
-
-    if ($PSBoundParameters.ContainsKey('RequirementsSatisfied')) {
-        $PolicyParams.requirementsSatisfied = $RequirementsSatisfied
-    }
-
-    if ($PSBoundParameters.ContainsKey('AllowedCombinations')) {
-        $PolicyParams.allowedCombinations = $AllowedCombinations
-    }
-
-    if ($PSBoundParameters.ContainsKey('CombinationConfigurations')) {
-        $PolicyParams.combinationConfigurations = $CombinationConfigurations
-    }
-
-    if ($ExistingPolicy) {
-        if ($ForceUpdate) {
-            Write-Host "Updating existing authentication strength policy: $PolicyName"
-            Update-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
-        } else {
-            Write-Host "Policy already exists. Use -ForceUpdate to modify it."
-        }
-    } elseif ($CreateOnly) {
-        Write-Host "Creating new authentication strength policy: $PolicyName"
-        New-MgPolicyAuthenticationStrengthPolicy -BodyParameter $PolicyParams
-    }
+    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    $randomString = -join ((1..$Length) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+    return $randomString
 }
 
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUaIOGhpJwdfCL3bDFkMCx06R7
-# 8qOgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQU8NNC8+ZX1eBAZENTZ2hPw7RK
+# 7A6gghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -188,16 +120,16 @@ if ($ViewOnly) {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQU1e6y5ywWg7riVMz8lAPlFDT8OswwDQYJKoZIhvcNAQEB
-# BQAEggIAkpXYIje0XIMtjlgywv5nmozL89aAArA8RK8wO0DkNalivzIx8YmZF5ig
-# 5TeMIlS5z1MkgBKs18N46GvEgBISxmdXK5dwReuz+MvDsnLzAphFqxhvK4F2vJc2
-# bJ8pDl27nOkws0jT4SSPPWppnZOV2DD7pZ1fWpu7hDhacnj8dlI1vO/Dv22oeJAE
-# QMX0hkHNkhLlqGkvdREng9tHW6ey6/SLOQvAEtCH3/LdGaYjztvTKsiyRcR3WKiF
-# jQGmm9wscyTOxIjS06ZR++jmK1krr80bl8duTgfWk+vV8yTuT/yagLEZv8eyLvqu
-# YRBRtB9W2MD7tgqIacbBOLTzbWWJ6Ww/9cemDiHM1gbGf48TTdpuexW5ja84DbBV
-# yKZdNQ13xj3rsfJCUHyEw7LUtPvu4kZOGAYrT88pmKJd1NgT7vhrbkEjdufSCK97
-# 3Iy9wp7Q3cgLQjAdTEc29vafmQNBSAmscISsVomDx+0OmRLOiYRJNtLIJB5UBjGm
-# ha7Q1hHES08s7fH8v9/F0X/qTG9PcmIMh8GO4qMlo5asT4WLxujsfjOzB+w+m1Pg
-# kfRvsrsx4HFqAn7ws0YNUH0RFRK1dl4MhjrTlrVhMmQ9My+p+HeGE/IkZ2WuUBys
-# EMnADzZ22BoJaKwMPdhO9PpRszwgyDNSAxjUiMF8HFhLMO/JaaY=
+# BgkqhkiG9w0BCQQxFgQUvq3j9eBWGGYCIkr/l99B/OJApRowDQYJKoZIhvcNAQEB
+# BQAEggIAckvhd+4NPBveMyRu3c/CD8lSbxx9W0zhIkwqCi3FKmuVOytIqGZhgg3M
+# VHZ14vTGMUH3DcGk3Ue592tO/vlFx3sV7RZEdDefTP8+UNTHWYyFv/eg9pfvD/XU
+# P5d8l7x9CPukSgb3aieQ64PTgIFXrHjjOZiDss2EAqQEMKTtv9ARDk/IAmvmunQl
+# l+RyfAngwVT/ylCWA3tlPCA37o2U/9tMXaxIWVp9YmSr2uEaHF/gUhFi3wJ7WR+r
+# mWpc52lY/qxH3ln6wHLO7zgHx+8c0DjriL4Zj+/ubjdK4BCjZjuHQbbY34zdLQEq
+# d60CZkZcSIPSOv7xAB+fS1XmBH8E8p/7fYkA51BZ6P7nQZid74W4GQFBjYMldWRS
+# 8ahPHKImEu2MQCVw8gJHhy9KXxXAkJ0/cmJHaNjTm6/pzrZA4bTTe1poObhYmuX/
+# LKGPY6X+wsZskcEwkj0i+MnbWGHmVzWSywU5m91ohUQWjcbuJiR54rxbfpESNJfq
+# +9KrUosissl+uW8ZolcwrVu1Ch6uH37o5LugTelF5LeerCPnmQ1NfIfDFgg5K1VQ
+# LPPXIBEScg10FdYqrqbMaLXMPPSdcxTaCtBxj7GiYg/asJMENrNEYWOblbSyPHaN
+# Je/xnNUFrBUUBl9CsC5RZ+S9qDalGnTnC5IETfszksR9v0VMPSw=
 # SIG # End signature block

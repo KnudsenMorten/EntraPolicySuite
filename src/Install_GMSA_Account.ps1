@@ -1,86 +1,22 @@
-function EntraAuthenticationStrength {
-    [CmdletBinding()]
+Function Install_GMSA_Account
+{
     param(
-        [Parameter(Mandatory)]
-        [string]$PolicyName,
-        
-        [Parameter()]
-        [string]$Description = "",  # Default to an empty string if not provided
-        
-        [Parameter()]
-        [ValidateSet("MFA", "windowsHelloForBusiness", "fido2", "temporaryAccessPassOneTime")]
-        [array]$AllowedCombinations,
-        
-        [Parameter()]
-        [string[]]$CombinationConfigurations,
-        
-        [Parameter()]
-        [ValidateSet("custom")]
-        [string]$PolicyType,
+         [Parameter(Mandatory)]
+         [string]$AccountName
+     )
 
-        [Parameter()]
-        [ValidateSet("mfa")]
-        [string]$RequirementsSatisfied,
+    # install account on fx. automation server
+        Install-ADServiceAccount $AccountName
 
-        [Parameter()]
-        [switch]$ViewOnly,
-        
-        [Parameter()]
-        [switch]$CreateOnly,
-        
-        [Parameter()]
-        [switch]$ForceUpdate
-    )
-
-# Get all existing authentication strength policies
-$ExistingPolicies = Get-MgPolicyAuthenticationStrengthPolicy
-
-# Check if the policy already exists
-$ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
-
-if ($ViewOnly) {
-    return $ExistingPolicy
-}
-
-# Building the policy parameters hashtable
-    $PolicyParams = @{
-        displayName = $PolicyName
-    }
-
-    if ($PSBoundParameters.ContainsKey('Description')) {
-        $PolicyParams.description = $Description
-    }
-
-    if ($PSBoundParameters.ContainsKey('RequirementsSatisfied')) {
-        $PolicyParams.requirementsSatisfied = $RequirementsSatisfied
-    }
-
-    if ($PSBoundParameters.ContainsKey('AllowedCombinations')) {
-        $PolicyParams.allowedCombinations = $AllowedCombinations
-    }
-
-    if ($PSBoundParameters.ContainsKey('CombinationConfigurations')) {
-        $PolicyParams.combinationConfigurations = $CombinationConfigurations
-    }
-
-    if ($ExistingPolicy) {
-        if ($ForceUpdate) {
-            Write-Host "Updating existing authentication strength policy: $PolicyName"
-            Update-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
-        } else {
-            Write-Host "Policy already exists. Use -ForceUpdate to modify it."
-        }
-    } elseif ($CreateOnly) {
-        Write-Host "Creating new authentication strength policy: $PolicyName"
-        New-MgPolicyAuthenticationStrengthPolicy -BodyParameter $PolicyParams
-    }
+    # Test - should return TRUE
+        Test-ADServiceAccount $AccountName
 }
 
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUaIOGhpJwdfCL3bDFkMCx06R7
-# 8qOgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUQZ8OL4UlSsDHI21MJZnwqdBD
+# 5COgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -188,16 +124,16 @@ if ($ViewOnly) {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQU1e6y5ywWg7riVMz8lAPlFDT8OswwDQYJKoZIhvcNAQEB
-# BQAEggIAkpXYIje0XIMtjlgywv5nmozL89aAArA8RK8wO0DkNalivzIx8YmZF5ig
-# 5TeMIlS5z1MkgBKs18N46GvEgBISxmdXK5dwReuz+MvDsnLzAphFqxhvK4F2vJc2
-# bJ8pDl27nOkws0jT4SSPPWppnZOV2DD7pZ1fWpu7hDhacnj8dlI1vO/Dv22oeJAE
-# QMX0hkHNkhLlqGkvdREng9tHW6ey6/SLOQvAEtCH3/LdGaYjztvTKsiyRcR3WKiF
-# jQGmm9wscyTOxIjS06ZR++jmK1krr80bl8duTgfWk+vV8yTuT/yagLEZv8eyLvqu
-# YRBRtB9W2MD7tgqIacbBOLTzbWWJ6Ww/9cemDiHM1gbGf48TTdpuexW5ja84DbBV
-# yKZdNQ13xj3rsfJCUHyEw7LUtPvu4kZOGAYrT88pmKJd1NgT7vhrbkEjdufSCK97
-# 3Iy9wp7Q3cgLQjAdTEc29vafmQNBSAmscISsVomDx+0OmRLOiYRJNtLIJB5UBjGm
-# ha7Q1hHES08s7fH8v9/F0X/qTG9PcmIMh8GO4qMlo5asT4WLxujsfjOzB+w+m1Pg
-# kfRvsrsx4HFqAn7ws0YNUH0RFRK1dl4MhjrTlrVhMmQ9My+p+HeGE/IkZ2WuUBys
-# EMnADzZ22BoJaKwMPdhO9PpRszwgyDNSAxjUiMF8HFhLMO/JaaY=
+# BgkqhkiG9w0BCQQxFgQUT9TWBFK3rW1Q854hFegXB8Z/yewwDQYJKoZIhvcNAQEB
+# BQAEggIAl2ALY7b9aKvrz8Vq4zZ0B+Ahjy7Vxb+c6ftIauhmfR601ChFlQzjL5xt
+# b3535PlUb7pRBPWWKzM/L0w/2spesLqmUa1R7reA01u5hY+H7YymsAkCeHSh7Mrt
+# lucrmrKDrrU9j/tV/6HjCRJELUaWkH5aJHpFPrzLzGe5dZ3QKKQ5IRh4RB2cC5Ff
+# V2W3VXtkL6B+8ADC89qC/Tl7Fcxm88T9lMILTqLvYHNmlmY4XUi20HA5YR6L8C6k
+# Y7dFJoVBu7n91A6bXg7XJAj4b29lu3PhPAW8wf03qZWpmSq6/e75jX5CDewMYDpD
+# pE/JDHp2k5oMhnbgQZxWsEox7rP3Kg8PtG/4RzgvC2/2Nq36qieaQGyrDu5QrRaL
+# y/j8giuwRWEnBfIGWBA0LoZ3oqPkjQAD12nqZlHMV3nbbzAw64FDe0mhRUuAQv9y
+# oJ0ThY3ZuSzezaSHiDXh4pty2QvNpzsEFfyuTlczHmEbAuHf1VFb7teTpeS+Nyry
+# OCFDwji0uJedEz2ECzGCBSlr7ZoWSYcf3s3rOmld/CPXAuBsUGuYaw2jmY58/O2y
+# KvuNPDJgc0wBieevemRznE6aKWyfG0kWIUpJe85AZO547bVpSr1VQDRFNjgtbUUG
+# P1oQXqvEHfUD/39UPoq+aqg07zs2BxS1HWEFjpiyRs6FQUJcRlM=
 # SIG # End signature block

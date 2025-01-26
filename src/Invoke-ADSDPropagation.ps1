@@ -1,86 +1,61 @@
-function EntraAuthenticationStrength {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$PolicyName,
-        
-        [Parameter()]
-        [string]$Description = "",  # Default to an empty string if not provided
-        
-        [Parameter()]
-        [ValidateSet("MFA", "windowsHelloForBusiness", "fido2", "temporaryAccessPassOneTime")]
-        [array]$AllowedCombinations,
-        
-        [Parameter()]
-        [string[]]$CombinationConfigurations,
-        
-        [Parameter()]
-        [ValidateSet("custom")]
-        [string]$PolicyType,
+Function Invoke-ADSDPropagation
+{
+<#
+.SYNOPSIS
+    Invoke a SDProp task on the PDCe.
+.DESCRIPTION
+    Make an LDAP call to trigger SDProp.
+.EXAMPLE
+    Invoke-ADSDPropagation
+    By default, RunProtectAdminGroupsTask is used.
+.EXAMPLE
+    Invoke-ADSDPropagation -TaskName FixUpInheritance
+    Use the legacy FixUpInheritance task name for Windows Server 2003 and earlier.
+.PARAMETER TaskName
+    Name of the task to use.
+        - FixUpInheritance for legacy OS
+        - RunProtectAdminGroupsTask for recent OS
+.NOTES
+    You can track progress with:
+    Get-Counter -Counter '\directoryservices(ntds)\ds security descriptor propagator runtime queue' | Select-Object -ExpandProperty CounterSamples | Select-Object -ExpandProperty CookedValue
+.LINK
+    http://ItForDummies.net
+#>
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory=$false,
+        HelpMessage='Name of the domain where to force SDProp to run',
+        Position=0)]
+    [ValidateScript({Test-Connection -ComputerName $_ -Count 2 -Quiet})]
+    [String]$DomainName = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name,
 
-        [Parameter()]
-        [ValidateSet("mfa")]
-        [string]$RequirementsSatisfied,
+    [ValidateSet('RunProtectAdminGroupsTask','FixUpInheritance')]
+    [String]$TaskName = 'RunProtectAdminGroupsTask'
+)
 
-        [Parameter()]
-        [switch]$ViewOnly,
-        
-        [Parameter()]
-        [switch]$CreateOnly,
-        
-        [Parameter()]
-        [switch]$ForceUpdate
-    )
-
-# Get all existing authentication strength policies
-$ExistingPolicies = Get-MgPolicyAuthenticationStrengthPolicy
-
-# Check if the policy already exists
-$ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
-
-if ($ViewOnly) {
-    return $ExistingPolicy
-}
-
-# Building the policy parameters hashtable
-    $PolicyParams = @{
-        displayName = $PolicyName
-    }
-
-    if ($PSBoundParameters.ContainsKey('Description')) {
-        $PolicyParams.description = $Description
-    }
-
-    if ($PSBoundParameters.ContainsKey('RequirementsSatisfied')) {
-        $PolicyParams.requirementsSatisfied = $RequirementsSatisfied
-    }
-
-    if ($PSBoundParameters.ContainsKey('AllowedCombinations')) {
-        $PolicyParams.allowedCombinations = $AllowedCombinations
-    }
-
-    if ($PSBoundParameters.ContainsKey('CombinationConfigurations')) {
-        $PolicyParams.combinationConfigurations = $CombinationConfigurations
-    }
-
-    if ($ExistingPolicy) {
-        if ($ForceUpdate) {
-            Write-Host "Updating existing authentication strength policy: $PolicyName"
-            Update-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
-        } else {
-            Write-Host "Policy already exists. Use -ForceUpdate to modify it."
+    try
+        {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('domain',$DomainName)
+            $DomainObject = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext)
+    
+            Write-Verbose -Message "Detected PDCe is $($DomainObject.PdcRoleOwner.Name)."
+            $RootDSE = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$($DomainObject.PdcRoleOwner.Name)/RootDSE") 
+            $RootDSE.UsePropertyCache = $false 
+            $RootDSE.Put($TaskName, "1") # RunProtectAdminGroupsTask & fixupinheritance
+            $RootDSE.SetInfo()
         }
-    } elseif ($CreateOnly) {
-        Write-Host "Creating new authentication strength policy: $PolicyName"
-        New-MgPolicyAuthenticationStrengthPolicy -BodyParameter $PolicyParams
-    }
+    catch
+        {
+            throw "Can't invoke SDProp on $($DomainObject.PdcRoleOwner.Name) !"
+        }
 }
+
 
 # SIG # Begin signature block
 # MIIXAgYJKoZIhvcNAQcCoIIW8zCCFu8CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUaIOGhpJwdfCL3bDFkMCx06R7
-# 8qOgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUn6Vtc18Z4p3lpSD/b+Ou35B4
+# CcKgghNiMIIFojCCBIqgAwIBAgIQeAMYQkVwikHPbwG47rSpVDANBgkqhkiG9w0B
 # AQwFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEGA1UE
 # ChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjAeFw0yMDA3MjgwMDAw
 # MDBaFw0yOTAzMTgwMDAwMDBaMFMxCzAJBgNVBAYTAkJFMRkwFwYDVQQKExBHbG9i
@@ -188,16 +163,16 @@ if ($ViewOnly) {
 # U2lnbiBHQ0MgUjQ1IENvZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJ
 # BgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0B
 # CQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAj
-# BgkqhkiG9w0BCQQxFgQU1e6y5ywWg7riVMz8lAPlFDT8OswwDQYJKoZIhvcNAQEB
-# BQAEggIAkpXYIje0XIMtjlgywv5nmozL89aAArA8RK8wO0DkNalivzIx8YmZF5ig
-# 5TeMIlS5z1MkgBKs18N46GvEgBISxmdXK5dwReuz+MvDsnLzAphFqxhvK4F2vJc2
-# bJ8pDl27nOkws0jT4SSPPWppnZOV2DD7pZ1fWpu7hDhacnj8dlI1vO/Dv22oeJAE
-# QMX0hkHNkhLlqGkvdREng9tHW6ey6/SLOQvAEtCH3/LdGaYjztvTKsiyRcR3WKiF
-# jQGmm9wscyTOxIjS06ZR++jmK1krr80bl8duTgfWk+vV8yTuT/yagLEZv8eyLvqu
-# YRBRtB9W2MD7tgqIacbBOLTzbWWJ6Ww/9cemDiHM1gbGf48TTdpuexW5ja84DbBV
-# yKZdNQ13xj3rsfJCUHyEw7LUtPvu4kZOGAYrT88pmKJd1NgT7vhrbkEjdufSCK97
-# 3Iy9wp7Q3cgLQjAdTEc29vafmQNBSAmscISsVomDx+0OmRLOiYRJNtLIJB5UBjGm
-# ha7Q1hHES08s7fH8v9/F0X/qTG9PcmIMh8GO4qMlo5asT4WLxujsfjOzB+w+m1Pg
-# kfRvsrsx4HFqAn7ws0YNUH0RFRK1dl4MhjrTlrVhMmQ9My+p+HeGE/IkZ2WuUBys
-# EMnADzZ22BoJaKwMPdhO9PpRszwgyDNSAxjUiMF8HFhLMO/JaaY=
+# BgkqhkiG9w0BCQQxFgQUMAc8mZficrLeT1z6GX5/SixcTPwwDQYJKoZIhvcNAQEB
+# BQAEggIAXWHBH+JNxx8/StdTlmaI0UKPUUi/Kwxtl5kimC4dk7Wxphn6QnVVHmn9
+# 4Fc/qMejI+SvVh1gIaehGH3WKtXZHQS0vcPYxem1a/UoswVsan5u5rJapHGg+e1B
+# ByKWyzogUqUxyJDnAVknj+fMLUjOYY/DK0mrU5py8BuiDbuJaijUz89AbDLuadvb
+# 0UKedMujvSPy9Gylt66avkFbHB5NKYa5/vrE45qOyyNtvfvoTnnISd7bIu8XDxf4
+# DgrijOAj61MBvApJDcHACSpHyyMNtYdcVVirE6O3kO1IcpZJyWY9rFE6Q96hdkDy
+# nD98DO4l2LLAmWVs1sG9cyYOjTpG+oaQaKhcB9+MhoEWlv3UVh9PBu1vo2+6a07g
+# NNrjt/DhyggFC4nrTYaupoTPz+tUeGa3K3k2aKjhZKfzKOOUrWiha6nRnH2OMqpg
+# uiWx8s2Gtz6bTnCkJfGL6NYHTMjSOs0vskNRNemqd93DGAaWyTdJaoC2dlu2wnoL
+# FT2R9yd7RdaNI/gGbiZaaOsNyYj7gBLTdubY4zxUfik8qmC1FI4v+3rK84M5vlEN
+# 1fblCeh79SZxaza+UgyHSeYrj2KBYPQkkOZOAUeBPPyrYXmrBGlX5YnKBbcPA6fQ
+# +89rYZYRKTLjJN/3hIuiIBAIEC7r9A8IdamQJ3WCKljm4YZ1ZYY=
 # SIG # End signature block

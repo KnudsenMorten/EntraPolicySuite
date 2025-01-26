@@ -1,3 +1,42 @@
+Function AddGroupMemberOf_GMSA_Group_AD
+{
+    param(
+         [Parameter(Mandatory)]
+         [string]$GroupMemberOf,
+
+         [Parameter(Mandatory)]
+         [string]$GroupName,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Add Members to Group
+        Add-ADGroupMember -Identity $GroupMemberOf -Members $GroupName -Server $DomainController
+}
+
+
+Function AddMembers_GMSA_Group_AD
+{
+    param(
+         [Parameter(Mandatory)]
+         [string]$GroupName,
+
+         [Parameter(Mandatory)]
+         [array]$GroupMembers,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Add Members to Group
+        ForEach ($Member in $GroupMembers)
+            {
+                Add-ADGroupMember -Identity $GroupName -Members $Member -Server $DomainController
+            }
+}
+
+
 Function BreakGlassValidation {
     [CmdletBinding()]
     param(
@@ -36,6 +75,199 @@ Function BreakGlassValidation {
             Write-host "Break Glass Accounts variable is OK !"
             Write-host ""
         }
+}
+
+
+Function Check-GroupMembers {
+    param(
+        [Parameter(Mandatory)]
+        [string]$GroupId
+    )
+
+$MembersCount = 0
+    try {
+        # Attempt to retrieve the first member of the group
+        $members = Get-MgGroupMember -GroupId $GroupId
+
+        if ($members) {
+            $MembersCount = $Members.count
+            Write-verbose "Group with ID $GroupId has members."
+        } else {
+            $MembersCount = 0
+            Write-verbose "Group with ID $GroupId has no members."
+        }
+    } catch {
+        Write-Error "Error retrieving members for group with ID GroupId: $_"
+    }
+
+    Return $MembersCount
+}
+
+
+Function CheckAccountConditions {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object]$User,
+        [Parameter(Mandatory)] [string]$Persona,
+        [Parameter(Mandatory)] [string]$TagType,
+        [Parameter(Mandatory)] [string]$TagValueAD,
+        [Parameter(Mandatory)] [string]$TagValueCloud,
+        [Parameter(Mandatory)] [string]$ConditionsType,
+        [Parameter()] [AllowNull()] [string]$ConditionGroup,
+        [Parameter(Mandatory)] [array]$Target,
+        [Parameter()] [AllowNull()] [string]$OnPremisesSyncEnabled,
+        [Parameter()] [object]$MailboxInfo,
+        [Parameter()] [object]$TeamsRoom
+    )
+
+    [boolean]$ConditionMet = $false
+    $ModifiedTagValue = $null
+
+    Write-Verbose ""
+    Write-Verbose "Checking ..."
+    Write-Verbose "ConditionsType   : $($ConditionsType)"
+    Write-Verbose "Target           : $($Target)"
+    Write-Verbose "ConditionGroup   : $($ConditionGroup)"
+
+    switch ($ConditionsType) {
+        "UPN_Like" {
+            if ($User.UserPrincipalName -Like "$($Target)") {
+                write-verbose $User.UserPrincipalName
+                Write-Verbose "UPN_Like $($Target) = true"
+                $ConditionMet = $true
+            }
+        }
+        "UPN_NotLike" {
+            if ($User.UserPrincipalName -Notlike "$($Target)") {
+                write-verbose $User.UserPrincipalName
+                Write-Verbose "UPN_NotLike $($Target) = true"
+                $ConditionMet = $true
+            }
+        }
+        "MemberOfGroup" {
+            If ($User.OnPremisesSyncEnabled) {
+                $GroupMembers = $global:AD_Group_Members_HashTable[$Target]
+                if ($GroupMembers) {
+                    if ($User.UserPrincipalName -in $GroupMembers.Members.UserPrincipalName) {
+                        Write-Verbose "MemberOfGroup $($Filter) = true"
+                        $ConditionMet = $true
+                    }
+                }
+            } Else {
+                $GroupMembers = $global:Entra_Group_Members_HashTable[$Target]
+                if ($GroupMembers) {
+                    if ($User.Id -in $GroupMembers.members.id) {
+                        Write-Verbose "MemberOfGroup $($Filter) = true"
+                        $ConditionMet = $true
+                    }
+                }
+            }
+            
+        }
+        "AD_OU_DN_Like" {
+            if ($User.OnPremisesDistinguishedName -Like "$($Target)") {
+                write-verbose $User.OnPremisesDistinguishedName
+                Write-Verbose "AD_OU_DN_Like $($Filter) = true"
+                $ConditionMet = $true
+            }
+        }
+        "OnPremisesSyncEnabled" {
+                if ( ($Target -match "TRUE") -and ($User.OnPremisesSyncEnabled) ) {
+                    Write-Verbose "OnPremisesSyncEnabled $($Filter) = true"
+                    $ConditionMet = $true
+                } elseif ( ($Target -match "FALSE") -and (-not $User.OnPremisesSyncEnabled) )  {
+                    # Write-Host "NOT OnPremisesSyncEnabled $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "MobilePhone_Like" {
+                if ( ($User.MobilePhone -Like "$($Target)") -and ($User.MobilePhone -ne $null) ) {
+                    write-verbose $User.MobilePhone
+                    Write-Verbose "MobilePhone_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "GivenName_Like" {
+                if ( ($User.GivenName -Like "$($Target)") -and ($User.GivenName -ne $null) ) {
+                    write-verbose $User.GivenName
+                    Write-Verbose "GivenName $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "SurName_Like" {
+                if ( ($User.SurName -Like "$($Target)") -and ($User.SurName -ne $null) ) {
+                    write-verbose $User.SurName
+                    Write-Verbose "SurName_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "UserType_Like" {
+                if ( ($User.UserType -Like "$($Target)") -and ($User.UserType -ne $null) ) {
+                    write-verbose $User.UserType
+                    Write-Verbose "UserType_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "UserType_NotLike" {
+                if ( ($User.UserType -NotLike "$($Target)") -and ($User.UserType -ne $null) ) {
+                    write-verbose $User.UserType
+                    Write-Verbose "UserType_NotLike $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "EmployeeType_Like" {
+                if ( ($User.EmployeeType -Like "$($Target)") -and ($User.EmployeeType -ne $null) ) {
+                    write-verbose $User.EmployeeType
+                    Write-Verbose "EmployeeType_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "Teams_Room_Like" {
+                if ( ($Target -match "TRUE") -and ($TeamsRoom) ) {
+                    Write-Verbose "Teams_Room_Like $($Filter) = true"
+                    $ConditionMet = $true
+                } elseif ( ($Target -match "FALSE") -and (-not $TeamsRoom) )  {
+                    Write-Verbose "Teams_Room_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "Mailbox_RecipientTypeDetails_Like" {
+                if ( ($MailboxInfo.RecipientTypeDetails -Like "$($Target)") -and ($MailBOxInfo.RecipientTypeDetails -ne $null) ) {
+                    write-verbose $MailboxInfo.RecipientTypeDetails
+                    Write-Verbose "Mailbox_RecipientTypeDetails_Like $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "Mailbox_RecipientTypeDetails_NotLike" {
+                if ( ($MailboxInfo.RecipientTypeDetails -NotLike "$($Target)") -and ($MailBOxInfo.RecipientTypeDetails -ne $null) ) {
+                    write-verbose $MailboxInfo.RecipientTypeDetails
+                    Write-Verbose "Mailbox_RecipientTypeDetails_NotLike $($Filter) = true"
+                    $ConditionMet = $true
+                }
+        }
+        "Mailbox_RecipientTypeDetails_ModifiedTagValue_Classification" {
+                If ($MailboxInfo.RecipientTypeDetails) {
+                    write-verbose $MailboxInfo.RecipientTypeDetails
+                    Write-Verbose "Mailbox_RecipientTypeDetails_ModifiedTagValue $($Filter) = true"
+                    $ConditionMet = $true
+                    $ModifiedTagValue = "Exchange_" + $MailboxInfo.RecipientTypeDetails
+                }
+        }
+        "Mailbox_RecipientTypeDetails_ModifiedTagValue_Authentication" {
+                If ($MailboxInfo.RecipientTypeDetails) {
+                    write-verbose $MailboxInfo.RecipientTypeDetails
+                    Write-Verbose "Mailbox_RecipientTypeDetails_ModifiedTagValue $($Filter) = true"
+                    $ConditionMet = $true
+                    $ModifiedTagValue = "Exchange_" + $MailboxInfo.RecipientTypeDetails + "_NoSignin"
+                }
+        }
+        default {
+            Write-Host "Unknown condition type: $ConditionsType"
+        }
+    }
+
+    # write-host $ConditionMet
+    Return $ConditionMet,$ModifiedTagValue
 }
 
 
@@ -80,39 +312,168 @@ function ConvertTo-HashTable() {
 
 
 
-Function EntraAuthenticationStrength {
+Function Create_GMSA_Account
+{
+    param(
+         [Parameter(Mandatory)]
+         [string]$AccountName,
+
+         [Parameter(Mandatory)]
+         [string]$DNSHostName,
+
+         [Parameter(Mandatory)]
+         [string]$AccountDescription,
+
+         [Parameter(Mandatory)]
+         [int]$AccountPasswordChangeFrequencyDays,
+
+         [Parameter(Mandatory)]
+         [string]$OUPathLDAP,
+
+         [Parameter(Mandatory)]
+         [string]$GroupPrincipalsAllowedGroupName,
+
+         [Parameter(Mandatory)]
+         [string]$KerberosEncryptionType,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Create GMSA Account
+    New-ADServiceAccount -Name $AccountName `
+                         -DNSHostName $DNSHostName `
+                         -Description $AccountDescription `
+                         -DisplayName $AccountDescription `
+                         -KerberosEncryptionType $KerberosEncryptionType `
+                         -ManagedPasswordIntervalInDays $AccountPasswordChangeFrequencyDays `
+                         -PrincipalsAllowedToRetrieveManagedPassword @($GroupPrincipalsAllowedGroupName) `
+                         -SamAccountName $AccountName `
+                         -Path $OUPathLDAP `
+                         -Server $DomainController
+                     
+
+    Set-ADServiceAccount -Identity $AccountName -Description $AccountDescription -DisplayName $AccountDescription
+
+    $AccountInfo = Get-ADServiceAccount -Identity $AccountName -Properties *
+    write-host $AccountInfo
+}
+
+
+Function Create_GMSA_Group_AD
+{
+    param(
+         [Parameter(Mandatory)]
+         [string]$GroupName,
+
+         [Parameter(Mandatory)]
+         [string]$GroupDescription,
+
+
+         [Parameter(Mandatory)]
+         [string]$Notes,
+
+         [Parameter(Mandatory)]
+         [string]$OUPath,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Create Group
+        $groupParams = @{
+            Name           = $GroupName
+            SamAccountName = $GroupName
+            DisplayName    = $GroupName
+            GroupCategory  = 'Security'
+            GroupScope     = 'Global'
+            Description    = $GroupDescription
+            Path           = $OUPath
+            Server         = $DomainController
+        }
+
+        New-ADGroup @groupParams
+        Set-ADGroup -Identity $GroupName -Replace @{info="$($Notes)"} -Description $GroupDescription
+}
+
+
+Function Create_GMSA_OU
+{
+    param(
+         [Parameter(Mandatory)]
+         [string]$OUPathParentLDAP,
+
+         [Parameter(Mandatory)]
+         [string]$OUPathName,
+
+         [Parameter(Mandatory)]
+         [string]$DomainController
+     )
+
+    # Create OU
+        New-ADOrganizationalUnit -Name $OUPathName -Path $OUPathParentLDAP -Server $DomainController
+}
+
+
+function EntraAuthenticationStrength {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$PolicyName,
+        
         [Parameter()]
-        [AllowEmptyString()]
-        [AllowNull()]
-        [string]$Description,
-        [Parameter(Mandatory)]
-        [ValidateSet("Password", "MFA", "Biometric", "WindowsHelloForBusiness", "FIDO2", "Combination")]
-        [string[]]$RequiredStrengths,
+        [string]$Description = "",  # Default to an empty string if not provided
+        
+        [Parameter()]
+        [ValidateSet("MFA", "windowsHelloForBusiness", "fido2", "temporaryAccessPassOneTime")]
+        [array]$AllowedCombinations,
+        
         [Parameter()]
         [string[]]$CombinationConfigurations,
+        
+        [Parameter()]
+        [ValidateSet("custom")]
+        [string]$PolicyType,
+
+        [Parameter()]
+        [ValidateSet("mfa")]
+        [string]$RequirementsSatisfied,
+
+        [Parameter()]
+        [switch]$ViewOnly,
+        
+        [Parameter()]
+        [switch]$CreateOnly,
+        
         [Parameter()]
         [switch]$ForceUpdate
     )
 
-    # Get all existing authentication strength policies
-    $ExistingPolicies = Get-MgAuthenticationStrengthPolicy -All
+# Get all existing authentication strength policies
+$ExistingPolicies = Get-MgPolicyAuthenticationStrengthPolicy
 
-    # Check if the policy already exists
-    $ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
+# Check if the policy already exists
+$ExistingPolicy = $ExistingPolicies | Where-Object { $_.displayName -eq $PolicyName }
 
-    # Build the hash table for the policy parameters
+if ($ViewOnly) {
+    return $ExistingPolicy
+}
+
+# Building the policy parameters hashtable
     $PolicyParams = @{
         displayName = $PolicyName
-        policyType = "authenticationStrength"
-        requiredStrengths = $RequiredStrengths
     }
 
     if ($PSBoundParameters.ContainsKey('Description')) {
         $PolicyParams.description = $Description
+    }
+
+    if ($PSBoundParameters.ContainsKey('RequirementsSatisfied')) {
+        $PolicyParams.requirementsSatisfied = $RequirementsSatisfied
+    }
+
+    if ($PSBoundParameters.ContainsKey('AllowedCombinations')) {
+        $PolicyParams.allowedCombinations = $AllowedCombinations
     }
 
     if ($PSBoundParameters.ContainsKey('CombinationConfigurations')) {
@@ -122,13 +483,13 @@ Function EntraAuthenticationStrength {
     if ($ExistingPolicy) {
         if ($ForceUpdate) {
             Write-Host "Updating existing authentication strength policy: $PolicyName"
-            Update-MgAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
+            Update-MgPolicyAuthenticationStrengthPolicy -AuthenticationStrengthPolicyId $ExistingPolicy.id -BodyParameter $PolicyParams
         } else {
-            Write-Host "Policy $PolicyName already exists. Use -ForceUpdate to update the existing policy."
+            Write-Host "Policy already exists. Use -ForceUpdate to modify it."
         }
-    } else {
+    } elseif ($CreateOnly) {
         Write-Host "Creating new authentication strength policy: $PolicyName"
-        New-MgAuthenticationStrengthPolicy -BodyParameter $PolicyParams
+        New-MgPolicyAuthenticationStrengthPolicy -BodyParameter $PolicyParams
     }
 }
 
@@ -316,29 +677,7 @@ Function EntraCAPolicy
                 [AllowNull()]
                 [array]$Cond_ClientAppTypes,
 
-    # deviceStates - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevicestates?view=graph-rest-beta
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("all")]
-                [Array]$Cond_DeviceStates_IncludeStates,
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("Compliant","DomainJoined")]
-                [Array]$Cond_DeviceStates_ExcludeStates,
-
     # devices - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("all")]
-                [Array]$Cond_Devices_IncludeDevices,
-            [Parameter()]
-                [AllowEmptyString()]
-                [AllowNull()]
-                [ValidateSet("Compliant","DomainJoined")]
-                [Array]$Cond_Devices_ExcludeDevices,
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
@@ -386,7 +725,7 @@ Function EntraCAPolicy
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
-                [ValidateSet("low","medium","high","none","unknownFutureValue")]
+                [ValidateSet("low","medium","high","hidden","none","unknownFutureValue")]
                 [string[]]$Cond_SignInRiskLevels,
 
     # UserRiskLevels - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessconditionset?view=graph-rest-beta
@@ -395,15 +734,15 @@ Function EntraCAPolicy
                 [AllowEmptyString()]
                 [AllowNull()]
                 [ValidateSet("low","medium","high","none","unknownFutureValue")]
-                [Array]$Cond_UserRiskLevels,
+                [string[]]$Cond_UserRiskLevels,
 
     # insiderRiskLevels - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessconditionset?view=graph-rest-beta
 
             [Parameter()]
                 [AllowEmptyString()]
                 [AllowNull()]
-                [ValidateSet("low","medium","high","none","unknownFutureValue")]
-                [Array]$Cond_InsiderRiskLevels,
+                [ValidateSet("minor","moderate","elevated","none","unknownFutureValue")]
+                [string]$Cond_InsiderRiskLevels,
 
     # grantControls - https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessgrantcontrols?view=graph-rest-beta
             [Parameter()]
@@ -1740,208 +2079,6 @@ Function EntraCAPolicy
 
 #endregion
 
-            ###############################################################################
-            # conditions.deviceStates.includeStates (array)
-            ###############################################################################
-
-#region conditions.deviceStates.includeStates (array)
-
-                $InputVariable = $Cond_DeviceStates_IncludeStates
-                $ExistingData  = $CAPolicy.conditions.DeviceStates.IncludeStates
-                $FunctionArg   = 'Cond_DeviceStates_IncludeStates'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devicestates" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.IncludeStates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devicestates | add-member -MemberType NoteProperty -Name "IncludeStates" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.deviceStates.IncludeStates = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.deviceStates.excludeStates (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevicestates?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.deviceStates.excludeStates (array)
-
-                $InputVariable = $Cond_DeviceStates_excludeStates
-                $ExistingData  = $CAPolicy.conditions.DeviceStates.excludeStates
-                $FunctionArg   = 'Cond_DeviceStates_excludeStates'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devicestates" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devicestates.ExcludeStates.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devicestates | add-member -MemberType NoteProperty -Name "ExcludeStates" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.deviceStates.excludeStates = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.devices.includeDevices (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.devices.includeDevices (array)
-
-                $InputVariable = $Cond_Devices_IncludeDevices
-                $ExistingData  = $CAPolicy.conditions.Devices.IncludeDevices
-                $FunctionArg   = 'Cond_Devices_IncludeDevices'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devices" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.IncludeDevices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devices | add-member -MemberType NoteProperty -Name "IncludeDevices" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.devices.includeDevices = $InputVariable
-                    }
-
-#endregion
-
-            ###############################################################################
-            # conditions.devices.excludeDevices (array)
-            # https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessdevices?view=graph-rest-beta
-            ###############################################################################
-
-#region conditions.devices.excludeDevices (array)
-
-                $InputVariable = $Cond_Devices_excludeDevices
-                $ExistingData  = $CAPolicy.conditions.Devices.excludeDevices
-                $FunctionArg   = 'Cond_Devices_excludeDevices'
-
-                If ( (!($ExistingData)) -and ($PSBoundParameters.ContainsKey($FunctionArg)) )  # variable was defined explicitly !
-                    {
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy | add-member -MemberType NoteProperty -Name "conditions" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions | add-member -MemberType NoteProperty -Name "devices" -Value $nestedObject -Force
-                            }
-                        #-----------------------------------------------------------------------------------------------------------
-                        Try 
-                            { 
-                                $Result = $CAPolicy.conditions.devices.ExcludeDevices.Gettype()
-                            }   
-                        Catch 
-                            { 
-                                $NestedObject = [PSCustomObject]@{}
-                                $CAPolicy.conditions.devices | add-member -MemberType NoteProperty -Name "ExcludeDevices" -Value $nestedObject -Force
-                            }
-                    }
-
-                If ($PSBoundParameters.ContainsKey($FunctionArg))
-                    {
-                        $CAPolicy.conditions.devices.excludeDevices = $InputVariable
-                    }
-
-#endregion
 
             ###############################################################################
             # conditions.devices.deviceFilter.mode (value)
@@ -3151,7 +3288,6 @@ Function EntraCAPolicy
 }
 
 
-
 Function EntraGroup {
     [CmdletBinding()]
     param(
@@ -3608,6 +3744,17 @@ Function EntraUser {
 }
 
 
+# Function to generate a random alphanumeric string of specified length
+function Generate-RandomString {
+    param (
+        [int]$Length = 20
+    )
+    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    $randomString = -join ((1..$Length) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+    return $randomString
+}
+
+
 Function Generate-SecurePassword {
     param (
         [int]$length = 16
@@ -3620,33 +3767,670 @@ Function Generate-SecurePassword {
 }
 
 
-Function Get-MgAuthenticationStrengthPolicy {
+function Get-MgGroupMemberRecurse 
+{
     param(
-        [Parameter()]
-        [string]$All
-    )
-    # Replace with actual call to Microsoft Graph API to get authentication strength policies
-    @()
+            [Parameter()]
+                [string]$GroupUPN,
+            [Parameter()]
+                [string]$GroupId
+        )
+ 
+    $Members = @()
+    
+    if ($GroupUPN)
+        {
+            # find group
+            $Group = Get-MgGroup -Filter "startsWith(userPrincipalName, $GroupUPN)"
+        }
+    ElseIf ($GroupId)
+        {
+            # find group
+            $Group = Get-MgGroup -Filter "id eq '$GroupId'"
+        }
+
+        If ($Group)
+            {
+                $GroupMembers = Get-MgGroupMember -GroupId $Group.Id | select * -ExpandProperty additionalProperties | Select-Object @(
+                    'id'
+                    @{  Name       = 'userPrincipalName'
+                        Expression = { $_.AdditionalProperties["userPrincipalName"] }
+                    }
+                    @{  Name       = 'type'
+                        Expression = { $_.AdditionalProperties["@odata.type"] }
+                    }
+                )
+
+                If ($GroupMembers)
+                    {
+                        ForEach ($Member in $GroupMembers)
+                            {
+                                if ($Member.type -eq "#microsoft.graph.user") {
+                                    $Members += $Member
+                                }
+                                if ($Member.type -eq "#microsoft.graph.group") {
+                                    $Members += @(Get-MgGroupMemberRecurse -GroupUPN $_.userPrincipalName)
+                                }
+                            }
+                    }
+            }
+return $Members
 }
 
 
-Function New-MgAuthenticationStrengthPolicy {
+Function Install_GMSA_Account
+{
     param(
-        [Parameter(Mandatory)]
-        [hashtable]$BodyParameter
-    )
-    # Replace with actual call to Microsoft Graph API to create new authentication strength policies
+         [Parameter(Mandatory)]
+         [string]$AccountName
+     )
+
+    # install account on fx. automation server
+        Install-ADServiceAccount $AccountName
+
+    # Test - should return TRUE
+        Test-ADServiceAccount $AccountName
 }
 
 
-Function Update-MgAuthenticationStrengthPolicy {
+Function Invoke-ADSDPropagation
+{
+<#
+.SYNOPSIS
+    Invoke a SDProp task on the PDCe.
+.DESCRIPTION
+    Make an LDAP call to trigger SDProp.
+.EXAMPLE
+    Invoke-ADSDPropagation
+    By default, RunProtectAdminGroupsTask is used.
+.EXAMPLE
+    Invoke-ADSDPropagation -TaskName FixUpInheritance
+    Use the legacy FixUpInheritance task name for Windows Server 2003 and earlier.
+.PARAMETER TaskName
+    Name of the task to use.
+        - FixUpInheritance for legacy OS
+        - RunProtectAdminGroupsTask for recent OS
+.NOTES
+    You can track progress with:
+    Get-Counter -Counter '\directoryservices(ntds)\ds security descriptor propagator runtime queue' | Select-Object -ExpandProperty CounterSamples | Select-Object -ExpandProperty CookedValue
+.LINK
+    http://ItForDummies.net
+#>
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory=$false,
+        HelpMessage='Name of the domain where to force SDProp to run',
+        Position=0)]
+    [ValidateScript({Test-Connection -ComputerName $_ -Count 2 -Quiet})]
+    [String]$DomainName = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().Name,
+
+    [ValidateSet('RunProtectAdminGroupsTask','FixUpInheritance')]
+    [String]$TaskName = 'RunProtectAdminGroupsTask'
+)
+
+    try
+        {
+            $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('domain',$DomainName)
+            $DomainObject = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext)
+    
+            Write-Verbose -Message "Detected PDCe is $($DomainObject.PdcRoleOwner.Name)."
+            $RootDSE = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$($DomainObject.PdcRoleOwner.Name)/RootDSE") 
+            $RootDSE.UsePropertyCache = $false 
+            $RootDSE.Put($TaskName, "1") # RunProtectAdminGroupsTask & fixupinheritance
+            $RootDSE.SetInfo()
+        }
+    catch
+        {
+            throw "Can't invoke SDProp on $($DomainObject.PdcRoleOwner.Name) !"
+        }
+}
+
+
+
+Function TagUser
+{
+    [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [string]$AuthenticationStrengthPolicyId,
-        [Parameter(Mandatory)]
-        [hashtable]$BodyParameter
+
+            [Parameter(mandatory)]
+                [object]$User,
+            [Parameter()]
+                [string]$PropertyKeyAD,
+            [Parameter()]
+                [string]$TagValueAD,
+            [Parameter()]
+                [string]$PropertyKeyCloud,
+            [Parameter()]
+                [string]$TagValueCloud,
+            [Parameter(mandatory)]
+                [AllowNull()]
+                [array]$OnPremisesSyncEnabled,
+            [Parameter()]
+                [AllowNull()]
+                [object]$MailBoxInfo
+         )
+
+
+    # Get existing tag-values
+        $ExistingTagValue = $null
+        $ExistingTagValue = $User.OnPremisesExtensionAttributes.$PropertyKeyCloud
+
+    # Cloud-only Account (use Microsoft Graph to update)
+    If ( (!($OnPremisesSyncEnabled)) -and ($MailboxInfo) )
+        {
+            # Modify property, cloud-only user
+                If ($ExistingTagValue -ne $TagValueCloud)
+                    {
+                        If ($MailboxInfo)
+                            {
+                                If (!($global:EnableWhatIf))
+                                    {
+                                        write-host ""
+                                        write-host "   Modifying $($User.DisplayName) using Exchange Online ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                                        Switch ($PropertyKeyCloud)
+                                            {
+                                                'extensionAttribute1'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute2'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute2 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute3'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute3 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute4'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute4 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute5'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute5 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute6'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute6 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute7'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute7 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute8'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute8 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute9'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute9 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute10' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute10 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute11' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute11 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute12' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute12 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute13' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute13 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute14' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute14 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                'extensionAttribute15' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute15 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                            }
+
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                                Else
+                                    {
+                                        write-host ""
+                                        write-host "   WhatIf - Modifying $($User.DisplayName) using Exchange Online ($($PropertyKeyCloud) = $($TagValueCloud))"
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                            }
+                        Else
+                            {
+
+                                If (!($global:EnableWhatIf))
+                                    {
+                                        write-host ""
+                                        write-host "   Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                                        Try
+                                            {
+                                                Update-MgBetaUser -UserId $User.Id -OnPremisesExtensionAttributes @{"$($PropertyKeyCloud)"="$($TagValueCloud)"} -ErrorAction Stop
+                                            }
+                                        Catch
+                                            {
+
+                                                write-host ""
+                                                write-host "   Modifying $($User.DisplayName) using Exchange Online ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                                                # We can be getting error "Unable to update the specified properties for objects that have originated within an external service"
+                                                # Reason: Object is managed by Exchange - and we need to manage using Exchange cmdlets instead of Microsoft Graph
+                                                switch ($PropertyKeyCloud)
+                                                    {
+                                                        'extensionAttribute1'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute2'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute2 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute3'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute3 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute4'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute4 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute5'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute5 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute6'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute6 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute7'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute7 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute8'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute8 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute9'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute9 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute10' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute10 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute11' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute11 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute12' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute12 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute13' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute13 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute14' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute14 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                        'extensionAttribute15' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute15 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue -ErrorAction SilentlyContinue }
+                                                    }
+                                                    
+                                            }
+
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                                Else
+                                    {
+                                        write-host ""
+                                        write-host "   WhatIf - Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                            }
+                    }
+        }
+
+    If ( (!($OnPremisesSyncEnabled)) -and (!($MailboxInfo)) )
+        {
+            # Modify property, cloud-only user
+                If ($ExistingTagValue -ne $TagValueCloud)
+                    {
+
+                        If (!($global:EnableWhatIf))
+                            {
+                                write-host ""
+                                write-host "   Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                                Try
+                                    {
+                                        Update-MgBetaUser -UserId $User.Id -OnPremisesExtensionAttributes @{"$($PropertyKeyCloud)"="$($TagValueCloud)"} -ErrorAction Stop
+                                    }
+                                Catch
+                                    {
+                                        write-host ""
+                                        write-host "   Modifying $($User.DisplayName) using Exchange Online ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                                        # We can be getting error "Unable to update the specified properties for objects that have originated within an external service"
+                                        # Reason: Object is managed by Exchange - and we need to manage using Exchange cmdlets instead of Microsoft Graph
+                                        switch ($PropertyKeyCloud)
+                                            {
+                                                'extensionAttribute1'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute2'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute2 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute3'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute3 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute4'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute4 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute5'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute5 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute6'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute6 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute7'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute7 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute8'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute8 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute9'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute9 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute10' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute10 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute11' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute11 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute12' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute12 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute13' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute13 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute14' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute14 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                                'extensionAttribute15' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute15 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                                            }
+                                    }
+
+                                ################################################################################
+                                $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                            }
+                                $Result = $Global:ModificationsLog.add($LogEntry) 
+                                ################################################################################
+                            }
+                        Else
+                            {
+                                write-host ""
+                                write-host "   WhatIf - Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+                                ################################################################################
+                                $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                            }
+
+                                $Result = $Global:ModificationsLog.add($LogEntry) 
+                                ################################################################################
+                            }
+                    }
+        }
+
+    ElseIf ( ($OnPremisesSyncEnabled) -and ($MailboxInfo) )
+        {
+            # Modify property, AD-synced user
+                If ($ExistingTagValue -ne $TagValueAD)
+                    {
+                        If ($MailboxInfo)
+                            {
+
+                                If (!($global:EnableWhatIf))
+                                    {
+                                        write-host ""
+                                        write-host "   Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+
+                                        $UserAD = Get-ADUser -Filter 'UserPrincipalName -eq $User.OnPremisesUserPrincipalName'
+                                        Try
+                                            {
+                                                If ($global:SecureCredentials) {
+                                                    Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                                                } Else {
+                                                    Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"}
+                                                }
+                                            }
+                                        Catch
+                                            {
+                                                If ($global:SecureCredentials) {
+                                                    Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                                                } Else {
+                                                    Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"}
+                                                }
+                                            }
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                                Else
+                                    {
+                                        write-host ""
+                                        write-host "   WhatIf - Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+                                        ################################################################################
+                                        $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                                    }
+
+                                        $Result = $Global:ModificationsLog.add($LogEntry) 
+                                        ################################################################################
+                                    }
+                            }
+                    }                
+        }
+
+    ElseIf ( ($OnPremisesSyncEnabled) -and (!($MailboxInfo)) )
+        {
+            # Modify property, AD-synced user
+                If ($ExistingTagValue -ne $TagValueAD)
+                    {
+
+                        If (!($global:EnableWhatIf))
+                            {
+                                write-host ""
+                                write-host "   Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+
+                                $UserAD = Get-ADUser -Filter 'UserPrincipalName -eq $User.OnPremisesUserPrincipalName'
+                                Try
+                                    {
+                                        If ($global:SecureCredentials) {
+                                            Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                                        } Else {
+                                            Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"}
+                                        }
+                                    }
+                                Catch
+                                    {
+                                        If ($global:SecureCredentials) {
+                                            Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                                        } Else {
+                                            Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"}
+                                        }
+                                    }
+
+                                ################################################################################
+                                $LogEntry = $null
+                                $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                            }
+
+                                $Result = $Global:ModificationsLog.add($LogEntry) 
+                                ################################################################################
+                            }
+                        Else
+                            {
+                                write-host ""
+                                write-host "   WhatIf - Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+
+                                ################################################################################
+                                $LogEntry = $null
+                                $LogEntry = [PSCustomObject]@{ 
+                                                                            UserUPN = $User.UserPrincipalName
+                                                                            UserDisplayName = $User.DisplayName
+                                                                            OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                                                                            PropertyKeyAD = $PropertyKeyAD
+                                                                            TagValueAD = $TagValueAD
+                                                                            PropertyKeyCloud = $PropertyKeyCloud
+                                                                            TagValueCloud = $TagValueCloud
+                                                                            ExistingTagValue = $ExistingTagValue
+                                                            }
+
+                                $Result = $Global:ModificationsLog.add($LogEntry)
+                                ################################################################################
+                            }
+                    }                
+        }
+}
+
+
+Function TagUserConditionsTrue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object]$User,
+        [Parameter(Mandatory)] [string]$PropertyKeyAD,
+        [Parameter(Mandatory)] [string]$PropertyKeyCloud,
+        [Parameter(Mandatory)] [string]$TagValueAD,
+        [Parameter(Mandatory)] [string]$TagValueCloud,
+        [Parameter()] [AllowNull()] [string]$OnPremisesSyncEnabled
     )
-    # Replace with actual call to Microsoft Graph API to update authentication strength policies
+
+    # Get existing tag-values
+    $ExistingTagValue = $User.OnPremisesExtensionAttributes.$PropertyKeyCloud
+
+    # Cloud-only Account (use Microsoft Graph to update)
+    if ([string]::IsNullOrEmpty($OnPremisesSyncEnabled)) {
+        write-verbose ""
+        write-Verbose "PropertyKeyCloud : $($PropertyKeyCloud)"
+        write-Verbose "ExistingValue    : $($ExistingTagValue)"
+        write-Verbose "TagValueCloud    : $($TagValueCloud)"
+
+        if ($ExistingTagValue -eq $TagValueCloud) {
+        write-verbose ""
+        write-Verbose "Skipping as value is already set correctly on user !!!"
+                
+        } elseIf ($ExistingTagValue -ne $TagValueCloud) {
+            if (-not $global:EnableWhatIf) {
+                Write-Host ""
+                Write-Host "   Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                try {
+                    Update-MgBetaUser -UserId $User.Id -OnPremisesExtensionAttributes @{"$($PropertyKeyCloud)"="$($TagValueCloud)"} -ErrorAction Stop
+                } catch {
+                    Write-Host ""
+                    Write-Host "   Modifying $($User.DisplayName) using Exchange Online ($($PropertyKeyCloud) = $($TagValueCloud))"
+                            
+                    # Handle updates via Exchange Online cmdlets
+                    switch ($PropertyKeyCloud) {
+                        'extensionAttribute1'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute1 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute2'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute2 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute2 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute3'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute3 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute3 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute4'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute4 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute4 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute5'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute5 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute5 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute6'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute6 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute6 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute7'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute7 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute7 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute8'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute8 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute8 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute9'  { set-mailuser -identity $User.UserPrincipalName -CustomAttribute9 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute9 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute10' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute10 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute10 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute11' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute11 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute11 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute12' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute12 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute12 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute13' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute13 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute13 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute14' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute14 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute14 $TagValueCloud -WarningAction SilentlyContinue }
+                        'extensionAttribute15' { set-mailuser -identity $User.UserPrincipalName -CustomAttribute15 $TagValueCloud -WarningAction SilentlyContinue; set-mailbox -identity $User.UserPrincipalName -CustomAttribute15 $TagValueCloud -WarningAction SilentlyContinue }
+                    }
+                }
+
+                # Log entry
+                $LogEntry = [PSCustomObject]@{ 
+                    UserUPN = $User.UserPrincipalName
+                    UserDisplayName = $User.DisplayName
+                    OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                    PropertyKeyAD = $PropertyKeyAD
+                    TagValueAD = $TagValueAD
+                    PropertyKeyCloud = $PropertyKeyCloud
+                    TagValueCloud = $TagValueCloud
+                    ExistingTagValue = $ExistingTagValue
+                }
+
+                $Result = $Global:ModificationsLog.add($LogEntry) 
+            } else {
+                Write-Host ""
+                Write-Host "   WhatIf - Modifying $($User.DisplayName) using Microsoft Graph ($($PropertyKeyCloud) = $($TagValueCloud))"
+
+                # Log entry
+                $LogEntry = [PSCustomObject]@{ 
+                    UserUPN = $User.UserPrincipalName
+                    UserDisplayName = $User.DisplayName
+                    OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                    PropertyKeyAD = $PropertyKeyAD
+                    TagValueAD = $TagValueAD
+                    PropertyKeyCloud = $PropertyKeyCloud
+                    TagValueCloud = $TagValueCloud
+                    ExistingTagValue = $ExistingTagValue
+                }
+
+                $Result = $Global:ModificationsLog.add($LogEntry) 
+            }
+        }
+            
+    } elseif (-not [string]::IsNullOrEmpty($OnPremisesSyncEnabled)) {
+
+        write-verbose ""
+        write-Verbose "PropertyKeyAD    : $($PropertyKeyAD)"
+        write-Verbose "ExistingValue    : $($ExistingTagValue)"
+        write-Verbose "TagValueAD       : $($TagValueAD)"
+                                
+        if ($ExistingTagValue -eq $TagValueAD) {
+        write-verbose ""
+        write-Verbose "Skipping as value is already set correctly on user !!!"
+                
+        } elseIf ($ExistingTagValue -ne $TagValueAD) {
+            if (-not $global:EnableWhatIf) {
+                Write-Host ""
+                Write-Host "   Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+
+                $UserAD = Get-ADUser -Filter 'UserPrincipalName -eq $User.OnPremisesUserPrincipalName'
+                try {
+                        If ($global:SecureCredentials) {
+                            Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                        } Else {
+                            Set-ADUser -identity $UserAD -Replace @{"$PropertyKeyAD"="$($TagValueAD)"}
+                        }
+                } catch {
+                        If ($global:SecureCredentials) {
+                            Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"} -Credential $global:SecureCredentials
+                        } Else {
+                            Set-ADUser -identity $UserAD -Add @{"$PropertyKeyAD"="$($TagValueAD)"}
+                        }
+                }
+
+                # Log entry
+                $LogEntry = [PSCustomObject]@{ 
+                    UserUPN = $User.UserPrincipalName
+                    UserDisplayName = $User.DisplayName
+                    OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                    PropertyKeyAD = $PropertyKeyAD
+                    TagValueAD = $TagValueAD
+                    PropertyKeyCloud = $PropertyKeyCloud
+                    TagValueCloud = $TagValueCloud
+                    ExistingTagValue = $ExistingTagValue
+                }
+
+                $Result = $Global:ModificationsLog.add($LogEntry) 
+            } else {
+                Write-Host ""
+                Write-Host "   WhatIf - Modifying $($User.DisplayName) using Active Directory ($($PropertyKeyAD) = $($TagValueAD))"
+
+                # Log entry
+                $LogEntry = [PSCustomObject]@{ 
+                    UserUPN = $User.UserPrincipalName
+                    UserDisplayName = $User.DisplayName
+                    OnPremisesSyncEnabled = [string]$OnPremisesSyncEnabled
+                    PropertyKeyAD = $PropertyKeyAD
+                    TagValueAD = $TagValueAD
+                    PropertyKeyCloud = $PropertyKeyCloud
+                    TagValueCloud = $TagValueCloud
+                    ExistingTagValue = $ExistingTagValue
+                }
+
+                $Result = $Global:ModificationsLog.add($LogEntry) 
+            }
+        }
+    }
 }
 
 
@@ -3654,8 +4438,8 @@ Function Update-MgAuthenticationStrengthPolicy {
 # SIG # Begin signature block
 # MIIaigYJKoZIhvcNAQcCoIIaezCCGncCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDVwslkpOQxi3yI
-# f9GZ6Rr/EJXXa5h4ecTV6nbXJjV4zKCCFsUwggNfMIICR6ADAgECAgsEAAAAAAEh
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCC+TxO4QdbEFUtY
+# hG3q1Je2tg5kEmXvWhbNUP0NG77DT6CCFsUwggNfMIICR6ADAgECAgsEAAAAAAEh
 # WFMIojANBgkqhkiG9w0BAQsFADBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3Qg
 # Q0EgLSBSMzETMBEGA1UEChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2ln
 # bjAeFw0wOTAzMTgxMDAwMDBaFw0yOTAzMTgxMDAwMDBaMEwxIDAeBgNVBAsTF0ds
@@ -3781,17 +4565,17 @@ Function Update-MgAuthenticationStrengthPolicy {
 # IG52LXNhMS8wLQYDVQQDEyZHbG9iYWxTaWduIEdDQyBSNDUgQ29kZVNpZ25pbmcg
 # Q0EgMjAyMAIMeWPZY2rjO3HZBQJuMA0GCWCGSAFlAwQCAQUAoIGEMBgGCisGAQQB
 # gjcCAQwxCjAIoAKAAKECgAAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYK
-# KwYBBAGCNwIBCzEOMAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIKuMVexz
-# rfUAowD83qyCAVZ5VbtBgC+VuZlZLYf6FpN9MA0GCSqGSIb3DQEBAQUABIICAL2a
-# NKnxcVZ65erVDMmmtLkjR7byhzqLlxaaw1eD3qg01RLCISkENoIyYINnU8PB8/89
-# 0ZVjr4G1b71xJkHjk4aMLjwvBtHRaNfGYzKl5k2IfI1wRvd1k7jlfks1/428IYCU
-# h1ysh3tDHqK1BOkv3Zr3sAbRRQFMFFO9+95tPXN3ek9YapSlhVcq/BA3jf7GVeBA
-# Cu1J4leGif96O5jNrkGtnx1EDhaI4Fu/G4yWPM8zo4MYniha0hSruKshHe9gtv1U
-# NJ2h9P8lrLG7FnKnZfyPxaC/YW41kgX5gvmfz0pl5eQpbQ7CbddwBFGiC+eLXvyT
-# 66gqxUQ7mylxjRGOJarPiZvrn6ntBV2Cigl4rFhtlQovDZ0H2kxMNXl0In2xv9uK
-# f5EvTPdgfrsfUZPiKU/oRT+v2USbvCj8J8zsUYPbS6rGr1gN4Yi8vBc4i3IBM9lG
-# v8MAwcYkDMGo8G/cTeZCPoDxImE+Sn2dENCnFHfA9ZkhKMrLNJmJX4TfbzTZZ9Sh
-# gghZVaDlBqVbjN5l/OhZrh4JzZLZINYu0D0+IafCm7brEXMWvLxMUpodKCyuOjVl
-# guZfgRwxFYvNA6a8F+kl8sWMa/Bzik/L7ccc9ml2lZKy5zRnhly+0xf82Q47HWvW
-# CQqORM2GNVNcMK+57Y12+yTrWcLfR31q9lKzdQS8
+# KwYBBAGCNwIBCzEOMAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIPRIQvOy
+# hvrHkQ97TugcwQt3O208txg2XvaTXTNMNKcBMA0GCSqGSIb3DQEBAQUABIICACOT
+# INnz11J/oJ1ES0IF1689kZB1I09xpFh/Hen/3m1SBZdKcdP+R610RY49PCPKNiaD
+# Zwj3pmaZoQQo9wSwmMEwn3f7p5dfHE0Q4yPhwSRhw3FYCLu/rA7d6jc1AYO/wvxo
+# RPEPF2WXsADxA/VzytX9eF0peS/42g8yP3rA4De5MUXbpOkCUmB5ow3UbTIrO/dy
+# qevf+C0Ud4JCHc5zi81t0SCeOGkXnH8pSfnUm8pzwarJdNb+aGZSFVoJXW1z8sQ8
+# WpviIF/Zdj0sa1QrWkYuG24MNSsknPcRAEKLfXuVaErdtG6lZsGQQkjuOItkHpqi
+# UcqEomOUROdRVPRAVCXY/UIgxdhkHk/rB4kcl8DjkrsmI4Gxm7JeDTfb2t38HU46
+# SFbyvFIqNFp/Ho75GqvKPXje5Mh4kA+s7xWWyHUOf6GlhbQeIV6HCmdghI79kQh6
+# ZFB307dIL614sEyYAtMCaf2sBTdcAJJ0boKljbMCioL8z368LnEx+7kH9q23o2sY
+# eTg2HxPI3yZnexbj6gvKGBqTSF83JMFvyix1cm/8swlTW4aJ54A942wOjPQ9/NRM
+# Dz38NYMe50ONbOw9yW7wirkWHLU2OocaZOUllDEwH+9a8LTRvt3pUGm01Gj6Gim3
+# 5+DcFMQ1nd8czY6K/TUZVx0QnFkiYjyNV0RqlSaT
 # SIG # End signature block
