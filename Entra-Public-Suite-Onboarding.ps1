@@ -49,6 +49,13 @@
     # Install PS module from Powershell Gallery
     Install-module ImportExcel
 
+########################################################################################################################################
+# Onboarding Entra Policy Suite PS module
+########################################################################################################################################
+
+    # Install PS module from Powershell Gallery
+    Install-module EntraPolicySuite
+
 
 ########################################################################################################################################
 # Onboarding Microsoft Graph integration
