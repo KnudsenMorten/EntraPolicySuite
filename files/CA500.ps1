@@ -118,7 +118,7 @@ if ($Mode -eq "Initial_Setup") {
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
-                  -Cond_App_includeApplications @("None") `
+                  -Cond_App_includeApplications @("All") `
                   -Cond_Locations_IncludeLocations @("All") `
                   -Cond_Locations_ExcludeLocations @("AllTrusted") `
                   -GC_Operator "OR" `
@@ -465,7 +465,7 @@ elseif ($Mode -eq "Install_Latest_Policy_Disabled") {
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
-                  -Cond_App_includeApplications @("None") `
+                  -Cond_App_includeApplications @("All") `
                   -Cond_Locations_IncludeLocations @("All") `
                   -Cond_Locations_ExcludeLocations @("AllTrusted") `
                   -GC_Operator "OR" `
