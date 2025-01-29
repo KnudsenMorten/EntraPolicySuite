@@ -158,11 +158,6 @@
         # Get the default name of Named Location for Denied Countries
         $Named_Location_Denied_Countries_CFG = $configData.Named_Locations_Denied_Countries_Name
 
-        # Get the administrative units for CA Groups
-        $AdministrativeUnits_CA_TargetGroups_CFG = $configData.AdministrativeUnits_CA_TargetGroups
-        $AdministrativeUnits_CA_PilotGroups_CFG = $configData.AdministrativeUnits_CA_PilotGroups
-        $AdministrativeUnits_CA_ExcludeGroups_CFG = $configData.AdministrativeUnits_CA_ExcludeGroups
-
         Write-host ""
         Write-host "Group Targeting Method            : $($Group_Targeting_Method)"
 
@@ -247,23 +242,21 @@
     # Create Break Class Accounts, if missing
     #######################################################
         
-        <#
-            # Create Break Glass Accounts, only if missing !!
+        # Create Break Glass Accounts, only if missing !!
 
-                ForEach ($User in $BreakGlassAccounts) {
+            ForEach ($User in $BreakGlassAccounts_CFG) {
 
-                    $GivenName = $User.UserPrincipalName.Split('@')[0]
+                $GivenName = $User.UserPrincipalName.Split('@')[0]
 
-                    $BreakGlassPassword = Generate-SecurePassword -length 16
+                $BreakGlassPassword = Generate-SecurePassword -length 16
 
-                    EntraUser -DisplayName $User.DisplayName `
-                              -UserPrincipalName $User.UserPrincipalName `
-                              -MailNickname $GivenName `
-                              -Password $BreakGlassPassword `
-                              -GivenName $GivenName `
-                              -Create
-                }
-        #>
+                EntraUser -DisplayName $User.DisplayName `
+                            -UserPrincipalName $User.UserPrincipalName `
+                            -MailNickname $GivenName `
+                            -Password $BreakGlassPassword `
+                            -GivenName $GivenName `
+                            -Create
+            }
 
         # Build Array of Break Glass Accounts
 
@@ -1068,161 +1061,6 @@ foreach ($file in $files) {
             
             $PolicyJson | Out-File $FileNamePath -Encoding utf8 -Force
         }
-
-###############################################################################
-# Move any groups with naming Entra-CA-xxx and Entra-SSPR-xxx into the AUs
-###############################################################################
-
-        ########################################################################
-        # Create AU, if missing
-        ########################################################################
-
-        # Get all administrative units and display their display names and IDs
-        write-host "Get Entra Administrative Units including members ... Please Wait !"
-        $AllAUs_Entra = Get-MgDirectoryAdministrativeUnit -All
-
-        # create array with members of AUs
-        $administrativeUnitsDetails = @()
-
-        # Loop through each administrative unit to get members and build the array
-        foreach ($au in $AllAUs_Entra) {
-            # Fetch members of the administrative unit
-            $members = @()
-            try {
-                $membersRaw = Get-MgDirectoryAdministrativeUnitMember -AdministrativeUnitId $au.Id -All
-                foreach ($member in $membersRaw) {
-                    $members += @{
-                        DisplayName = $member.DisplayName
-                        UserType = $member['@odata.type'] -replace '#microsoft.graph.', ''
-                        Id = $member.Id
-                    }
-                }
-            } catch {
-                Write-Output "Error retrieving members for administrative unit $($au.DisplayName): $_"
-            }
-
-            # Create a custom object for the AU and add it to the array
-            $auDetails = [PSCustomObject]@{
-                Id = $au.Id
-                DisplayName = $au.DisplayName
-                Members = $members
-            }
-            $administrativeUnitsDetails += $auDetails
-        }
-
-        $AUs_All = @()
-        $AUs_All += $AdministrativeUnits_CA_TargetGroups_CFG
-        $AUs_All += $AdministrativeUnits_CA_ExcludeGroups_CFG
-        $AUs_All += $AdministrativeUnits_CA_PilotGroups_CFG
-
-        # Process AU $AdministrativeUnits_CA_TargetGroups_CFG
-    
-        ForEach ($AU in $AUs_All) {
-
-            $AUInfo = $AllAUs_Entra | where-object { $_.DisplayName -eq $AU.DisplayName }
-
-            If (!($AUInfo)) {
-
-                # Create a new Administrative Unit
-                $adminUnitParams = @{
-                    DisplayName = $AU.DisplayName
-                    Description = $AU.Description
-                }
-
-                # Using Microsoft Graph to create the Administrative Unit
-                write-host ""
-                Write-host "Creating Administrative Unit: $($newAdminUnit.DisplayName)"
-                $newAdminUnit = New-MgDirectoryAdministrativeUnit -BodyParameter $adminUnitParams
-            }
-        }
-
-        ########################################################################
-        # Move Groups to AUs
-        ########################################################################
-
-        $EntraGroupsHashTable = EntraGroupsAsHashtable
-
-        write-host "Getting All Groups from Entra ID ... Please Wait !"
-        $AllGroups_Entra = Get-MgGroup -All
-
-            ##################
-            # Target Groups
-            ##################
-
-            $Entra_CA_TargetGroups_Placement = $AllGroups_Entra | Where-Object { ( ($_.DisplayName -like "Entra-CA-*") -and `
-                                                                                   ($_.DisplayName -notLike "*-Excluded-Assignment") -and `
-                                                                                   ($_.DisplayName -notLike "*-Pilot-*") ) -or `
-                                                                               
-                                                                                   ($_.DisplayName -Like "Entra-SSPR-*") `
-                                                                               }
-
-            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_TargetGroups_CFG.DisplayName }
-            If ($AUScope) {
-
-                ForEach ($Group in $Entra_CA_TargetGroups_Placement) {
-
-                    If ($Group.Id -notin $AUScope.Members.id) {
-                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
-
-                        $params = @{
-	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
-                        }
-
-                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
-                    }
-                }
-            }
-        
-            ##################
-            # Exclude Groups
-            ##################
-
-            $Entra_CA_ExcludeGroups_Placement = $AllGroups_Entra | Where-Object { ($_.DisplayName -like "Entra-CA-*") -and `
-                                                                                  ($_.DisplayName -Like "*-Excluded-Assignment") -and `
-                                                                                  ($_.DisplayName -notLike "*-Pilot-*")
-                                                                                }
-
-            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_ExcludeGroups_CFG.DisplayName }
-            If ($AUScope) {
-
-                ForEach ($Group in $Entra_CA_ExcludeGroups_Placement) {
-
-                    If ($Group.Id -notin $AUScope.Members.id) {
-                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
-
-                        $params = @{
-	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
-                        }
-
-                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
-                    }
-                }
-            }
-
-            ##################
-            # Pilot Groups
-            ##################
-            $Entra_CA_PilotGroups_Placement = $AllGroups_Entra | Where-Object { ($_.DisplayName -like "Entra-CA-*") -and `
-                                                                                ($_.DisplayName -notLike "*-Excluded-Assignment") -and `
-                                                                                ($_.DisplayName -Like "*-Pilot-*")
-                                                                              }
-
-            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_ExcludeGroups_CFG.DisplayName }
-            If ($AUScope) {
-
-                ForEach ($Group in $Entra_CA_PilotGroups_Placement) {
-
-                    If ($Group.Id -notin $AUScope.Members.id) {
-                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
-
-                        $params = @{
-	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
-                        }
-
-                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
-                    }
-                }
-            }
 
 
 #####################################################################################################################
