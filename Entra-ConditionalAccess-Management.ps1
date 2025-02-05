@@ -1045,7 +1045,7 @@ foreach ($file in $files) {
 
     $ConditionalAccessPoliciesJSON = $ConditionalAccessPolicies | ConvertTo-Json -Depth 20
 
-    $OutPutPath = "C:\Scripts\TEMP\CAPolicies"
+    $OutPutPath = ".\CAPolicies"
     MD $OutPutPath -ErrorAction SilentlyContinue
 
     $ConditionalAccessPoliciesArray = $ConditionalAccessPoliciesJSON | ConvertFrom-Json
@@ -1259,8 +1259,8 @@ foreach ($file in $files) {
             $ConditionalAccessArray += $ConditionalAccessHash
         }
 
-$FileCSV   = "c:\scripts\output\Entra-CA-Policies-Documentation-with-IDs.csv"
-$FileExcel = "c:\scripts\output\Entra-CA-Policies-Documentation-with-IDs.xlsx"
+$FileCSV   = ".\Entra-CA-Policies-Documentation-with-IDs.csv"
+$FileExcel = ".\Entra-CA-Policies-Documentation-with-IDs.xlsx"
 
 $ConditionalAccessArray | export-csv $FileCSV -Encoding UTF8 -Delimiter ";" -NoTypeInformation
 $ConditionalAccessArray | Export-Excel -Path $FileExcel -AutoSize
@@ -1452,8 +1452,8 @@ $ConditionalAccessArray | Export-Excel -Path $FileExcel -AutoSize
             $ConditionalAccessArray += $ConditionalAccessHash
         }
 
-$FileCSV   = "c:\scripts\output\Entra-CA-Policies-Documentation.csv"
-$FileExcel = "c:\scripts\output\Entra-CA-Policies-Documentation.xlsx"
+$FileCSV   = ".\Entra-CA-Policies-Documentation.csv"
+$FileExcel = ".\Entra-CA-Policies-Documentation.xlsx"
 
 $ConditionalAccessArray | export-csv $FileCSV -Encoding UTF8 -Delimiter ";" -NoTypeInformation
 $ConditionalAccessArray | Export-Excel -Path $FileExcel -AutoSize

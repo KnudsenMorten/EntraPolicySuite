@@ -1,7 +1,7 @@
 ﻿########################################################################################################################################
 # Policy Prefix         : CA211
 # Policy Name           : CA211-Users-Internal-Office365-InsiderRiskElevated-Block
-# Policy Persona Target : Users-Internals
+# Policy Persona Target : Users-Internal
 # -------------------------------------------------------------------------------------------------------------------------------------
 # PS Functions Lib      : EntraPolicySuite, developed by Microsoft MVP Morten Knudsen (blog: aka.ms/morten - mok@mortenknudsen.net)
 # Github Repo           : https://github.com/KnudsenMorten/EntraPolicySuite

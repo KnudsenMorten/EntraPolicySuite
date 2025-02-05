@@ -119,7 +119,8 @@ if ($Mode -eq "Initial_Setup") {
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
                   -Cond_App_IncludeUserActions urn:user:registersecurityinfo `
-                  -Cond_Locations_IncludeLocations @("AllTrusted") `
+                  -Cond_Locations_IncludeLocations @("All") `
+                  -Cond_Locations_excludeLocations @("AllTrusted") `
                   -GC_Operator "OR" `
                   -GC_BuiltInControls @() `
                   -GC_authenticationStrength "WHfB + TAP" `
@@ -463,7 +464,8 @@ elseif ($Mode -eq "Install_Latest_Policy_Disabled") {
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
                   -Cond_App_IncludeUserActions urn:user:registersecurityinfo `
-                  -Cond_Locations_IncludeLocations @("AllTrusted") `
+                  -Cond_Locations_IncludeLocations @("All") `
+                  -Cond_Locations_excludeLocations @("AllTrusted") `
                   -GC_Operator "OR" `
                   -GC_BuiltInControls @() `
                   -GC_authenticationStrength "WHfB + TAP" `

@@ -1,7 +1,7 @@
 ﻿########################################################################################################################################
 # Policy Prefix         : CA212
 # Policy Name           : CA212-Users-Internal-AllApps-AnyPlatform-SigninFrequency-Enforce
-# Policy Persona Target : Admins
+# Policy Persona Target : Users-Internal
 # -------------------------------------------------------------------------------------------------------------------------------------
 # PS Functions Lib      : EntraPolicySuite, developed by Microsoft MVP Morten Knudsen (blog: aka.ms/morten - mok@mortenknudsen.net)
 # Github Repo           : https://github.com/KnudsenMorten/EntraPolicySuite

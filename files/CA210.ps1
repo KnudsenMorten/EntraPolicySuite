@@ -1,7 +1,7 @@
 ﻿########################################################################################################################################
 # Policy Prefix         : CA210
 # Policy Name           : CA210-Users-Internal-EntraGSA-Windows-MFACompliant-Enforce
-# Policy Persona Target : Users-Internals
+# Policy Persona Target : Users-Internal
 # -------------------------------------------------------------------------------------------------------------------------------------
 # PS Functions Lib      : EntraPolicySuite, developed by Microsoft MVP Morten Knudsen (blog: aka.ms/morten - mok@mortenknudsen.net)
 # Github Repo           : https://github.com/KnudsenMorten/EntraPolicySuite
