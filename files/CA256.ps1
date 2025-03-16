@@ -452,7 +452,7 @@ elseif ($Mode -eq "Prod") {
     EntraCAPolicy -CAPolicyPrefixArray @("CA256-Initial", "CA256-Pilot1", "CA256-Pilot2", "CA256-Pilot3", "CA256-Prod") `
                   -DisplayName "CA256-Prod-Users-Internal-Developers-MicrosoftIntuneEnrollment-AnyPlatform-MFA-Enforce" `
                   -Cond_Users_IncludeUsers @() `
-                  -Cond_Users_IncludeGroups @(($Users_Internal_MFA_All.id)) `
+                  -Cond_Users_IncludeGroups @(($Users_Internal_Developers_MFA_All.id)) `
                   -State enabled `
                   -CreateUpdate
 }

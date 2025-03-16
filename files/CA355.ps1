@@ -453,7 +453,7 @@ elseif ($Mode -eq "Prod") {
     EntraCAPolicy -CAPolicyPrefixArray @("CA355-Initial", "CA355-Pilot1", "CA355-Pilot2", "CA355-Pilot3", "CA355-Prod") `
                   -DisplayName "CA355-Prod-Users-External-Developers-AllApps-AnyPlatform-MediumHighSigninRisk-MFA-Enforce" `
                   -Cond_Users_IncludeUsers @() `
-                  -Cond_Users_IncludeGroups @(($Users_External_MFA_All.id)) `
+                  -Cond_Users_IncludeGroups @(($Users_External_Developers_MFA_All.id)) `
                   -State enabled `
                   -CreateUpdate
 }
