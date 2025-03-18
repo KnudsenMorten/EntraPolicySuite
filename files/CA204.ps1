@@ -121,7 +121,7 @@ if ($Mode -eq "Initial_Setup") {
                   -Cond_App_includeApplications @("All") `
                   -Cond_Platforms_includePlatforms @("windows", "macOS") `
                   -Cond_Devices_DeviceFilter_Mode include `
-                  -Cond_Devices_DeviceFilter_Rule 'device.trustType -eq "Workplace"' `
+                  -Cond_Devices_DeviceFilter_Rule 'device.trustType -ne "AzureAD" -and device.trustType -ne "ServerAD"' `
                   -SC_SignInFrequency_Value 1 `
                   -SC_SignInFrequency_Type "days" `
                   -SC_SignInFrequency_AuthenticationType "primaryAndSecondaryAuthentication" `
