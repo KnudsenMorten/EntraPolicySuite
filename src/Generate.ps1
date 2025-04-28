@@ -1,4 +1,3 @@
-# Function to generate a random alphanumeric string of specified length
 function Generate-RandomString {
     param (
         [int]$Length = 20
@@ -7,3 +6,4 @@ function Generate-RandomString {
     $randomString = -join ((1..$Length) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
     return $randomString
 }
+

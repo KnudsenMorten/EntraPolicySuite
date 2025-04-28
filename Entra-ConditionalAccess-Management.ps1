@@ -29,17 +29,52 @@
 # Entra Policy Suite Functions
 ########################################################################################################################################
 
-    # Set the path to the custom config file
-    $FunctionFile = ".\EntraPolicySuite.psm1"
+# Define module name and fallback local file
+$ModuleName = "EntraPolicySuite"
+$FunctionFile = ".\EntraPolicySuite.psm1"
 
-    # Check if the config file exists
-    if (-Not (Test-Path $configFilePath)) {
-        Write-host ""
-        Write-host "EntraPolicySuite.psm1 was not found in current directory. Terminating !" -ForegroundColor DarkYellow
+# Check if the module is already available
+if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
+    Write-Host ""
+    Write-Host "EntraPolicySuite is not installed. Attempting to install from PowerShell Gallery..." -ForegroundColor Yellow
+
+    try {
+        Install-Module -Name $ModuleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Write-Host "Module '$ModuleName' installed successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Failed to install module '$ModuleName' from PowerShell Gallery." -ForegroundColor Red
+        
+        # Try to import from local fallback if available
+        if (Test-Path $FunctionFile) {
+            Write-Host "Attempting to load EntraPolicySuite.psm1 from local directory..." -ForegroundColor Yellow
+            try {
+                Import-Module $FunctionFile -Global -Force -WarningAction SilentlyContinue
+                Write-Host "Local EntraPolicySuite.psm1 loaded successfully." -ForegroundColor Green
+            }
+            catch {
+                Write-Host "Failed to load local EntraPolicySuite.psm1. Terminating!" -ForegroundColor Red
+                break
+            }
+        }
+        else {
+            Write-Host "Local EntraPolicySuite.psm1 not found. Cannot continue." -ForegroundColor Red
+            break
+        }
+    }
+}
+else {
+    # Module is already installed — import it
+    Write-Host "Module '$ModuleName' is already installed. Importing..." -ForegroundColor Cyan
+    try {
+        Import-Module $ModuleName -Global -Force -WarningAction SilentlyContinue
+        Write-Host "Module '$ModuleName' imported successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Failed to import installed module '$ModuleName'!" -ForegroundColor Red
         break
     }
-
-    Import-Module $FunctionFile -Global -force -WarningAction SilentlyContinue
+}
 
 ########################################################################################################################################
 # Connectivity
@@ -116,6 +151,8 @@
 # Step 1: READING CONFIGURATIONS FROM CONFIG-FILE
 ########################################################################################################################################
 
+    Write-host ""
+    Write-host "Step 1: Getting Configurations from config-files"
     ###############################################
     # Get data from CUSTOM CONFIG-file
     ###############################################
@@ -134,8 +171,8 @@
         $configData = Get-Content $configFilePath | ConvertFrom-Json
 
         # Get Paths to CA-files
-        $Path_CA_Scripts_Active = $ScriptDirectory + "\" + $configData.Path_CA_Scripts_Active
-        $Path_CA_Scripts_Github_Latest_Inbound = $ScriptDirectory + "\" + $configData.Path_CA_Scripts_Github_Latest_Inbound
+        $Path_CA_Scripts_Active = $PSScriptRoot + "\" + $configData.Path_CA_Scripts_Active
+        $Path_CA_Scripts_Github_Latest_Inbound = $PSScriptRoot + "\" + $configData.Path_CA_Scripts_Github_Latest_Inbound
 
         # Get all BreakGlassAccounts
         $BreakGlassAccounts_CFG = $configData.BreakGlassAccounts
@@ -158,6 +195,10 @@
         # Get the default name of Named Location for Denied Countries
         $Named_Location_Denied_Countries_CFG = $configData.Named_Locations_Denied_Countries_Name
 
+        # Get the administrative units for CA Groups
+        $AdministrativeUnits_CA_TargetGroups_CFG = $configData.AdministrativeUnits_CA_TargetGroups
+        $AdministrativeUnits_CA_PilotGroups_CFG = $configData.AdministrativeUnits_CA_PilotGroups
+        $AdministrativeUnits_CA_ExcludeGroups_CFG = $configData.AdministrativeUnits_CA_ExcludeGroups
         Write-host ""
         Write-host "Group Targeting Method            : $($Group_Targeting_Method)"
 
@@ -188,10 +229,10 @@
         # Read the config file
         $configData = Get-Content $configFilePath | ConvertFrom-Json
 
-        # Get the Target Groups for Dynamic via Tagging
+        # Get the Target Groups for Dynamic Assignment
         $Target_Groups_Dynamic_Assignment_CFG = $configData.Target_Groups_Dynamic_Assignment
 
-        # Get the Target Groups for Dynamic via Tagging
+        # Get the Target Groups for Dynamic Assignment
         $Target_Groups_Manual_Assignment_CFG = $configData.Target_Groups_Manual_Assignment
 
 
@@ -199,12 +240,17 @@
 # Step 2: CREATE CRITICAL CONFIGURATIONS, IF MISSING (BREAK GLASS ACCOUNTS, TARGET GROUPS, NAMED LOCATION, ETC)
 ########################################################################################################################################
 
+    Write-host ""
+    Write-host "Step 2: Create Critical Configurations (if missing)"
     # Build Entra ID Groups as Hashtable
     $EntraGroupsHashTable = EntraGroupsAsHashtable
 
     #######################################################
     # Create Break Class Accounts Group, if missing
     #######################################################
+
+        Write-host ""
+        Write-host "  Break Glass Accounts"
 
         $BreakGlassAccountsGroup = EntraGroup -DisplayName "Entra-CA-BreakGlassAccounts-All-Dynamic" `
                                               -EntraGroupsHashTable $EntraGroupsHashTable `
@@ -296,6 +342,8 @@
     # Create Authentication Strengths, if missing
     #######################################################
 
+        Write-host ""
+        Write-host "  Authentication Strengths"
         $Authentication_Strength_Default_WHfB_Name = EntraAuthenticationStrength -PolicyName $Authentication_Strength_Default_WHfB_Name_CFG -ViewOnly
         If (!($Authentication_Strength_Default_WHfB_Name))
             {
@@ -415,6 +463,8 @@
 
 #endregion
 
+        Write-host ""
+        Write-host "  Denied Countries (named location)"
         # Validating if Denied Countries Named Location exist !
         $DeniedCountriesNamedLocation = EntraNamedLocation -DisplayName $Named_Location_Denied_Countries_CFG
         If (!($DeniedCountriesNamedLocation))
@@ -434,6 +484,8 @@
     # Create/Update Target Groups for CA Prod Policies
     #######################################################
 
+        Write-host ""
+        Write-host "  Target Groups for CA Prod Policies"
         # Rebuild Entra Groups as HashTable
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
@@ -535,9 +587,11 @@
 
 
 ################################################################################################
-# Step 2: VALIDATE TARGET GROUPS HAVE MEMBERS
+# Step 3: VALIDATE TARGET GROUPS HAVE MEMBERS
 ################################################################################################
 
+Write-host ""
+Write-host "Step 3: Validate Target Groups have members"
 $Verify_List = @()
 
 $Verify_List = $groupDetailsArray | Where-Object { $_.MembersCount -eq 0 }
@@ -554,11 +608,14 @@ If ($Verify_List.count -gt 0) {
     Break    
 }
 
+pause	 
 
 ################################################################################################
-# Step 3: DOWNLOAD LATEST CA-POLICY CONFIG FILES FROM GITHUB
+# Step 4: DOWNLOAD LATEST CA-POLICY CONFIG FILES FROM GITHUB
 ################################################################################################
 
+Write-host ""
+Write-host "Step 4: Download latest CA-policy Config Files from Github"
 # Parameters
 $owner             = "KnudsenMorten"
 $repo              = "EntraPolicySuite"
@@ -622,7 +679,7 @@ foreach ($file in $files) {
 
 
 ################################################################################################
-# Step 4A: SAMPLES - CONFIGURATION OF CA100 POLICY
+# Step 5A: SAMPLES - CONFIGURATION OF CA100 POLICY
 ################################################################################################
 #region Samples - manually configuration of CA100 policy using all 3 targeting methods
 
@@ -733,7 +790,7 @@ foreach ($file in $files) {
 
 
 ################################################################################################
-# Step 4B: INITIAL SETUP OF RECOMMENDED POLICIES
+# Step 5B: INITIAL SETUP OF RECOMMENDED POLICIES
 ################################################################################################
 
 #Region Help
@@ -925,7 +982,7 @@ foreach ($file in $files) {
 #>
 
 ###################################################################################################################
-# Step 4: POLICIES THAT REQUIRE EXTRA CONFIGURATION, COMMUNICATION AND COULD REQUIRE EXCEPTIONS (MANUAL CREATION)
+# Step 6: POLICIES THAT REQUIRE EXTRA CONFIGURATION, COMMUNICATION AND COULD REQUIRE EXCEPTIONS (MANUAL CREATION)
 ###################################################################################################################
 
 <#  OPTIONAL CONFIGURATION & DECISIONS:
@@ -1036,6 +1093,160 @@ foreach ($file in $files) {
     $ConditionalAccessPolicies = Invoke-MgGraphRequestPS -Uri $Uri -Method GET -OutputType PSObject
 #>
 
+###############################################################################
+# Move any groups with naming Entra-CA-xxx and Entra-SSPR-xxx into the AUs
+###############################################################################
+
+        ########################################################################
+        # Create AU, if missing
+        ########################################################################
+
+        # Get all administrative units and display their display names and IDs
+        write-host "Get Entra Administrative Units including members ... Please Wait !"
+        $AllAUs_Entra = Get-MgDirectoryAdministrativeUnit -All
+
+        # create array with members of AUs
+        $administrativeUnitsDetails = @()
+
+        # Loop through each administrative unit to get members and build the array
+        foreach ($au in $AllAUs_Entra) {
+            # Fetch members of the administrative unit
+            $members = @()
+            try {
+                $membersRaw = Get-MgDirectoryAdministrativeUnitMember -AdministrativeUnitId $au.Id -All
+                foreach ($member in $membersRaw) {
+                    $members += @{
+                        DisplayName = $member.DisplayName
+                        UserType = $member['@odata.type'] -replace '#microsoft.graph.', ''
+                        Id = $member.Id
+                    }
+                }
+            } catch {
+                Write-Output "Error retrieving members for administrative unit $($au.DisplayName): $_"
+            }
+
+            # Create a custom object for the AU and add it to the array
+            $auDetails = [PSCustomObject]@{
+                Id = $au.Id
+                DisplayName = $au.DisplayName
+                Members = $members
+            }
+            $administrativeUnitsDetails += $auDetails
+        }
+
+        $AUs_All = @()
+        $AUs_All += $AdministrativeUnits_CA_TargetGroups_CFG
+        $AUs_All += $AdministrativeUnits_CA_ExcludeGroups_CFG
+        $AUs_All += $AdministrativeUnits_CA_PilotGroups_CFG
+
+        # Process AU $AdministrativeUnits_CA_TargetGroups_CFG
+    
+        ForEach ($AU in $AUs_All) {
+
+            $AUInfo = $AllAUs_Entra | where-object { $_.DisplayName -eq $AU.DisplayName }
+
+            If (!($AUInfo)) {
+
+                # Create a new Administrative Unit
+                $adminUnitParams = @{
+                    DisplayName = $AU.DisplayName
+                    Description = $AU.Description
+                }
+
+                # Using Microsoft Graph to create the Administrative Unit
+                write-host ""
+                Write-host "Creating Administrative Unit: $($newAdminUnit.DisplayName)"
+                $newAdminUnit = New-MgDirectoryAdministrativeUnit -BodyParameter $adminUnitParams
+            }
+        }
+
+        ########################################################################
+        # Move Groups to AUs
+        ########################################################################
+
+        $EntraGroupsHashTable = EntraGroupsAsHashtable
+
+        write-host "Getting All Groups from Entra ID ... Please Wait !"
+        $AllGroups_Entra = Get-MgGroup -All
+
+            ##################
+            # Target Groups
+            ##################
+
+            $Entra_CA_TargetGroups_Placement = $AllGroups_Entra | Where-Object { ( ($_.DisplayName -like "Entra-CA-*") -and `
+                                                                                   ($_.DisplayName -notLike "*-Excluded-Assignment") -and `
+                                                                                   ($_.DisplayName -notLike "*-Pilot-*") ) -or `
+                                                                               
+                                                                                   ($_.DisplayName -Like "Entra-SSPR-*") `
+                                                                               }
+
+            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_TargetGroups_CFG.DisplayName }
+            If ($AUScope) {
+
+                ForEach ($Group in $Entra_CA_TargetGroups_Placement) {
+
+                    If ($Group.Id -notin $AUScope.Members.id) {
+                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
+
+                        $params = @{
+	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
+                        }
+
+                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
+                    }
+                }
+            }
+        
+            ##################
+            # Exclude Groups
+            ##################
+
+            $Entra_CA_ExcludeGroups_Placement = $AllGroups_Entra | Where-Object { ($_.DisplayName -like "Entra-CA-*") -and `
+                                                                                  ($_.DisplayName -Like "*-Excluded-Assignment") -and `
+                                                                                  ($_.DisplayName -notLike "*-Pilot-*")
+                                                                                }
+
+            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_ExcludeGroups_CFG.DisplayName }
+            If ($AUScope) {
+
+                ForEach ($Group in $Entra_CA_ExcludeGroups_Placement) {
+
+                    If ($Group.Id -notin $AUScope.Members.id) {
+                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
+
+                        $params = @{
+	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
+                        }
+
+                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
+                    }
+                }
+            }
+
+            ##################
+            # Pilot Groups
+            ##################
+            $Entra_CA_PilotGroups_Placement = $AllGroups_Entra | Where-Object { ($_.DisplayName -like "Entra-CA-*") -and `
+                                                                                ($_.DisplayName -notLike "*-Excluded-Assignment") -and `
+                                                                                ($_.DisplayName -Like "*-Pilot-*")
+                                                                              }
+
+            $AUScope = $administrativeUnitsDetails | Where-Object { $_.DisplayName -eq $AdministrativeUnits_CA_ExcludeGroups_CFG.DisplayName }
+            If ($AUScope) {
+
+                ForEach ($Group in $Entra_CA_PilotGroups_Placement) {
+
+                    If ($Group.Id -notin $AUScope.Members.id) {
+                        Write-host "Moving $($Group.id) to AU $($AUScope.DisplayName)"
+
+                        $params = @{
+	                        "@odata.id" = "https://graph.microsoft.com/v1.0/groups/$($Group.id)"
+                        }
+
+                        New-MgDirectoryAdministrativeUnitMemberByRef -AdministrativeUnitId $AUScope.id -BodyParameter $params
+                    }
+                }
+            }
 #####################################################################################################################
 # Export Entra ID Conditional Access Policies as JSON
 #####################################################################################################################

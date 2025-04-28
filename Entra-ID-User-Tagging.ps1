@@ -29,17 +29,52 @@
 # Entra Policy Suite Functions
 ########################################################################################################################################
 
-    # Set the path to the custom config file
-    $FunctionFile = ".\EntraPolicySuite.psm1"
+# Define module name and fallback local file
+$ModuleName = "EntraPolicySuite"
+$FunctionFile = ".\EntraPolicySuite.psm1"
 
-    # Check if the config file exists
-    if (-Not (Test-Path $configFilePath)) {
-        Write-host ""
-        Write-host "EntraPolicySuite.psm1 was not found in current directory. Terminating !" -ForegroundColor DarkYellow
+# Check if the module is already available
+if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
+    Write-Host ""
+    Write-Host "EntraPolicySuite is not installed. Attempting to install from PowerShell Gallery..." -ForegroundColor Yellow
+
+    try {
+        Install-Module -Name $ModuleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Write-Host "Module '$ModuleName' installed successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Failed to install module '$ModuleName' from PowerShell Gallery." -ForegroundColor Red
+        
+        # Try to import from local fallback if available
+        if (Test-Path $FunctionFile) {
+            Write-Host "Attempting to load EntraPolicySuite.psm1 from local directory..." -ForegroundColor Yellow
+            try {
+                Import-Module $FunctionFile -Global -Force -WarningAction SilentlyContinue
+                Write-Host "Local EntraPolicySuite.psm1 loaded successfully." -ForegroundColor Green
+            }
+            catch {
+                Write-Host "Failed to load local EntraPolicySuite.psm1. Terminating!" -ForegroundColor Red
+                break
+            }
+        }
+        else {
+            Write-Host "Local EntraPolicySuite.psm1 not found. Cannot continue." -ForegroundColor Red
+            break
+        }
+    }
+}
+else {
+    # Module is already installed — import it
+    Write-Host "Module '$ModuleName' is already installed. Importing..." -ForegroundColor Cyan
+    try {
+        Import-Module $ModuleName -Global -Force -WarningAction SilentlyContinue
+        Write-Host "Module '$ModuleName' imported successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Failed to import installed module '$ModuleName'!" -ForegroundColor Red
         break
     }
-
-    Import-Module $FunctionFile -Global -force -WarningAction SilentlyContinue
+}
 
 ########################################################################################################################################
 # Connectivity
@@ -117,8 +152,8 @@ Classification | Extension6 | Type of User for Classification Purpose - used for
  Teams_Room                                           Teams Room
  Shared_Device_User                                   Shared Device User
  Break_Glass_Account                                  Break Glass Account
- Cloud_User                                           Cloud-only User in Entra ID
- AD_Synced_User                                       AD-synced User in Entra ID
+ NonManaged_Cloud_User                                Cloud-only User in Entra ID (NonManaged)
+ NonManaged_AD_Synced_User                            AD-synced User in Entra ID (NonManaged)
  Contact                                              Contact
  FacilityAccessOnly                                   Facility Access Only
  Exchange_LinkedMailBox                               Exchange, Linked Mailbox
@@ -152,10 +187,10 @@ Users
  Internal_Developer_Cloud_MFA                         Internal User with developer role (Cloud) with MFA
  External_Developer_AD_Synced_MFA                     Internal User with developer role (AD-synced) with MFA
  External_Developer_Cloud_MFA                         Internal User with developer role (Cloud) with MFA
- Non_Managed_User_AD_Synced_Pwd                       Non-Managed User (AD-synced) with Userid & password + trusted location
- Non_Managed_User_AD_Synced_MFA                       Non-Managed User (AD-synced) with MFA
- Non_Managed_User_Cloud_Pwd                           Non-Managed User (Cloud) with Userid & password + trusted location
- Non_Managed_User_Cloud_MFA                           Non-Managed User (Cloud) with MFA
+ NonManaged_User_AD_Synced_Pwd                       Non-Managed User (AD-synced) with Userid & password + trusted location
+ NonManaged_User_AD_Synced_MFA                       Non-Managed User (AD-synced) with MFA
+ NonManaged_User_Cloud_Pwd                           Non-Managed User (Cloud) with Userid & password + trusted location
+ NonManaged_User_Cloud_MFA                           Non-Managed User (Cloud) with MFA
 
 Admin Accounts
  Internal_Admin_AD_Synced_MFA                         Internal Admin Account with Userid/password + MFA
@@ -264,7 +299,8 @@ Exchange / Users / Shared Mailboxes
 
 #>
 
-S#############################################################################################
+
+#############################################################################################
 # Main Program
 #############################################################################################
 
@@ -274,9 +310,20 @@ S###############################################################################
     # Check if the config file exists
     if (-Not (Test-Path $DataFilePath)) {
         Write-host ""
-        Write-host "Identity-Tagging.csv was not found in current directory. Terminating !" -ForegroundColor DarkYellow
+        Write-host "Identity_Tagging.csv was not found in current directory. Terminating !" -ForegroundColor DarkYellow
         break
     }
+
+    # Set the path to the data file
+    $DataFile = ".\Identity_Tagging_AccountInfo.csv"
+
+    # Check if the config file exists
+    if (-Not (Test-Path $DataFilePath)) {
+        Write-host ""
+        Write-host "Identity_Tagging_AccountInfo.csv was not found in current directory. Terminating !" -ForegroundColor DarkYellow
+        break
+    }
+
 
     write-host "Getting Exchange information ... Please Wait !"
     Try {
@@ -311,13 +358,25 @@ S###############################################################################
     write-host "Getting All Groups from Entra ID ... Please Wait !"
     $AllGroups_Entra = Get-MgGroup -All
 
-    write-host "Finding which groups are used as part of configuration ... Please Wait !"
+    write-host "Getting Tag Conditions from CSV-file ... Please Wait !"
     $Tag_Conditions = import-csv -Path ".\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
 
-    # Remove empty lines
-    $Tag_Conditions = $Tag_Conditions | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+    $Tag_Conditions_AccountInfo = @()
+    $Tag_Conditions_AccountInfo = import-csv -Path ".\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
 
-    $Tag_Conditions_MemberOf = $Tag_Conditions | Where-Object { ($_.ConditionType -like "*MemberOf*") }
+    # Remove empty lines
+    If ($Tag_Conditions) {
+        $Tag_Conditions = $Tag_Conditions | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+    }
+    If ($Tag_Conditions_AccountInfo) {
+        $Tag_Conditions_AccountInfo = $Tag_Conditions_AccountInfo | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+    }
+    
+    $Tag_Conditions_Array = @()
+    $Tag_Conditions_Array += $Tag_Conditions
+    $Tag_Conditions_Array += $Tag_Conditions_AccountInfo
+
+    $Tag_Conditions_MemberOf = $Tag_Conditions_Array | Where-Object { ($_.ConditionType -like "*MemberOf*") }
 
     write-host "Scope Entra ID Group to check for members (MemberOf) ... Please Wait !"
     $Entra_MemberOf_Scope = $AllGroups_Entra | Where-Object { $_.DisplayName -in $Tag_Conditions_MemberOf.Target }
@@ -349,44 +408,51 @@ S###############################################################################
     $Entra_Group_Members | ForEach-Object { $global:Entra_Group_Members_HashTable.add($_.GroupName,$_)}
 
     #--------------
+    # Getting All Groups from Active Directory ... Please Wait !
 
-    write-host "Getting All Groups from Active Directory ... Please Wait !"
-    $AllGroups_AD = Get-ADGroup -Filter *
-
-    write-host "Scope AD Groups to check for members (MemberOf) ... Please Wait !"
-    $AD_MemberOf_Scope = $AllGroups_AD | Where-Object { $_.Name -in $Tag_Conditions_MemberOf.Target }
-
-    write-host "Getting Group Members from Active Directory Groups in scope of MemberOf ... Please Wait !"
-
-    # Initialize an empty array to store group and member information
-    $AD_Group_Members = [System.Collections.ArrayList]@()
-
-    # Loop through each group and retrieve members
-    foreach ($group in $AD_MemberOf_Scope) {
-        $members = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive |
-                   Where-Object { $_.objectClass -eq 'user' } | `
-                   ForEach-Object { Get-ADUser -Identity $_.DistinguishedName -Properties UserPrincipalName } |
-                   Select-Object Name, UserPrincipalName
-    
-        # Create a custom object for each group with its members
-        $groupInfo = [PSCustomObject]@{
-            GroupName = $group.Name
-            Members   = $members
-        }
-    
-        # Add the group info to the final array
-        $Result = $AD_Group_Members.add($groupInfo)
-    }
-
-    # build hashtable of all AD groups
     $global:AD_Groups_HashTable = [ordered]@{}
-    $AllGroups_AD | ForEach-Object { $global:AD_Groups_HashTable.add($_.Name,$_)}
+    Try
+        {
+            $AllGroups_AD = Get-ADGroup -Filter * -ErrorAction SilentlyContinue
+        }
+    Catch
+        {
+        }
 
-    # build hashtable of all AD group members
-    $global:AD_Group_Members_HashTable = [ordered]@{}
-    $AD_Group_Members | ForEach-Object { $global:AD_Group_Members_HashTable.add($_.GroupName,$_)}
+    If ($AllGroups_AD) {
+        write-host "Scope AD Groups to check for members (MemberOf) ... Please Wait !"
+        $AD_MemberOf_Scope = $AllGroups_AD | Where-Object { $_.Name -in $Tag_Conditions_MemberOf.Target }
 
-   
+        write-host "Getting Group Members from Active Directory Groups in scope of MemberOf ... Please Wait !"
+
+        # Initialize an empty array to store group and member information
+        $AD_Group_Members = [System.Collections.ArrayList]@()
+
+        # Loop through each group and retrieve members
+        foreach ($group in $AD_MemberOf_Scope) {
+            $members = Get-ADGroupMember -Identity $group.DistinguishedName -Recursive |
+                       Where-Object { $_.objectClass -eq 'user' } | `
+                       ForEach-Object { Get-ADUser -Identity $_.DistinguishedName -Properties UserPrincipalName } |
+                       Select-Object Name, UserPrincipalName
+    
+            # Create a custom object for each group with its members
+            $groupInfo = [PSCustomObject]@{
+                GroupName = $group.Name
+                Members   = $members
+            }
+    
+            # Add the group info to the final array
+            $Result = $AD_Group_Members.add($groupInfo)
+        }
+
+        # build hashtable of all AD groups
+											  
+        $AllGroups_AD | ForEach-Object { $global:AD_Groups_HashTable.add($_.Name,$_)}
+
+        # build hashtable of all AD group members
+        $global:AD_Group_Members_HashTable = [ordered]@{}
+        $AD_Group_Members | ForEach-Object { $global:AD_Group_Members_HashTable.add($_.GroupName,$_)}
+    }
 #########################################################################################################################
 
     # Set variable to true, if you only want to write-out the result and NOT apply the setting !! 
@@ -430,14 +496,25 @@ $Global:ModificationsLog = [System.Collections.ArrayList]@()
 $Global:CompleteLog = [System.Collections.ArrayList]@()
 
 write-host "Getting Tag Conditions from CSV-file ... Please Wait !"
-$Tag_Conditions = import-csv -Path "$($global:PathScripts)\DATA\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
+$Tag_Conditions = import-csv -Path ".\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
+$Tag_Conditions_AccountInfo = @()
+$Tag_Conditions_AccountInfo = import-csv -Path ".\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
 
 # Remove empty lines
-$Tag_Conditions = $Tag_Conditions | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+If ($Tag_Conditions) {
+    $Tag_Conditions = $Tag_Conditions | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+}
+If ($Tag_Conditions_AccountInfo) {
+    $Tag_Conditions_AccountInfo = $Tag_Conditions_AccountInfo | Where-Object { ($_.Persona -notlike "") -and ($_.Persona -ne $null) }
+}
+
+$Tag_Conditions_Array = @()
+$Tag_Conditions_Array += $Tag_Conditions
+$Tag_Conditions_Array += $Tag_Conditions_AccountInfo
 
 # Handle blank ConditionGroup and randomize a number & letters into ConditionGroup to solve blank ConditionGroup are not handled together !
 $Tag_Conditions_Fixed = @()
-foreach ($item in $Tag_Conditions) {
+foreach ($item in $Tag_Conditions_Array) {
     $newItem = $item.PSObject.Copy()  # Create a copy of the object
     if ([string]::IsNullOrEmpty($newItem.ConditionGroup)) {
         $newItem.ConditionGroup = Generate-RandomString  # Set random string if blank
@@ -446,8 +523,6 @@ foreach ($item in $Tag_Conditions) {
 }
 
 $Tag_Conditions_Array = $Tag_Conditions_Fixed | Group-Object -Property Persona,TagType,TagValueAD,TagValueCloud,ConditionGroup
-
-
 #################################################
 # Loop
 #################################################
@@ -485,6 +560,11 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
 
                 # Scoping
                 switch ($Condition.TagType) {
+                    "AccountInfo" {
+                        $PropertyKeyAD     = "extensionAttribute5"
+                        $PropertyKeyCloud  = "extensionAttribute5"
+                        break
+                    }								   
                     "Classification" {
                         $PropertyKeyAD     = "extensionAttribute6"
                         $PropertyKeyCloud  = "extensionAttribute6"
@@ -618,8 +698,8 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
         # Script didn't find any conditions, setting user as non-managed user !
         $PropertyKeyAD     = "extensionAttribute6"
         $PropertyKeyCloud  = "extensionAttribute6"
-        $TagValueAD        = "Non_Managed_User"
-        $TagValueCloud     = "Non_Managed_User"
+        $TagValueAD        = "NonManaged_User_AD_Synced"
+        $TagValueCloud     = "NonManaged_User_Cloud"
 
         TagUserConditionsTrue -User $User `
                               -PropertyKeyAD $PropertyKeyAD `
@@ -634,8 +714,8 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
         # Script didn't find any conditions, setting user as non-managed user !
         $PropertyKeyAD     = "extensionAttribute7"
         $PropertyKeyCloud  = "extensionAttribute7"
-        $TagValueAD        = "Non_Managed_User_AD_Synced_MFA"
-        $TagValueCloud     = "Non_Managed_User_Cloud_MFA"
+        $TagValueAD        = "NonManaged_User_AD_Synced_MFA"
+        $TagValueCloud     = "NonManaged_User_Cloud_MFA"
 
         TagUserConditionsTrue -User $User `
                               -PropertyKeyAD $PropertyKeyAD `

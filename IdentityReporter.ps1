@@ -142,7 +142,7 @@
 
         # Iterate through each domain controller and retrieve users
         foreach ($DC in $domainControllers) {
-             $users = Get-ADUser -Filter * -SearchBase ((Get-ADRootDSE).defaultNamingContext) -Properties SamAccountName, UserPrincipalName, LastLogonDate, Enabled, LockedOut, PasswordNeverExpires, CannotChangePassword, whenCreated, description |
+             $users = Get-ADUser -Filter * -SearchBase ((Get-ADRootDSE).defaultNamingContext) -Properties SamAccountName, UserPrincipalName, LastLogonDate, Enabled, LockedOut, PasswordNeverExpires, CannotChangePassword, whenCreated, AccountExpirationDate, description |
                  Select-Object SamAccountName, UserPrincipalName, @{Name="LastLogin"; Expression={$_.LastLogonDate}}, Enabled, LockedOut, PasswordNeverExpires, CannotChangePassword , whenCreated, AccountExpirationDate, description
             $results += $users
         }
@@ -194,7 +194,7 @@
 
 # Looping
     $UserInfoArray = [System.Collections.ArrayList]@()
-    $UsersTotal = $Users_Scoped.count
+    $UsersTotal = ($Users_Scoped | Measure-Object).count
 
     $Users_Scoped | ForEach-Object -Begin  {
             $i = 0
@@ -329,9 +329,28 @@
                 # https://learn.microsoft.com/en-us/entra/identity/users/licensing-service-plan-reference
 
                 #------------------------------------------------------------------------------------------
+                # No License needed (Shared Mailboxes)
+
+                If ($User.UserClassification -like "*SharedMailbox*")
+                    {
+                        $MinimumPlanNeeded_SKU        = ""
+                        $MinimumPlanNeeded            = ""
+
+                        $OverProvisionedLicenses_SKUs = @("AAD_PREMIUM","AAD_PREMIUM_P2","SPE_E3","SPE_E5","O365_w/o Teams Bundle_M3","O365_BUSINESS_PREMIUM","Microsoft_365_Business_Standard_EEA_(no_Teams)","SPB","O365_w/o Teams Bundle_M3","SPE_F1")
+
+                        ForEach ($License in $LicenseInfo)
+                            {
+                                If ($License -in $OverProvisionedLicenses_SKUs)
+                                    {
+                                        $IsLicenseOverProvisioned = $true 
+                                    }
+                            }
+                    }
+
+                #------------------------------------------------------------------------------------------
                 # ENTRA P1
 
-                If ( ($User.UserClassification -like "Service_Account") -or ($User.UserClassification -like "Break_Glass_Account") -or ($User.UserClassification -like "AD_Synced_User") -or ($User.UserClassification -like "Cloud_User") -or ($User.UserClassification -like "Shared_Mail_User") -or ($User.UserClassification -like "AppSystem_Test_User") )
+                If ( ($User.UserClassification -like "Service_Account") -or ($User.UserClassification -like "Break_Glass_Account") -or ($User.UserClassification -like "NonManaged_User_AD_Synced") -or ($User.UserClassification -like "NonManaged_User_Cloud") -or ($User.UserClassification -like "Shared_Mail_User") -or ($User.UserClassification -like "AppSystem_Test_User") )
                     {
                         $MinimumPlanNeeded_SKU        = "41781fb2-bc02-4b7c-bd55-b576c07bb09d"
                         $MinimumPlanNeeded            = "Entra ID P1"
@@ -410,11 +429,16 @@
                                 If ($License -in $MinimumPlanNeeded_SKUs)
                                     {
                                         $HasMinimumNeededLicense = $true
-                                        $IsLicenseOverProvisioned = $false
+																		  
                                     }
                             }
 
                     }
+
+            If (!($MinimumPlanNeeded)) {
+                $IsLicenseOverProvisioned = $null
+                $HasMinimumNeededLicense  = $null
+            }
 
             #------------------------------------------------------------------------------------------------
             # Building array
@@ -532,21 +556,21 @@
     #--------------------------------------------------------------------------------------------------------
     # Active Directory Validation based on OU-placement
 
-        $Users_AD_Validation_Compliant = $UserInfoArray | Where-Object { ($_.UserAuthMethodType -like "AD_Synced_User") -or `
+        $Users_AD_Validation_Compliant = $UserInfoArray | Where-Object { ($_.UserAuthMethodType -like "NonManaged_User_AD_Synced") -or `
                                                                          ($_.UserAuthMethodType -like "Internal_User_AD_Synced*") -or `
                                                                          ($_.UserAuthMethodType -like "External_User_AD_Synced*") -or `
                                                                          ($_.UserAuthMethodType -like "Internal_Developer_AD_Synced*") -or `
                                                                          ($_.UserAuthMethodType -like "External_Developer_AD_Synced*") -or `
-                                                                         ($_.UserAuthMethodType -like "Non_Managed_User_AD_Synced*") -and `
+                                                                         ($_.UserAuthMethodType -like "NonManaged_User_AD_Synced*") -and `
                                                                          ($_.UserIsADValidated -eq $true) `
                                                                        }
 
-        $Users_AD_Validation_Incompliant = $UserInfoArray | Where-Object { ($_.UserAuthMethodType -like "AD_Synced_User") -or `
+        $Users_AD_Validation_Incompliant = $UserInfoArray | Where-Object { ($_.UserAuthMethodType -like "NonManaged_User_AD_Synced") -or `
                                                                            ($_.UserAuthMethodType -like "Internal_User_AD_Synced*") -or `
                                                                            ($_.UserAuthMethodType -like "External_User_AD_Synced*") -or `
                                                                            ($_.UserAuthMethodType -like "Internal_Developer_AD_Synced*") -or `
                                                                            ($_.UserAuthMethodType -like "External_Developer_AD_Synced*") -or `
-                                                                           ($_.UserAuthMethodType -like "Non_Managed_User_AD_Synced*") -and `
+                                                                           ($_.UserAuthMethodType -like "NonManaged_User_AD_Synced*") -and `
                                                                            ($_.UserIsADValidated -eq $false) `
                                                                          }
 
@@ -575,12 +599,12 @@
 
         $DisableAccountDate = (Get-date) - (New-TimeSpan -Days 90)
         $LastSign90DaysOrNoSignIn = $UserInfoArray | Where-Object { ( ($_.AD_LastSignInDateTime -lt $DisableAccountDate) -or ($_.AD_LastSignInDateTime -eq $null) ) -and ( ($_.Cloud_LastSignInDateTime -lt $DisableAccountDate) -or ($_.Cloud_LastSignInDateTime -eq $null) )}
-        $ActiveLastSign90DaysOrNoSignIn = $LastSign90DaysOrNoSignIn | Where-Object { ($_.Classification -like "AD_Synced_User") -or `
-                                                                                     ($_.Classification -like "Cloud_User") -or `
-                                                                                     ($_.Classification -like "Internal_User") -or `
-                                                                                     ($_.Classification -like "External_User") -or `
-                                                                                     ($_.Classification -like "Internal_Developer") -or `
-                                                                                     ($_.Classification -like "External_Developer") -and `
+        $ActiveLastSign90DaysOrNoSignIn = $LastSign90DaysOrNoSignIn | Where-Object { ($_.UserClassification -like "NonManaged_User_AD_Synced") -or `
+                                                                                     ($_.UserClassification -like "NonManaged_User_Cloud") -or `
+                                                                                     ($_.UserClassification -like "Internal_User") -or `
+                                                                                     ($_.UserClassification -like "External_User") -or `
+                                                                                     ($_.UserClassification -like "Internal_Developer") -or `
+                                                                                     ($_.UserClassification -like "External_Developer") -and `
                                                                                      ($_.AccountEnabled) `
                                                                                    }
 
@@ -589,12 +613,12 @@
 
         $DisableAccountDate = (Get-date) - (New-TimeSpan -Days 365)
         $LastSignXDaysOrNoSignIn = $UserInfoArray | Where-Object { ( ($_.AD_LastSignInDateTime -lt $DisableAccountDate) -or ($_.AD_LastSignInDateTime -eq $null) ) -and ( ($_.Cloud_LastSignInDateTime -lt $DisableAccountDate) -or ($_.Cloud_LastSignInDateTime -eq $null) )}
-        $ActiveLastSignXDaysOrNoSignIn = $LastSignXDaysOrNoSignIn | Where-Object { ($_.Classification -like "AD_Synced_User") -or `
-                                                                                   ($_.Classification -like "Cloud_User") -or `
-                                                                                   ($_.Classification -like "Internal_User") -or `
-                                                                                   ($_.Classification -like "External_User") -or `
-                                                                                   ($_.Classification -like "Internal_Developer") -or `
-                                                                                   ($_.Classification -like "External_Developer") -and `
+        $ActiveLastSignXDaysOrNoSignIn = $LastSignXDaysOrNoSignIn | Where-Object { ($_.UserClassification -like "NonManaged_User_AD_Synced") -or `
+                                                                                   ($_.UserClassification -like "NonManaged_User_Cloud") -or `
+                                                                                   ($_.UserClassification -like "Internal_User") -or `
+                                                                                   ($_.UserClassification -like "External_User") -or `
+                                                                                   ($_.UserClassification -like "Internal_Developer") -or `
+                                                                                   ($_.UserClassification -like "External_Developer") -and `
                                                                                    ($_.AccountEnabled) `
                                                                                  }
 
