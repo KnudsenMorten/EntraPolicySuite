@@ -1,7 +1,7 @@
 ﻿########################################################################################################################################
-# Policy Prefix         : CA353
-# Policy Name           : CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce
-# Policy Persona Target : Users-External-Developers
+# Policy Prefix         : CA005
+# Policy Name           : CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block
+# Policy Persona Target : Global
 # -------------------------------------------------------------------------------------------------------------------------------------
 # PS Functions Lib      : EntraPolicySuite, developed by Microsoft MVP Morten Knudsen (blog: aka.ms/morten - mok@mortenknudsen.net)
 # Github Repo           : https://github.com/KnudsenMorten/EntraPolicySuite
@@ -40,8 +40,8 @@ BreakGlassValidation -BreakGlassAccountsGroup $BreakGlassAccountsGroup -BreakGla
 if ($Mode -eq "Initial_Setup") {
 
     # Create exclude group for policy, if missing
-    EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce-Excluded-Assigned" `
-               -Description "Excluded Users for Policy CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraGroup -DisplayName "Entra-CA-CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block-Excluded-Assigned" `
+               -Description "Excluded Users for Policy CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                -EntraGroupsHashTable $EntraGroupsHashTable `
                -AutomaticMailNickName `
                -MailEnabled $false `
@@ -52,14 +52,14 @@ if ($Mode -eq "Initial_Setup") {
     if ($Group_Targeting_Method -eq "Dynamic_Using_Tags") {
         
         # Create pilot group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" `
-                   -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" `
+                   -Description "Pilot Users for Entra-CA-CA005-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
                    -SecurityEnabled $true `
                    -GroupType DynamicMembership `
-                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Internal_User") and (user.extensionAttribute8 -contains "_pilot1")' `
+                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Global") and (user.extensionAttribute8 -contains "_pilot1")' `
                    -MembershipRuleProcessingState On `
                    -CreateOnly
 
@@ -67,14 +67,14 @@ if ($Mode -eq "Initial_Setup") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot-Dynamic"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") {
         foreach ($pilot in 1..3) {
 
             # Create pilot group, if missing
-            EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot$pilot-Assigned" `
-                       -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+            EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot$pilot-Assigned" `
+                       -Description "Pilot Users for Entra-CA-CA005-Global" `
                        -EntraGroupsHashTable $EntraGroupsHashTable `
                        -AutomaticMailNickName `
                        -MailEnabled $false `
@@ -86,14 +86,14 @@ if ($Mode -eq "Initial_Setup") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot1-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot1-Assigned"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Simple") {
         foreach ($pilot in 1..3) {
 
             # Create pilot group, if missing
-            EntraGroup -DisplayName "Entra-CA-Users-External-Developers-Pilot$pilot-Assigned" `
-                       -Description "Pilot Users for Entra-CA-Users-External-Developers" `
+            EntraGroup -DisplayName "Entra-CA-Global-Pilot$pilot-Assigned" `
+                       -Description "Pilot Users for Entra-CA-Global" `
                        -EntraGroupsHashTable $EntraGroupsHashTable `
                        -AutomaticMailNickName `
                        -MailEnabled $false `
@@ -105,23 +105,23 @@ if ($Mode -eq "Initial_Setup") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Pilot1-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Global-Pilot1-Assigned"]
     }
 
     # Find group info in hash table
-    $PolicyExcludeGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce-Excluded-Assigned"]
+    $PolicyExcludeGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block-Excluded-Assigned"]
 
     # Configure initial policy - see policy documentation on https://github.com/KnudsenMorten/EntraPolicySuite
-    EntraCAPolicy -CAPolicyPrefix "CA353-Initial" `
-                  -DisplayName "CA353-Initial-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraCAPolicy -CAPolicyPrefix "CA005-Initial" `
+                  -DisplayName "CA005-Initial-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                   -Cond_Users_IncludeUsers @() `
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
-                  -Cond_App_includeApplications @("Office365") `
-                  -Cond_Platforms_includePlatforms @("macOS") `
+                  -Cond_App_includeApplications @("All") `
+                  -Cond_AuthenticationFlows_TransferMethods deviceCodeFlow `
                   -GC_Operator "OR" `
-                  -GC_BuiltInControls "compliantDevice" `
+                  -GC_BuiltInControls @("Block") `
                   -State disabled `
                   -CreateOnly
 }
@@ -134,8 +134,8 @@ elseif ($Mode -eq "Pilot1") {
     if ($Group_Targeting_Method -eq "Dynamic_Using_Tags") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" `
-                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Internal_User") and (user.extensionAttribute8 -contains "_pilot1")' `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" `
+                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Global") and (user.extensionAttribute8 -contains "_pilot1")' `
                    -MembershipRuleProcessingState On `
                    -ForceUpdate
 
@@ -143,13 +143,13 @@ elseif ($Mode -eq "Pilot1") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot-Dynamic"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot1-Assigned" `
-                   -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot1-Assigned" `
+                   -Description "Pilot Users for Entra-CA-CA005-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -160,13 +160,13 @@ elseif ($Mode -eq "Pilot1") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot1-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot1-Assigned"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Simple") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-Users-External-Developers-Pilot1-Assigned" `
-                   -Description "Pilot Users for Entra-CA-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-Global-Pilot1-Assigned" `
+                   -Description "Pilot Users for Entra-CA-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -177,12 +177,12 @@ elseif ($Mode -eq "Pilot1") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Pilot1-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Global-Pilot1-Assigned"]
     }
 
     # Change to pilot 1 configuration, look for any stages using prefix array
-    EntraCAPolicy -CAPolicyPrefixArray @("CA353-Initial", "CA353-Pilot1", "CA353-Pilot2", "CA353-Pilot3", "CA353-Prod") `
-                  -DisplayName "CA353-Pilot1-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraCAPolicy -CAPolicyPrefixArray @("CA005-Initial", "CA005-Pilot1", "CA005-Pilot2", "CA005-Pilot3", "CA005-Prod") `
+                  -DisplayName "CA005-Pilot1-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                   -Cond_Users_IncludeUsers @() `
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -State enabledForReportingButNotEnforced `
@@ -197,8 +197,8 @@ elseif ($Mode -eq "Pilot2") {
     if ($Group_Targeting_Method -eq "Dynamic_Using_Tags") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" `
-                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Internal_User") and ((user.extensionAttribute8 -contains "_pilot1") or (user.extensionAttribute8 -contains "_pilot2"))' `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" `
+                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Global") and ((user.extensionAttribute8 -contains "_pilot1") or (user.extensionAttribute8 -contains "_pilot2"))' `
                    -MembershipRuleProcessingState On `
                    -ForceUpdate
 
@@ -206,13 +206,13 @@ elseif ($Mode -eq "Pilot2") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot-Dynamic"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot2-Assigned" `
-                   -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot2-Assigned" `
+                   -Description "Pilot Users for Entra-CA-CA005-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -223,13 +223,13 @@ elseif ($Mode -eq "Pilot2") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot2-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot2-Assigned"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Simple") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-Users-External-Developers-Pilot2-Assigned" `
-                   -Description "Pilot Users for Entra-CA-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-Global-Pilot2-Assigned" `
+                   -Description "Pilot Users for Entra-CA-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -240,12 +240,12 @@ elseif ($Mode -eq "Pilot2") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Pilot2-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Global-Pilot2-Assigned"]
     }
 
     # Change to pilot 2 configuration, look for any policies using prefix array
-    EntraCAPolicy -CAPolicyPrefixArray @("CA353-Initial", "CA353-Pilot1", "CA353-Pilot2", "CA353-Pilot3", "CA353-Prod") `
-                  -DisplayName "CA353-Pilot2-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraCAPolicy -CAPolicyPrefixArray @("CA005-Initial", "CA005-Pilot1", "CA005-Pilot2", "CA005-Pilot3", "CA005-Prod") `
+                  -DisplayName "CA005-Pilot2-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                   -Cond_Users_IncludeUsers @() `
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -State enabled `
@@ -260,8 +260,8 @@ elseif ($Mode -eq "Pilot3") {
     if ($Group_Targeting_Method -eq "Dynamic_Using_Tags") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" `
-                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Internal_User") and ((user.extensionAttribute8 -contains "_pilot1") or (user.extensionAttribute8 -contains "_pilot2") or (user.extensionAttribute8 -contains "_pilot3"))' `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" `
+                   -GroupQuery '(user.accountEnabled -eq true) and (user.extensionAttribute8 -startsWith "Global") and ((user.extensionAttribute8 -contains "_pilot1") or (user.extensionAttribute8 -contains "_pilot2") or (user.extensionAttribute8 -contains "_pilot3"))' `
                    -MembershipRuleProcessingState On `
                    -ForceUpdate
 
@@ -269,13 +269,13 @@ elseif ($Mode -eq "Pilot3") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot-Dynamic"]
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") {
         
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot3-Assigned" `
-                   -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot3-Assigned" `
+                   -Description "Pilot Users for Entra-CA-CA005-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -286,14 +286,14 @@ elseif ($Mode -eq "Pilot3") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot3-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot3-Assigned"]
 
     }
     elseif ($Group_Targeting_Method -eq "Manual_Assignment_Simple") {
 
         # Create pilot target group, if missing
-        EntraGroup -DisplayName "Entra-CA-Users-External-Developers-Pilot3-Assigned" `
-                   -Description "Pilot Users for Entra-CA-Users-External-Developers" `
+        EntraGroup -DisplayName "Entra-CA-Global-Pilot3-Assigned" `
+                   -Description "Pilot Users for Entra-CA-Global" `
                    -EntraGroupsHashTable $EntraGroupsHashTable `
                    -AutomaticMailNickName `
                    -MailEnabled $false `
@@ -304,12 +304,12 @@ elseif ($Mode -eq "Pilot3") {
         $EntraGroupsHashTable = EntraGroupsAsHashtable
 
         # Find group info in hash table
-        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Pilot3-Assigned"]
+        $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-Global-Pilot3-Assigned"]
     }
 
     # Change to pilot 3 configuration, look for any policies using prefix array
-    EntraCAPolicy -CAPolicyPrefixArray @("CA353-Initial", "CA353-Pilot1", "CA353-Pilot2", "CA353-Pilot3", "CA353-Prod") `
-                  -DisplayName "CA353-Pilot3-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraCAPolicy -CAPolicyPrefixArray @("CA005-Initial", "CA005-Pilot1", "CA005-Pilot2", "CA005-Pilot3", "CA005-Prod") `
+                  -DisplayName "CA005-Pilot3-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                   -Cond_Users_IncludeUsers @() `
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -CreateUpdate
@@ -372,18 +372,13 @@ elseif ($Mode -eq "Prod") {
         $Users_All                     = $EntraGroupsHashTable["Entra-CA-Users-All-Dynamic"]
         $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Dynamic"]
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Dynamic"]
-        $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Dynamic"]
+        $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
         $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
         $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
 
-        $Users_Internal_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-Internal-Developers-All-Dynamic"]
-        $Users_Internal_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-Internal-Developers-Req-MFA-All-Dynamic"]
-        $Users_External_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-All-Dynamic"]
-        $Users_External_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Req-MFA-All-Dynamic"]
-
         # Pause Dynamic Membership Rule Processing
-        EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" -GroupType DynamicMembership -MembershipRuleProcessingState Paused -ForceUpdate
+        EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" -GroupType DynamicMembership -MembershipRuleProcessingState Paused -ForceUpdate
     }
 
     if ( ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") -or ($Group_Targeting_Method -eq "Manual_Assignment_Simple") ) {
@@ -436,24 +431,19 @@ elseif ($Mode -eq "Prod") {
         $AppSystem_Test_Users_WHfB_All = $EntraGroupsHashTable["Entra-CA-AppSystem-Test-Users-Req-WHfB-All-Assigned"]
 
         $Users_All                     = $EntraGroupsHashTable["Entra-CA-Users-All-Assigned"]
-        $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Assigned"]
-        $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
-        $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
-        $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
+        $Users_Internals_All           = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Assigned"]
+        $Users_Internals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
+        $Users_Externals_All           = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
+        $Users_Externals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
         $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
         $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
-
-        $Users_Internal_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-Internal-Developers-All-Assigned"]
-        $Users_Internal_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-Internal-Developers-Req-MFA-All-Assigned"]
-        $Users_External_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-All-Assigned"]
-        $Users_External_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Req-MFA-All-Assigned"]
     }
 
     # Enforce Conditional Access Policy
-    EntraCAPolicy -CAPolicyPrefixArray @("CA353-Initial", "CA353-Pilot1", "CA353-Pilot2", "CA353-Pilot3", "CA353-Prod") `
-                  -DisplayName "CA353-Prod-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
-                  -Cond_Users_IncludeUsers @() `
-                  -Cond_Users_IncludeGroups @(($Users_Internal_Developers_All.id)) `
+    EntraCAPolicy -CAPolicyPrefixArray @("CA005-Initial", "CA005-Pilot1", "CA005-Pilot2", "CA005-Pilot3", "CA005-Prod") `
+                  -DisplayName "CA005-Prod-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
+                  -Cond_Users_IncludeUsers @("All") `
+                  -Cond_Users_IncludeGroups @() `
                   -State enabled `
                   -CreateUpdate
 }
@@ -464,20 +454,19 @@ elseif ($Mode -eq "Prod") {
 elseif ($Mode -eq "Install_Latest_Policy_Disabled") {
 
     # Find group info in hash table
-    $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic"]
-    $PolicyExcludeGroup = $EntraGroupsHashTable["Entra-CA-CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce-Excluded-Assigned"]
+    $PolicyPilotGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-Pilot-Dynamic"]
+    $PolicyExcludeGroup = $EntraGroupsHashTable["Entra-CA-CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block-Excluded-Assigned"]
 
     # Setup latest version of policy in disabled state. Policy will include PolicyVersion. Policy can be used for testing
-    EntraCAPolicy -CAPolicyPrefix "CA353-$($PolicyVersion)" `
-                  -DisplayName "CA353-$($PolicyVersion)-Users-External-Developers-CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraCAPolicy -CAPolicyPrefix "CA005-$($PolicyVersion)" `
+                  -DisplayName "CA005-$($PolicyVersion)-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                   -Cond_Users_IncludeUsers @() `
                   -Cond_Users_IncludeGroups @(($PolicyPilotGroup.id)) `
                   -Cond_Users_ExcludeGroups @(($BreakGlassAccountsGroup.id), ($PolicyExcludeGroup.id)) `
                   -Cond_Users_ExcludeUsers @(($BreakGlassAccounts.id)) `
-                  -Cond_App_includeApplications @("Office365") `
-                  -Cond_Platforms_includePlatforms @("macOS") `
+                  -Cond_AuthenticationFlows_TransferMethods deviceCodeFlow `
                   -GC_Operator "OR" `
-                  -GC_BuiltInControls "compliantDevice" `
+                  -GC_BuiltInControls @("Block") `
                   -State disabled `
                   -CreateOnly
 }
@@ -489,11 +478,11 @@ elseif ($Mode -eq "Update_Prod_Policy_To_Latest") {
 
     # Update existing PROD policy with latest recommended configuration
     # WARNING: This command will overwrite critical configuration, but will not change the targetting of the group - or state (enabled, disabled, reporting)
-    EntraCAPolicy -CAPolicyPrefix "CA353-Prod" `
+    EntraCAPolicy -CAPolicyPrefix "CA005-Prod" `
+                  -Cond_AuthenticationFlows_TransferMethods deviceCodeFlow `
                   -GC_Operator "OR" `
-                  -GC_BuiltInControls "compliantDevice" `
+                  -GC_BuiltInControls @("Block") `
                   -CreateUpdate
-
 }
 
 #######################################################
@@ -502,8 +491,8 @@ elseif ($Mode -eq "Update_Prod_Policy_To_Latest") {
 elseif ($Mode -eq "GroupForceUpdate") {
 
     # Update group info, based on the defined parameters
-    EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce-Excluded-Assigned" `
-               -Description "Excluded Users for Policy CA353-Users-External-Developers-Office365-MacOS-CompliantDevice-Enforce" `
+    EntraGroup -DisplayName "Entra-CA-CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block-Excluded-Assigned" `
+               -Description "Excluded Users for Policy CA005-Global-DeviceCodeFlow-AllApps-AnyPlatform-Block" `
                -EntraGroupsHashTable $EntraGroupsHashTable `
                -AutomaticMailNickName `
                -MailEnabled $false `
@@ -512,8 +501,8 @@ elseif ($Mode -eq "GroupForceUpdate") {
                -ForceUpdate
 
     # Update group info, based on the defined parameters
-    EntraGroup -DisplayName "Entra-CA-CA353-Users-External-Developers-Pilot-Dynamic" `
-               -Description "Pilot Users for Entra-CA-CA353-Users-External-Developers" `
+    EntraGroup -DisplayName "Entra-CA-CA005-Global-Pilot-Dynamic" `
+               -Description "Pilot Users for Entra-CA-CA005-Global" `
                -EntraGroupsHashTable $EntraGroupsHashTable `
                -AutomaticMailNickName `
                -MailEnabled $false `
@@ -530,7 +519,7 @@ elseif ($Mode -eq "GroupForceUpdate") {
 elseif ($Mode -eq "Disable_Policy") {
 
     # Disable policy found by looking for policies defined in prefix array
-    EntraCAPolicy -CAPolicyPrefixArray @("CA353-Initial", "CA353-Pilot1", "CA353-Pilot2", "CA353-Pilot3", "CA353-Prod") `
+    EntraCAPolicy -CAPolicyPrefixArray @("CA005-Initial", "CA005-Pilot1", "CA005-Pilot2", "CA005-Pilot3", "CA005-Prod") `
                   -State disabled `
                   -CreateUpdate
 }

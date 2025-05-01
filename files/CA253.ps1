@@ -453,7 +453,7 @@ elseif ($Mode -eq "Prod") {
     EntraCAPolicy -CAPolicyPrefixArray @("CA253-Initial", "CA253-Pilot1", "CA253-Pilot2", "CA253-Pilot3", "CA253-Prod") `
                   -DisplayName "CA253-Prod-Users-Internal-Developers-Office365-MacOS-CompliantDevice-Enforce" `
                   -Cond_Users_IncludeUsers @() `
-                  -Cond_Users_IncludeGroups @(($Users_Internal_All.id)) `
+                  -Cond_Users_IncludeGroups @(($Users_Internal_Developers_All.id)) `
                   -State enabled `
                   -CreateUpdate
 }
