@@ -2,117 +2,51 @@
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [object]$Device,
-        [Parameter(Mandatory)] [string]$PropertyKeyAD,
-        [Parameter(Mandatory)] [string]$PropertyKeyCloud,
-        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string]$TagValueAD,
-        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string]$TagValueCloud,
+        [Parameter(Mandatory)] [string]$PropertyKey,
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string]$TagValue,
         [Parameter()] [AllowNull()] [string]$OnPremisesSyncEnabled
     )
 
     # Get existing tag-values
-    $ExistingTagValue = $Device.ExtensionAttributes.$PropertyKeyCloud
+    $ExistingTagValue = $Device.ExtensionAttributes.$PropertyKey
 
-    if ($TagValueAD -eq "") { $TagValueAD = $null }
-    if ($TagValueCloud -eq "") { $TagValueCloud = $null }
+    if ($TagValue -eq "") { $TagValue = $null }
 
-    # Cloud-only device
-    if ([string]::IsNullOrEmpty($OnPremisesSyncEnabled)) {
-        Write-Verbose "PropertyKeyCloud : $PropertyKeyCloud"
-        Write-Verbose "ExistingValue    : $ExistingTagValue"
-        Write-Verbose "TagValueCloud    : $TagValueCloud"
+    Write-Verbose "PropertyKey      : $PropertyKey"
+    Write-Verbose "ExistingValue    : $ExistingTagValue"
+    Write-Verbose "TagValue         : $TagValue"
 
-        if ($ExistingTagValue -eq $TagValueCloud) {
-            Write-Verbose "Skipping as value is already set correctly on device."
-        } else {
-            if (-not $global:EnableWhatIf) {
-                Write-Host "Modifying device $($Device.DisplayName) in Microsoft Graph ($PropertyKeyCloud = $TagValueCloud)"
-
-                try {
-                    Update-MgBetaDevice -DeviceId $Device.Id -ExtensionAttributes @{"$PropertyKeyCloud"="$TagValueCloud"} -ErrorAction Stop
-                } catch {
-                    Write-Warning "Failed to update device $($Device.DisplayName) in Graph."
-                }
-
-                $LogEntry = [PSCustomObject]@{ 
-                    DeviceName = $Device.DisplayName
-                    DeviceId = $Device.Id
-                    PropertyKeyAD = $PropertyKeyAD
-                    TagValueAD = $TagValueAD
-                    PropertyKeyCloud = $PropertyKeyCloud
-                    TagValueCloud = $TagValueCloud
-                    ExistingTagValue = $ExistingTagValue
-                }
-                $Result = $Global:ModificationsLog.Add($LogEntry)
-            } else {
-                Write-Host "WhatIf - Modifying device $($Device.DisplayName) ($PropertyKeyCloud = $TagValueCloud)"
-
-                $LogEntry = [PSCustomObject]@{ 
-                    DeviceName = $Device.DisplayName
-                    DeviceId = $Device.Id
-                    PropertyKeyAD = $PropertyKeyAD
-                    TagValueAD = $TagValueAD
-                    PropertyKeyCloud = $PropertyKeyCloud
-                    TagValueCloud = $TagValueCloud
-                    ExistingTagValue = $ExistingTagValue
-                }
-                $Result = $Global:ModificationsLog.Add($LogEntry)
-            }
-        }
+    if ($ExistingTagValue -eq $TagValue) {
+        Write-Verbose "Skipping as value is already set correctly on device."
     } else {
-        # Device is Hybrid AD joined (on-prem sync enabled)
-        Write-Verbose "PropertyKeyAD : $PropertyKeyAD"
-        Write-Verbose "ExistingValue : $ExistingTagValue"
-        Write-Verbose "TagValueAD    : $TagValueAD"
+        if (-not $global:EnableWhatIf) {
+            Write-Host "Modifying device $($Device.DisplayName) in Microsoft Graph ($PropertyKey = $TagValue)"
 
-        if ($ExistingTagValue -eq $TagValueAD) {
-            Write-Verbose "Skipping as value is already set correctly on device."
-        } else {
-            if (-not $global:EnableWhatIf) {
-                Write-Host "Modifying device $($Device.DisplayName) in Active Directory ($PropertyKeyAD = $TagValueAD)"
-
-                $DeviceAD = Get-ADComputer -Filter { Name -eq $Device.DisplayName }
-                try {
-                    if ($global:SecureCredentials) {
-                        Set-ADComputer -Identity $DeviceAD -Replace @{"$PropertyKeyAD"="$TagValueAD"} -Credential $global:SecureCredentials
-                    } else {
-                        Set-ADComputer -Identity $DeviceAD -Replace @{"$PropertyKeyAD"="$TagValueAD"}
-                    }
-                } catch {
-                    try {
-                        if ($global:SecureCredentials) {
-                            Set-ADComputer -Identity $DeviceAD -Add @{"$PropertyKeyAD"="$TagValueAD"} -Credential $global:SecureCredentials
-                        } else {
-                            Set-ADComputer -Identity $DeviceAD -Add @{"$PropertyKeyAD"="$TagValueAD"}
-                        }
-                    } catch {
-                        Write-Warning "Failed to modify device $($Device.DisplayName) in AD."
-                    }
-                }
-
-                $LogEntry = [PSCustomObject]@{ 
-                    DeviceName = $Device.DisplayName
-                    DeviceId = $Device.Id
-                    PropertyKeyAD = $PropertyKeyAD
-                    TagValueAD = $TagValueAD
-                    PropertyKeyCloud = $PropertyKeyCloud
-                    TagValueCloud = $TagValueCloud
-                    ExistingTagValue = $ExistingTagValue
-                }
-                $Result = $Global:ModificationsLog.Add($LogEntry)
-            } else {
-                Write-Host "WhatIf - Modifying device $($Device.DisplayName) in AD ($PropertyKeyAD = $TagValueAD)"
-
-                $LogEntry = [PSCustomObject]@{ 
-                    DeviceName = $Device.DisplayName
-                    DeviceId = $Device.Id
-                    PropertyKeyAD = $PropertyKeyAD
-                    TagValueAD = $TagValueAD
-                    PropertyKeyCloud = $PropertyKeyCloud
-                    TagValueCloud = $TagValueCloud
-                    ExistingTagValue = $ExistingTagValue
-                }
-                $Result = $Global:ModificationsLog.Add($LogEntry)
+            try {
+                Update-MgBetaDevice -DeviceId $Device.Id -ExtensionAttributes @{"$PropertyKey"="$TagValue"} -ErrorAction Stop
+            } catch {
+                Write-Warning "Failed to update device $($Device.DisplayName) in Graph."
             }
+
+            $LogEntry = [PSCustomObject]@{ 
+                DeviceName = $Device.DisplayName
+                DeviceId = $Device.Id
+                PropertyKey = $PropertyKey
+                TagValue = $TagValue
+                ExistingTagValue = $ExistingTagValue
+            }
+            $Result = $Global:ModificationsLog.Add($LogEntry)
+        } else {
+            Write-Host "WhatIf - Modifying device $($Device.DisplayName) ($PropertyKey = $TagValue)"
+
+            $LogEntry = [PSCustomObject]@{ 
+                    DeviceName = $Device.DisplayName
+                    DeviceId = $Device.Id
+                    PropertyKey = $PropertyKey
+                    TagValue = $TagValue
+                    ExistingTagValue = $ExistingTagValue
+                }
+            $Result = $Global:ModificationsLog.Add($LogEntry)
         }
     }
 }
@@ -122,8 +56,8 @@
 # SIG # Begin signature block
 # MIIRgwYJKoZIhvcNAQcCoIIRdDCCEXACAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUjzqCgruynw0uN/r2IqvtwvEJ
-# 3Kaggg3jMIIG5jCCBM6gAwIBAgIQd70OA6G3CPhUqwZyENkERzANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUZ0/JYfmldZSzMSReaWvLDCvS
+# fYWggg3jMIIG5jCCBM6gAwIBAgIQd70OA6G3CPhUqwZyENkERzANBgkqhkiG9w0B
 # AQsFADBTMQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xvYmFsU2lnbiBudi1zYTEp
 # MCcGA1UEAxMgR2xvYmFsU2lnbiBDb2RlIFNpZ25pbmcgUm9vdCBSNDUwHhcNMjAw
 # NzI4MDAwMDAwWhcNMzAwNzI4MDAwMDAwWjBZMQswCQYDVQQGEwJCRTEZMBcGA1UE
@@ -202,16 +136,16 @@
 # ZGVTaWduaW5nIENBIDIwMjACDHlj2WNq4ztx2QUCbjAJBgUrDgMCGgUAoHgwGAYK
 # KwYBBAGCNwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIB
 # BDAcBgorBgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU
-# 3ijLcT0oRskD0LOMab2keo2l6RgwDQYJKoZIhvcNAQEBBQAEggIAXV22Njj2aZ6c
-# 3ldqJmKCdwOtuBCLugO+G8Pv1X1CEGbhoA7cQ0KVzBU5wbBGvvLQYkiAyig5dFSK
-# kwXRVWogePb78xJSEboP/8vs3kK6KcJBV+Wr06D/mNo9IWzEBkW+lnhqvYL+0b2g
-# N7OFPUnoOK7ut/ztjNXDibcVBqpTGQASyilbKRzOhpbH/dt45Hq1SE6TU0AZ4EPQ
-# F9oIiui0stRftaLuRu1aZI4sNF0DODSW978jY+IcLxDYGA1UvQ6q0kYUgw3sUZz7
-# 7E7A95belpJwDn/kXQdMEUkMI1689Wbt1Fyw+Ose/ZBzdWrPnLJ1PDh98F/mGQE8
-# DOn+6NUxYPecB9/O4/wyQWk2aJbJBpJjhgyH/3mqRUh4PUIZXSBBimXvFSRypsnM
-# OJTT2tqILd56HrvADhApN1kkY5Q0r1ddyk4mryPlhrWmaSqXVcnk9GaFKPkVcfeI
-# T2tRACl1Ukt7ep7TZM6gg0n6yeFhCEXmc2VnO0Vz0YiMkeAgYMuVNOaV8TESmMGR
-# 69Zdk0M9HL6wvuxCWU3mC/KT07L8cyNZv9w32q58FUYr0c3oXSrd1zhiJpF+ioln
-# TL+AQJLf+hN7LZ70CgmjnG6W79nVZKhi3fpZdAX6Sphq9AeRYZHv6M00mJvgm88G
-# OMMeSBpaP9TluVdHV37V0H22UTEg1LQ=
+# OsRYrYnXbmuczzdU3f8J3l1LHHUwDQYJKoZIhvcNAQEBBQAEggIAW8t3YmIi2o/r
+# 4OygvdaEhE6ep7Kzq9DCJmPHZgMlmqpd3wzDa1osrUhbF0IEJqu0aNjTGCDHRtXR
+# ilwBU6dejy7f1tI8ahN0wGEW30dR5nJxYwIkpFyaq7+1r9gXjXwd6ClGmQ70D9MG
+# vheIZ1vhnn+Ng/lihNzfb9xkkQDWkFMiwsaoux8k17vVz2PXazjkZGo/+82u4aEz
+# 9rvmkjEWDV5629dQIGdD5Ggs4MpoSvlPIrcGfkvLFARIORHbwofsRw/raXhgJlG5
+# /Lu0MrrtP27bImmwZ9D1LP6Shp9I3LBTrHg+TRuVvdYQ6UgxqIyGo7lt9ja7dIdQ
+# wEJr96dqw8t9V0l2352CS6jFTK20Gfl6rYn3qkue6PerAKP2Uwv61OzTQHxrcw2O
+# Kup7C94Do79MaPGxS60fwWGKVH53ybE5QY+sFEqpuDlfhibgWyb1yd8aYgutk6xn
+# cah4pYHThUwWtEtYf5/mTHTDtKII3sos9B4uQNTdVPc1P7yRkxTmweour0Hy8SEs
+# Q+dqVzgaMz5e51L09ICO5P0o/EAfUeaec1/FcFTUL+t9kY/8zwmkMUnB5kG/TtyV
+# 6NJ42GPnKwGYWan6yPF5EFEpTYRFhjf8E0RoNOYJ3B/Cl6Memn2aXruNky0BrJuF
+# Fk9sa4Xq4Sd8NB1L3MdUAoUaNQdLZSA=
 # SIG # End signature block
