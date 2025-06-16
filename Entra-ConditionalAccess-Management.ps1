@@ -614,68 +614,37 @@ pause
 # Step 4: DOWNLOAD LATEST CA-POLICY CONFIG FILES FROM GITHUB
 ################################################################################################
 
+################################################################################################
+# Step 4: DOWNLOAD LATEST CA-POLICY CONFIG FILES FROM GITHUB
+################################################################################################
+
 Write-host ""
 Write-host "Step 4: Download latest CA-policy Config Files from Github"
-# Parameters
-$owner             = "KnudsenMorten"
-$repo              = "EntraPolicySuite"
-$path              = "files"
-$destinationFolder = $Path_CA_Scripts_Github_Latest_Inbound
 
-# Base URL for GitHub API
-$baseUrl = "https://api.github.com/repos/$owner/$repo/contents/$path"
+# Download repo as ZIP-file
+$owner = "KnudsenMorten"
+$repo = "EntraPolicySuite"
+$branch = "main"
+$zipUrl = "https://github.com/$owner/$repo/archive/refs/heads/$branch.zip"
+$destinationFolder = $Path_CA_Scripts_Github_Latest_Inbound + "\TEMP"
+$zipFile = Join-Path $destinationFolder "$repo-$branch.zip"
 
-# Ensure the destination folder exists
-if (-Not (Test-Path $destinationFolder)) {
-    New-Item -ItemType Directory -Path $destinationFolder
+# Create TEMP folder if it doesn't exist
+if (-not (Test-Path $destinationFolder)) {
+    New-Item -ItemType Directory -Path $destinationFolder | Out-Null
 }
 
-# Function to download file if needed
-function Download-File($url, $localPath, $remoteSize, $remoteDate) {
-    $download = $true
-    if (Test-Path $localPath) {
-        $localFile = Get-Item $localPath
-        $localSize = $localFile.Length
-        $localModified = $localFile.LastWriteTime
+# Download the ZIP file
+Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile
 
-        # Compare file size and last modified dates
-        if ($localSize -eq $remoteSize -and $remoteDate -ne $null -and $localModified -ge [DateTime]$remoteDate) {
-            Write-Host "No changes detected (size and date match): $localPath"
-            $download = $false
-        }
-    }
-    if ($download) {
-        Invoke-WebRequest -Uri $url -OutFile $localPath -UseBasicParsing
-        Write-Host "Downloaded updated file: $localPath"
-        # Only update the last write time if remoteDate is not null
-        if ($remoteDate -ne $null) {
-            (Get-Item $localPath).LastWriteTime = [DateTime]$remoteDate
-        }
-    }
-}
+# Unzip the file
+$extractPath = Join-Path $destinationFolder "extracted"
+Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
 
-# Fetch files from GitHub
-$files = Invoke-RestMethod -Uri $baseUrl -Headers @{ Accept = "application/vnd.github.v3+json" }
+# Copy all files from the 'files' folder in the extracted repo to the target folder
+$sourceFilesFolder = Join-Path $extractPath "$repo-$branch\files"
+Copy-Item -Path (Join-Path $sourceFilesFolder "*") -Destination $Path_CA_Scripts_Github_Latest_Inbound -Recurse -Force
 
-foreach ($file in $files) {
-    if ($file.type -eq "file") {
-        $fileUrl = $file.download_url
-        $localFilePath = Join-Path -Path $destinationFolder -ChildPath $file.name
-
-        # For last modified date, use commit date from the file's SHA (proxy for last modified)
-        $commitUrl = "https://api.github.com/repos/$owner/$repo/commits?path=$($file.path)&sha=$($file.sha)"
-        $commitInfo = Invoke-RestMethod -Uri $commitUrl -Headers @{ Accept = "application/vnd.github.v3+json" }
-
-        # Check if commit info is available
-        $lastModifiedDate = $null
-        if ($commitInfo -and $commitInfo.Count -gt 0) {
-            $lastModifiedDate = $commitInfo[0].commit.committer.date
-        }
-
-        # Download the file if different
-        Download-File -url $fileUrl -localPath $localFilePath -remoteSize $file.size -remoteDate $lastModifiedDate
-    }
-}
 
 
 ################################################################################################
