@@ -375,8 +375,8 @@ elseif ($Mode -eq "Prod") {
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Dynamic"]
         $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Dynamic"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Dynamic"]
 
         # Pause Dynamic Membership Rule Processing
         EntraGroup -DisplayName "Entra-CA-CA543-Teams-Rooms-Pilot-Dynamic" -GroupType DynamicMembership -MembershipRuleProcessingState Paused -ForceUpdate
@@ -436,8 +436,8 @@ elseif ($Mode -eq "Prod") {
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
         $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Assigned"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Assigned"]
     }
 
     # Enforce Conditional Access Policy

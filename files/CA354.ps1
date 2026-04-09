@@ -377,8 +377,8 @@ elseif ($Mode -eq "Prod") {
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
         $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Dynamic"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Dynamic"]
 
         $Users_External_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-All-Dynamic"]
         $Users_External_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Req-MFA-All-Dynamic"]
@@ -443,8 +443,8 @@ elseif ($Mode -eq "Prod") {
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
         $Users_External_All            = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Assigned"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Assigned"]
 
         $Users_External_Developers_All     = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-All-Assigned"]
         $Users_External_Developers_MFA_All = $EntraGroupsHashTable["Entra-CA-Users-External-Developers-Req-MFA-All-Assigned"]

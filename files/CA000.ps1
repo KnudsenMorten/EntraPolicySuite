@@ -159,8 +159,8 @@ if ($Mode -eq "Initial_Setup") {
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Dynamic"]
         $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Dynamic"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Dynamic"]
     }
 
     if ( ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") -or ($Group_Targeting_Method -eq "Manual_Assignment_Simple") ) {
@@ -214,8 +214,8 @@ if ($Mode -eq "Initial_Setup") {
         $Users_Internals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
         $Users_Externals_All           = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
         $Users_Externals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Assigned"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Assigned"]
 
     }
 
@@ -484,8 +484,8 @@ elseif ($Mode -eq "Prod") {
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Dynamic"]
         $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Dynamic"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Dynamic"]
 
         # Pause Dynamic Membership Rule Processing
         EntraGroup -DisplayName "Entra-CA-CA000-Global-Pilot-Dynamic" -GroupType DynamicMembership -MembershipRuleProcessingState Paused -ForceUpdate
@@ -545,8 +545,8 @@ elseif ($Mode -eq "Prod") {
         $Users_Internals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
         $Users_Externals_All           = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
         $Users_Externals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Assigned"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Assigned"]
     }
 
     # Enforce Conditional Access Policy
@@ -621,8 +621,8 @@ elseif ($Mode -eq "Install_Latest_Policy_Disabled") {
         $Users_Internal_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Dynamic"]
         $Users_Internal_All            = $EntraGroupsHashTable["Entra-CA-Users-Internal-All-Dynamic"]
         $Users_External_MFA_All        = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Dynamic"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Dynamic"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Dynamic"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Dynamic"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Dynamic"]
     }
 
     if ( ($Group_Targeting_Method -eq "Manual_Assignment_Advanced") -or ($Group_Targeting_Method -eq "Manual_Assignment_Simple") ) {
@@ -679,8 +679,8 @@ elseif ($Mode -eq "Install_Latest_Policy_Disabled") {
         $Users_Internals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-Internal-Req-MFA-All-Assigned"]
         $Users_Externals_All           = $EntraGroupsHashTable["Entra-CA-Users-External-All-Assigned"]
         $Users_Externals_MFA_All       = $EntraGroupsHashTable["Entra-CA-Users-External-Req-MFA-All-Assigned"]
-        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-All-Assigned"]
-        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-Non-Managed-Req-MFA-All-Assigned"]
+        $Users_Non_Managed_All         = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-All-Assigned"]
+        $Users_Non_Managed_MFA_All     = $EntraGroupsHashTable["Entra-CA-Users-NonManaged-Req-MFA-All-Assigned"]
     }
 
     # Setup latest version of policy in disabled state. Policy will include PolicyVersion. Policy can be used for testing
