@@ -1,0 +1,38 @@
+{
+    "scriptName":   "IdentityReporter",
+    "version":      "2.0.0",
+    "scriptType":   "Engine",
+    "community":    true,
+    "communityRepo":"EntraPolicySuite",
+    "schedule":     "P1D",
+    "capabilities": {
+        "OnPremAD":   "optional",
+        "Graph":      "required",
+        "Exchange":   "required",
+        "AzureRM":    "optional"
+    },
+    "description":  "Exports comprehensive user / device / MFA / license report to Excel + CSV, optionally uploads to Log Analytics via DCR.",
+    "author":       "Morten Knudsen <mok@mortenknudsen.net>",
+    "requires": {
+        "modules": [
+            { "name": "AutomateITPS",                 "version": "0.1.0" },
+            { "name": "Microsoft.Graph.Beta.Users" },
+            { "name": "Microsoft.Graph.Beta.Reports" },
+            { "name": "Microsoft.Graph.Beta.DeviceManagement" },
+            { "name": "ExchangeOnlineManagement" },
+            { "name": "ImportExcel" }
+        ],
+        "graphScopes": [
+            "Directory.Read.All",
+            "User.Read.All",
+            "DeviceManagementManagedDevices.Read.All",
+            "AuditLog.Read.All",
+            "Reports.Read.All"
+        ],
+        "legacyDependencies": [
+            "FUNCTIONS/2LINKIT-Functions.psm1 (mail sender + DCR upload)",
+            "FUNCTIONS/Automation-DefaultVariables.psm1 (customer defaults)"
+        ]
+    },
+    "notes": "Transitional v2 port (2.0.0) of the 1.x IdentityReporter. v2 handles identity hydration, logging, transcript, capability-guarded AD lookup, and failure alerts; mail sender + DCR upload still use the legacy 2LINKIT-Functions.psm1."
+}

@@ -1,0 +1,10 @@
+{
+  "communityRepo": "Entra-Policy-Suite",
+  "notes": "Ported via TOOLS/New-SolutionLauncherSet.ps1. Engine copied near-verbatim with defensive patches (idempotent $global:PathScripts + FUNCTIONS/LEGACY fallback). Internal-only = False.",
+  "scriptName": "ExposureSigninReports",
+  "community": true,
+  "version": "2.0.0",
+  "author": "Morten Knudsen <mok@mortenknudsen.net>",
+  "description": "ExposureSigninReports -- v2 ported engine under Entra-Policy-Suite.",
+  "scriptType": "Engine"
+}
