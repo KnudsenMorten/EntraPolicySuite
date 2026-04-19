@@ -5,13 +5,8 @@
 > **"Same security with no exceptions — including in the office. No convenient considerations."**
 
 Developed by **Morten Knudsen** — Microsoft MVP (Security · Azure · Security Copilot).
-Based on the MMSMOA 2025 session *"Mastering Identity with Entra ID — Regain the Control"*.
 
----
-
-## 📺 Learn the model first
-
-Before deploying, skim the talk this suite implements: **"Mastering Identity with Entra ID — Regain the Control"** (MMSMOA 2025). It explains the persona-driven model, the CA numbering scheme, and the break-glass-first rollout sequence. Slides / recording via the author's blog: [mortenknudsen.net](https://mortenknudsen.net) · [aka.ms/morten](https://aka.ms/morten).
+Author blog: [mortenknudsen.net](https://mortenknudsen.net) · [aka.ms/morten](https://aka.ms/morten)
 
 Sample generated CA policy documentation (what you get after deployment):
 📎 [Conditional Access Policy Documentation (PDF)](https://mortenknudsen.net/wp-content/uploads/2025/05/Conditional-Access-Policy-Documentation.pdf)
@@ -152,6 +147,18 @@ User.extensionAttribute7 -contains "Internal_Admin_AD_Synced_FIDO"
   AND
 Device.extensionAttribute6 -contains "PAW_Tier0"
 ```
+
+> **The 6 / 7 split is the default — change it to suit your tenant.** Each
+> tenant has 15 `extensionAttribute1`–`extensionAttribute15` slots on
+> `User` and another 15 on `Device`. If your environment already uses
+> `extensionAttribute6` / `extensionAttribute7` for something else (HR sync,
+> asset tag, email signature data), pick any free pair instead. Update the
+> attribute names in `LauncherConfig.ps1` (community mode) or in your
+> `launcher.override.ps1` (internal mode) — every engine reads the values
+> through the launcher's globals, so all CA policies, dynamic-group rules,
+> tagging engines and reports follow automatically. The only constraint:
+> use **two different** attributes (one for user persona, one for device
+> classification) so CA rules can target them independently.
 
 ---
 
@@ -487,5 +494,3 @@ Hard-won lessons from the author's engagements:
 - Blog: https://mortenknudsen.net  (aka.ms/morten)
 - GitHub: https://github.com/KnudsenMorten
 - Support: GitHub Issues on this repo.
-
-Based on the MMSMOA 2025 session *"Mastering Identity with Entra ID — Regain the Control"*. If you're deploying Entra Policy Suite in production, the deck is the best ~60-minute investment you can make — it explains *why* every design choice in this repo is the way it is.
