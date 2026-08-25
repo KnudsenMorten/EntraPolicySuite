@@ -1,137 +1,89 @@
-﻿#Requires -Version 5.0
+﻿######################################################################################
+# OUTPUT ENCODING  -  ALWAYS UTF-8
+######################################################################################
 
-<#
-    .NAME
-    Entra Policy Suite (EPS) | Tagging of Users
+<#  Everything this script emits is forced to UTF-8, on both Windows PowerShell 5.1
+    and PowerShell 7, so Danish characters survive the trip to VisualCron.
 
-    .SYNOPSIS
+    Why this is needed:
+      PS 5.1 leaves [Console]::OutputEncoding at the OEM codepage (CP850 / CP865 in DK),
+      so a name like Str<oe>b<ae>k goes out as bytes 9B / 91. Anything reading that stream
+      as Windows-1252 renders it as  Str>b`k .  PS 7 already defaults to UTF-8, which is
+      why the two versions disagreed.
 
-    .NOTES
-    
-    .VERSION
-    1.0
-    
-    .AUTHOR
-    Morten Knudsen, Microsoft MVP - https://mortenknudsen.net
+    IMPORTANT - the receiving end must agree:
+      Set the VisualCron Task > Main Settings > Encoding property to UTF-8 as well.
+      Forcing UTF-8 here while VisualCron still decodes Windows-1252 will show
+      Str<A-tilde><...>b<A-tilde><...>k instead. Both halves have to be UTF-8.
 
-    .LICENSE
-    Licensed under the MIT license.
-
-    .PROJECTURI
-    https://github.com/KnudsenMorten/EntraPolicySuite
-
-
-    .WARRANTY
-    Use at your own risk, no warranty given!
+      If this runs as a VisualCron *PowerShell* Task (in-process runspace) rather than an
+      *Execute* Task launching powershell.exe, there is no console to configure - the
+      [Console] lines below fail silently and only the VisualCron Encoding property applies.
 #>
 
-########################################################################################################################################
-# Entra Policy Suite Functions
-########################################################################################################################################
+    $global:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-# Define module name and fallback local file
-$ModuleName = "EntraPolicySuite"
-$FunctionFile = ".\EntraPolicySuite.psm1"
+    # Console / stdout - what VisualCron captures
+    Try { [Console]::OutputEncoding = $global:Utf8NoBom } Catch { }
+    Try { [Console]::InputEncoding  = $global:Utf8NoBom } Catch { }
 
-# Check if the module is already available
-if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
-    Write-Host ""
-    Write-Host "EntraPolicySuite is not installed. Attempting to install from PowerShell Gallery..." -ForegroundColor Yellow
+    # Encoding used when piping to native executables
+    $global:OutputEncoding = $global:Utf8NoBom
 
-    try {
-        Install-Module -Name $ModuleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        Write-Host "Module '$ModuleName' installed successfully." -ForegroundColor Green
+    # File writes (Out-File, Set-Content, Export-Csv, Add-Content ...)
+    # -Encoding UTF8 means WITH BOM on 5.1 but WITHOUT BOM on 7 - pin it so files are
+    # detected as UTF-8 identically on both versions (BOM keeps Excel and Notepad happy).
+    If ($PSVersionTable.PSVersion.Major -ge 6) {
+        $PSDefaultParameterValues['*:Encoding'] = 'utf8BOM'
+    } Else {
+        $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
     }
-    catch {
-        Write-Host "Failed to install module '$ModuleName' from PowerShell Gallery." -ForegroundColor Red
-        
-        # Try to import from local fallback if available
-        if (Test-Path $FunctionFile) {
-            Write-Host "Attempting to load EntraPolicySuite.psm1 from local directory..." -ForegroundColor Yellow
-            try {
-                Import-Module $FunctionFile -Global -Force -WarningAction SilentlyContinue
-                Write-Host "Local EntraPolicySuite.psm1 loaded successfully." -ForegroundColor Green
-            }
-            catch {
-                Write-Host "Failed to load local EntraPolicySuite.psm1. Terminating!" -ForegroundColor Red
-                break
-            }
-        }
-        else {
-            Write-Host "Local EntraPolicySuite.psm1 not found. Cannot continue." -ForegroundColor Red
-            break
-        }
-    }
-}
-else {
-    # Module is already installed — import it
-    Write-Host "Module '$ModuleName' is already installed. Importing..." -ForegroundColor Cyan
-    try {
-        Import-Module $ModuleName -Global -Force -WarningAction SilentlyContinue
-        Write-Host "Module '$ModuleName' imported successfully." -ForegroundColor Green
-    }
-    catch {
-        Write-Host "Failed to import installed module '$ModuleName'!" -ForegroundColor Red
-        break
-    }
-}
 
-########################################################################################################################################
-# Connectivity
-########################################################################################################################################
-<#
-    # PreReq: Initial onboarding must have been completed (Entra-Public-Suite-Onboarding.ps1)
+    Write-Verbose "PSVersion       -> $($PSVersionTable.PSVersion)"
+    Write-Verbose "OutputEncoding  -> $([Console]::OutputEncoding.WebName)"
 
-    # Microsoft Graph connect with AzApp & Secret
-    Connect-MicrosoftGraphPS -AppId "xxxx" `
-                             -AppSecret ""xxxx"" `
-                             -TenantId "xxxx"
+#------------------------------------------------------------------------------------------------
+Write-Output "***********************************************************************************************"
+Write-Output "Tagging of Users in Entra ID based on type"
+Write-Output ""
+Write-Output "Support: Morten Knudsen - mok@2linkit.net | 40 178 179"
+Write-Output "***********************************************************************************************"
 
-    # Microsoft Graph connect with AzApp & CertificateThumprint
-    Connect-MicrosoftGraphPS -AppId "xxxx" `
-                             -CertificateThumbprint "xxxx" `
-                             -TenantId "xxxx"
+<#  Automation-DefaultVariables.psm1
 
-    # Show Permissions in the current context
-    Connect-MicrosoftGraphPS -ShowMgContextExpandScopes
+    #############################################################################
+    # Entra Policy Suite | Extension Management
+    #############################################################################
 
-    # Show context of current Microsoft Graph context
-    Connect-MicrosoftGraphPS -ShowMgContext
-
-    # Microsoft Graph connect with interactive login with the permission defined in the scopes
-    $Scopes = @("User.ReadWrite.All",`
-                "Group.ReadWrite.All",`
-                "Policy.Read.All"
-                "Policy.ReadWrite.ConditionalAccess"
-                "Policy.ReadWrite.AuthenticationMethod"
-               )
-
-    Connect-MicrosoftGraphPS -Scopes $Scopes
-
-
-    ############################################
-    # Connectivity to Exchange
-    ############################################
-
-    Connect-ExchangeOnline -CertificateThumbprint "xxx" `
-                           -AppId "xxxx" `
-                           -ShowProgress $false `
-                           -Organization "xxxx" `
-                           -ShowBanner
-
-
-    ############################################
-    # Connectivity to AD
-    ############################################
-
-    VisualCron / Task Scheduler:
-    <domain>\gMSA-AUTM-L1-T0$ - sample: myaddomain.local\gMSA-AUTM-L1-T0$
-
-    Interactive login with Powershell ISE and PSExec:
-    %~dp0\PsExec.exe -h -e -s -i "C:\Windows\System32\WindowsPowerShell\v1.0\powershell_ise.exe"
-
+        $global:EntraPolicySuite_Tagging_User_AccountInfo               = "extensionAttribute5"
+        $global:EntraPolicySuite_Tagging_User_Classification            = "extensionAttribute6"
+        $global:EntraPolicySuite_Tagging_User_Authentication            = "extensionAttribute7"
+        $global:EntraPolicySuite_Tagging_User_Pilot                     = "extensionAttribute8"
 #>
 
+#------------------------------------------------------------------------------------------------------------
+# Loading Functions, Connectivity & Default variables
+#------------------------------------------------------------------------------------------------------------
+    $ScriptDirectory = $PSScriptRoot
+    $global:PathScripts = Split-Path -parent $ScriptDirectory
+    Write-Output ""
+    Write-Output "Script Directory -> $($global:PathScripts)"
+
+    # Loading function modules (2LINKIT)
+    Import-Module "$($global:PathScripts)\FUNCTIONS\2LINKIT-Functions.psm1" -Global -force  -WarningAction SilentlyContinue
+
+    Import-Module "$($global:PathScripts)\FUNCTIONS\Automation-ConnectDetails.psm1" -Global -force -WarningAction SilentlyContinue
+    ConnectDetails
+    
+    Import-Module "$($global:PathScripts)\FUNCTIONS\Automation-DefaultVariables.psm1" -Global -force -WarningAction SilentlyContinue
+    Default_Variables
+
+    # Connecting using modern authentication
+    & "$($global:PathScripts)\FUNCTIONS\Connect_Azure.ps1"
+
+    # Exchange Online
+    Write-Output "Connecting to Exchange Online using High Privilege Account using Modern method (certificate)"
+    Connect-ExchangeOnline -CertificateThumbprint $HighPriv_Modern_CertificateThumbprint_O365 -AppId $HighPriv_Modern_ApplicationID_O365 -ShowProgress $false -Organization $TenantNameOrganization -ShowBanner
 
 
 ######################################################################################################
@@ -300,30 +252,71 @@ Exchange / Users / Shared Mailboxes
 #>
 
 
+######################################################################################################
+# Entra Policy Suite Functions
+######################################################################################################
+
+    # Loading functions
+    Import-Module "$($global:PathScripts)\FUNCTIONS\EntraPolicySuite.psm1" -Global -force -WarningAction SilentlyContinue
+
+
+######################################################################################
+## ENVIRONMENT (PARAMETER)
+######################################################################################
+
+    If ($args[0])
+        {
+            Write-Output "Arg -> $($args[0])"
+
+            If ($args[0] -eq "Internal_Prod")
+                {
+                    $global:Environment              = "Internal_Prod"
+                    $global:SecureCredentials        = $global:HighPriv_Legacy_SecureCredentials_Internal_Prod
+                    $global:AD_LDAP_SearchBase_CN    = $global:AD_LDAP_SearchBase_Internal_Prod_CN
+                    $global:AD_LDAP_SearchBase_OU    = $global:AD_LDAP_SearchBase_Internal_Prod_OU
+                    $global:AD_Domain                = $global:AD_Domain_Internal_Prod 
+                }
+            ElseIf ($args[0] -eq "DMZ_Prod")
+                {
+                    $global:Environment              = "DMZ_Prod"
+                    $global:SecureCredentials        = $global:HighPriv_Legacy_SecureCredentials_DMZ_Prod
+                    $global:AD_LDAP_SearchBase_CN    = $global:AD_LDAP_SearchBase_DMZ_Prod_CN
+                    $global:AD_LDAP_SearchBase_OU    = $global:AD_LDAP_SearchBase_DMZ_Prod_OU
+                    $global:AD_Domain                = $global:AD_Domain_DMZ_Prod
+                }
+            ElseIf ($args[0] -eq "Internal_Dev")
+                {
+                    $global:Environment              = "Internal_Dev"
+                    $global:SecureCredentials        = $global:HighPriv_Legacy_SecureCredentials_Internal_Dev
+                    $global:AD_LDAP_SearchBase_CN    = $global:AD_LDAP_SearchBase_Internal_Dev_CN
+                    $global:AD_LDAP_SearchBase_OU    = $global:AD_LDAP_SearchBase_Internal_Dev_OU
+                    $global:AD_Domain                = $global:AD_Domain_Internal_Dev
+                }
+            ElseIf ($args[0] -eq "Internal_Test")
+                {
+                    $global:Environment              = "Internal_Test"
+                    $global:SecureCredentials        = $global:HighPriv_Legacy_SecureCredentials_Internal_Test
+                    $global:AD_LDAP_SearchBase_CN    = $global:AD_LDAP_SearchBase_Internal_Test_CN
+                    $global:AD_LDAP_SearchBase_OU    = $global:AD_LDAP_SearchBase_Internal_Test_OU
+                    $global:AD_Domain                = $global:AD_Domain_Internal_Test 
+                }
+
+        }
+    Else
+        {
+            Write-Output ""
+            Write-Output "Defaulting to INTERNAL_PROD environment ....."
+            $global:Environment              = "Internal_Prod"
+            $global:SecureCredentials        = $global:HighPriv_Legacy_SecureCredentials_Internal_Prod
+            $global:AD_LDAP_SearchBase_CN    = $global:AD_LDAP_SearchBase_Internal_Prod_CN
+            $global:AD_LDAP_SearchBase_OU    = $global:AD_LDAP_SearchBase_Internal_Prod_OU
+            $global:AD_Domain                = $global:AD_Domain_Internal_Prod 
+        }
+
+
 #############################################################################################
 # Main Program
 #############################################################################################
-
-    # Set the path to the data file
-    $DataFile = ".\Identity_Tagging.csv"
-
-    # Check if the config file exists
-    if (-Not (Test-Path $DataFilePath)) {
-        Write-host ""
-        Write-host "Identity_Tagging.csv was not found in current directory. Terminating !" -ForegroundColor DarkYellow
-        break
-    }
-
-    # Set the path to the data file
-    $DataFile = ".\Identity_Tagging_AccountInfo.csv"
-
-    # Check if the config file exists
-    if (-Not (Test-Path $DataFilePath)) {
-        Write-host ""
-        Write-host "Identity_Tagging_AccountInfo.csv was not found in current directory. Terminating !" -ForegroundColor DarkYellow
-        break
-    }
-
 
     write-host "Getting Exchange information ... Please Wait !"
     Try {
@@ -345,7 +338,11 @@ Exchange / Users / Shared Mailboxes
     $EntraID_Users_ALL_Scoped = $EntraID_Users_ALL | where-Object { ($_.DisplayName -ne "On-Premises Directory Synchronization Service Account") }
 
     # EXTRA CHECK | TERMINATE IF VARIABLES ARE EMPTY !!!
-    If ( ($EntraID_Users_ALL_Scoped.Count -eq 0) -or ($Global:ExchangeUsers_ALL.Count -eq 0) )
+<#
+    $EntraID_Users_ALL_Scoped.Count
+    $ExchangeUsers_ALL.Count
+#>
+    If ( ($EntraID_Users_ALL_Scoped.Count -eq 0) -or ($ExchangeUsers_ALL.Count -eq 0) )
         {
             Write-host "Exiting as there is a critical error .... Critical variable is empty !"
             Exit 1
@@ -359,10 +356,10 @@ Exchange / Users / Shared Mailboxes
     $AllGroups_Entra = Get-MgGroup -All
 
     write-host "Getting Tag Conditions from CSV-file ... Please Wait !"
-    $Tag_Conditions = import-csv -Path ".\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
+    $Tag_Conditions = import-csv -Path "$($global:PathScripts)\DATA\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
 
     $Tag_Conditions_AccountInfo = @()
-    $Tag_Conditions_AccountInfo = import-csv -Path ".\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
+    $Tag_Conditions_AccountInfo = import-csv -Path "$($global:PathScripts)\DATA\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
 
     # Remove empty lines
     If ($Tag_Conditions) {
@@ -446,13 +443,14 @@ Exchange / Users / Shared Mailboxes
         }
 
         # build hashtable of all AD groups
-											  
         $AllGroups_AD | ForEach-Object { $global:AD_Groups_HashTable.add($_.Name,$_)}
 
         # build hashtable of all AD group members
         $global:AD_Group_Members_HashTable = [ordered]@{}
         $AD_Group_Members | ForEach-Object { $global:AD_Group_Members_HashTable.add($_.GroupName,$_)}
     }
+
+   
 #########################################################################################################################
 
     # Set variable to true, if you only want to write-out the result and NOT apply the setting !! 
@@ -468,7 +466,7 @@ Exchange / Users / Shared Mailboxes
 
 
         $EntraID_Users_ALL_Scoped = $EntraID_Users_ALL | where-Object { ($_.DisplayName -ne "On-Premises Directory Synchronization Service Account") -and `
-                                                                        ($_.UserPrincipalName -like "abkje*") }
+                                                                        ($_.UserPrincipalName -like "tho@*") }
 
         $EntraID_Users_ALL_Scoped = $EntraID_Users_ALL | Where-Object { ($_.UserPrincipalName -like "ev-x*") -or ($_.UserPrincipalName -like "anped*") -or ($_.UserPrincipalName -like "x-mowa*") }
 
@@ -492,13 +490,15 @@ Exchange / Users / Shared Mailboxes
 
 #########################################################################################################################
 
+Start-Transcript -Path "$($global:PathScripts)\OUTPUT\IdentityTagging_debug.log"
+
 $Global:ModificationsLog = [System.Collections.ArrayList]@()
 $Global:CompleteLog = [System.Collections.ArrayList]@()
 
 write-host "Getting Tag Conditions from CSV-file ... Please Wait !"
-$Tag_Conditions = import-csv -Path ".\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
+$Tag_Conditions = import-csv -Path "$($global:PathScripts)\DATA\Identity_Tagging.csv" -Delimiter ";" -Encoding UTF8
 $Tag_Conditions_AccountInfo = @()
-$Tag_Conditions_AccountInfo = import-csv -Path ".\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
+$Tag_Conditions_AccountInfo = import-csv -Path "$($global:PathScripts)\DATA\Identity_Tagging_AccountInfo.csv" -Delimiter ";" -Encoding UTF8
 
 # Remove empty lines
 If ($Tag_Conditions) {
@@ -522,7 +522,71 @@ foreach ($item in $Tag_Conditions_Array) {
     $Tag_Conditions_Fixed += $newItem
 }
 
-$Tag_Conditions_Array = $Tag_Conditions_Fixed | Group-Object -Property Persona,TagType,TagValueAD,TagValueCloud,ConditionGroup
+#------------------------------------------------------------------------------------------------------------
+# Building condition groups  (replaces Group-Object - see note below)
+#------------------------------------------------------------------------------------------------------------
+
+<#  IMPORTANT - do NOT replace this block with Group-Object !
+
+    Group-Object behaves DIFFERENTLY between Windows PowerShell 5.1 and PowerShell 7:
+
+      PS 5.1 : returns the groups in the order they first appear in the source  (= CSV row order)
+      PS 7   : returns the groups SORTED alphabetically by the grouping properties
+
+    This script is first-match-wins per TagType (see the '$TagTypes_String -notLike' check further down),
+    so the ORDER of the groups decides which rule wins when a user matches more than one persona.
+
+    Example - a guest matches BOTH the 'Guests' persona and the catch-all 'Exchange_Mailboxes' persona
+    (RecipientTypeDetails 'GuestMailUser' is -NotLike 'UserMailbox'):
+
+      PS 5.1 -> Guests (CSV row 127) is evaluated first   -> External_Guest / Guest_MFA
+      PS 7   -> Exchange_Mailboxes sorts before Guests    -> Exchange_Cloud_GuestMailUser
+
+    The same applies to Contacts, Teams_Rooms, FacilityAccess and any other persona that overlaps
+    with the Exchange_Mailboxes catch-all, and it also flips the write order of the extensionAttributes
+    (PS 7 sorts 'Authentication' before 'Classification').
+
+    Secondly, PS 7's sort is UNSTABLE for rows with identical grouping keys, so it can also re-order
+    the conditions INSIDE a group. That matters because $ModifiedTagValue is overwritten on every
+    condition iteration - the '..._ModifiedTagValue_...' condition MUST be evaluated last, otherwise
+    the value is reset to $null.
+
+    The ordered hashtable below reproduces the Group-Object output shape (.Name / .Count / .Group),
+    but preserves CSV order BETWEEN groups and INSIDE each group - identically on 5.1 and 7.
+    [ordered]@{} is case-insensitive, which matches Group-Object's default behaviour.
+#>
+
+$Tag_Conditions_GroupTable = [ordered]@{}
+
+foreach ($item in $Tag_Conditions_Fixed) {
+
+    $GroupKey = "{0}|{1}|{2}|{3}|{4}" -f $item.Persona, `
+                                         $item.TagType, `
+                                         $item.TagValueAD, `
+                                         $item.TagValueCloud, `
+                                         $item.ConditionGroup
+
+    If (-not $Tag_Conditions_GroupTable.Contains($GroupKey)) {
+        $Tag_Conditions_GroupTable[$GroupKey] = [System.Collections.ArrayList]@()
+    }
+
+    $Result = $Tag_Conditions_GroupTable[$GroupKey].Add($item)
+}
+
+$Tag_Conditions_Array = @(
+    foreach ($GroupKey in $Tag_Conditions_GroupTable.Keys) {
+        [PSCustomObject]@{
+            Name  = $GroupKey
+            Count = $Tag_Conditions_GroupTable[$GroupKey].Count
+            Group = $Tag_Conditions_GroupTable[$GroupKey]
+        }
+    }
+)
+
+write-host "Condition groups built (CSV/source order preserved) -> $($Tag_Conditions_Array.Count) groups"
+write-verbose "PSVersion -> $($PSVersionTable.PSVersion)"
+
+
 #################################################
 # Loop
 #################################################
@@ -561,23 +625,59 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
                 # Scoping
                 switch ($Condition.TagType) {
                     "AccountInfo" {
-                        $PropertyKeyAD     = "extensionAttribute5"
-                        $PropertyKeyCloud  = "extensionAttribute5"
+                        if ($global:EntraPolicySuite_Tagging_User_AccountInfo) {
+                            $PropertyKeyAD    = $global:EntraPolicySuite_Tagging_User_AccountInfo
+                            $PropertyKeyCloud = $global:EntraPolicySuite_Tagging_User_AccountInfo
+
+                            $AccountInfoExtension = $global:EntraPolicySuite_Tagging_User_AccountInfo
+                        } else {
+                            $PropertyKeyAD    = "extensionAttribute5"
+                            $PropertyKeyCloud = "extensionAttribute5"
+
+                            $AccountInfoExtension = "extensionAttribute5"
+                        }
                         break
-                    }								   
+                    }
                     "Classification" {
-                        $PropertyKeyAD     = "extensionAttribute6"
-                        $PropertyKeyCloud  = "extensionAttribute6"
+                        if ($global:EntraPolicySuite_Tagging_User_Classification) {
+                            $PropertyKeyAD    = $global:EntraPolicySuite_Tagging_User_Classification
+                            $PropertyKeyCloud = $global:EntraPolicySuite_Tagging_User_Classification
+
+                            $ClassificationExtension = $global:EntraPolicySuite_Tagging_User_Classification
+                        } else {
+                            $PropertyKeyAD    = "extensionAttribute6"
+                            $PropertyKeyCloud = "extensionAttribute6"
+
+                            $ClassificationExtension = "extensionAttribute6"
+                        }
                         break
                     }
                     "Authentication" {
-                        $PropertyKeyAD     = "extensionAttribute7"
-                        $PropertyKeyCloud  = "extensionAttribute7"
+                        if ($global:EntraPolicySuite_Tagging_User_Authentication) {
+                            $PropertyKeyAD    = $global:EntraPolicySuite_Tagging_User_Authentication
+                            $PropertyKeyCloud = $global:EntraPolicySuite_Tagging_User_Authentication
+
+                            $AuthenticationExtension = $global:EntraPolicySuite_Tagging_User_Authentication
+                        } else {
+                            $PropertyKeyAD    = "extensionAttribute7"
+                            $PropertyKeyCloud = "extensionAttribute7"
+
+                            $AuthenticationExtension = "extensionAttribute7"
+                        }
                         break
                     }
                     "Pilot" {
-                        $PropertyKeyAD     = "extensionAttribute8"
-                        $PropertyKeyCloud  = "extensionAttribute8"
+                        if ($global:EntraPolicySuite_Tagging_User_Pilot) {
+                            $PropertyKeyAD    = $global:EntraPolicySuite_Tagging_User_Pilot
+                            $PropertyKeyCloud = $global:EntraPolicySuite_Tagging_User_Pilot
+
+                            $PilotExtension = $global:EntraPolicySuite_Tagging_User_Pilot
+                        } else {
+                            $PropertyKeyAD    = "extensionAttribute8"
+                            $PropertyKeyCloud = "extensionAttribute8"
+
+                            $PilotExtension = "extensionAttribute8"
+                        }
                         break
                     }
                 }
@@ -654,9 +754,10 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
 
             $TagTypes_String = ($TagTypes -join ",")
             write-verbose ""
-            write-verbose $TagTypes_String
+            write-verbose "TagType_String -> $TagTypes_String"
+            write-verbose "Tagtype -> $TagType"
 
-            If ($TagTypes_string -notLike "*$($TagType)*") {
+            If ($TagTypes_String -notLike "*$($TagType)*") {
                 if ($ModifiedTagValue) {
                     $index = $ModifiedTagValue.IndexOf("_")
 
@@ -696,8 +797,8 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
     If ($TagTypes_string -notLike "*Classification*") {
 
         # Script didn't find any conditions, setting user as non-managed user !
-        $PropertyKeyAD     = "extensionAttribute6"
-        $PropertyKeyCloud  = "extensionAttribute6"
+        $PropertyKeyAD     = $ClassificationExtension
+        $PropertyKeyCloud  = $ClassificationExtension
         $TagValueAD        = "NonManaged_User_AD_Synced"
         $TagValueCloud     = "NonManaged_User_Cloud"
 
@@ -712,8 +813,8 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
     If ($TagTypes_string -notLike "*Authentication*") {
 
         # Script didn't find any conditions, setting user as non-managed user !
-        $PropertyKeyAD     = "extensionAttribute7"
-        $PropertyKeyCloud  = "extensionAttribute7"
+        $PropertyKeyAD     = $AuthenticationExtension
+        $PropertyKeyCloud  = $AuthenticationExtension
         $TagValueAD        = "NonManaged_User_AD_Synced_MFA"
         $TagValueCloud     = "NonManaged_User_Cloud_MFA"
 
@@ -738,3 +839,4 @@ $EntraID_Users_ALL_Scoped | ForEach-Object -Begin  {
         Write-Progress -Activity "Tagging Users" -Status "Ready" -Completed
 }
 
+Stop-Transcript
