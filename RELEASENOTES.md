@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.23 - bulk changes in one engine check, full-width pages
+- A bulk change (for example adopting many Conditional Access policies at once) is applied in ONE engine check:
+  the engine takes every waiting configuration change together instead of one per check.
+- The bar at the top says what really happens: the engine picks changes up at its next check (every 5 minutes), and it
+  counts how many are applied and how many are waiting. A second click while a selection is still being sent sends
+  nothing twice.
+- Pages use the full width of the window on a laptop and a desktop alike: the explanations, info boxes, settings
+  fields, table cells and the search box are no longer capped.
+
 ## 2.0.22 - a readable rule editor
 - Tagging Rules: new, edit, duplicate and restore open the rule in a wide dialog. Each field (persona, tag type, the
   value, notes) has its own full-width line, so long tag types, values and notes are readable, and each condition is a

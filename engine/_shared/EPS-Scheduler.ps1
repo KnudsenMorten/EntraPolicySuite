@@ -276,7 +276,17 @@ function Invoke-EpsTick {
         # 1. requests first: an admin is waiting for them
         $startedNow = @{}
         foreach ($q in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT RequestId, Job, Mode, RequestedBy FROM eps.JobRequest WHERE Status = 'Pending' ORDER BY RequestedAtUtc")) {
-            if ($startedNow[$q.Job] -and -not $parallel[$q.Job]) { $decisions.Add(@{ Job = $q.Job; Action = 'Waiting'; Reason = 'an earlier request for this job was started in this engine check'; RequestId = $q.RequestId }); continue }
+            if ($startedNow[$q.Job] -and -not $parallel[$q.Job]) {
+                if ($alwaysOn[$q.Job]) {
+                    # BULK-1 (owner 2026-11-02, 234 adopts at once - "the engine applies them, usually within a minute or
+                    # two" was wrong: one request per 5-minute check = ~19 h): the Config job takes EVERY dispatched request
+                    # in one execution (job-entry.ps1 loops until none is left), so the rest go with the run just started
+                    $won = Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId } -Query "UPDATE eps.JobRequest SET Status = 'Dispatched', UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id AND Status = 'Pending'"
+                    $decisions.Add(@{ Job = $q.Job; Action = $(if ($won -eq 1) { 'Dispatched' } else { 'Skipped' }); Reason = $(if ($won -eq 1) { 'with the run started in this engine check' } else { 'another engine check took this request' }); RequestId = $q.RequestId })
+                    continue
+                }
+                $decisions.Add(@{ Job = $q.Job; Action = 'Waiting'; Reason = 'an earlier request for this job was started in this engine check'; RequestId = $q.RequestId }); continue
+            }
             $why = & $blocked $q.Job
             if ($why -and $why -notmatch 'overlap') {
                 Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; t = $why } -Query "UPDATE eps.JobRequest SET Status = 'Refused', StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id" | Out-Null

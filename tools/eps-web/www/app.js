@@ -67,28 +67,42 @@
     document.getElementById('noticeClose').onclick = function () { b.hidden = true; };
     status(t);
   }
+  // BULK-1 (owner 2026-11-02: "wording is wrong 'the engine applies them...'"): the engine takes changes at its next
+  // check (every 5 minutes) - say so, show how many are applied, and follow them all with ONE call per round
+  var pend = { total: 0, done: 0, failed: [], since: null, timer: null, rounds: 0, last: '' };
+  var ENGINE_WAIT = 'The engine picks changes up at its next check (every 5 minutes) and applies them; this bar follows them.';
   function pendingText() {
-    var ids = Object.keys(pendingReqs); if (!ids.length) return '';
-    return ids.length === 1 ? 'Sent: ' + pendingReqs[ids[0]] + ' - the engine applies it, usually within a minute or two. This page updates by itself.'
-      : 'Sent ' + ids.length + ' changes - the engine applies them, usually within a minute or two. This page updates by itself.';
+    var left = Object.keys(pendingReqs).length; if (!left) return '';
+    if (pend.total === 1) return 'Sent: ' + pendingReqs[Object.keys(pendingReqs)[0]] + '. ' + ENGINE_WAIT;
+    return 'Sent ' + fmtNum(pend.total) + ' changes: ' + fmtNum(pend.done) + ' applied, ' + fmtNum(left) + ' waiting' + (pend.failed.length ? ', ' + fmtNum(pend.failed.length) + ' not applied' : '') + '. ' + ENGINE_WAIT;
   }
   function watchRequest(id, label) {
-    var tries = 0; pendingReqs[id] = label || 'your change'; notice(pendingText());
-    var tick = function () {
-      api('GET', '/api/requests/' + encodeURIComponent(id)).then(function (q) {
-        if (q.Status === 'Done' || q.Status === 'Refused' || q.Status === 'Failed') {
-          delete pendingReqs[id];
-          var left = pendingText();
-          if (q.Status === 'Done') notice(left || ('Done: ' + (q.StatusText || pendingReqs[id] || 'applied')));
-          else notice(q.Status + ': ' + (q.StatusText || ''), 'warn');
-          if (!left) render();
-          return;
-        }
-        if (++tries < 48) setTimeout(tick, 5000);
-        else { delete pendingReqs[id]; notice('Still waiting for the engine - Jobs > Requests shows it.', 'warn'); }
-      }).catch(function () { if (++tries < 48) setTimeout(tick, 5000); });
-    };
-    setTimeout(tick, 3000);
+    if (!Object.keys(pendingReqs).length) { pend.total = 0; pend.done = 0; pend.failed = []; pend.rounds = 0; pend.since = new Date(Date.now() - 120000).toISOString(); }
+    pendingReqs[String(id).toLowerCase()] = label || 'your change'; pend.total++;
+    notice(pendingText());
+    if (!pend.timer) pend.timer = setTimeout(pollRequests, 4000);
+  }
+  function pollRequests() {
+    pend.timer = null;
+    api('GET', '/api/requests/mine?since=' + encodeURIComponent(pend.since)).then(function (d) {
+      (d.rows || []).forEach(function (q) {
+        var id = String(q.RequestId).toLowerCase(); if (!pendingReqs[id]) return;
+        if (q.Status === 'Done') { pend.done++; pend.last = q.StatusText || ''; delete pendingReqs[id]; }
+        else if (q.Status === 'Refused' || q.Status === 'Failed') { pend.failed.push(pendingReqs[id] + ' - ' + q.Status.toLowerCase() + (q.StatusText ? ': ' + q.StatusText : '')); delete pendingReqs[id]; }
+      });
+      followUp();
+    }).catch(followUp);
+  }
+  function followUp() {
+    var left = Object.keys(pendingReqs).length;
+    if (!left) {
+      if (pend.failed.length) notice(fmtNum(pend.total - pend.failed.length) + ' of ' + fmtNum(pend.total) + ' applied; ' + fmtNum(pend.failed.length) + ' not: ' + pend.failed.slice(0, 3).join('; ') + (pend.failed.length > 3 ? ' ...' : ''), 'warn');
+      else notice(pend.total === 1 ? 'Done - the engine applied it' + (pend.last ? ': ' + pend.last : '.') : 'Done - the engine applied all ' + fmtNum(pend.total) + ' changes.');
+      render(); return;
+    }
+    notice(pendingText());
+    if (++pend.rounds < 120) pend.timer = setTimeout(pollRequests, 10000);   // followed for 20 minutes
+    else { notice(fmtNum(left) + ' change(s) still waiting for the engine - Jobs shows the requests.', 'warn'); pendingReqs = {}; }
   }
   function afterAction(r, label) {
     if (r && r.requestIds) {
@@ -243,11 +257,15 @@
     return host;
   }
   // a bulk action: ONE confirmation for the selection, then one call per row; every queued change is followed
+  var bulkBusy = false;   // BULK-1: a second click while the first selection is still being sent sends nothing twice
   function bulkAction(title, text, rows, call) {
+    if (bulkBusy) { notice('Still sending the previous selection - wait for it to finish.', 'warn'); return; }
     withReason(title + ' (' + rows.length + ')', text, function (reason) {
       var ids = [], errs = [], i = 0;
+      bulkBusy = true;
+      notice('Sending ' + fmtNum(rows.length) + ' changes ...');
       var next = function () {
-        if (i >= rows.length) return Promise.resolve({ requestIds: ids, errors: errs, count: rows.length });
+        if (i >= rows.length) { bulkBusy = false; return Promise.resolve({ requestIds: ids, errors: errs, count: rows.length }); }
         var r = rows[i++];
         return call(r, reason).then(function (res) { if (res && res.queued && res.requestId) ids.push(res.requestId); }, function (e) { errs.push(e.message); }).then(next);
       };

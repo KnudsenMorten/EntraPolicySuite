@@ -221,6 +221,14 @@ function Get-EpsWebRoutes {
             $rq = New-EpsSignedJobRequest -Ctx $c -Job $job -Mode 'Preview' -Scope @{ Kind = 'Objects'; Values = @($who); Trace = $true }
             New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = "Trying the rules on $who - the answer comes within 5 minutes (a preview: nothing is written)." } -Audit @{ Target = "Try|$who"; After = @{ requestId = $rq }; WhatIf = $true } } }
         # a request's state - the page follows a queued configuration change until the engine has applied it (SEC-AUDIT-1 S1)
+        # BULK-1: the page follows a bulk change with ONE call per round (owner 2026-11-02: 234 adopts at once - one call per
+        # request every 5 s was ~47 calls a second)
+        @{ Method = 'GET'; Pattern = '^/api/requests/mine$'; Summary = 'Your own requests since a time (since = ISO 8601, UTC): the state of each, at most 2,000.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $since = [datetime]::MinValue
+            if (-not [datetime]::TryParse("$($c.Query.since)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal, AssumeUniversal', [ref]$since)) { return New-EpsWebError 400 'since: a time (ISO 8601, UTC)' }
+            $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ by = "$($c.Caller.identity)"; s = $since } -Query 'SELECT TOP (2000) RequestId, Job, Status, StatusText, RequestedAtUtc, UpdatedAtUtc FROM eps.JobRequest WHERE RequestedBy = @by AND RequestedAtUtc >= @s ORDER BY RequestedAtUtc'))
+            New-EpsWebResponse -Body @{ rows = $rows } } }
         @{ Method = 'GET'; Pattern = '^/api/requests/(?<rid>[0-9a-fA-F-]{36})$'; Summary = 'The state of one request: queued, running, done, failed or refused, with its result text.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $q = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = [guid]$m.rid } -Query 'SELECT RequestId, Job, Status, StatusText, RequestedBy, RequestedAtUtc, UpdatedAtUtc FROM eps.JobRequest WHERE RequestId = @id'))[0]
