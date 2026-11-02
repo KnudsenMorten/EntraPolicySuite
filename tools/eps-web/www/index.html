@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" data-version="{{VERSION}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EntraPolicySuite</title>
+<!-- the theme before first paint (BRAND-2.5); a same-origin file, not inline: the sign-in front's CSP allows no inline script -->
+<script src="theme.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="brand">
+    <h1><span class="brand-name">EntraPolicySuite</span></h1>
+    <span id="versionBadge">v{{VERSION}}</span>
+    <span id="edition" class="brand-sub">Community</span>
+    <div id="brandRight">
+      <div class="brand-group"><span class="brand-cap">Environment</span><span class="brand-val" id="envName">-</span></div>
+      <div class="brand-group"><span class="brand-cap">Tenant</span><span class="brand-val"><b id="tenantName">-</b><span class="brand-guid" id="tenantId"></span></span></div>
+      <div class="brand-group"><span class="brand-cap">Theme</span>
+        <select id="themePick" class="brand-pick" aria-label="Theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+      <div class="brand-group"><span class="brand-cap">Numbers</span>
+        <select id="numPick" class="brand-pick" aria-label="Number format"><option value="auto">Automatic</option><option value="da-DK">Danish (1.234,5)</option><option value="en-US">English US (1,234.5)</option><option value="en-GB">English UK (1,234.5)</option><option value="de-DE">German (1.234,5)</option></select></div>
+      <div class="brand-group"><span class="brand-cap" id="whoRole">-</span><span class="brand-val"><span id="whoName">-</span> &middot; <a id="signout" href="/signout">Sign out</a></span></div>
+    </div>
+  </header>
+  <div id="versionBar" class="bar bar-info" hidden><span id="versionBarText"></span> <button id="versionReload" type="button">Reload</button> <button id="versionLater" type="button" class="link">Later</button></div>
+  <div id="sessionBar" class="bar bar-warn" hidden>Your session has ended. <button id="sessionReload" type="button">Sign in again</button></div>
+  <div id="noSuperAdmin" class="bar bar-warn" hidden>Nobody is SuperAdmin yet, so nobody can grant access in this app. A SQL administrator runs <code>Set-EpsWebAccess.ps1</code> once to name the first SuperAdmin.</div>
+  <div id="noticeBar" class="bar bar-info" hidden role="status" aria-live="polite"><span id="noticeText"></span> <button id="noticeClose" type="button" class="link">Close</button></div>
+  <nav id="tabs" role="tablist" aria-label="Pages"></nav>
+  <main id="page" tabindex="-1"></main>
+  <footer id="statusBar"><span id="statusCounts"></span><span class="spacer"></span><span id="statusText"></span></footer>
+</div>
+<dialog id="reasonDialog">
+  <form method="dialog" id="reasonForm">
+    <h2 id="reasonTitle">Confirm</h2>
+    <p id="reasonText"></p>
+    <label for="reasonInput">Note (optional, kept in the audit trail)</label>
+    <input type="text" id="reasonInput" maxlength="500" autocomplete="off">
+    <div class="dlg-buttons"><button type="button" id="reasonCancel" class="link">Cancel</button> <button type="submit" id="reasonOk">OK</button></div>
+  </form>
+</dialog>
+<script src="app.js"></script>
+</body>
+</html>

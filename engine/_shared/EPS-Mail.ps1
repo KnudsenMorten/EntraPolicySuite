@@ -1,0 +1,124 @@
+# EntraPolicySuite -- mail (framework MAIL-1 / MAIL-3, one place for every mail the product sends).
+#   MAIL-1: a shared mailbox (no licence); the product's OWN managed identity sends with Graph app-only
+#           POST /users/<mailbox>/sendMail; the right is Exchange RBAC 'Application Mail.Send' scoped to that ONE
+#           mailbox (Initialize-EpsMailSender.ps1) - never a tenant-wide Mail.Send consent.
+#   MAIL-3: subject  [<Environment>] <severity word if relevant> <what happened> [EntraPolicySuite], max 120 characters,
+#           only <what happened> is shortened; every mail names its environment in the footer (name, tenant, product,
+#           version).
+# Settings: Mail.Mode (none | sharedMailbox; default none), Mail.Sender (the mailbox's UPN or id), Mail.Recipients
+# (a JSON array), Platform.EnvironmentName. Dot-source EPS-SqlStore and EPS-Graph first.
+
+Set-StrictMode -Off
+$script:EpsProductName = 'EntraPolicySuite'
+
+function New-EpsMailSubject {
+    # MAIL-3. -Severity: Failed | Warning | 'Action needed' | '' (none on a normal mail).
+    param([Parameter(Mandatory)][string]$Environment, [Parameter(Mandatory)][string]$What, [ValidateSet('', 'Failed', 'Warning', 'Action needed')][string]$Severity = '', [string]$Ticket)
+    $head = "[$Environment] " + $(if ($Severity) { "$Severity`: " } else { '' })
+    $tail = $(if ($Ticket) { " [$Ticket]" } else { '' }) + " [$script:EpsProductName]"
+    $room = 120 - $head.Length - $tail.Length
+    $w = if ($What.Length -gt $room) { $What.Substring(0, [math]::Max(0, $room - 3)) + '...' } else { $What }
+    "$head$w$tail"
+}
+
+function ConvertTo-EpsHtml([string]$s) { [Net.WebUtility]::HtmlEncode($s) }
+
+function New-EpsMailBody {
+    # The calm format (framework 12.11): a summary, the facts, what to do, the details - and the footer that names the
+    # environment (MAIL-1 "every mail names its environment").
+    param([Parameter(Mandatory)][string]$Summary, [object[]]$Rows = @(), [string[]]$Columns = @(), [string]$WhatToDo,
+          [Parameter(Mandatory)][hashtable]$Footer)
+    $sb = [Text.StringBuilder]::new()
+    [void]$sb.Append("<html><body style=""font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1b1b1b"">")
+    [void]$sb.Append("<p>$(ConvertTo-EpsHtml $Summary)</p>")
+    if ($Rows.Count -and $Columns.Count) {
+        [void]$sb.Append('<table style="border-collapse:collapse;font-size:13px"><tr>')
+        foreach ($c in $Columns) { [void]$sb.Append("<th style=""text-align:left;border-bottom:1px solid #ccc;padding:4px 10px"">$(ConvertTo-EpsHtml $c)</th>") }
+        [void]$sb.Append('</tr>')
+        foreach ($r in $Rows) {
+            [void]$sb.Append('<tr>')
+            foreach ($c in $Columns) { [void]$sb.Append("<td style=""border-bottom:1px solid #eee;padding:4px 10px"">$(ConvertTo-EpsHtml ([string]$r.$c))</td>") }
+            [void]$sb.Append('</tr>')
+        }
+        [void]$sb.Append('</table>')
+    }
+    if ($WhatToDo) { [void]$sb.Append("<p><b>What to do:</b> $(ConvertTo-EpsHtml $WhatToDo)</p>") }
+    [void]$sb.Append("<hr style=""border:0;border-top:1px solid #ddd""><p style=""font-size:12px;color:#666"">")
+    [void]$sb.Append("Environment: $(ConvertTo-EpsHtml $Footer.Environment) &middot; tenant $(ConvertTo-EpsHtml $Footer.TenantName) ($(ConvertTo-EpsHtml $Footer.TenantId)) &middot; $script:EpsProductName $(ConvertTo-EpsHtml $Footer.Version)")
+    [void]$sb.Append('</p></body></html>')
+    $sb.ToString()
+}
+
+function Get-EpsMailConfig {
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $g = { param($n, $d) $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $n } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'; if ($null -eq $v -or "$v" -eq '') { $d } else { [string]$v } }
+    $rcpt = & $g 'Mail.Recipients' '[]'
+    [pscustomobject]@{
+        Mode = & $g 'Mail.Mode' 'none'; Sender = & $g 'Mail.Sender' ''
+        Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
+        Environment = & $g 'Platform.EnvironmentName' $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'EntraPolicySuite' })
+        TenantId = $env:EPS_TENANT_ID; TenantName = & $g 'Platform.TenantName' ''
+    }
+}
+
+function Send-EpsMail {
+    # One mail. NEVER throws (an alert that cannot be mailed must not fail the job): returns @{ Sent; Reason }.
+    # Mode none, no sender or no recipient = not sent, and said why.
+    # -Attachments: @{ Name; Bytes; ContentType } - inline (Graph sendMail takes ~3 MB in all); a larger one is left out
+    # and the mail says so (the GUI has the export).
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Html, [string]$Importance = 'normal', [object[]]$Attachments = @(), [int]$MaxAttachmentBytes = 3000000)
+    if ($Config.Mode -ne 'sharedMailbox') { return @{ Sent = $false; Reason = "Mail.Mode is '$($Config.Mode)' - no mail is sent (set it up: Initialize-EpsMailSender.ps1)" } }
+    if (-not $Config.Sender) { return @{ Sent = $false; Reason = 'Mail.Sender is not set' } }
+    if (-not @($Config.Recipients).Count) { return @{ Sent = $false; Reason = 'Mail.Recipients is empty' } }
+    $att = @(); $left = @()
+    foreach ($a in $Attachments) {
+        if (@($a.Bytes).Count -gt $MaxAttachmentBytes) { $left += $a.Name; continue }
+        $att += @{ '@odata.type' = '#microsoft.graph.fileAttachment'; name = [string]$a.Name; contentType = [string]$a.ContentType; contentBytes = [Convert]::ToBase64String([byte[]]$a.Bytes) }
+    }
+    if ($left) { $Html += "<p><i>$([System.Net.WebUtility]::HtmlEncode(($left -join ', '))) is too large to attach - export it from the web app.</i></p>" }
+    $msg = @{ message = @{ subject = $Subject; importance = $Importance; body = @{ contentType = 'HTML'; content = $Html }
+                           toRecipients = @(foreach ($r in $Config.Recipients) { @{ emailAddress = @{ address = [string]$r } } }) }; saveToSentItems = $true }
+    if ($att) { $msg.message.attachments = $att }
+    try {
+        [void](Invoke-EpsGraph -Method POST -Path "v1.0/users/$([uri]::EscapeDataString($Config.Sender))/sendMail" -Body $msg)
+        @{ Sent = $true; Reason = "sent to $(@($Config.Recipients).Count) recipient(s)" }
+    } catch { @{ Sent = $false; Reason = "sendMail failed: $($_.Exception.Message)" } }
+}
+
+function Send-EpsTestMail {
+    # "Send a test mail" (Settings > Alert mail): proves the sender works AS THE ENGINE'S IDENTITY - the scoped
+    # Application Mail.Send - not as the person who set it up. @{ Sent; Reason }; never throws.
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$RequestedBy, [string]$Version = '2.0.0')
+    $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
+    $e = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
+    $html = "<p>This is a test mail from EntraPolicySuite $(& $e $Version) ($(& $e $cfg.Environment)), sent by the engine as $(& $e $cfg.Sender).</p><p>Requested by $(& $e $RequestedBy) at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way.</p>"
+    Send-EpsMail -Config $cfg -Subject "[EntraPolicySuite] $($cfg.Environment): test mail" -Html $html
+}
+
+function Send-EpsTamperAlert {
+    <#
+    .SYNOPSIS
+        The tamper monitor's alert (DESIGN §5.7a): ONE mail for the OPEN events of a run that were not alerted yet, the
+        HIGH ones first, each with what it means; the events are then marked AlertedAtUtc (an event is alerted once, a
+        failed send is tried again by the next run). Allowed writers' changes are never alerted.
+        Returns @{ Events; Sent; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version = '2.0.0')
+    $open = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT * FROM eps.TamperEvent WHERE Status = 'Open' AND AlertedAtUtc IS NULL ORDER BY CASE Severity WHEN 'High' THEN 0 ELSE 1 END, FoundAtUtc")
+    if (-not $open.Count) { return @{ Events = 0; Sent = $false; Reason = 'nothing new to alert' } }
+    $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
+    $high = @($open | Where-Object Severity -eq 'High').Count
+    $what = "$($open.Count) change(s) to watched tags not made by the engine$(if ($high) { ", $high HIGH" })"
+    $subject = New-EpsMailSubject -Environment $cfg.Environment -What $what -Severity 'Action needed'
+    $rows = @(foreach ($e in $open) { [pscustomobject]@{ Severity = $e.Severity; Object = $e.ObjectName; Tag = "$($e.TagType) ($($e.Attribute))"; Change = "'$($e.OldValue)' -> '$($e.NewValue)'"; Who = $(if ($e.Initiator) { $e.Initiator } else { 'unknown' }); Found = ([datetime]$e.FoundAtUtc).ToString('yyyy-MM-dd HH:mm') + ' UTC' } })
+    $html = New-EpsMailBody -Summary "The EntraPolicySuite tamper monitor found $what. The tags drive the dynamic groups and the Conditional Access policies that read them, so a changed tag can move a user out of a policy (a break-glass value or a cleared Authentication tag takes the user out of MFA)." `
+        -Rows $rows -Columns 'Severity', 'Object', 'Tag', 'Change', 'Who', 'Found' `
+        -WhatToDo 'Check each change on the Tamper page. Restore puts the engine''s value back; a known writer (e.g. an HR provisioning app) can be added to the allow list (TamperMonitor.AllowList).' `
+        -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
+    $r = Send-EpsMail -Config $cfg -Subject $subject -Html $html -Importance $(if ($high) { 'high' } else { 'normal' })
+    if ($r.Sent) {
+        $ids = (@($open | ForEach-Object { [long]$_.EventId }) -join ',')
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query "UPDATE eps.TamperEvent SET AlertedAtUtc = SYSUTCDATETIME() WHERE EventId IN ($ids)" | Out-Null
+    }
+    @{ Events = $open.Count; High = $high; Sent = $r.Sent; Reason = $r.Reason; Subject = $subject }
+}

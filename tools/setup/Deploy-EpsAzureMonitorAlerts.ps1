@@ -1,0 +1,63 @@
+#Requires -Version 7.2
+<#
+.SYNOPSIS
+    Deploys (or updates) EntraPolicySuite's EXTERNAL alarm in your Azure: an Azure Monitor rule set that keeps working
+    even when the product does not (DESIGN §5.7a).
+.DESCRIPTION
+    Built from the product's own settings - the break-glass accounts of the break-glass module, the attributes of the
+    enabled tag types, the engine's identity, the tamper monitor's allow list - so run it again after any of them
+    change: the rules follow exactly the accounts in the module and an account that left takes its rules with it.
+    It creates: the Entra diagnostic setting 'eps-entra-logs' (AuditLogs + sign-in logs -> the install's Log Analytics
+    workspace) unless one already sends AuditLogs somewhere (that workspace is then used); the action group
+    ag-eps-alarm (mail + SMS); the scheduled query rules eps-* (AuditLogs / SigninLogs / SecurityEvent data missing,
+    Conditional Access policy changed, break-glass sign-ins and actions in Entra and AD, a watched tag changed by a
+    foreign writer, the product's heartbeat stopped). You sign in in a browser; no module. -WhatIf shows the plan and
+    changes nothing.
+.PARAMETER Email
+    Mail addresses the alarm goes to.
+.PARAMETER Sms
+    Phone numbers for SMS, as '+<country code> <number>' (e.g. '+45 12345678').
+.EXAMPLE
+    ./Deploy-EpsAzureMonitorAlerts.ps1 -TenantId <tenant> -SubscriptionId <sub> -Email soc@contoso.com -Sms '+45 12345678' -WhatIf
+.LINK
+    https://invardia.com/docs/eps/scripts/Deploy-EpsAzureMonitorAlerts
+#>
+[CmdletBinding(SupportsShouldProcess)]
+param(
+    [Parameter(Mandatory)][guid]$TenantId,
+    [Parameter(Mandatory)][guid]$SubscriptionId,
+    [string]$ResourceGroup = 'rg-entrapolicysuite',
+    [string[]]$Email = @(),
+    [string[]]$Sms = @(),
+    [string]$WorkspaceResourceId
+)
+$ErrorActionPreference = 'Stop'
+Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Deploy-EpsAzureMonitorAlerts'
+$sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-AzureMonitor') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+$what = [bool]$WhatIfPreference; $WhatIfPreference = $false
+if (-not ($Email.Count + $Sms.Count)) { throw 'give -Email and / or -Sms: the alarm must reach someone' }
+if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
+
+$names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
+$rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+$ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol }
+$law = Invoke-EpsArm -Path "$rg/providers/Microsoft.OperationalInsights/workspaces/$($names.Logs)" -ApiVersion '2022-10-01' -AllowNotFound
+if (-not $WorkspaceResourceId) { if (-not $law) { throw "no Log Analytics workspace $($names.Logs) in $ResourceGroup - is EntraPolicySuite installed there? (or give -WorkspaceResourceId)" }; $WorkspaceResourceId = $law.id }
+$location = if ($law) { $law.location } else { 'westeurope' }
+$engine = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
+
+# the product's settings (read only)
+$accounts = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script "SELECT UserPrincipalName, Directory, CAST(ObjectId AS NVARCHAR(36)) AS ObjectId, Sid FROM eps.BreakGlassAccount WHERE Enabled = 1" | ForEach-Object {
+    if ($_.Directory -eq 'AD') { @{ Directory = 'AD'; Name = ([string]$_.UserPrincipalName -split '@')[0]; Sid = $_.Sid } } else { @{ Directory = 'Entra'; UserPrincipalName = $_.UserPrincipalName; ObjectId = $_.ObjectId } } })
+$attrs = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script 'SELECT DISTINCT Attribute FROM eps.TagType WHERE Enabled = 1' | ForEach-Object { [string]$_.Attribute })
+$allowRaw = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script "SELECT Value FROM eps.Setting WHERE Name = 'TamperMonitor.AllowList'")[0].Value
+$allow = @(if ($allowRaw) { $allowRaw | ConvertFrom-Json })
+
+$rules = Get-EpsAzureMonitorRules -Accounts $accounts -WatchedAttributes $attrs -EngineAppId $engine.properties.clientId -AllowList $allow -TickJobName $names.TickJob
+$plan = Get-EpsAzureMonitorPlan -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -WorkspaceId $WorkspaceResourceId -Location $location -Rules $rules -Email $Email -Sms $Sms
+Write-Host "Break-glass accounts: $(@($accounts | Where-Object Directory -ne 'AD').Count) Entra, $(@($accounts | Where-Object Directory -eq 'AD').Count) AD; watched attributes: $($attrs -join ', ')" -ForegroundColor Cyan
+foreach ($s in $plan.Steps) { Write-Host ("  {0,-7} {1}" -f $s.Action, $s.What) -ForegroundColor $(if ($s.Action -eq 'remove') { 'Yellow' } elseif ($s.Action -eq 'exists') { 'DarkGray' } else { 'Gray' }) }
+if ($what) { Write-Host "`nWhatIf: nothing was changed." -ForegroundColor Cyan; return }
+Invoke-EpsAzureMonitorDeploy -Plan $plan
+Write-Host "`nDeployed: $(@($rules).Count) rule(s), action group ag-eps-alarm. Test it: sign in once with each break-glass account and check the alert arrives (DESIGN §5.1a step 7)." -ForegroundColor Green

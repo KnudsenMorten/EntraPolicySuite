@@ -1,0 +1,32 @@
+{
+  "script": "Initialize-EpsMailSender.ps1",
+  "product": "eps",
+  "version": "2.0.0",
+  "title": "Set up EntraPolicySuite's mail: a shared mailbox, sent from by the engine only",
+  "purpose": "Creates (or uses) a shared mailbox and gives the engine's managed identity the right to send as that mailbox and no other (Exchange RBAC for applications), removes a tenant-wide Graph Mail.Send grant on the identity, and stores the mail settings in the EntraPolicySuite database.",
+  "whenToRun": "Once after the install, and again to change the sender or the recipients.",
+  "runAs": [
+    { "kind": "entraRole", "name": "Exchange Administrator (and Global Administrator for the Graph grant check)", "scope": "the tenant", "why": "creates the mailbox, the Exchange service principal, the scope and the role assignment" },
+    { "kind": "other", "name": "the EntraPolicySuite SQL server's Entra admin", "scope": "the EntraPolicySuite database", "why": "stores the mail settings" }
+  ],
+  "changes": [
+    { "target": "Exchange Online", "action": "create", "object": "the shared mailbox (if it does not exist; no licence)", "scope": "the tenant", "why": "the alerts are sent from it", "undo": "Remove-Mailbox" },
+    { "target": "Exchange Online", "action": "create", "object": "service principal for the engine identity, management scope <sender>-SendScope", "scope": "the tenant", "why": "Exchange RBAC for applications needs both", "undo": "Remove-ManagementScope, Remove-ServicePrincipal" },
+    { "target": "Exchange Online", "action": "grant", "object": "the engine identity (id-eps-engine)", "permission": "Application Mail.Send", "scope": "the sender mailbox ONLY (the management scope)", "why": "it sends the alerts", "undo": "Remove-ManagementRoleAssignment EPS-MailSend-<app id>" },
+    { "target": "Entra", "action": "remove", "object": "a tenant-wide Graph Mail.Send app role on the engine identity, if present", "permission": "Mail.Send", "scope": "the tenant", "why": "it would let the engine send as any mailbox, beside the scope", "undo": "not wanted" },
+    { "target": "SQL", "action": "update", "object": "settings Mail.Mode, Mail.Sender, Mail.Recipients (Platform.EnvironmentName)", "scope": "the EntraPolicySuite database", "why": "the engine reads them", "undo": "set Mail.Mode to none" }
+  ],
+  "parameters": [
+    { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant" },
+    { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription EntraPolicySuite is installed in" },
+    { "name": "Sender", "required": true, "default": null, "help": "the shared mailbox's address" },
+    { "name": "Recipients", "required": true, "default": null, "help": "who gets the alerts" },
+    { "name": "ResourceGroup", "required": false, "default": "rg-entrapolicysuite", "help": "the install's resource group" },
+    { "name": "EnvironmentName", "required": false, "default": null, "help": "the environment's name in every mail (subject and footer)" }
+  ],
+  "readsOnly": [ "Exchange: the mailbox, the organization config, the service principals, scopes and role assignments", "Graph: the engine identity's app roles" ],
+  "network": [ "login.microsoftonline.com", "management.azure.com", "graph.microsoft.com", "outlook.office365.com", "<server>.database.windows.net" ],
+  "whatIf": "Every step it would take and the settings it would store; nothing is changed.",
+  "undo": "Remove the role assignment, the scope, the Exchange service principal and (if created) the mailbox; set Mail.Mode to none.",
+  "docUrl": "https://invardia.com/docs/eps/scripts/Initialize-EpsMailSender"
+}

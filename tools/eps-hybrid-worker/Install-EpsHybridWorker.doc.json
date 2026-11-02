@@ -1,0 +1,31 @@
+{
+  "script": "Install-EpsHybridWorker.ps1",
+  "product": "eps",
+  "version": "2.0.0",
+  "title": "Install the EntraPolicySuite hybrid worker on a domain-joined server",
+  "purpose": "Installs the worker that writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It talks to EntraPolicySuite only through its SQL database with the machine's managed identity, and writes AD as the gMSA you name. Nothing inbound, no password, no gallery module.",
+  "whenToRun": "Once on the worker (an Azure VM or an Azure Arc-enabled server), after Initialize-EpsHybridWorkerAd.ps1 and Grant-EpsHybridWorkerAccess.ps1. Again with -Remove to take it away.",
+  "runAs": [ { "kind": "other", "name": "local Administrator on the worker", "scope": "the worker machine", "why": "copies the code, sets ACLs, user rights and a scheduled task" } ],
+  "changes": [
+    { "target": "the worker", "action": "create", "object": "C:\\EntraPolicySuite\\app (the worker code), C:\\EntraPolicySuite\\worker.json (the database, the worker name - no secret), C:\\EntraPolicySuite\\logs", "scope": "the worker machine", "why": "the worker runs from there", "undo": "-Remove (deletes app; the logs stay)" },
+    { "target": "the worker", "action": "update", "object": "the ACL of C:\\EntraPolicySuite", "permission": "SYSTEM + Administrators full control; the gMSA read + execute, modify on logs only", "scope": "C:\\EntraPolicySuite", "why": "only administrators may change the code the gMSA runs", "undo": "delete the folder" },
+    { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "Log on as a batch job", "scope": "the worker machine", "why": "the scheduled task runs as the gMSA", "undo": "remove it from the local security policy" },
+    { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "member of the local group 'Hybrid agent extension applications' (Azure Arc only)", "scope": "the worker machine", "why": "it reads the Arc agent's identity key to get the machine's token", "undo": "-Remove" },
+    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker' (every 5 minutes, as the gMSA)", "scope": "the worker machine", "why": "one worker cycle every 5 minutes", "undo": "-Remove" }
+  ],
+  "parameters": [
+    { "name": "GmsaName", "required": true, "default": null, "help": "DOMAIN\\name$ of the gMSA the worker writes AD as" },
+    { "name": "SqlServer", "required": true, "default": null, "help": "<name>.database.windows.net of the EntraPolicySuite database" },
+    { "name": "Database", "required": false, "default": "eps", "help": "the database" },
+    { "name": "WorkerName", "required": false, "default": "the computer name", "help": "the worker's name in the heartbeat" },
+    { "name": "AdServer", "required": false, "default": "the domain locator", "help": "a domain controller to use" },
+    { "name": "ManagedIdentityClientId", "required": false, "default": "the machine's identity", "help": "a user-assigned identity's client id (Azure VM)" },
+    { "name": "HostType", "required": false, "default": "Auto", "help": "Auto | AzureVm | Arc" },
+    { "name": "Remove", "required": false, "default": false, "help": "take the worker away" }
+  ],
+  "readsOnly": [ "the release folder it installs from" ],
+  "network": [ "<server>.database.windows.net (the worker, every cycle)", "the domain controllers (LDAP, the worker)" ],
+  "whatIf": "Every step it would take; nothing is copied, granted or registered.",
+  "undo": "-Remove: the task, the group membership and the code; then Initialize-EpsHybridWorkerAd.ps1 -Remove and Grant-EpsHybridWorkerAccess.ps1 -Remove.",
+  "docUrl": "https://invardia.com/docs/eps/scripts/Install-EpsHybridWorker"
+}

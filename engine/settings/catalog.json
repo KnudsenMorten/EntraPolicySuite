@@ -1,0 +1,691 @@
+{
+  "schema": 1,
+  "product": "entrapolicysuite",
+  "docBase": "https://invardia.com/docs/eps/settings/",
+  "note": "Framework §12.9 SETTING-INFO-1: every setting the product reads, with its More info text. The web app renders from this file and validates every save against it; tests/Test-EpsSettings.ps1 fails when the code reads a setting that is not here, or an entry misses an info field. Values are stored as text: booleans 'true' / 'false', lists as a JSON array.",
+  "groups": [
+    { "id": "Platform", "label": "General" },
+    { "id": "Security", "label": "Security" },
+    { "id": "CommitQueue", "label": "Commit queue" },
+    { "id": "UserTagging", "label": "User tagging" },
+    { "id": "DeviceTagging", "label": "Device tagging" },
+    { "id": "TamperMonitor", "label": "Tamper monitor" },
+    { "id": "CAPolicyAnalyzer", "label": "CA Policy Analyzer" },
+    { "id": "Mail", "label": "Alert mail" },
+    { "id": "CA", "label": "Conditional Access" },
+    { "id": "NamedLocations", "label": "Named locations" },
+    { "id": "IdentityReport", "label": "Identity report" },
+    { "id": "Uplink", "label": "Invardia telemetry" }
+  ],
+  "settings": [
+    {
+      "key": "Platform.EnvironmentName", "group": "Platform", "label": "Environment name", "type": "text", "maxLength": 80, "default": "", "role": "Admin",
+      "info": {
+        "what": "A short name for this install, shown in the header of every page and in the subject of every alert mail, so people can tell production from test at a glance.",
+        "enabled": "The name is shown in the page header straight away and used in the next alert mail.",
+        "disabled": "Empty: the header shows '-' and alert mails name the tenant id instead.",
+        "risk": "Nothing changes in the directory. A misleading name can make someone act in the wrong environment. Reversible: change it back.",
+        "requires": "Admin.",
+        "recommended": "Set it, e.g. 'Contoso (production)'.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Platform.EnvironmentName/"
+      }
+    },
+    {
+      "key": "Platform.TenantName", "group": "Platform", "label": "Tenant name", "type": "text", "maxLength": 120, "default": "", "role": "Admin",
+      "info": {
+        "what": "The tenant's name as people know it, shown in the page header next to the tenant id and in alert mails.",
+        "enabled": "Shown in the header straight away and in the next alert mail.",
+        "disabled": "Empty: only the tenant id is shown.",
+        "risk": "Display only: nothing changes in the directory. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Set it to the tenant's primary domain or display name.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Platform.TenantName/"
+      }
+    },
+    {
+      "key": "Platform.TimeZone", "group": "Platform", "label": "Time zone for schedules", "type": "timezone", "maxLength": 64, "default": "UTC", "role": "Admin",
+      "info": {
+        "what": "The time zone the job schedules are read in: 'daily 01:00' means 01:00 in this time zone, summer time included. The pages always show times in your browser's local time, whatever this is set to.",
+        "enabled": "From the next scheduler tick (within 5 minutes) every daily job starts at its time in this zone. If the new zone puts today's start time after the job's last start, the job can run once more today.",
+        "disabled": "UTC (the default): schedules are read in UTC, with no summer time shift.",
+        "risk": "Low. A job may run one extra time on the day of the change, or later than expected. The mass-change guard still applies to every run. Reversible.",
+        "requires": "Admin. A time zone id the server knows, e.g. 'Europe/Copenhagen' or 'W. Europe Standard Time'.",
+        "recommended": "Your main office's time zone, so the nightly runs happen at night there.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Platform.TimeZone/"
+      }
+    },
+    {
+      "key": "Platform.JobsEnabled", "group": "Platform", "label": "Jobs run (master switch)", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Stop every job?", "body": "No job starts any more: no tagging, and no tamper monitoring, so a foreign change to a tag is neither found nor alerted. Run now requests are refused while it is off." } ],
+      "info": {
+        "what": "The one switch that stops every job of EntraPolicySuite at once, for example during an incident or a migration. Each feature also has its own switch.",
+        "enabled": "On (the default): each job starts at its schedule when its own feature switch is on.",
+        "disabled": "From the next scheduler tick (within 5 minutes) no job starts: no user or device tagging, no tamper monitoring and alerting, and every Run now / restore request is refused with 'all jobs are switched off'. A run that is already running finishes.",
+        "risk": "While it is off, nothing watches the tags: a foreign change is not found or alerted. The external Azure Monitor alarm (when deployed) still alerts on changes to break-glass accounts. Reversible: switch it on and the next tick starts what is due.",
+        "requires": "SuperAdmin.",
+        "recommended": "On. Switch it off only for a planned stop, and switch it on again afterwards.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Platform.JobsEnabled/"
+      }
+    },
+    {
+      "key": "Security.SignedRequests", "group": "Security", "label": "Signed requests", "type": "enum", "values": ["observe", "enforce"], "default": "enforce", "role": "SuperAdmin",
+      "confirm": [ { "when": "value", "value": "observe", "title": "Stop refusing unsigned requests?", "body": "In observe the engine runs an Apply or a restore request even when its requester's signature does not verify, or the requester has lost the Admin role. It only writes in the run's log that enforce would have refused it." } ],
+      "info": {
+        "what": "How the engine treats a request from the web app that changes the directory (an Apply run, a tag restore). Each one carries the requester's verified sign-in, and the engine checks it again before it acts: the signature, the person, and that the person still has the Admin role.",
+        "enabled": "Enforce (the default): a request whose check fails is refused (the request shows Refused with the reason) and nothing is changed.",
+        "disabled": "Observe: the request runs, and the run's log says 'OBSERVE: enforce would refuse ...'. Only for finding out why requests are refused.",
+        "risk": "In observe, someone who can write to the database directly could queue a change in an admin's name. In enforce, a request queued by a person who loses the Admin role before it runs is refused. Reversible either way, from the next request.",
+        "requires": "SuperAdmin.",
+        "recommended": "Enforce (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/Security.SignedRequests/"
+      }
+    },
+
+    {
+      "key": "UserTagging.Enabled", "group": "UserTagging", "label": "User tagging", "type": "boolean", "default": "false", "role": "Admin",
+      "confirm": [ { "when": "on", "title": "Start scheduled user tagging?", "body": "The user tagging job runs at its schedule (daily). With the mode on Apply it writes tags to users in Entra ID and, through the hybrid worker, in Active Directory." } ],
+      "info": {
+        "what": "Switches the user tagging feature on: the job that evaluates the user rules and gives every user their tags (persona, classification, authentication ...) in extension attributes.",
+        "enabled": "The scheduler starts the job at its schedule. What it does depends on 'User tagging mode': Preview computes the changes and writes none, Apply writes them (cloud users through Microsoft Graph, AD-synced users through the hybrid worker). Run now from the Jobs page works too.",
+        "disabled": "Off (the default): no scheduled run, and Run now requests for user tagging are refused. Tags already written stay as they are.",
+        "risk": "With the mode on Apply, the tags drive Conditional Access policies and groups, so a wrong rule changes who gets which policy. The mass-change guard holds a run that changes far more than the last one. Reversible: switch it off; tags written stay until a later run or a restore changes them.",
+        "requires": "Admin. The engine identity's Graph rights to write user extension attributes (given by the install), and a hybrid worker for AD-synced users.",
+        "recommended": "On, with the mode on Preview first. Move to Apply after a preview on everyone and an Apply on a test scope.",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Enabled/"
+      }
+    },
+    {
+      "key": "CommitQueue.Enabled", "group": "CommitQueue", "label": "Commit queue for rule changes", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Write rule changes at once?", "body": "Every save on the Rules, Tag types and Condition types pages is then written straight away, without anyone committing it. Changes already waiting in the queue stay there until they are committed or discarded." } ],
+      "info": {
+        "what": "Whether a change to the tagging rules, tag types, tag values or condition types waits in the commit queue until an admin commits it, instead of being written when it is saved.",
+        "enabled": "On (the default): a save is checked and staged; nothing changes until an admin commits it on the Commit queue page. The commit writes every chosen change and then starts one tagging run on everyone, in the job's own mode.",
+        "disabled": "Off: a save is written at once and a preview on everyone is queued; nothing runs in Apply until the schedule does.",
+        "risk": "With the queue off, one admin's save changes the rules the next scheduled run applies, and with them the tags that Conditional Access reads. Reversible: switch it on again.",
+        "requires": "SuperAdmin.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CommitQueue.Enabled/"
+      }
+    },
+    {
+      "key": "CommitQueue.SecondApprover", "group": "CommitQueue", "label": "Second approver", "type": "enum", "values": ["off", "all"], "default": "off", "role": "SuperAdmin", "offValue": "off",
+      "confirm": [ { "when": "value", "value": "off", "title": "Remove the four-eyes check?", "body": "An admin can then commit a change they staged themselves." } ],
+      "info": {
+        "what": "Whether a change in the commit queue must be committed by a DIFFERENT admin than the one who staged it (four eyes).",
+        "enabled": "all: a commit that holds a change the committer staged is refused; another admin commits it.",
+        "disabled": "off (the default): any admin may commit, also their own changes.",
+        "risk": "With it off, one admin alone can change the rules and apply them. With it on and only one admin, nothing can be committed. Reversible.",
+        "requires": "SuperAdmin. Two or more admins (Access page) before switching it on.",
+        "recommended": "all when two or more people administer EntraPolicySuite.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CommitQueue.SecondApprover/"
+      }
+    },
+    {
+      "key": "UserTagging.Mode", "group": "UserTagging", "label": "User tagging mode (scheduled runs)", "type": "enum", "values": ["Preview", "Apply"], "default": "Preview", "role": "Admin",
+      "confirm": [ { "when": "value", "value": "Apply", "title": "Let scheduled runs write user tags?", "body": "From the next scheduled run, every planned tag change is written to the users in scope - everyone, unless the run is scoped. Make sure a preview on everyone and an Apply on a test scope looked right." } ],
+      "info": {
+        "what": "What a SCHEDULED user tagging run does. A Run now request from the Jobs page says its own mode.",
+        "enabled": "Apply: the run writes every planned change (unless the mass-change guard holds it) and records each one on the Tag changes page.",
+        "disabled": "Preview (the default): the run computes and records every change it would make and writes none.",
+        "risk": "Apply changes the directory for every user in scope. Never switch a new or changed rule set straight to Apply on the whole tenant: preview it on everyone, apply it on a test scope, check the result, then switch. Reversible from the next run; written tags are not rolled back by switching back.",
+        "requires": "Admin. 'User tagging' switched on.",
+        "recommended": "Preview until the rules are proven, then Apply.",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Mode/"
+      }
+    },
+    {
+      "key": "UserTagging.RunOnDirectoryChange", "group": "UserTagging", "label": "Also tag a user at once when it changes", "type": "boolean", "default": "false", "role": "Admin",
+      "confirm": [ { "when": "on", "title": "Tag changed users within minutes?", "body": "Every 5 minutes the engine asks Entra which users changed in the properties the rules read, and tags only those, in the job's own mode. In a large or busy directory that is a run every few minutes." } ],
+      "info": {
+        "what": "Besides the schedule, tag a NEW or CHANGED user within about 5 minutes: only the users whose rule properties changed (a Graph delta of exactly those properties), not everyone.",
+        "enabled": "From the next tick, every 5 minutes: the changed users are tagged in the job's mode (Settings: User tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
+        "disabled": "Off (the default - owner: directory changes must not trigger a run by default, there are millions): users are tagged by the schedule only; every scheduled run reads everyone, so new users are picked up there.",
+        "risk": "In a directory with many changes this is a run every 5 minutes. Group membership changes are not seen here (the schedule catches them). Reversible: switch it off.",
+        "requires": "Admin. 'User tagging' switched on.",
+        "recommended": "Off, unless new users must be tagged within minutes.",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.RunOnDirectoryChange/"
+      }
+    },
+    {
+      "key": "UserTagging.ExcludeObjects", "group": "UserTagging", "label": "Never tag these users", "type": "list", "maxItems": 200, "itemMaxLength": 320, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a UPN, display name or object id; wildcards allowed (e.g. Sync_*@contoso.com)", "default": "[]", "role": "Admin",
+      "confirm": [ { "when": "widen", "title": "Stop tagging these ", "body": "They are left out of every run from now on: no tag is set, changed or cleared on them, and no fallback is given." } ],
+      "info": {
+        "what": "Users that the tagging job never touches - e.g. a directory sync service account. They are left out before the plan is made.",
+        "enabled": "From the next run, a matching object gets no tag, no change and no fallback; the run log says how many were left out.",
+        "disabled": "Empty (the default): every object in scope is tagged by the rules.",
+        "risk": "An excluded object keeps whatever tags it has now, also when they are wrong, and a Conditional Access policy that reads them still applies. Keep the list short. Reversible: remove the entry and the next run tags it.",
+        "requires": "Admin.",
+        "recommended": "Only technical accounts that must not be tagged (e.g. the directory sync account).",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.ExcludeObjects/"
+      }
+    },
+    {
+      "key": "UserTagging.Guard.MaxChanges", "group": "UserTagging", "label": "Guard: most new tag changes per run", "type": "int", "min": 0, "max": 10000000, "default": "500", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the mass-change guard?", "body": "A run may then change more users than before without being held for an admin's approval." } ],
+      "info": {
+        "what": "The mass-change guard: an Apply run is held (nothing written) when its planned tag changes grow by more than this number over the last applied run - or by more than 'most new tag changes (percent)' of the users in scope, whichever is larger.",
+        "enabled": "A higher number lets bigger runs through without approval.",
+        "disabled": "A lower number (down to 0) holds smaller jumps; with 0 the percent alone decides.",
+        "risk": "Set too high, a mistake in the rules (a cloned rule that matches everyone) reaches the whole tenant in one run. Set too low, normal runs are held and wait for approval. A held run is approved on its run page. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the default 500 unless normal runs are held.",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Guard.MaxChanges/"
+      }
+    },
+    {
+      "key": "UserTagging.Guard.MaxChangesPercent", "group": "UserTagging", "label": "Guard: most new tag changes (percent of users)", "type": "number", "min": 0, "max": 100, "default": "5", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the mass-change guard?", "body": "A run may then change a larger share of the users than before without being held." } ],
+      "info": {
+        "what": "The guard's limit as a share of the users in scope, so a large tenant is not held for normal churn. The limit is the larger of this and 'most new tag changes per run'.",
+        "enabled": "A higher percent lets bigger runs through on a large tenant.",
+        "disabled": "A lower percent (down to 0) leaves the fixed number alone to decide.",
+        "risk": "As for the number: too high lets a rule mistake through, too low holds normal runs. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "5 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Guard.MaxChangesPercent/"
+      }
+    },
+    {
+      "key": "UserTagging.Guard.MaxOverwrites", "group": "UserTagging", "label": "Guard: most new overwrites per run", "type": "int", "min": 0, "max": 10000000, "default": "100", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the overwrite guard?", "body": "A run may then replace more existing tag values than before without being held." } ],
+      "info": {
+        "what": "An overwrite replaces a tag value a user already has (filling an empty tag is not one). It is the riskier kind of change, so it has its own, tighter limit: the run is held when overwrites grow by more than this over the last applied run, or by more than the percent below, whichever is larger.",
+        "enabled": "A higher number lets more overwrites through without approval.",
+        "disabled": "A lower number holds smaller jumps.",
+        "risk": "Overwrites move users from one persona or classification to another, and with it their Conditional Access policies. Too high lets a rule mistake re-tag many users at once. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "100 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Guard.MaxOverwrites/"
+      }
+    },
+    {
+      "key": "UserTagging.Guard.MaxOverwritesPercent", "group": "UserTagging", "label": "Guard: most new overwrites (percent of users)", "type": "number", "min": 0, "max": 100, "default": "1", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the overwrite guard?", "body": "A run may then replace existing tag values on a larger share of the users without being held." } ],
+      "info": {
+        "what": "The overwrite limit as a share of the users in scope. The limit is the larger of this and 'most new overwrites per run'.",
+        "enabled": "A higher percent lets more overwrites through on a large tenant.",
+        "disabled": "A lower percent leaves the fixed number alone to decide.",
+        "risk": "As for the number. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "1 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/UserTagging.Guard.MaxOverwritesPercent/"
+      }
+    },
+
+    {
+      "key": "DeviceTagging.Enabled", "group": "DeviceTagging", "label": "Device tagging", "type": "boolean", "default": "false", "role": "Admin",
+      "confirm": [ { "when": "on", "title": "Start scheduled device tagging?", "body": "The device tagging job runs at its schedule (daily). With the mode on Apply it writes tags to devices in Entra ID." } ],
+      "info": {
+        "what": "Switches the device tagging feature on: the job that evaluates the device rules and writes each device's tags to its extension attributes in Entra ID.",
+        "enabled": "The scheduler starts the job at its schedule; 'Device tagging mode' decides between Preview and Apply. Run now from the Jobs page works too.",
+        "disabled": "Off (the default): no scheduled run, and Run now requests for device tagging are refused. Tags already written stay.",
+        "risk": "Device tags can drive Conditional Access device filters, so a wrong rule changes which devices a policy covers. The mass-change guard holds unusually large runs. Reversible: switch it off; written tags stay.",
+        "requires": "Admin. The engine identity's Graph right to write device extension attributes (given by the install).",
+        "recommended": "On, with the mode on Preview first.",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Enabled/"
+      }
+    },
+    {
+      "key": "DeviceTagging.Mode", "group": "DeviceTagging", "label": "Device tagging mode (scheduled runs)", "type": "enum", "values": ["Preview", "Apply"], "default": "Preview", "role": "Admin",
+      "confirm": [ { "when": "value", "value": "Apply", "title": "Let scheduled runs write device tags?", "body": "From the next scheduled run, every planned tag change is written to the devices in scope. Make sure a preview and an Apply on a test scope looked right." } ],
+      "info": {
+        "what": "What a SCHEDULED device tagging run does. A Run now request says its own mode.",
+        "enabled": "Apply: the run writes every planned change (unless the guard holds it) and records each one on the Tag changes page.",
+        "disabled": "Preview (the default): the run computes and records every change and writes none.",
+        "risk": "Apply changes the devices in Entra ID. Prove new or changed rules with a preview and a scoped Apply first. Reversible from the next run; written tags are not rolled back.",
+        "requires": "Admin. 'Device tagging' switched on.",
+        "recommended": "Preview until the rules are proven, then Apply.",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Mode/"
+      }
+    },
+    {
+      "key": "DeviceTagging.RunOnDirectoryChange", "group": "DeviceTagging", "label": "Also tag a device at once when it changes", "type": "boolean", "default": "false", "role": "Admin",
+      "confirm": [ { "when": "on", "title": "Tag changed devices within minutes?", "body": "Every 5 minutes the engine asks Entra which devices changed in the properties the rules read, and tags only those, in the job's own mode." } ],
+      "info": {
+        "what": "Besides the schedule, tag a NEW or CHANGED device within about 5 minutes: only the devices whose rule properties changed (a Graph delta of exactly those properties), not every device.",
+        "enabled": "From the next tick, every 5 minutes: the changed devices are tagged in the job's mode (Settings: Device tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
+        "disabled": "Off (the default): devices are tagged by the schedule only; every scheduled run reads every device, so new ones are picked up there.",
+        "risk": "In a directory with many device changes this is a run every 5 minutes. Reversible: switch it off.",
+        "requires": "Admin. 'Device tagging' switched on.",
+        "recommended": "Off, unless new devices must be tagged within minutes.",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.RunOnDirectoryChange/"
+      }
+    },
+    {
+      "key": "DeviceTagging.ExcludeObjects", "group": "DeviceTagging", "label": "Never tag these devices", "type": "list", "maxItems": 200, "itemMaxLength": 320, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a UPN, display name or object id; wildcards allowed (e.g. Sync_*@contoso.com)", "default": "[]", "role": "Admin",
+      "confirm": [ { "when": "widen", "title": "Stop tagging these ", "body": "They are left out of every run from now on: no tag is set, changed or cleared on them, and no fallback is given." } ],
+      "info": {
+        "what": "Devices that the tagging job never touches - e.g. a directory sync service account. They are left out before the plan is made.",
+        "enabled": "From the next run, a matching object gets no tag, no change and no fallback; the run log says how many were left out.",
+        "disabled": "Empty (the default): every object in scope is tagged by the rules.",
+        "risk": "An excluded object keeps whatever tags it has now, also when they are wrong, and a Conditional Access policy that reads them still applies. Keep the list short. Reversible: remove the entry and the next run tags it.",
+        "requires": "Admin.",
+        "recommended": "Only technical accounts that must not be tagged (e.g. the directory sync account).",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.ExcludeObjects/"
+      }
+    },
+    {
+      "key": "DeviceTagging.Guard.MaxChanges", "group": "DeviceTagging", "label": "Guard: most new tag changes per run", "type": "int", "min": 0, "max": 10000000, "default": "500", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the mass-change guard?", "body": "A run may then change more devices than before without being held for approval." } ],
+      "info": {
+        "what": "The mass-change guard for device tagging: an Apply run is held when its planned changes grow by more than this over the last applied run, or by more than the percent below, whichever is larger.",
+        "enabled": "A higher number lets bigger runs through without approval.",
+        "disabled": "A lower number holds smaller jumps; with 0 the percent alone decides.",
+        "risk": "Too high lets a rule mistake reach every device in one run; too low holds normal runs. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "500 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Guard.MaxChanges/"
+      }
+    },
+    {
+      "key": "DeviceTagging.Guard.MaxChangesPercent", "group": "DeviceTagging", "label": "Guard: most new tag changes (percent of devices)", "type": "number", "min": 0, "max": 100, "default": "5", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the mass-change guard?", "body": "A run may then change a larger share of the devices without being held." } ],
+      "info": {
+        "what": "The device guard's limit as a share of the devices in scope. The limit is the larger of this and the fixed number.",
+        "enabled": "A higher percent lets bigger runs through.",
+        "disabled": "A lower percent leaves the fixed number to decide.",
+        "risk": "As for the number. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "5 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Guard.MaxChangesPercent/"
+      }
+    },
+    {
+      "key": "DeviceTagging.Guard.MaxOverwrites", "group": "DeviceTagging", "label": "Guard: most new overwrites per run", "type": "int", "min": 0, "max": 10000000, "default": "100", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the overwrite guard?", "body": "A run may then replace more existing device tag values without being held." } ],
+      "info": {
+        "what": "The tighter limit for overwrites (replacing a tag value a device already has): the run is held when they grow by more than this over the last applied run, or by more than the percent below.",
+        "enabled": "A higher number lets more overwrites through.",
+        "disabled": "A lower number holds smaller jumps.",
+        "risk": "Overwrites move devices between policy filters. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "100 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Guard.MaxOverwrites/"
+      }
+    },
+    {
+      "key": "DeviceTagging.Guard.MaxOverwritesPercent", "group": "DeviceTagging", "label": "Guard: most new overwrites (percent of devices)", "type": "number", "min": 0, "max": 100, "default": "1", "role": "Admin",
+      "confirm": [ { "when": "raise", "title": "Loosen the overwrite guard?", "body": "A run may then replace existing tag values on a larger share of the devices without being held." } ],
+      "info": {
+        "what": "The device overwrite limit as a share of the devices in scope.",
+        "enabled": "A higher percent lets more overwrites through.",
+        "disabled": "A lower percent leaves the fixed number to decide.",
+        "risk": "As for the number. Applies from the next run; reversible.",
+        "requires": "Admin.",
+        "recommended": "1 (the default).",
+        "docUrl": "https://invardia.com/docs/eps/settings/DeviceTagging.Guard.MaxOverwritesPercent/"
+      }
+    },
+
+    {
+      "key": "TamperMonitor.Enabled", "group": "TamperMonitor", "label": "Tamper monitor", "type": "boolean", "default": "false", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Stop watching the tags?", "body": "Changes to the watched tags that the engine did not make are no longer found or alerted, and restore requests are refused." } ],
+      "info": {
+        "what": "Watches every tag attribute the engine manages. Every 15 minutes it reads what changed (and once a day it compares everything); a change the engine did not make becomes a tamper event on the Tamper page, and an alert mail goes out.",
+        "enabled": "From the next scheduler tick the monitor runs every 15 minutes. The first run records today's values as the baseline; later runs report every foreign change with who made it.",
+        "disabled": "Off (the default for a new install): nothing is watched, no event or alert is raised, and Restore requests from the Tamper page are refused.",
+        "risk": "While it is off, someone can change a user's tag - and with it their Conditional Access policies - unnoticed. Reversible: switch it on; the next daily compare finds changes made while it was off.",
+        "requires": "SuperAdmin. The engine identity's right to read the directory audit log (given by the install).",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/TamperMonitor.Enabled/"
+      }
+    },
+    {
+      "key": "TamperMonitor.AutoRestore", "group": "TamperMonitor", "label": "Restore foreign changes automatically", "type": "boolean", "default": "false", "role": "Admin",
+      "confirm": [ { "when": "on", "title": "Restore every foreign change automatically?", "body": "The engine writes its own value back as soon as it has sent the alert - also when the change was legitimate. A known writer (an HR app) should be on the allow list first." } ],
+      "info": {
+        "what": "Whether the monitor puts the engine's value back by itself after every foreign change it finds, instead of waiting for an admin to choose Accept or Restore.",
+        "enabled": "Straight after the alert, in the same run, each open event is restored and the restore is in the audit trail as made by 'auto-restore'.",
+        "disabled": "Off (the default): events stay Open until an admin accepts or restores them on the Tamper page.",
+        "risk": "A legitimate writer that is not on the allow list gets its change undone every 15 minutes, and the value flips back and forth. Reversible: switch it off; values already restored stay.",
+        "requires": "Admin. 'Tamper monitor' switched on.",
+        "recommended": "Off until the allow list holds every legitimate writer; then on for a strict tenant.",
+        "docUrl": "https://invardia.com/docs/eps/settings/TamperMonitor.AutoRestore/"
+      }
+    },
+    {
+      "key": "TamperMonitor.AllowList", "group": "TamperMonitor", "label": "Known writers (allow list)", "type": "list", "maxItems": 50, "itemMaxLength": 320, "itemPattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[^@\\s]+@[^@\\s]+\\.[^@\\s]+)$", "itemHint": "an application (client) id or a user principal name", "default": "[]", "role": "SuperAdmin",
+      "confirm": [ { "when": "widen", "title": "Trust another writer?", "body": "Changes made by this application or person are recorded as Allowed and NOT alerted. If it is ever misused, its changes go unnoticed." } ],
+      "info": {
+        "what": "Applications (by client id) and people (by user principal name) that are allowed to change the watched tags, e.g. an HR provisioning app. Their changes are recorded as Allowed, not raised as tamper events.",
+        "enabled": "From the next monitor run, a change made by a listed writer is recorded as Allowed: no alert, nothing to resolve.",
+        "disabled": "Empty (the default): every change the engine did not make is a tamper event.",
+        "risk": "Every entry is a writer whose changes nobody is told about. Keep it short. The external Azure Monitor alarm keeps its own copy: run Deploy-EpsAzureMonitorAlerts.ps1 again after a change so both agree. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "Only the provisioning apps that are meant to write these attributes.",
+        "docUrl": "https://invardia.com/docs/eps/settings/TamperMonitor.AllowList/"
+      }
+    },
+    {
+      "key": "TamperMonitor.HighValues", "group": "TamperMonitor", "label": "High-severity tag values", "type": "list", "maxItems": 50, "itemMaxLength": 200, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a value or a wildcard pattern, e.g. *Break_Glass*", "default": "[\"*Break_Glass*\"]", "role": "Admin",
+      "confirm": [ { "when": "narrow", "title": "Lower the severity of some changes?", "body": "A foreign change from or to the values you removed is then Normal, not High." } ],
+      "info": {
+        "what": "Tag values (wildcards allowed) whose change is HIGH severity: a foreign change from or to a matching value is flagged High on the Tamper page and in the alert. A cleared authentication tag is always High.",
+        "enabled": "From the next monitor run, changes that touch these values are High.",
+        "disabled": "The list replaces the default, so keep *Break_Glass* in it. An empty list leaves only the cleared authentication tag as High.",
+        "risk": "Removing a value lowers the alert's severity for changes that may be an attack (e.g. someone making an account look like a break-glass account). Reversible.",
+        "requires": "Admin.",
+        "recommended": "*Break_Glass* plus the values of your privileged personas.",
+        "docUrl": "https://invardia.com/docs/eps/settings/TamperMonitor.HighValues/"
+      }
+    },
+
+    {
+      "key": "CAPolicyAnalyzer.Enabled", "group": "CAPolicyAnalyzer", "label": "CA Policy Analyzer", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Switches the CA Policy Analyzer on: it reads your Conditional Access policies and the sign-in logs and shows, per user, who a policy blocked or challenged and why - the check before you move a policy to pilot or production. It only READS: it never changes a policy.",
+        "enabled": "Analyse now works from the CA Policy Analyzer page, and the monitors you switch on run on their schedules, several side by side, each with its own policies and parameters. An alert mail goes out only when users are impacted.",
+        "disabled": "Off (the default): no analysis runs, Analyse now requests are refused, monitors do not start. Earlier analyses stay readable.",
+        "risk": "None in the tenant: the analyzer has no right and no code to change a Conditional Access policy. It reads sign-in logs (who signed in where), which the analysis pages show to every signed-in role. Reversible.",
+        "requires": "Admin. The engine identity's read rights: Policy.Read.All, RoleManagement.Read.Directory, AuditLog.Read.All and GroupMember.Read.All; Entra ID P1 for the sign-in logs.",
+        "recommended": "On, and analyse a policy in report-only before every stage change.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CAPolicyAnalyzer.Enabled/"
+      }
+    },
+    {
+      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox"], "default": "none", "role": "SuperAdmin", "dependsOn": ["Mail.Sender"], "offValue": "none",
+      "confirm": [ { "when": "value", "value": "none", "title": "Stop sending alert mail?", "body": "Tamper alerts are then no longer mailed. They stay on the Tamper page, and are mailed once mail is switched on again." } ],
+      "info": {
+        "what": "Whether the engine mails alerts (tamper events), and how: as one mailbox of yours that the engine may send as, and as no other.",
+        "enabled": "sharedMailbox: from the next monitor run, each run with new events sends one mail to the recipients, from the sender mailbox.",
+        "disabled": "none (the default): no mail is sent; events wait on the Tamper page and are mailed later if mail is switched on.",
+        "risk": "With mail off, nobody is told about a foreign change unless they look at the Tamper page. Switching to sharedMailbox only works after Initialize-EpsMailSender.ps1 has given the engine the right to send as the sender mailbox. Reversible.",
+        "requires": "SuperAdmin. 'Sender mailbox' set by Initialize-EpsMailSender.ps1.",
+        "recommended": "sharedMailbox, set up with Initialize-EpsMailSender.ps1.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.Mode/"
+      }
+    },
+    {
+      "key": "Mail.Sender", "group": "Mail", "label": "Sender mailbox", "type": "text", "maxLength": 320, "default": "", "role": "SuperAdmin", "editable": false, "setBy": "tools/setup/Initialize-EpsMailSender.ps1",
+      "info": {
+        "what": "The mailbox the alert mails come from. The engine's identity may send as this one mailbox only (an Exchange scope for exactly it), never as anyone else.",
+        "enabled": "Set by Initialize-EpsMailSender.ps1 together with the right to send as it.",
+        "disabled": "Empty: no mail can be sent.",
+        "risk": "It is not editable here: a new sender without the Exchange right would stop every alert mail. Run Initialize-EpsMailSender.ps1 with the new mailbox instead; it moves the right too.",
+        "requires": "An Exchange administrator to run Initialize-EpsMailSender.ps1.",
+        "recommended": "A shared mailbox used only for EntraPolicySuite.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.Sender/"
+      }
+    },
+    {
+      "key": "Mail.Recipients", "group": "Mail", "label": "Alert recipients", "type": "list", "maxItems": 20, "itemMaxLength": 320, "itemPattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "itemHint": "an e-mail address", "default": "[]", "role": "SuperAdmin",
+      "confirm": [ { "when": "change", "title": "Change who gets the security alerts?", "body": "Tamper alerts go to the new list from the next run. Removed addresses are no longer told about foreign changes." } ],
+      "info": {
+        "what": "The addresses every alert mail goes to, e.g. your security team's mailbox.",
+        "enabled": "From the next monitor run, alerts go to every address on the list.",
+        "disabled": "Empty: no mail is sent, even with alert mail on.",
+        "risk": "Whoever is on this list learns about foreign changes; whoever is removed does not. Changing it is a security change and is audited. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "A team mailbox or distribution list, not one person.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.Recipients/"
+      }
+    },
+
+    {
+      "key": "CA.Monitoring.Enabled", "group": "CA", "label": "Conditional Access monitor (adopted policies)", "type": "boolean", "default": "false", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Stop watching the adopted Conditional Access policies?", "body": "A change to an adopted policy, or a missing break-glass exclusion, is then no longer found or alerted. Nothing in the tenant changes either way." } ],
+      "info": {
+        "what": "Watches the Conditional Access policies you adopted on the Conditional Access page. Each time the engine reads the policy list (the CA Policy Analyzer's runs and monitors, or 'Read the policy list'), a policy that differs from the body recorded when you adopted it, a policy that is gone, or a policy that does not exclude the break-glass group or accounts becomes a finding on the page and one alert mail. It only shows and alerts: it never changes a policy.",
+        "enabled": "From the engine's next read of the policy list, every adopted policy is checked; new findings are mailed to the alert recipients once.",
+        "disabled": "Off (the default): adopted policies are not checked and nothing is alerted. The page still shows each policy's review.",
+        "risk": "Read only: nothing in the tenant is ever changed, whatever the finding. While it is off, a change to an adopted policy or a removed break-glass exclusion goes unnoticed. Reversible.",
+        "requires": "SuperAdmin. Alert mail set up (Mail.Mode) to be told by mail; the findings are on the page either way.",
+        "recommended": "On, once the policies you manage are adopted.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CA.Monitoring.Enabled/"
+      }
+    },
+    {
+      "key": "CA.GroupTargetingMethod", "group": "CA", "label": "Group targeting method", "type": "text", "maxLength": 100, "default": "", "role": "Admin",
+      "info": {
+        "what": "How the Conditional Access policies target groups (v1: Dynamic_Using_Tags, Manual_Assignment_Advanced or Manual_Assignment_Simple), imported from the v1 configuration. The Conditional Access page uses it to know which pilot and target group names a template expects.",
+        "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no policy or group is changed.",
+        "disabled": "Empty: the group names of every method are accepted when a policy is compared with its template.",
+        "risk": "Read only: a wrong value only makes the comparison report differences that are not there. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the imported value.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CA.GroupTargetingMethod/"
+      }
+    },
+    {
+      "key": "CA.AuthStrengthFidoName", "group": "CA", "label": "Authentication strength name (FIDO2)", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "info": {
+        "what": "The name of the authentication strength that requires FIDO2, imported from the v1 configuration. The Conditional Access page expects it in the templates that require FIDO2.",
+        "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no authentication strength is changed.",
+        "disabled": "Empty: the name v1 shipped is expected.",
+        "risk": "Read only: a wrong name only makes the comparison report a difference. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the imported value.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CA.AuthStrengthFidoName/"
+      }
+    },
+    {
+      "key": "CA.AuthStrengthWhfbName", "group": "CA", "label": "Authentication strength name (Windows Hello)", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "info": {
+        "what": "The name of the authentication strength that requires Windows Hello for Business, imported from the v1 configuration. The Conditional Access page expects it in the templates that require it.",
+        "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no authentication strength is changed.",
+        "disabled": "Empty: the name v1 shipped is expected.",
+        "risk": "Read only: a wrong name only makes the comparison report a difference. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the imported value.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CA.AuthStrengthWhfbName/"
+      }
+    },
+    {
+      "key": "CA.DeniedCountriesLocationName", "group": "CA", "label": "Named location for denied countries", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "info": {
+        "what": "The name of the named location that lists the countries sign-ins are blocked from, imported from the v1 configuration. The Conditional Access page expects it in the template that blocks those countries.",
+        "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no named location is changed.",
+        "disabled": "Empty: the name v1 shipped is expected.",
+        "risk": "Read only: a wrong name only makes the comparison report a difference. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the imported value.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CA.DeniedCountriesLocationName/"
+      }
+    },
+    {
+      "key": "NamedLocations.Region", "group": "NamedLocations", "label": "Azure region for the service-tag named locations", "type": "text", "maxLength": 60, "pattern": "^[a-z0-9]{2,60}$", "default": "westeurope", "role": "Admin", "active": false,
+      "info": {
+        "what": "The Azure region whose service tags become named locations (v1 used westeurope, hard-coded). Set by the v1 import.",
+        "enabled": "Kept for the named locations job, which is not in this release: saving it changes nothing yet.",
+        "disabled": "westeurope (v1's value).",
+        "risk": "None in this release. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The region your workloads run in, e.g. westeurope.",
+        "docUrl": "https://invardia.com/docs/eps/settings/NamedLocations.Region/"
+      }
+    },
+    {
+      "key": "IdentityReport.Enabled", "group": "IdentityReport", "label": "Identity report", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Switches the identity report on: a daily snapshot of every user and device - MFA, sign-in, licences, AD, devices - shown on the Identity page as gap views with filters and pivots. Read only: nothing in the tenant or AD is changed.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Off (the default): the report does not run and the Identity page shows the last snapshot, if any.",
+        "risk": "Read only. The engine reads users, the MFA registration report (AuditLog.Read.All), Intune devices (DeviceManagementManagedDevices.Read.All) and Exchange recipients; the hybrid worker reads AD users. Reversible.",
+        "requires": "Admin.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.Enabled/"
+      }
+    },
+    {
+      "key": "IdentityReport.KeepRuns", "group": "IdentityReport", "label": "Snapshots to keep", "type": "int", "min": 1, "max": 90, "default": "7", "role": "Admin",
+      "info": {
+        "what": "How many report snapshots the database keeps (the newest ones). The Identity page can show any kept snapshot and how the gap counts changed.",
+        "enabled": "Used from the next report run.",
+        "disabled": "7 snapshots.",
+        "risk": "More snapshots use more database space (every user and device per snapshot). Reversible: older ones go at the next run.",
+        "requires": "Admin.",
+        "recommended": "7 (a week of daily runs).",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.KeepRuns/"
+      }
+    },
+    {
+      "key": "IdentityReport.MailWorkbook", "group": "IdentityReport", "label": "Mail the workbook after each run", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Sends the report as an Excel workbook (v1's sheets plus the gap views) to the alert mail recipients after every run, with the open High / Medium gaps in the mail.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Off (the default): the report is on the Identity page; export a view to Excel or CSV from there (owner 2026-10-31: \"excel is optional output\").",
+        "risk": "The workbook holds every user's details: it goes to the alert recipients' mailboxes. A workbook over ~3 MB is not attached (the mail says so). Reversible.",
+        "requires": "Admin.",
+        "recommended": "Off, unless someone needs the file every day.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.MailWorkbook/"
+      }
+    },
+    {
+      "key": "IdentityReport.DeviceCountWindowDays", "group": "IdentityReport", "label": "Device counts: devices synced in the last N days", "type": "int", "min": 1, "max": 3650, "default": "30", "role": "Admin",
+      "info": {
+        "what": "The per-user device counts (iPhone / iPad / Android / Windows, company / personal) and the smartphone flags only count Intune devices that synced in this many days. The Devices list always shows every device.",
+        "enabled": "Used from the next report run.",
+        "disabled": "30 days (v1's value).",
+        "risk": "Report only: nothing in the tenant changes. Reversible.",
+        "requires": "Admin.",
+        "recommended": "30.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.DeviceCountWindowDays/"
+      }
+    },
+    {
+      "key": "IdentityReport.InactiveDays", "group": "IdentityReport", "label": "Inactive after N days", "type": "int", "min": 1, "max": 3650, "default": "90", "role": "Admin",
+      "info": {
+        "what": "The view \"No sign-in for 90 days\": enabled users of the active classifications with no cloud and no AD sign-in in this many days.",
+        "enabled": "Used from the next report run.",
+        "disabled": "90 days (v1's value).",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "90.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.InactiveDays/"
+      }
+    },
+    {
+      "key": "IdentityReport.LongInactiveDays", "group": "IdentityReport", "label": "Long inactive after N days", "type": "int", "min": 1, "max": 3650, "default": "365", "role": "Admin",
+      "info": {
+        "what": "The view \"No sign-in for a year\": the same as the inactive view, with this longer window.",
+        "enabled": "Used from the next report run.",
+        "disabled": "365 days (v1's value).",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "365.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.LongInactiveDays/"
+      }
+    },
+    {
+      "key": "IdentityReport.GuestInactiveDays", "group": "IdentityReport", "label": "Guests inactive after N days", "type": "int", "min": 1, "max": 3650, "default": "90", "role": "Admin",
+      "info": {
+        "what": "The view \"Guests without a recent sign-in\": enabled guests with no cloud sign-in in this many days.",
+        "enabled": "Used from the next report run.",
+        "disabled": "90 days (v1's value).",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "90.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.GuestInactiveDays/"
+      }
+    },
+    {
+      "key": "IdentityReport.NewHireGraceDays", "group": "IdentityReport", "label": "New hires: grace period (days)", "type": "int", "min": 0, "max": 365, "default": "7", "role": "Admin",
+      "info": {
+        "what": "The view \"Active without MFA\" leaves out users whose hire date (the hire date attribute) is more than this many days in the future - they have not started yet. A user without a valid hire date is always shown.",
+        "enabled": "Used from the next report run.",
+        "disabled": "7 days (v1's value).",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "7.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.NewHireGraceDays/"
+      }
+    },
+    {
+      "key": "IdentityReport.HireDateAttribute", "group": "IdentityReport", "label": "Hire date attribute", "type": "enum", "values": ["extensionAttribute1", "extensionAttribute2", "extensionAttribute3", "extensionAttribute4", "extensionAttribute5", "extensionAttribute6", "extensionAttribute7", "extensionAttribute8", "extensionAttribute9", "extensionAttribute10", "extensionAttribute11", "extensionAttribute12", "extensionAttribute13", "extensionAttribute14", "extensionAttribute15"], "default": "extensionAttribute2", "role": "Admin",
+      "info": {
+        "what": "The extension attribute that holds a user's hire (start) date, read by the \"Active without MFA\" view.",
+        "enabled": "Used from the next report run.",
+        "disabled": "extensionAttribute2 (v1's value).",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The attribute your HR provisioning writes the start date to.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.HireDateAttribute/"
+      }
+    },
+    {
+      "key": "IdentityReport.AdOu.User", "group": "IdentityReport", "label": "AD validation: user OU pattern", "type": "text", "maxLength": 400, "default": "", "role": "Admin",
+      "info": {
+        "what": "Which AD location is right for an AD-synced user (views 'AD users in the right / wrong OU' and the shared device user views). A regular expression matched against the user's on-premises distinguished name (e.g. OU=Users,OU=Corp). Empty: nobody is validated by this rule.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Empty: every AD-synced user is listed as in the wrong OU.",
+        "risk": "Report only. A wrong pattern only moves users between the two views. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The OU your user accounts are created in.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.AdOu.User/"
+      }
+    },
+    {
+      "key": "IdentityReport.AdOu.ServiceAccount", "group": "IdentityReport", "label": "AD validation: service account OU pattern", "type": "text", "maxLength": 400, "default": "", "role": "Admin",
+      "info": {
+        "what": "Which AD location is right for an AD-synced service account. A regular expression matched against the user's on-premises distinguished name (e.g. OU=Users,OU=Corp). Empty: nobody is validated by this rule.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Empty: every AD-synced service account is listed as in the wrong OU.",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The OU your service accounts live in.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.AdOu.ServiceAccount/"
+      }
+    },
+    {
+      "key": "IdentityReport.AdOu.SharedUser", "group": "IdentityReport", "label": "AD validation: shared user OU pattern", "type": "text", "maxLength": 400, "default": "", "role": "Admin",
+      "info": {
+        "what": "Which AD location is right for a shared user (a column of the user list). A regular expression matched against the user's on-premises distinguished name (e.g. OU=Users,OU=Corp). Empty: nobody is validated by this rule.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Empty: no user is validated by it.",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The OU your shared users live in.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.AdOu.SharedUser/"
+      }
+    },
+    {
+      "key": "IdentityReport.AdOu.SharedMailbox", "group": "IdentityReport", "label": "AD validation: shared mailbox OU pattern", "type": "text", "maxLength": 400, "default": "", "role": "Admin",
+      "info": {
+        "what": "Which AD location is right for a shared mailbox account (a column of the user list). A regular expression matched against the user's on-premises distinguished name (e.g. OU=Users,OU=Corp). Empty: nobody is validated by this rule.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Empty: no user is validated by it.",
+        "risk": "Report only. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The OU your shared mailbox accounts live in.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.AdOu.SharedMailbox/"
+      }
+    },
+    {
+      "key": "IdentityReport.ExcludeObjects", "group": "IdentityReport", "label": "Leave these users out of the report", "type": "list", "maxItems": 200, "itemMaxLength": 320, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a UPN or display name; wildcards allowed", "default": "[\"On-Premises Directory Synchronization Service Account\"]", "role": "Admin",
+      "info": {
+        "what": "Users the report never lists, by UPN or display name (wildcards allowed). v1 left out the directory synchronization account.",
+        "enabled": "Used from the next report run.",
+        "disabled": "Empty: every user is in the report.",
+        "risk": "Report only: a left-out user is simply not seen in any view. Reversible.",
+        "requires": "Admin.",
+        "recommended": "Keep the directory synchronization account.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.ExcludeObjects/"
+      }
+    },
+    {
+      "key": "Uplink.Enabled", "group": "Uplink", "label": "Send telemetry to Invardia", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Stop sending telemetry to Invardia?", "body": "Invardia no longer sees that this install runs, which runs failed or the support state - it marks the install silent, and a failure is only found when you report it." } ],
+      "info": {
+        "what": "Every 4 hours the uplink job tells Invardia that this install runs (a heartbeat with counts and the state of the jobs), and sends one record per finished run. Only with the per-install key Invardia issued, kept in the install's own Key Vault: without that key nothing is ever sent (there is no anonymous telemetry). Numbers and states only - never a user, device, tag value or object name.",
+        "enabled": "On (the default): with the key in the Key Vault, the next uplink run sends the heartbeat and the runs since the last one. Without the key it sends nothing and the job says so.",
+        "disabled": "Off: the uplink job sends nothing. Invardia marks the install silent after about 5 hours.",
+        "risk": "Nothing changes in the directory. Off, Invardia cannot see failures or offer support from the telemetry. Reversible: switch it on again.",
+        "requires": "SuperAdmin. The per-install key from Invardia as the secret 'uplink-key' in the install's Key Vault, readable by the engine identity only (the install grants that when the secret exists).",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Enabled/"
+      }
+    },
+    {
+      "key": "Uplink.Alerts.Enabled", "group": "Uplink", "label": "Send security findings to Invardia", "type": "boolean", "default": "false", "role": "SuperAdmin", "dependsOn": ["Uplink.Enabled"],
+      "info": {
+        "what": "Also sends Invardia a short alert record for a finding that is still open: foreign changes to watched tags (and the high-severity ones), drift or deletion of an adopted Conditional Access policy, a policy without the break-glass exclusion, a hybrid worker that stopped reporting. One record per finding type per 24 hours while it is open, numbers only.",
+        "enabled": "From the next uplink run, open findings are reported to Invardia as well.",
+        "disabled": "Off (the default): no alert record is sent. Your own alarms (alert mail, the Azure Monitor rules) are not affected by this switch.",
+        "risk": "Nothing changes in the directory. The uplink is Invardia's view, never your only alarm. Reversible.",
+        "requires": "SuperAdmin. Telemetry on (Uplink.Enabled) with the per-install key; Invardia taking the alert kind.",
+        "recommended": "Off until Invardia confirms it takes the alert kind, then on.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Alerts.Enabled/"
+      }
+    }
+  ]
+}

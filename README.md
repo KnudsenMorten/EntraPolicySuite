@@ -1,106 +1,74 @@
+# EntraPolicySuite 2.0
 
-# Entra Policy Suite
+Conditional Access management, user and device tagging, and identity reporting for Microsoft Entra ID - running in
+your own Azure subscription as Container Apps with Azure SQL, with a web app your admins sign in to with Microsoft
+Entra ID.
 
-The Entra Policy Suite is a modular collection of PowerShell scripts and tools for managing Microsoft Entra ID. It includes functionality for identity reporting, user tagging, conditional access policy management, and reusable utility functions.
+> **v1 (the scripts) is unchanged** and stays on the [`v1` branch](https://github.com/KnudsenMorten/EntraPolicySuite/tree/v1)
+> with its releases v1.0.1 and v1.0.2. EntraPolicySuite 2.0 is a new major: it reads your v1 rule files and moves them
+> into its database (`tools/setup/Import-EpsV1Data.ps1`), and it never changes your v1 install.
 
----
+## What it does
 
-## Table of Contents
+| Feature | What you get |
+|---|---|
+| **User and device tagging** | Rules (persona, tag type, value, conditions) write tags to extension attributes on users and devices. Every run is planned first: you preview what would change, then switch a rule set to Apply. |
+| **Tag tamper monitor** | A change to a watched tag that EntraPolicySuite did not make is found and alerted; you accept it or restore the tag. |
+| **Conditional Access** | The template library as data, a review of your policies against it (template, stage, difference, break-glass), adopt / release, and a documentation export. EntraPolicySuite never writes a Conditional Access policy. |
+| **CA Policy Analyzer** | Analyse policies by persona or series (for example CA2 for the whole CA2xx series), and monitor them with alerts to the team that owns them. |
+| **Identity report** | Every user with licences, sign-in activity, MFA methods, roles and devices, plus ready-made gap views; downloadable as a workbook. |
+| **Hybrid worker** | For AD-synced users, a domain-joined Windows Server writes the tags in Active Directory. |
 
-- [Identity Reporting](#identity-reporting)
-- [Identity Tagging](#identity-tagging)
-- [Conditional Access and Group Deployment & Management](#conditional-access-and-group-deployment--management)
-- [PowerShell Functions](#powershell-functions)
-- [Requirements](#requirements)
-- [License](#license)
+Every feature is **off** after the install, and a scheduled run only previews until you switch it to Apply.
 
----
+## Install
 
-## Identity Reporting
-
-This module generates identity-related reports from Microsoft Entra ID. It helps administrators analyze user data and ensure compliance or licensing accuracy.
-
-### Files
-
-- **`IdentityReporter.ps1`**  
-  Connects to Microsoft Graph and retrieves user information such as:
-  - Display names, UPNs, departments
-  - Group memberships
-  - License details
-  - Sign-in risk or authentication methods
-
-### Usage
+Two lines in PowerShell 7 (Windows, macOS, Linux) or Azure Cloud Shell. You sign in in your browser; no PowerShell
+modules, no Azure CLI, no secret.
 
 ```powershell
-Install-Module Microsoft.Graph -Scope CurrentUser
-.\IdentityReporter.ps1
+Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
 ```
 
-> 📄 Modify the script to include additional attributes or filters as needed.
+`-WhatIf` downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and shows
+every step the installer would take - nothing is created. Run the same line without `-WhatIf` to install. A stopped
+install continues where it stopped when you run the same command again.
 
----
+| Parameter | Default | What it is |
+|---|---|---|
+| `-TenantId` | (required) | Your Entra tenant id |
+| `-SubscriptionId` | (required) | The subscription to install in |
+| `-Location` | westeurope | The Azure region |
+| `-ResourceGroup` | rg-entrapolicysuite | The resource group to install into |
+| `-Version` | the latest 2.x release | A specific release, for example 2.0.20 |
 
-## Identity Tagging
+**Rights for the person who installs:** Owner on the subscription, and Global Administrator or Privileged Role
+Administrator in Microsoft Entra ID (for the engine's Microsoft Graph and Exchange Online permissions and the web app's
+sign-in registration).
 
-This module applies metadata or tags to Entra ID user accounts using a CSV-based input. Useful for segmentation, automation, and policy targeting.
+**What it creates, in one resource group:** three managed identities (engine, scheduler, web app - no client secrets,
+no certificates), an Azure SQL database (Microsoft Entra authentication only), a container registry with the image
+built inside it, a Container Apps environment with the jobs and the web app, a storage account for the job queues, a
+Log Analytics workspace and a Key Vault. The installer's help (`Get-Help ./tools/setup/Install-EntraPolicySuite.ps1
+-Full`) lists every permission it grants and why.
 
-### Files
+## After the install
 
-- **`Entra-ID-User-Tagging.ps1`** – Automates tagging based on CSV input.
-- **`Identity_Tagging.csv`** – Input CSV mapping users to tags.
-- **`Identity_Tagging_AccountInfo.csv`** – Output audit log showing tagging results.
+1. Open the web app address the installer prints and sign in - you are its first SuperAdmin.
+2. Optional: `tools/setup/Initialize-EpsMailSender.ps1` sets up the shared mailbox the alerts are sent from.
+3. Optional: `tools/setup/Import-EpsV1Data.ps1` brings your v1 rules over (plan first, `-Apply` to write).
+4. Switch a feature on in Settings, preview, then go live.
 
+## Folders
 
-### Usage
+| Folder | What is in it |
+|---|---|
+| `engine` | the engine: shared libraries, condition types, Conditional Access templates, settings |
+| `sql` | the database schema (idempotent, additive) and each part's database grants |
+| `tools/setup` | the scripts a person runs, each with its `.doc.json` |
+| `tools/eps-engine`, `tools/eps-web`, `tools/eps-hybrid-worker` | the engine image, the web app and the hybrid worker |
 
-```powershell
-.\Entra-ID-User-Tagging.ps1
-```
+## Licence
 
-> ✅ Ensure Graph API permissions allow writing to user properties.
-
----
-
-## Conditional Access and Group Deployment & Management
-
-This module helps deploy, update, and manage Conditional Access (CA) policies along with related groups, using config files for consistent rollout and enforcement.
-
-### Files
-
-- **`Entra-ConditionalAccess-Management.ps1`** – Main script for deploying CA policies.
-- **`Entra_Policy_Suite_custom.config`** – Optional, user-customized policy set.
-- **`Entra_Policy_Suite_locked.config`** – Baseline or mandatory policy definitions.
-
-### Usage
-
-```powershell
-.\Entra-ConditionalAccess-Management.ps1
-```
-
-## PowerShell Functions
-
-This reusable module provides helper functions used across all other scripts in the suite.
-
-### Files
-
-- **`EntraPolicySuite.psm1`** – Contains functions for authentication, API handling, logging, data transformation, etc.
-
-### Usage
-
-```powershell
-Import-Module .\EntraPolicySuite.psm1
-```
-
-
-## Requirements
-
-- PowerShell 5.1+ or PowerShell Core 7+
-- Microsoft Graph PowerShell SDK
-- Admin access to Microsoft Entra ID (Azure AD)
-- Connectivity to Microsoft 365 services
-
----
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT - see [LICENSE](LICENSE). Release notes: [RELEASENOTES.md](RELEASENOTES.md).
