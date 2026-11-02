@@ -6,6 +6,7 @@
 
 Set-StrictMode -Off
 . (Join-Path $PSScriptRoot 'EPS-InstallWeb.ps1')   # the web app's steps (the sign-in front)
+. (Join-Path $PSScriptRoot 'EPS-InstallNetwork.ps1')   # the private network install (NET-1) - used only with -PrivateNetwork
 $script:EpsApi = @{ rg = '2021-04-01'; mi = '2023-01-31'; law = '2022-10-01'; acr = '2023-07-01'; sql = '2021-11-01'; aca = '2024-03-01'; acajob = '2025-01-01'; st = '2023-05-01'; rbac = '2022-04-01'; prov = '2021-04-01'; sub = '2022-12-01' }
 $script:EpsRole = @{ AcrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
     # SEC-AUDIT-1 S4 (2.0.9): the tick may only SEND to the job queues; the engine reads + deletes them (and KEDA counts)
@@ -44,15 +45,19 @@ $script:EpsExchangeRecipientAdminRole = '31392ffb-586c-42d1-9346-e59415a2cc4e'  
 function Get-EpsInstallNames {
     # One place for every name. Globally unique names (registry, SQL server) carry a short, stable suffix from the
     # subscription + resource group, so a re-run finds the same resources.
-    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
-    $h = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId|$ResourceGroup".ToLowerInvariant()))
+    # -Private (NET-1): the environment inside the network is cae-eps-vnet - a Container Apps environment cannot move
+    # into a network, so a public install converted to private gets a NEW one (the public cae-eps is removed after the
+    # inside check), and a new private install uses the same name, so both read the same afterwards.
+    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private)
+    $h =[Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId|$ResourceGroup".ToLowerInvariant()))
     $s = (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') }))
     [ordered]@{
         ResourceGroup = $ResourceGroup; Suffix = $s
         EngineIdentity = 'id-eps-engine'; TickIdentity = 'id-eps-tick'; WebIdentity = 'id-eps-web'
         Logs = 'log-eps'; Registry = "acreps$s"; Image = 'eps-engine'
         SqlServer = "sql-eps-$s"; Database = 'eps'
-        Environment = 'cae-eps'; TickJob = 'caj-eps-tick'; Storage = "steps$s"
+        Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; TickJob = 'caj-eps-tick'; Storage = "steps$s"
+        AgentPool = 'epspool'; InsideCheckJob = 'caj-eps-insidecheck'
         JobStarterRole = "EntraPolicySuite job starter ($ResourceGroup)"
         WebApp = 'ca-eps-web'; KeyVault = "kv-eps-$s"; WebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
     }
@@ -61,6 +66,9 @@ function Get-EpsInstallNames {
 function Get-EpsInstallSteps {
     # The order is load-bearing: identities before the registry (AcrPull), the registry before the image, the image and
     # SQL before the jobs (a job pins its image; its env names the database), the jobs before their role assignments.
+    # -Private: the private network install's own order (Get-EpsPrivateInstallSteps); the public order is unchanged.
+    param([switch]$Private)
+    if ($Private) { return (Get-EpsPrivateInstallSteps) }
     @(
         [pscustomobject]@{ Id = 'resourcegroup'; Title = 'Resource group' }
         [pscustomobject]@{ Id = 'identities';    Title = 'Managed identities (engine, tick, web)' }
@@ -84,6 +92,63 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image (the pinned version), built in the registry' }
         [pscustomobject]@{ Id = 'webapp';        Title = 'The web app: the sign-in front + the GUI in one revision' }
         [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
+    )
+}
+
+function Get-EpsPrivateInstallSteps {
+    <#
+      The PRIVATE order (NET-1, DESIGN §2b) - load-bearing, each line for a reason:
+      - the network right after the resource group (every endpoint and the environment need its subnets), then the
+        privatelink zones (an endpoint's record is written into its zone);
+      - each data resource is CREATED with public access off and gets its private endpoint + zone record IMMEDIATELY
+        after it (registry, SQL, queues, Key Vault) - nothing data-side is reachable from the internet, not even during
+        the install (customer policy may refuse a public Key Vault);
+      - the web registration before the Key Vault (the vault step reads its facts); the environment (internal, in the
+        apps subnet) and its own zone; the optional hub peering / zone links; then the hand-off list;
+      - the DNS check from THIS machine before ANY data-plane read or write (the image upload, SQL) - it stops (exit 1,
+        resumable) with the exact A records when a name does not resolve privately;
+      - the registry's build pool inside the network before the image (ACR Tasks cannot reach a closed registry from
+        outside); then the same image, SQL, jobs, grants and web app steps as the public install;
+      - verify (the tick), then the INSIDE CHECK gates success; only then is the old public environment of a converted
+        install removed, and LAST public access is read back as Disabled (lockdown) - never before the inside check.
+    #>
+    $t = @{}; foreach ($s in Get-EpsInstallSteps) { $t[$s.Id] = $s.Title }
+    $mk = { param($id, $title) [pscustomobject]@{ Id = $id; Title = $(if ($title) { $title } else { $t[$id] }) } }
+    @(
+        & $mk 'resourcegroup'
+        & $mk 'network'          'Network: the spoke, the apps subnet (Container Apps) and the endpoints subnet'
+        & $mk 'dnszones'         'Private DNS zones (SQL, Key Vault, queues, registry), linked to the spoke'
+        & $mk 'identities'
+        & $mk 'logs'
+        & $mk 'registry'         'Container registry (Premium, public access off) + AcrPull for the identities'
+        & $mk 'registryendpoint' 'Private endpoint + DNS records: the registry (login server and data endpoint)'
+        & $mk 'sql'              'Azure SQL (Entra-only, public access off) + database'
+        & $mk 'sqlendpoint'      'Private endpoint + DNS record: Azure SQL'
+        & $mk 'queues'           'The job queues (storage, no shared key, public access off)'
+        & $mk 'queueendpoint'    'Private endpoint + DNS record: the job queues'
+        & $mk 'webregistration'
+        & $mk 'keyvault'         "Key Vault for the sign-in front's wrap key (public access off)"
+        & $mk 'keyvaultendpoint' 'Private endpoint + DNS record: Key Vault'
+        & $mk 'environment'      'Container Apps environment inside the network (internal: no public address)'
+        & $mk 'environmentdns'   "The environment's own DNS zone (@, *, *.internal), linked to the spoke"
+        & $mk 'hub'              'Hub peering / zone links to the hub (only with -PeerToHub / -LinkZonesToHub)'
+        & $mk 'handoff'          "The network hand-off list (and the hub owner's script)"
+        & $mk 'dnscheck'         'DNS check from this machine: every private name resolves to its endpoint'
+        & $mk 'agentpool'        "The registry's build pool inside the network"
+        & $mk 'image'
+        & $mk 'schema'
+        & $mk 'sqlaccess'
+        & $mk 'jobs'
+        & $mk 'jobstarter'
+        & $mk 'graph'
+        & $mk 'exchange'
+        & $mk 'webstate'
+        & $mk 'frontimage'
+        & $mk 'webapp'
+        & $mk 'verify'           'Verify: read everything back, run the tick once'
+        & $mk 'insidecheck'      'Inside check: from inside the network - private DNS, the web app, every job queue'
+        & $mk 'retireoldenv'     'Public -> private: the old public environment removed (after the inside check)'
+        & $mk 'lockdown'         'Lockdown: public access read back as Disabled on SQL, Key Vault, storage and the registry'
     )
 }
 
@@ -278,6 +343,7 @@ function Test-EpsInstallStep {
     param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)]$Ctx)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     $has = { param($path, $api) [bool](Invoke-EpsArm -Path $path -ApiVersion $api -AllowNotFound) }
+    if ($Ctx.Network.Private) { $p = Test-EpsPrivateInstallStep -Id $Id -Ctx $Ctx; if ($p) { return $p } }
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
         'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all three' } } }
@@ -309,6 +375,7 @@ function Invoke-EpsInstallStep {
     param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)]$Ctx)
     $n = $Ctx.Names; $sub = "/subscriptions/$($Ctx.SubscriptionId)"; $rg = "$sub/resourceGroups/$($n.ResourceGroup)"
     $tags = @{ product = 'EntraPolicySuite'; version = $Ctx.Version }
+    $priv = [bool]$Ctx.Network.Private   # NET-1: the private network install (the public install never sets it)
     $loadMi = {
         if ($Ctx.Identities.EngineIdentity -and $Ctx.Identities.TickIdentity -and $Ctx.Identities.WebIdentity) { return }
         foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') {
@@ -346,13 +413,24 @@ function Invoke-EpsInstallStep {
         'logs' { [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" -ApiVersion $script:EpsApi.law -Body @{ location = $Ctx.Location; tags = $tags; properties = @{ sku = @{ name = 'PerGB2018' }; retentionInDays = 30 } }) }
         'registry' {
             & $loadMi
-            $acr = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -Body @{ location = $Ctx.Location; tags = $tags; sku = @{ name = 'Basic' }; properties = @{ adminUserEnabled = $false } }
+            $acrBody = @{ location = $Ctx.Location; tags = $tags; sku = @{ name = 'Basic' }; properties = @{ adminUserEnabled = $false } }
+            if ($priv) {
+                # private: Premium (private endpoint, build pool); a NEW registry is created with public access off and no
+                # exception; an existing one (public -> private) keeps its setting until the lockdown step
+                $old = Invoke-EpsArm -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -AllowNotFound
+                $acrBody.sku.name = 'Premium'
+                $acrBody.properties.publicNetworkAccess = if ($old) { if ("$($old.properties.publicNetworkAccess)") { "$($old.properties.publicNetworkAccess)" } else { 'Enabled' } } else { 'Disabled' }
+                $acrBody.properties.networkRuleBypassOptions = if ($old) { if ("$($old.properties.networkRuleBypassOptions)") { "$($old.properties.networkRuleBypassOptions)" } else { 'AzureServices' } } else { 'None' }
+            }
+            $acr = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -Body $acrBody
             foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
         }
         'image' {
             $ctxFile = New-EpsBuildContext -SolutionRoot $Ctx.SolutionRoot
             try {
-                $b = Invoke-EpsAcrBuild -RegistryId "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ContextPath $ctxFile -DockerFile 'SOLUTIONS/EntraPolicySuite/tools/eps-engine/Dockerfile' -ImageName "$($n.Image):$($Ctx.Version)" -BuildArgs @{ EPS_CONTENT_HASH = $Ctx.Version } -PollSeconds ($Ctx.PollSeconds ?? 10)
+                # private: the build runs on the pool INSIDE the network; the digest comes from the build's own run record
+                # (ARM), never from reading the registry afterwards - its data plane is closed then (PIM Setup-PimContainers)
+                $b = Invoke-EpsAcrBuild -RegistryId "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ContextPath $ctxFile -DockerFile 'SOLUTIONS/EntraPolicySuite/tools/eps-engine/Dockerfile' -ImageName "$($n.Image):$($Ctx.Version)" -BuildArgs @{ EPS_CONTENT_HASH = $Ctx.Version } -PollSeconds ($Ctx.PollSeconds ?? 10) -AgentPoolName $(if ($priv) { $n.AgentPool } else { '' })
                 $Ctx.ImageDigest = $b.Digest
             } finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
         }
@@ -376,9 +454,12 @@ function Invoke-EpsInstallStep {
                 @{ administratorType = 'ActiveDirectory'; azureADOnlyAuthentication = $true; principalType = $(if ($Ctx.Person.PrincipalType) { $Ctx.Person.PrincipalType } else { 'User' })
                    login = $Ctx.Person.Upn; sid = $(if ($Ctx.Person.Sid) { $Ctx.Person.Sid } else { $Ctx.Person.ObjectId }); tenantId = $Ctx.TenantId }
             }
-            [void](Invoke-EpsArm -Method PUT -Path $srv -ApiVersion $script:EpsApi.sql -Body @{ location = $(if ($old) { $old.location } else { $sqlLoc }); tags = $tags; properties = @{ minimalTlsVersion = '1.2'; publicNetworkAccess = 'Enabled'; administrators = $admin } })
-            # the jobs reach SQL from Azure (external exposure, DESIGN §2); the internal exposure (private endpoints) is a later slice
-            [void](Invoke-EpsArm -Method PUT -Path "$srv/firewallRules/AllowAllWindowsAzureIps" -ApiVersion $script:EpsApi.sql -Body @{ properties = @{ startIpAddress = '0.0.0.0'; endIpAddress = '0.0.0.0' } })
+            # private (NET-1): a NEW server is created with public access off and no firewall rule at all; an existing one
+            # (public -> private) keeps its setting until the lockdown step, after the inside check
+            $pna = if (-not $priv) { 'Enabled' } elseif ($old -and "$($old.properties.publicNetworkAccess)") { "$($old.properties.publicNetworkAccess)" } else { 'Disabled' }
+            [void](Invoke-EpsArm -Method PUT -Path $srv -ApiVersion $script:EpsApi.sql -Body @{ location = $(if ($old) { $old.location } else { $sqlLoc }); tags = $tags; properties = @{ minimalTlsVersion = '1.2'; publicNetworkAccess = $pna; administrators = $admin } })
+            # the jobs reach SQL from Azure (external exposure, DESIGN §2); a private install reaches it through its endpoint
+            if (-not $priv) { [void](Invoke-EpsArm -Method PUT -Path "$srv/firewallRules/AllowAllWindowsAzureIps" -ApiVersion $script:EpsApi.sql -Body @{ properties = @{ startIpAddress = '0.0.0.0'; endIpAddress = '0.0.0.0' } }) }
             [void](Invoke-EpsArm -Method PUT -Path "$srv/databases/$($n.Database)" -ApiVersion $script:EpsApi.sql -Body @{ location = $sqlLoc; tags = $tags; sku = @{ name = 'S0'; tier = 'Standard' } })
         }
         'sqlaccess' {
@@ -392,6 +473,14 @@ function Invoke-EpsInstallStep {
         'environment' {
             $law = Invoke-EpsArm -Path "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" -ApiVersion $script:EpsApi.law
             $key = (Invoke-EpsArm -Method POST -Path "$($law.id)/sharedKeys" -ApiVersion $script:EpsApi.law -Body @{}).primarySharedKey
+            if ($priv) {
+                # inside the network (apps subnet, internal = no public address). An environment cannot move into a network:
+                # a public install converted to private gets this NEW one; the public one is removed after the inside check
+                Read-EpsNetworkFacts -Ctx $Ctx
+                [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" -ApiVersion $script:EpsApi.aca -Body (New-EpsPrivateEnvironmentBody -Ctx $Ctx -LawCustomerId $law.properties.customerId -LawKey $key))
+                $Ctx.Network.EnvDomain = $null
+                break
+            }
             [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" -ApiVersion $script:EpsApi.aca -Body @{ location = $Ctx.Location; tags = $tags
                 properties = @{ workloadProfiles = @(@{ name = 'Consumption'; workloadProfileType = 'Consumption' })
                     appLogsConfiguration = @{ destination = 'log-analytics'; logAnalyticsConfiguration = @{ customerId = $law.properties.customerId; sharedKey = $key } } } })
@@ -402,8 +491,16 @@ function Invoke-EpsInstallStep {
             # anything); the engine: Message Processor on each queue (read + delete; KEDA counts with it).
             & $loadMi
             $st = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)"
+            $stProps = @{ allowSharedKeyAccess = $false; minimumTlsVersion = 'TLS1_2'; allowBlobPublicAccess = $false; supportsHttpsTrafficOnly = $true; defaultToOAuthAuthentication = $true }
+            if ($priv) {
+                # private: a NEW account is created with public access off and no exception (the queues are reached through
+                # their private endpoint); an existing one (public -> private) keeps its setting until the lockdown step
+                $old = Invoke-EpsArm -Path $st -ApiVersion $script:EpsApi.st -AllowNotFound
+                if ($old) { if ("$($old.properties.publicNetworkAccess)") { $stProps.publicNetworkAccess = "$($old.properties.publicNetworkAccess)" }; if ($old.properties.networkAcls) { $stProps.networkAcls = $old.properties.networkAcls } }
+                else { $stProps.publicNetworkAccess = 'Disabled'; $stProps.networkAcls = @{ defaultAction = 'Deny'; bypass = 'None' } }
+            }
             [void](Invoke-EpsArm -Method PUT -Path $st -ApiVersion $script:EpsApi.st -Body @{ location = $Ctx.Location; tags = $tags; kind = 'StorageV2'; sku = @{ name = 'Standard_LRS' }
-                properties = @{ allowSharedKeyAccess = $false; minimumTlsVersion = 'TLS1_2'; allowBlobPublicAccess = $false; supportsHttpsTrafficOnly = $true; defaultToOAuthAuthentication = $true } })
+                properties = $stProps })
             $sw = [Diagnostics.Stopwatch]::StartNew()
             do { $sa = Invoke-EpsArm -Path $st -ApiVersion $script:EpsApi.st; if ("$($sa.properties.provisioningState)" -eq 'Succeeded') { break }; Start-Sleep -Seconds ($Ctx.PollSeconds ?? 5) } while ($sw.Elapsed.TotalSeconds -lt 300)
             if ($sa.properties.allowSharedKeyAccess -ne $false) { throw "the storage account $($n.Storage) allows shared keys - refused (Entra only)" }
@@ -428,7 +525,12 @@ function Invoke-EpsInstallStep {
             # the web app's address (alert links, UPLINK-1): its name in the environment's default domain - known before the app exists
             if (-not $Ctx.WebUrl) { $ce = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" -ApiVersion $script:EpsApi.aca -AllowNotFound; if ("$($ce.properties.defaultDomain)" -match '^[A-Za-z0-9.-]+$') { $Ctx.WebUrl = "https://$($n.WebApp).$($ce.properties.defaultDomain)/".ToLowerInvariant() } }
             # the jobs on 2025-01-01: the first version that takes an identity on a scale rule (2.0.9, S4)
-            foreach ($j in Get-EpsJobBodies -Ctx $Ctx -Image $image) { [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.acajob -Body $j.Body) }
+            foreach ($j in Get-EpsJobBodies -Ctx $Ctx -Image $image) {
+                # public -> private: a job cannot move to another environment - one in the old environment is deleted and
+                # re-created in the new one (same name, identity, queue and database; a queued message waits for it)
+                if ($priv) { Remove-EpsAppInOtherEnvironment -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -EnvironmentId $j.Body.properties.environmentId }
+                [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.acajob -Body $j.Body)
+            }
         }
         'jobstarter' {
             # 2.0.10 (SEC-AUDIT-1 S4): the tick holds NO right to start jobs - the start API takes a container override,
@@ -464,14 +566,40 @@ function Invoke-EpsInstallStep {
             $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot
             if (-not $s.Ok) { throw $s.Reason }
             $ctxFile = New-EpsFrontBuildContext -Src $s.Src
-            try { [void](Invoke-EpsAcrBuild -RegistryId "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ContextPath $ctxFile -DockerFile 'Dockerfile' -ImageName "signin-front:$pin" -PollSeconds ($Ctx.PollSeconds ?? 10)) }
+            try { [void](Invoke-EpsAcrBuild -RegistryId "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ContextPath $ctxFile -DockerFile 'Dockerfile' -ImageName "signin-front:$pin" -PollSeconds ($Ctx.PollSeconds ?? 10) -AgentPoolName $(if ($priv) { $n.AgentPool } else { '' })) }
             finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
         }
-        'webapp' { & $loadMi; & $loadWeb; Invoke-EpsWebAppStep -Ctx $Ctx }
+        'webapp' {
+            & $loadMi
+            if ($priv) {
+                # public -> private: the app is re-created in the new environment (its address changes; the web app step adds
+                # the new redirect URI, the retire step removes the old one)
+                Remove-EpsAppInOtherEnvironment -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -EnvironmentId "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)"
+                if ($Ctx.Web) { $Ctx.Web.Fqdn = $null; $Ctx.Web.Url = $null }
+            }
+            & $loadWeb; Invoke-EpsWebAppStep -Ctx $Ctx
+        }
+        # NET-1, the private network install's own steps (EPS-InstallNetwork.ps1)
+        'network'          { Invoke-EpsNetworkStep -Ctx $Ctx }
+        'dnszones'         { Invoke-EpsDnsZonesStep -Ctx $Ctx }
+        'registryendpoint' { Invoke-EpsPrivateEndpointStep -Ctx $Ctx -Key 'registry' }
+        'sqlendpoint'      { Invoke-EpsPrivateEndpointStep -Ctx $Ctx -Key 'sql' }
+        'queueendpoint'    { Invoke-EpsPrivateEndpointStep -Ctx $Ctx -Key 'queue' }
+        'keyvaultendpoint' { Invoke-EpsPrivateEndpointStep -Ctx $Ctx -Key 'vault' }
+        'environmentdns'   { Invoke-EpsEnvironmentDnsStep -Ctx $Ctx }
+        'hub'              { [void](Invoke-EpsHubStep -Ctx $Ctx) }
+        'handoff'          { & $loadMi; Invoke-EpsHandoffStep -Ctx $Ctx }
+        'dnscheck'         { [void](Invoke-EpsDnsCheckStep -Ctx $Ctx) }
+        'agentpool'        { Invoke-EpsAgentPoolStep -Ctx $Ctx }
+        'insidecheck'      { & $loadMi; & $loadWeb; [void](Invoke-EpsInsideCheckStep -Ctx $Ctx) }
+        'retireoldenv'     { & $loadWeb; [void](Invoke-EpsRetireOldEnvStep -Ctx $Ctx) }
+        'lockdown'         { [void](Invoke-EpsLockdownStep -Ctx $Ctx) }
         'verify' {
             $r = Confirm-EpsInstall -Ctx $Ctx -PollSeconds ($Ctx.PollSeconds ?? 15)
             # a tick that ran and FAILED is a failed install (2.0.7 live 2026-11-01: reported 'ok' with the tick failing)
             if ($r.Tick -ne 'Succeeded') { throw "the tick ($($r.Execution)) ran and ended '$($r.Tick)' - see its log in $($Ctx.Names.Logs); fix the cause and run the install again" }
+            # private: the web app has no public address - it is proven from INSIDE the network by the next step
+            if ($priv) { return $r }
             & $loadWeb
             $w = Test-EpsWebAppAnswers -Fqdn $Ctx.Web.Fqdn -PollSeconds ($Ctx.PollSeconds ?? 10)
             if (-not $w.Ok) { throw $w.Reason }
@@ -507,6 +635,11 @@ function Invoke-EpsSetupSql {
                 return
             } catch {
                 $m = "$($_.Exception.Message)"
+                # a private install opens NO firewall rule (its server has no public access at all): the SQL steps run
+                # from a machine inside the network, through the private endpoint (NET-1)
+                if ($Ctx.Network.Private -and $m -match "Client with IP address '([0-9a-fA-F.:]+)' is not allowed|Deny Public Network Access|47073") {
+                    throw "Azure SQL refused this machine ($($Matches[0])): a private install runs its database steps from a machine inside your network (its name must resolve to the private endpoint) - run the same command again from there; it resumes"
+                }
                 if (-not $opened -and $m -match "Client with IP address '([0-9a-fA-F.:]+)' is not allowed") {
                     [void](Invoke-EpsArm -Method PUT -Path $rule -ApiVersion $script:EpsApi.sql -Body @{ properties = @{ startIpAddress = $Matches[1]; endIpAddress = $Matches[1] } })
                     $opened = $true; Start-Sleep -Seconds ($Ctx.SqlRetrySeconds ?? 15); continue
@@ -559,7 +692,8 @@ function Invoke-EpsInstall {
     #>
     param([Parameter(Mandatory)]$Ctx, [switch]$WhatIf, [string[]]$Completed = @(), [scriptblock]$OnStep = { param($e) })
     $done = [System.Collections.Generic.List[string]]::new(); foreach ($c in $Completed) { $done.Add($c) }
-    foreach ($s in Get-EpsInstallSteps) {
+    $Ctx.Completed = $done   # the steps that gate on an earlier one (lockdown, retireoldenv: only after the inside check) read it
+    foreach ($s in Get-EpsInstallSteps -Private:([bool]$Ctx.Network.Private)) {
         if ($done.Contains($s.Id)) { & $OnStep @{ Step = $s; State = 'skipped'; Message = 'already done (resume)' }; continue }
         $t = Test-EpsInstallStep -Id $s.Id -Ctx $Ctx
         if ($WhatIf) { & $OnStep @{ Step = $s; State = 'plan'; Message = "$($t.Action): $($t.Detail)" }; continue }

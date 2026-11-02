@@ -70,13 +70,16 @@ function Invoke-EpsAcrBuild {
         A failed build throws with the registry's error and the end of the build log.
     #>
     param([Parameter(Mandatory)][string]$RegistryId, [Parameter(Mandatory)][string]$ContextPath, [Parameter(Mandatory)][string]$DockerFile,
-          [Parameter(Mandatory)][string]$ImageName, [hashtable]$BuildArgs = @{}, [int]$TimeoutSeconds = 3600, [int]$PollSeconds = 10)
+          [Parameter(Mandatory)][string]$ImageName, [hashtable]$BuildArgs = @{}, [int]$TimeoutSeconds = 3600, [int]$PollSeconds = 10,
+          # NET-1: the registry's build pool inside the network (a private registry cannot be reached by ACR Tasks from outside)
+          [string]$AgentPoolName = '')
     $up = Invoke-EpsArm -Method POST -Path "$RegistryId/listBuildSourceUploadUrl" -ApiVersion $script:EpsAcrTasksApi -Body @{}
     $put = & $script:EpsHttp 'PUT' $up.uploadUrl @{ 'x-ms-blob-type' = 'BlockBlob' } ([IO.File]::ReadAllBytes($ContextPath))
     if ($put.Status -ge 300) { throw "uploading the build context failed: $($put.Status) $($put.Body)" }
     $body = @{ type = 'DockerBuildRequest'; isPushEnabled = $true; noCache = $false; dockerFilePath = $DockerFile; imageNames = @($ImageName)
                sourceLocation = $up.relativePath; platform = @{ os = 'Linux'; architecture = 'amd64' }; timeout = $TimeoutSeconds
                arguments = @(foreach ($k in $BuildArgs.Keys) { @{ name = $k; value = [string]$BuildArgs[$k]; isSecret = $false } }) }
+    if ($AgentPoolName) { $body.agentPoolName = $AgentPoolName }
     $run = Invoke-EpsArm -Method POST -Path "$RegistryId/scheduleRun" -ApiVersion $script:EpsAcrTasksApi -Body $body
     $runId = if ($run.properties.runId) { $run.properties.runId } elseif ($run.runId) { $run.runId } else { $run.name }
     if (-not $runId) { throw 'the registry returned no build run id' }

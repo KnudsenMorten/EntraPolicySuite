@@ -36,7 +36,7 @@ param(
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
-Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Initialize-EpsHybridWorkerAd'
+Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Initialize-EpsHybridWorkerAd when EPS is public there (DOC-LINKS)
 . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'engine\_shared\EPS-AdDelegation.ps1')
 $write = $Apply -and -not $WhatIfPreference
 $WhatIfPreference = $false

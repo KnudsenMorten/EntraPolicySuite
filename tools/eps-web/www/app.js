@@ -6,6 +6,9 @@
 'use strict';
 (function () {
   var LOADED_VERSION = document.documentElement.getAttribute('data-version');
+  // DOC-LINKS: the setting help links point at invardia.com/docs/eps, which is published only when the owner makes
+  // EntraPolicySuite public there - until then the "Read more" link is not shown (a customer would get a 404)
+  var DOCS_LIVE = false;
   var me = null;
   var store = {
     get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
@@ -321,7 +324,8 @@
     });
     dl.appendChild(el('dt', { text: 'Default' })); dl.appendChild(el('dd', { text: showValue(r, r.default) + (r.role === 'SuperAdmin' ? '. Changed by a SuperAdmin.' : '') }));
     var box = el('div', { class: 'infobox' }, dl);
-    if (i.docUrl && i.docUrl.indexOf('https://invardia.com/') === 0) box.appendChild(el('a', { href: i.docUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Read more on invardia.com' }));
+    // DOC-LINKS: shown once EntraPolicySuite is public on invardia.com (set DOCS_LIVE = true with that release)
+    if (DOCS_LIVE && i.docUrl && i.docUrl.indexOf('https://invardia.com/') === 0) box.appendChild(el('a', { href: i.docUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Read more on invardia.com' }));
     return box;
   }
   function historyPanel(r) {

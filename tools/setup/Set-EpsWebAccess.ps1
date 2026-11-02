@@ -22,7 +22,7 @@ param(
     [string]$ResourceGroup = 'rg-entrapolicysuite'
 )
 $ErrorActionPreference = 'Stop'
-Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Set-EpsWebAccess'
+Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Set-EpsWebAccess when EPS is public there (DOC-LINKS)
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false

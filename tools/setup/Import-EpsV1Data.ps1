@@ -41,7 +41,7 @@ param(
     [switch]$Quiet
 )
 $ErrorActionPreference = 'Stop'
-$docUrl = 'https://invardia.com/docs/eps/scripts/Import-EpsV1Data'
+$docUrl = 'https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Import-EpsV1Data when EPS is public there (DOC-LINKS)
 if (-not $Quiet) { Write-Host "Documentation: $docUrl" }
 
 $engine = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'engine\_shared'

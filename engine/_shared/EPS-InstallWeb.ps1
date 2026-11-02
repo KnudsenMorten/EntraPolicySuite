@@ -87,10 +87,13 @@ function Get-EpsFicSpec {
 
 function New-EpsKeyVaultBody {
     # PURE. The install's vault: Standard, RBAC, soft delete 90 days, purge protection (owner 2026-10-30, as PIM)
-    param([Parameter(Mandatory)][string]$Location, [Parameter(Mandatory)][string]$TenantId)
-    [ordered]@{ location = $Location; tags = [ordered]@{ product = 'EntraPolicySuite'; purpose = 'signin-front' }
+    # -Private (NET-1): created with public access off and no exception (it is reached through its private endpoint)
+    param([Parameter(Mandatory)][string]$Location, [Parameter(Mandatory)][string]$TenantId, [switch]$Private)
+    $b = [ordered]@{ location = $Location; tags = [ordered]@{ product = 'EntraPolicySuite'; purpose = 'signin-front' }
         properties = [ordered]@{ tenantId = $TenantId; sku = [ordered]@{ family = 'A'; name = 'standard' }; enableRbacAuthorization = $true
                                  enableSoftDelete = $true; softDeleteRetentionInDays = 90; enablePurgeProtection = $true; publicNetworkAccess = 'Enabled' } }
+    if ($Private) { $b.properties.publicNetworkAccess = 'Disabled'; $b.properties.networkAcls = [ordered]@{ defaultAction = 'Deny'; bypass = 'None' } }
+    $b
 }
 
 function Get-EpsSigninStateSql {
@@ -229,7 +232,7 @@ function Invoke-EpsKeyVaultStep {
         # a subscription-level check: with Owner on the resource group only it is refused (403) - then the PUT itself
         # says whether the name is free (a taken name fails there with Azure's own message)
         $av = try { Invoke-EpsArm -Method POST -Path "$sub/providers/Microsoft.KeyVault/checkNameAvailability" -ApiVersion $script:EpsWeb.KvApi -Body @{ name = $n.KeyVault; type = 'Microsoft.KeyVault/vaults' } } catch { if ("$_" -match '(?i)AuthorizationFailed|403') { $null } else { throw } }
-        $body = New-EpsKeyVaultBody -Location $Ctx.Location -TenantId $Ctx.TenantId
+        $body = New-EpsKeyVaultBody -Location $Ctx.Location -TenantId $Ctx.TenantId -Private:([bool]$Ctx.Network.Private)
         if ($av -and -not $av.nameAvailable) {
             # purge protection keeps a deleted vault (and its name) 90 days: THIS install's own vault, deleted with an earlier
             # install of the same resource group, is recovered - with its key - instead of failing the re-install

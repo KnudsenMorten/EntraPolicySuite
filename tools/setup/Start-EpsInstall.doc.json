@@ -12,6 +12,7 @@
     { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription to install in" },
     { "name": "Location", "required": false, "default": "westeurope", "help": "passed to the installer" },
     { "name": "ResourceGroup", "required": false, "default": "rg-entrapolicysuite", "help": "passed to the installer" },
+    { "name": "(every other parameter of Install-EntraPolicySuite.ps1)", "required": false, "default": "the installer's", "help": "passed on as given - e.g. -PrivateNetwork -VnetId -HubVnetId for a private install (tools/setup/install-parameters.json lists them)" },
     { "name": "Version", "required": false, "default": "the latest v2", "help": "a v2 release, e.g. 2.0.0" }
   ],
   "readsOnly": [ "the GitHub releases of KnudsenMorten/EntraPolicySuite" ],

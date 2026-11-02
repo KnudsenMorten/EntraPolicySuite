@@ -25,7 +25,7 @@ param(
     [string]$EnvironmentName
 )
 $ErrorActionPreference = 'Stop'
-Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Initialize-EpsMailSender'
+Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Initialize-EpsMailSender when EPS is public there (DOC-LINKS)
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-MailSender') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false

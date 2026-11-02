@@ -43,6 +43,28 @@ install continues where it stopped when you run the same command again.
 | `-ResourceGroup` | rg-entrapolicysuite | The resource group to install into |
 | `-Version` | the latest 2.x release | A specific release, for example 2.0.20 |
 
+### Private network
+
+Add `-PrivateNetwork` to the same line to install inside your own virtual network: the web app gets no public address
+(you reach it from your network, still behind the Entra sign-in), and the database, Key Vault, job queues and container
+registry are created with public access off and reached through private endpoints and private DNS zones.
+
+```powershell
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -WhatIf
+```
+
+| Parameter | What it is |
+|---|---|
+| `-VnetId` | Your existing virtual network (same region); without it the install creates one from `-VnetAddressPrefix` (default 10.230.0.0/24) |
+| `-AppsSubnetName` / `-EndpointsSubnetName` | The subnets for the apps and for the private endpoints (created when missing) |
+| `-PrivateDnsZonesResourceGroupId` | Use your central private DNS zones instead of zones in EntraPolicySuite's resource group |
+| `-HubVnetId`, `-PeerToHub`, `-LinkZonesToHub` | Peer with your hub network and link the zones to it (both off by default) |
+
+Run a private install from a machine inside your network: it checks DNS before it touches any data, prints the DNS
+records your network needs when a name does not resolve, and continues where it stopped when you run it again. It also
+writes a hand-off list (and a ready-to-run script for your hub network's owner). An existing public install moves to
+the private network with the same command and `-PrivateNetwork`.
+
 **Rights for the person who installs:** Owner on the subscription, and Global Administrator or Privileged Role
 Administrator in Microsoft Entra ID (for the engine's Microsoft Graph and Exchange Online permissions and the web app's
 sign-in registration).

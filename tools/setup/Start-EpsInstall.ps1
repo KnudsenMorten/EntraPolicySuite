@@ -19,19 +19,43 @@
 param(
     [Parameter(Mandatory)][guid]$TenantId,
     [Parameter(Mandatory)][guid]$SubscriptionId,
+    # every other parameter is the installer's own and passed on only when you give it (the installer's defaults apply);
+    # tools/setup/install-parameters.json lists them, a test keeps the three in step
     [string]$Location,
     [string]$ResourceGroup,
+    [string]$StatePath,
+    [string]$SqlLocation,
+    [string]$SqlAdminGroupId,
+    [string]$SqlAdminGroupName,
+    [string[]]$ExcludeGraphRole,
+    [switch]$Quiet,
+    # the private network install (NET-1)
+    [switch]$PrivateNetwork,
+    [string]$VnetId,
+    [string]$VnetAddressPrefix,
+    [string]$VnetName,
+    [string]$AppsSubnetName,
+    [string]$AppsSubnetPrefix,
+    [string]$EndpointsSubnetName,
+    [string]$EndpointsSubnetPrefix,
+    [string]$PrivateDnsZonesResourceGroupId,
+    [string]$HubVnetId,
+    [switch]$LinkZonesToHub,
+    [switch]$PeerToHub,
+    [string]$WebAppAccess,
+    [switch]$ConfirmedFromInside,
     [ValidatePattern('^$|^2\.\d+\.\d+$')][string]$Version,
     # test seams (as PIM's launcher): the release lookup, the download, the hand-over
     [scriptblock]$GetRelease, [scriptblock]$Download, [scriptblock]$RunInstaller
 )
 $ErrorActionPreference = 'Stop'
-Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Start-EpsInstall'
+Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Start-EpsInstall when EPS is public there (DOC-LINKS)
 # -WhatIf is for the INSTALLER (its plan, nothing changed in Azure); the download, the check and the unpack into a temp
 # folder are real, or there is nothing to run (2026-10-30: the preference reached New-Item / Copy-Item and nothing was
 # downloaded)
 $what = [bool]$WhatIfPreference
 $WhatIfPreference = $false
+# the PUBLIC repository the release (the zip and this launcher as assets) comes from (public since 2.0.20)
 $repo = 'KnudsenMorten/EntraPolicySuite'
 if (-not $GetRelease) { $GetRelease = { param($v) Invoke-RestMethod -Uri $(if ($v) { "https://api.github.com/repos/$repo/releases/tags/v$v" } else { "https://api.github.com/repos/$repo/releases?per_page=30" }) -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } } }
 if (-not $Download) { $Download = { param($url, $file) Invoke-WebRequest -Uri $url -OutFile $file -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } } }
@@ -61,6 +85,7 @@ $installer = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'Install-EntraPoli
 if (-not $installer) { Write-Host 'The release has no tools/setup/Install-EntraPolicySuite.ps1.' -ForegroundColor Red; exit 3 }
 
 $pass = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId }
-foreach ($k in 'Location', 'ResourceGroup') { if ($PSBoundParameters.ContainsKey($k)) { $pass[$k] = $PSBoundParameters[$k] } }
+# the installer's parameters as given (the launcher's own - the version and the test seams - stay here)
+foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'TenantId', 'SubscriptionId', 'Version', 'GetRelease', 'Download', 'RunInstaller', 'WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable', 'ProgressAction') { $pass[$k] = $PSBoundParameters[$k] } }
 if ($what) { $pass.WhatIf = $true }
 exit (& $RunInstaller $installer.FullName $pass)

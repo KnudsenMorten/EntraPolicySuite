@@ -44,7 +44,7 @@ param(
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
-Write-Host 'Documentation: https://invardia.com/docs/eps/scripts/Install-EpsHybridWorker'
+Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Install-EpsHybridWorker when EPS is public there (DOC-LINKS)
 $task = 'EntraPolicySuite Hybrid Worker'; $taskPath = '\EPS\'   # its own task folder (§12.26: never the host's names)
 $guestFile = 'C:\ProgramData\HybridWorkerHost\guests\eps.json'
 if ($AsGuestOf -and -not $PSBoundParameters.ContainsKey('Root')) { $Root = 'C:\EPS' }   # a sibling of C:\PIM, never inside it
