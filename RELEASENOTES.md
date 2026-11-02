@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.22 - a readable rule editor
+- Tagging Rules: new, edit, duplicate and restore open the rule in a wide dialog. Each field (persona, tag type, the
+  value, notes) has its own full-width line, so long tag types, values and notes are readable, and each condition is a
+  row of type, target and Remove, with its explanation under it. The dialog closes after a save; the bar at the top
+  follows the change.
+
 ## 2.0.21 - private network install
 - Private network install: add `-PrivateNetwork` to install EntraPolicySuite inside your own virtual network. The web app
   then has no public address (reachable from your network, still behind the Entra sign-in), and the database, Key Vault,

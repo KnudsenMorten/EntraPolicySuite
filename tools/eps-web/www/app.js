@@ -417,14 +417,19 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var persona = el('input', { type: 'text', 'aria-label': 'Persona', placeholder: 'e.g. Internal_Admin', maxlength: 200 }); persona.value = textOf(card.Persona);
     var notes = el('input', { type: 'text', 'aria-label': 'Notes', placeholder: 'why this rule exists (optional)', maxlength: 1000 }); notes.value = textOf(card.Notes);
     var enabled = el('input', { type: 'checkbox', 'aria-label': 'Enabled' }); enabled.checked = card.Enabled !== false;
-    var valHost = el('span'), vAD = null, vCloud = null, vDev = null;
+    // RULE-EDITOR (owner 2026-11-02: "impossible to see the names, values etc"): a two-column form - a label, then the
+    // field across the whole width - so a long tag type, value, note or condition target is readable in full
+    var form = el('div', { class: 'rf-grid' });
+    var fieldRow = function (label, node) { form.appendChild(el('div', { class: 'rf-l', text: label })); form.appendChild(el('div', { class: 'rf-c' }, node)); return node; };
+    var valHost = el('div', { class: 'rf-vals' }), vAD = null, vCloud = null, vDev = null;
     function drawValues() {
       clear(valHost);
       var tt = j.tagTypes.filter(function (t) { return t.name === tsel.value; })[0];
       if (ot === 'User') {
         vAD = valueInput(tt, vAD ? vAD.input.value : card.TagValueAD, 'value for AD-synced users'); vCloud = valueInput(tt, vCloud ? vCloud.input.value : card.TagValueCloud, 'value for cloud users');
-        valHost.appendChild(el('label', null, 'AD-synced: ', vAD.node)); valHost.appendChild(document.createTextNode(' ')); valHost.appendChild(el('label', null, 'Cloud: ', vCloud.node));
-      } else { vDev = valueInput(tt, vDev ? vDev.input.value : card.TagValue, 'value (empty = clear the attribute)'); valHost.appendChild(el('label', null, 'Value: ', vDev.node)); }
+        valHost.appendChild(el('label', { class: 'rf-val' }, el('span', { text: 'AD-synced users' }), vAD.node));
+        valHost.appendChild(el('label', { class: 'rf-val' }, el('span', { text: 'Cloud users' }), vCloud.node));
+      } else { vDev = valueInput(tt, vDev ? vDev.input.value : card.TagValue, 'value (empty = clear the attribute)'); valHost.appendChild(vDev.node); }
     }
     tsel.addEventListener('change', drawValues); drawValues();
     var condHost = el('div', { class: 'conds' });
@@ -433,18 +438,22 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var s = el('select', { 'aria-label': 'Condition type' }, el('option', { value: '', text: '- condition -' }), ctypes.map(function (d) { return el('option', { value: d.id, text: d.id + (d.shipped ? '' : ' (yours)') }); }));
       s.value = textOf(c.ConditionType);
       var t = el('input', { type: 'text', 'aria-label': 'Target', placeholder: 'target, e.g. *@contoso.com or TRUE', maxlength: 1024 }); t.value = textOf(c.Target);
-      var help = el('div', { class: 'smeta' });
+      var help = el('div', { class: 'smeta cond-help' });
       var showHelp = function () { var d = ctypes.filter(function (x) { return x.id === s.value; })[0]; help.textContent = d ? d.description + (d.modifiesValue ? ' (it also sets the value)' : '') : ''; };
       s.addEventListener('change', showHelp); showHelp();
-      var row = el('div', { class: 'cond' }, s, ' ', t, ' ', el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { condHost.removeChild(row); } }), help);
+      var row = el('div', { class: 'cond' }, s, t, el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { condHost.removeChild(row); } }), help);
       row._read = function () { return { conditionType: s.value, target: t.value }; };
       condHost.appendChild(row);
     }
     (card.Conditions && card.Conditions.length ? card.Conditions : [{}]).forEach(condRow);
-    box.appendChild(el('div', { class: 'form' },
-      ot === 'User' ? el('label', null, 'Persona ', persona) : null,
-      el('label', null, 'Tag type ', tsel), valHost, el('label', null, enabled, ' enabled'), el('label', { class: 'wide' }, 'Notes ', notes)));
-    box.appendChild(el('div', { class: 'smeta', text: 'Conditions - ALL must match. Rules run top to bottom; for a First tag type the first rule that matches sets the tag.' }));
+    if (ot === 'User') fieldRow('Persona', persona);
+    fieldRow('Tag type', tsel);
+    fieldRow(ot === 'User' ? 'Values' : 'Value', valHost);
+    fieldRow('Enabled', el('label', { class: 'rf-check' }, enabled, ' the rule runs'));
+    fieldRow('Notes', notes);
+    box.appendChild(form);
+    box.appendChild(el('h4', { class: 'rf-sub', text: 'Conditions - ALL must match' }));
+    box.appendChild(el('div', { class: 'smeta', text: 'Rules run top to bottom; for a First tag type the first rule that matches sets the tag.' }));
     box.appendChild(condHost);
     box.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Add condition', onclick: function () { condRow({}); } }));
     box.appendChild(errs);
@@ -458,11 +467,23 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var call = card.RuleId && !opts.insertAfter && !opts.restore ? function (reason) { b.reason = reason; b.expected = card.UpdatedAtUtc; return api('PUT', '/api/rules/' + ot + '/' + card.RuleId, b); }
         : function (reason) { b.reason = reason; if (opts.insertAfter) b.insertAfter = opts.insertAfter; return api('POST', '/api/rules/' + ot, b); };
       withReason(opts.title, j.queueOn ? 'The change waits in the commit queue until an admin commits it; nothing is written to the directory by saving.' : 'A preview on everyone is queued after the save (when the feature is on); nothing is written to the directory by saving.', function (reason) {
-        return call(reason).catch(function (e) { errs.hidden = false; errs.textContent = 'Not saved: ' + e.message; throw e; });
+        return call(reason).then(function (r) { if (opts.onSaved) opts.onSaved(); return r; }).catch(function (e) { errs.hidden = false; errs.textContent = 'Not saved: ' + e.message; throw e; });
       });
     };
     box.appendChild(el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: opts.onDone }), el('button', { type: 'button', text: 'Save', onclick: save })));
     return box;
+  }
+  function openRuleEditor(ot, j, card, opts) {
+    // RULE-EDITOR: the editor opens as a WIDE dialog, not inside the narrow side panel; it closes on Cancel, Esc or a
+    // save (the notice bar then follows the change)
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': opts.title });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.appendChild(ruleEditor(ot, j, card, Object.assign({}, opts, { onDone: function () { close(); if (opts.onDone) opts.onDone(); }, onSaved: close })));
+    d.addEventListener('close', close);
+    document.body.appendChild(d);
+    d.showModal();
+    var first = d.querySelector('input[type=text], select'); if (first) first.focus();
   }
   function fromJournal(js) {
     // a journal row's card -> the shape the editor reads
@@ -1217,13 +1238,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var side = function (r, mode) {
         clear(sideBox);
         var panel = el('div');
-        if (mode === 'new') panel.appendChild(ruleEditor(ot, j, {}, { title: 'New ' + ot.toLowerCase() + ' rule', onDone: function () { side(S.sel); } }));
-        else if (mode === 'deleted') {
+        if (mode === 'new') { openRuleEditor(ot, j, {}, { title: 'New ' + ot.toLowerCase() + ' rule' }); mode = null; r = S.sel; }
+        if (mode === 'deleted') {
           panel.appendChild(el('h3', { text: 'Deleted rules' }));
           api('GET', '/api/rules/' + ot + '/deleted').then(function (d) {
             panel.appendChild(table(d.rows, [{ key: 'AtUtc', label: 'Deleted', type: 'date' }, { key: 'EntityKey', label: 'Rule' },
               { key: 'BeforeJson', label: 'The rule', wrap: true, render: function (h) { var c = fromJournal(h.BeforeJson); return (c.Persona || c.TagType) + ': ' + c.Conditions.map(function (x) { return x.ConditionType + ' ' + textOf(x.Target); }).join(' AND '); } },
-              { key: '_b', label: '', render: function (h) { return admin ? el('button', { type: 'button', class: 'secondary', text: 'Put back', onclick: function () { clear(panel).appendChild(ruleEditor(ot, j, fromJournal(h.BeforeJson), { restore: true, title: 'Put back rule ' + h.EntityKey + ' (as a new rule, last)', onDone: function () { side(S.sel); } })); } }) : null; } }],
+              { key: '_b', label: '', render: function (h) { return admin ? el('button', { type: 'button', class: 'secondary', text: 'Put back', onclick: function () { openRuleEditor(ot, j, fromJournal(h.BeforeJson), { restore: true, title: 'Put back rule ' + h.EntityKey + ' (as a new rule, last)' }); } }) : null; } }],
               { sort: 'AtUtc', dir: -1, empty: 'No rule was deleted.' }));
           }).catch(function (e) { status('Could not load: ' + e.message); });
         } else if (r) {
@@ -1240,15 +1261,15 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           if (r.id) {
             var acts = el('div', { class: 'rx-acts' });
             if (admin) {
-              acts.appendChild(el('button', { type: 'button', text: 'Edit', onclick: function () { clear(slot).appendChild(ruleEditor(ot, j, c, { title: 'Edit rule ' + r.id, onDone: function () { clear(slot); } })); } }));
-              acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Duplicate', onclick: function () { clear(slot).appendChild(ruleEditor(ot, j, Object.assign({}, c, { RuleId: null }), { insertAfter: r.id, title: 'New rule after rule ' + r.id + ' (a copy - change what differs)', onDone: function () { clear(slot); } })); } }));
+              acts.appendChild(el('button', { type: 'button', text: 'Edit', onclick: function () { openRuleEditor(ot, j, c, { title: 'Edit rule ' + r.id }); } }));
+              acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Duplicate', onclick: function () { openRuleEditor(ot, j, Object.assign({}, c, { RuleId: null }), { insertAfter: r.id, title: 'New rule after rule ' + r.id + ' (a copy - change what differs)' }); } }));
               ['up', 'down'].forEach(function (d) { acts.appendChild(el('button', { type: 'button', class: 'secondary', text: d === 'up' ? 'Move up' : 'Move down', onclick: function () { withReason('Move rule ' + r.id + ' ' + d, 'For a First tag type a rule higher up wins over the ones below it.', function (reason) { return api('POST', '/api/rules/' + ot + '/' + r.id + '/move', { direction: d, reason: reason }); }); } })); });
             }
             acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'History', onclick: function () {
               api('GET', '/api/rules/' + ot + '/' + r.id + '/history').then(function (h) {
                 clear(slot).appendChild(table(h.rows, [{ key: 'AtUtc', label: 'When', type: 'date' }, { key: 'Actor', label: 'Who' }, { key: 'Action', label: 'Action', type: 'cat' },
                   { key: '_r', label: '', render: function (x) { if (!admin || x.Action !== 'Update' || !x.BeforeJson) return null; return el('button', { type: 'button', class: 'secondary', text: 'Restore the version before', onclick: function () {
-                    var o = fromJournal(x.BeforeJson); o.RuleId = r.id; o.UpdatedAtUtc = c.UpdatedAtUtc; clear(slot).appendChild(ruleEditor(ot, j, o, { title: 'Restore rule ' + r.id + ' as it was before ' + fmtTime(x.AtUtc), onDone: function () { clear(slot); } })); } }); } }],
+                    var o = fromJournal(x.BeforeJson); o.RuleId = r.id; o.UpdatedAtUtc = c.UpdatedAtUtc; openRuleEditor(ot, j, o, { title: 'Restore rule ' + r.id + ' as it was before ' + fmtTime(x.AtUtc) }); } }); } }],
                   { sort: 'AtUtc', dir: -1, empty: 'No change recorded (imported as it is).' }));
               }).catch(function (e) { status('Could not load: ' + e.message); });
             } }));

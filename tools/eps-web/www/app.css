@@ -129,8 +129,33 @@ ul.hints { margin:4px 0; padding-left:18px; color:var(--warning); }
 .editor .form { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; margin-bottom:8px; }
 .editor .form .wide { flex:1 1 100%; }
 .editor .form .wide input { width:100%; max-width:640px; box-sizing:border-box; }
-.conds .cond { margin:4px 0; }
-.conds .cond input { width:min(360px, 60vw); }
+/* RULE-EDITOR (owner 2026-11-02): the rule editor is a wide dialog with a two-column form, every field full width */
+dialog.dlg-wide { max-width:980px; width:calc(100% - 32px); max-height:calc(100vh - 48px); overflow:auto; padding:18px 22px; }
+dialog.dlg-wide::backdrop { background:rgba(0,0,0,.35); }
+dialog.dlg-wide .editor { border:0; padding:0; margin:0; background:transparent; }
+dialog.dlg-wide .editor h3 { margin:0 0 12px; overflow-wrap:anywhere; }
+.rf-grid { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:10px 14px; align-items:center; margin-bottom:12px; }
+.rf-l { font-weight:600; color:var(--text-muted); }
+.rf-c { min-width:0; }
+.rf-c > input[type=text], .rf-c > select, .rf-vals input[type=text] { width:100%; box-sizing:border-box; }
+.rf-vals { display:flex; flex-direction:column; gap:6px; }
+.rf-vals > span { display:block; }
+.rf-val { display:grid; grid-template-columns:130px minmax(0, 1fr); gap:8px; align-items:center; }
+.rf-val > span:first-child { color:var(--text-muted); }
+.rf-val > span:last-child { display:block; min-width:0; }
+.rf-check { display:inline-flex; align-items:center; gap:6px; }
+.rf-sub { margin:14px 0 2px; font-size:14px; }
+.conds { display:flex; flex-direction:column; gap:8px; margin:8px 0; }
+.conds .cond { display:grid; grid-template-columns:minmax(180px, 280px) minmax(0, 1fr) auto; gap:4px 8px; align-items:center; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--surface-card); }
+.conds .cond select, .conds .cond input { width:100%; box-sizing:border-box; }
+.conds .cond .cond-help { grid-column:1 / -1; margin:0; }
+@media (max-width:640px) {
+  .rf-grid { grid-template-columns:minmax(0, 1fr); gap:4px; }
+  .rf-l { margin-top:6px; }
+  .rf-val { grid-template-columns:minmax(0, 1fr); }
+  .conds .cond { grid-template-columns:minmax(0, 1fr) auto; }
+  .conds .cond select { grid-column:1 / -1; }
+}
 .errors { color:var(--danger); background:var(--danger-bg); padding:6px 10px; border-radius:4px; margin:6px 0; white-space:pre-wrap; }
 .values { display:flex; flex-wrap:wrap; gap:4px 10px; margin:4px 0; }
 .val { border:1px solid var(--border); border-radius:10px; padding:1px 8px; }
