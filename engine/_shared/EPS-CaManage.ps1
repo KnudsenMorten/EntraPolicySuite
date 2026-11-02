@@ -88,8 +88,13 @@ function Get-EpsCaPersona {
     param([string]$DisplayName, $Catalog = (Get-EpsCaTemplateCatalog))
     $t = (Get-EpsCaNameMatch -DisplayName $DisplayName -Catalog $Catalog).Template
     if (-not $t -or -not "$($t.persona)") { return 'Other (no template)' }
-    $p = "$($t.persona)"
-    switch -Regex ($p) { '^Users-Internals$' { 'Users-Internal' } '^Users-Internal-Developerss$' { 'Users-Internal-Developers' } default { $p } }
+    ConvertTo-EpsCaPersonaName "$($t.persona)"
+}
+
+function ConvertTo-EpsCaPersonaName {
+    # v1's two spelling slips folded into one persona each (the templates stay as v1 has them)
+    param([string]$Persona)
+    switch -Regex ($Persona) { '^Users-Internals$' { 'Users-Internal' } '^Users-Internal-Developerss$' { 'Users-Internal-Developers' } default { $Persona } }
 }
 
 function Get-EpsCaNameMatch {

@@ -460,11 +460,10 @@ function Get-EpsWebRoutes {
         # ---- the CA Policy Analyzer (DESIGN §5.7): READ ONLY - the web app reads what the engine stored and queues requests ----
         @{ Method = 'GET'; Pattern = '^/api/ca/policies$'; Summary = 'The CA policies as the engine last read them.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
-            # + the persona of each (its template's) - the analyzer groups and picks by persona
-            $cat = Get-EpsCaTemplateCatalog
-            $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc FROM eps.CaPolicy ORDER BY DisplayName'))
-            foreach ($r in $rows) { $r | Add-Member -NotePropertyName Persona -NotePropertyValue (Get-EpsCaPersona -DisplayName "$($r.DisplayName)" -Catalog $cat) -Force }
-            New-EpsWebResponse -Body @{ rows = $rows } } }
+            # + the personas each is in (CA-PERSONA: the managed list - several, or none) and the monitors it is in now
+            # (CA-MONADD: the small tags on each policy) - the analyzer groups and picks by persona
+            $v = Get-EpsCaPersonaView -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body @{ rows = @($v.Policies) } } }
         @{ Method = 'POST'; Pattern = '^/api/ca/analyze$'; Summary = 'Request a CA Policy Analyzer run now (read only), or a new read of the policy list.'; Body = 'policyIds, policyNames, policyPrefixes, policyPatterns: which policies; mode and its time window as on the page; listOnly: true reads the policy list again'; Public = $true
            Role = 'Admin'; Action = 'ca.analyze.request'; NeedsReason = $true; Handler = { param($c, $m)
             $v = ConvertTo-EpsCaRequest -Body $c.Body
@@ -515,6 +514,76 @@ function Get-EpsWebRoutes {
             $p = @{ n = $m.mn } + (New-EpsJournalParameters -Actor $c.Caller.identity -Entity 'CaMonitor' -Key $m.mn -Action 'Delete' -Before (@{ definition = $cur.Definition; schedule = $cur.Schedule } | ConvertTo-Json -Compress) -After $null)
             [void](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -NonQuery -Parameters $p -Query "SET XACT_ABORT ON; BEGIN TRAN; DELETE FROM eps.CaMonitor WHERE Name = @n; $(Get-EpsJournalSql) COMMIT;")
             New-EpsWebResponse -Body @{ ok = $true; text = "Monitor $($m.mn) deleted. Its analyses stay." } -Audit @{ Target = "CaMonitor|$($m.mn)" } } }
+        # ---- the analyzer's personas (CA-PERSONA, owner 2026-11-02: "it should be possible edit/delete/create existing
+        # monitors persona. this functionality replaces the series button"): a name + picked policies + name rules; the
+        # template personas are the starting list (seeded once by the engine); a monitor names personas and resolves them
+        # at each run. Written by the engine from the signed request (Apply = 'Engine'), journaled and audited. ----
+        @{ Method = 'GET'; Pattern = '^/api/ca/personas$'; Summary = 'The personas of the CA Policy Analyzer: each with its picked policies, its name rules, the policies it takes now and the monitors that name it.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $v = Get-EpsCaPersonaView -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body @{ rows = @($v.Personas); seeded = $v.Seeded } } }
+        @{ Method = 'PUT'; Pattern = '^/api/ca/personas/(?<pn>[A-Za-z0-9_.-]{1,100})$'; Summary = 'Create or change a persona of the CA Policy Analyzer; a new name renames it and the monitors that name it follow.'; Body = 'policyIds: picked policy ids; rules: name rules, e.g. CA2 (every CA2xx), CA006, CA6*; newName: a new name (optional)'; Public = $true
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.persona.change'; NeedsReason = $true; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $t = "CaPersona|$($m.pn)"
+            $v = ConvertTo-EpsCaPersonaBody -Body $c.Body -Name $m.pn
+            if (-not $v.Ok) { return New-EpsWebResponse -Status 400 -Body @{ error = $v.Error } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $v.Error } }
+            [void](Initialize-EpsCaPersonas -ConnectionString $cs)   # an edit before the first analyzer run starts from the seeded list
+            $cur = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ n = [string]$m.pn } -Query 'SELECT Name, PolicyIdsJson, RulesJson, Source FROM eps.CaPersona WHERE Name = @n')[0]
+            if ($v.NewName -and -not $cur) { return New-EpsWebResponse -Status 404 -Body @{ error = "no persona '$($m.pn)' to rename - reload" } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'missing' } }
+            $old = if ($cur) { [string]$cur.Name } else { [string]$m.pn }
+            $new = if ($v.NewName) { $v.NewName } else { $old }
+            $rename = [bool]$cur -and $new -cne $old
+            if ($rename -and $new -ine $old -and [int](Invoke-EpsSql -ConnectionString $cs -Scalar -Parameters @{ n = $new } -Query 'SELECT COUNT(*) FROM eps.CaPersona WHERE Name = @n')) { return New-EpsWebResponse -Status 409 -Body @{ error = "a persona '$new' exists already" } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "'$new' exists" } }
+            $ids = ConvertTo-Json -InputObject @($v.PolicyIds) -Compress; $rules = ConvertTo-Json -InputObject @($v.Rules) -Compress
+            $before = if ($cur) { [ordered]@{ name = $old; policyIds = @($cur.PolicyIdsJson | ConvertFrom-Json); rules = @($cur.RulesJson | ConvertFrom-Json) } | ConvertTo-Json -Compress -Depth 4 }
+            $after = [ordered]@{ name = $new; policyIds = @($v.PolicyIds); rules = @($v.Rules) } | ConvertTo-Json -Compress -Depth 4
+            $p = @{ n = $old; nn = $new; i = $ids; r = $rules; by = [string]$c.Caller.identity; act = $(if ($cur) { 'Update' } else { 'Create' }); jb = $before; jaf = $after }
+            # a rename: every monitor that names the old persona names the new one, in the same transaction (journaled each)
+            $mons = [System.Collections.Generic.List[string]]::new(); $msql = ''
+            if ($rename) {
+                foreach ($mo in @(Invoke-EpsSql -ConnectionString $cs -Query 'SELECT Name, Definition FROM eps.CaMonitor ORDER BY Name')) {
+                    if (-not @(Get-EpsCaMonitorPersonas -Definition "$($mo.Definition)" | Where-Object { $_ -ieq $old }).Count) { continue }
+                    $d = "$($mo.Definition)" | ConvertFrom-Json
+                    $d.personas = @(@($d.personas) | ForEach-Object { if ("$_".Trim() -ieq $old) { $new } else { "$_" } } | Select-Object -Unique)
+                    $k = $mons.Count; $mons.Add([string]$mo.Name)
+                    $p["mn$k"] = [string]$mo.Name; $p["mb$k"] = [string]$mo.Definition; $p["md$k"] = ($d | ConvertTo-Json -Compress -Depth 6)
+                    $msql += "UPDATE eps.CaMonitor SET Definition = @md$k, UpdatedAtUtc = SYSUTCDATETIME() WHERE Name = @mn$k; INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source) VALUES (@by, 'CaMonitor', @mn$k, 'Update', @mb$k, @md$k, 'gui'); "
+                }
+            }
+            $write = if ($cur) { 'UPDATE eps.CaPersona SET Name = @nn, PolicyIdsJson = @i, RulesJson = @r, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @by WHERE Name = @n;' } else { "INSERT INTO eps.CaPersona (Name, PolicyIdsJson, RulesJson, Source, UpdatedBy) VALUES (@nn, @i, @r, 'custom', @by);" }
+            [void](Invoke-EpsSql -ConnectionString $cs -NonQuery -Parameters $p -Query "SET XACT_ABORT ON; BEGIN TRAN; $write INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source) VALUES (@by, 'CaPersona', @nn, @act, @jb, @jaf, 'gui'); $msql COMMIT;")
+            $txt = if ($rename) { "Persona $old renamed to $new" + $(if ($mons.Count) { "; the monitor(s) $($mons -join ', ') follow" } else { '' }) + '.' } elseif ($cur) { "Persona $new saved." } else { "Persona $new created." }
+            New-EpsWebResponse -Body @{ ok = $true; name = $new; monitors = @($mons); text = "$txt Monitors take the change at their next run." } -Audit @{ Target = "CaPersona|$new"; Before = $(if ($before) { $before | ConvertFrom-Json }); After = (@{ persona = ($after | ConvertFrom-Json); monitors = @($mons) }) } } }
+        @{ Method = 'DELETE'; Pattern = '^/api/ca/personas/(?<pn>[A-Za-z0-9_.-]{1,100})$'; Summary = 'Delete a persona of the CA Policy Analyzer; refused while a monitor names it, unless force takes it out of those monitors.'; Body = 'force: true takes the persona out of the monitors that name it'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.persona.delete'; NeedsReason = $true; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $t = "CaPersona|$($m.pn)"
+            [void](Initialize-EpsCaPersonas -ConnectionString $cs)
+            $cur = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ n = [string]$m.pn } -Query 'SELECT Name, PolicyIdsJson, RulesJson, Source FROM eps.CaPersona WHERE Name = @n')[0]
+            if (-not $cur) { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such persona' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'missing' } }
+            $name = [string]$cur.Name
+            # the list is never emptied: an empty list starts again from the template personas
+            if ([int](Invoke-EpsSql -ConnectionString $cs -Scalar -Query 'SELECT COUNT(*) FROM eps.CaPersona') -le 1) { return New-EpsWebResponse -Status 409 -Body @{ error = 'the last persona cannot be deleted (an empty list starts again from the template personas) - change it instead' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'the last persona' } }
+            $users = @(Invoke-EpsSql -ConnectionString $cs -Query 'SELECT Name, Definition, Enabled FROM eps.CaMonitor ORDER BY Name' | Where-Object { @(Get-EpsCaMonitorPersonas -Definition "$($_.Definition)" | Where-Object { $_ -ieq $name }).Count })
+            if ($users.Count -and -not ($c.Body.force -eq $true)) {
+                $mn = @($users | ForEach-Object { [string]$_.Name })
+                return New-EpsWebResponse -Status 409 -Body @{ error = "the monitor(s) $($mn -join ', ') name this persona - delete it again with force to take it out of them"; monitors = $mn } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "in use by $($mn -join ', ')" } }
+            $before = [ordered]@{ name = $name; policyIds = @($cur.PolicyIdsJson | ConvertFrom-Json); rules = @($cur.RulesJson | ConvertFrom-Json) } | ConvertTo-Json -Compress -Depth 4
+            $p = @{ n = $name; by = [string]$c.Caller.identity; jb = $before }
+            $msql = ''; $off = [System.Collections.Generic.List[string]]::new(); $k = 0
+            foreach ($mo in $users) {
+                $d = "$($mo.Definition)" | ConvertFrom-Json
+                $d.personas = @(@($d.personas) | Where-Object { "$_".Trim() -ine $name })
+                # a monitor left with nothing to analyse is switched off (it would only fail) - and the answer says so
+                $empty = -not @(@($d.policyIds) + @($d.policyNames) + @($d.policyPrefixes) + @($d.policyPatterns) + @($d.personas) | Where-Object { "$_".Trim() }).Count
+                if ($empty -and $mo.Enabled) { $off.Add([string]$mo.Name) }
+                $p["mn$k"] = [string]$mo.Name; $p["mb$k"] = [string]$mo.Definition; $p["md$k"] = ($d | ConvertTo-Json -Compress -Depth 6); $p["me$k"] = [bool]$empty
+                $msql += "UPDATE eps.CaMonitor SET Definition = @md$k, Enabled = CASE WHEN @me$k = 1 THEN 0 ELSE Enabled END, UpdatedAtUtc = SYSUTCDATETIME() WHERE Name = @mn$k; INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source) VALUES (@by, 'CaMonitor', @mn$k, 'Update', @mb$k, @md$k, 'gui'); "
+                $k++
+            }
+            [void](Invoke-EpsSql -ConnectionString $cs -NonQuery -Parameters $p -Query "SET XACT_ABORT ON; BEGIN TRAN; DELETE FROM eps.CaPersona WHERE Name = @n; INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source) VALUES (@by, 'CaPersona', @n, 'Delete', @jb, NULL, 'gui'); $msql COMMIT;")
+            $mn = @($users | ForEach-Object { [string]$_.Name })
+            $txt = "Persona $name deleted." + $(if ($mn.Count) { " Taken out of the monitor(s) $($mn -join ', ')." } else { '' }) + $(if ($off.Count) { " $($off -join ', ') named nothing else and is switched off." } else { '' })
+            New-EpsWebResponse -Body @{ ok = $true; monitors = $mn; switchedOff = @($off); text = $txt } -Audit @{ Target = "CaPersona|$name"; Before = ($before | ConvertFrom-Json); After = @{ monitors = $mn; switchedOff = @($off) } } } }
 
         # ---- Conditional Access management, the READ-ONLY half (DESIGN §5.1; owner 2026-10-30: "dont touch any ca policy
         # stuff ... otherwise i can be locked out of my tenant"). The web app reads what the engine stored; Adopt / Release
@@ -809,7 +878,7 @@ function Test-EpsApiRoutePublic {
 function ConvertTo-EpsApiPath {
     # '^/api/rules/(?<ot>User|Device)/(?<id>\d{1,9})$' -> @{ Path = '/api/rules/{objectType}/{id}'; Params = (name, what) }
     param([Parameter(Mandatory)][string]$Pattern)
-    $names = @{ ot = 'objectType'; rid = 'requestId'; aid = 'analysisId'; mn = 'monitor'; vid = 'viewId'; sn = 'scope'; p = 'principal'; cid = 'conditionType' }
+    $names = @{ ot = 'objectType'; rid = 'requestId'; aid = 'analysisId'; mn = 'monitor'; pn = 'persona'; vid = 'viewId'; sn = 'scope'; p = 'principal'; cid = 'conditionType' }
     $params = [System.Collections.Generic.List[object]]::new()
     $path = [regex]::Replace(($Pattern -replace '^\^', '' -replace '\$$', ''), '\(\?<(\w+)>([^()]*)\)', {
         param($mm)

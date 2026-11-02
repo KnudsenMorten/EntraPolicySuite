@@ -293,3 +293,12 @@ table.grid tr.selected td { background:var(--surface-alt); }
 .pgroup { padding:3px 0; border-top:1px solid var(--border); }
 .pgroup:first-child { border-top:0; }
 .pindent { padding-left:28px; }
+/* the CA Policy Analyzer's one form (CA-ONE): its steps, More options, the monitor tags on a policy (CA-MONADD) */
+.ca-one { border:1px solid var(--border); border-radius:6px; padding:8px 12px 10px; margin:8px 0 14px; background:var(--surface-card); }
+.ca-step { margin:12px 0 4px; }
+details.more { margin:6px 0; }
+details.more > summary { cursor:pointer; color:var(--text-muted); }
+details.more .form { display:flex; flex-wrap:wrap; gap:6px 14px; margin:6px 0 0 4px; }
+details.more .form .wide { flex:1 1 100%; }
+.mtag { display:inline-block; font-size:10.5px; line-height:15px; padding:0 6px; margin-left:5px; border-radius:8px; border:1px solid var(--border); background:var(--surface-alt); color:var(--text-muted); }
+.mtag.on { border-color:var(--accent); color:var(--text); }

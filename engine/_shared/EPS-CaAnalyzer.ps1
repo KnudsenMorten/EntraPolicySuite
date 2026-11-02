@@ -32,8 +32,10 @@ function Select-EpsCaPolicies {
     # ids (exact), names (exact, one match each), prefixes (CA006 -> CA006-Initial-..., CA006-Prod-..., never CA0060) and
     # wildcards (CA2* = a whole series; owner 2026-10-30 "ca2xx in one monitor") against the tenant's policy list.
     # Returns @{ Ids; Errors; Unmatched }.
-    # + personas (owner 2026-11-02): every policy whose template is of that persona, resolved at each run
-    param([object[]]$Policies, [string[]]$Ids = @(), [string[]]$Names = @(), [string[]]$Prefixes = @(), [string[]]$Patterns = @(), [string[]]$Personas = @())
+    # + personas (owner 2026-11-02, CA-PERSONA): every policy the persona takes NOW (its picked policies + its name rules),
+    # resolved at each run so a change to the persona joins. -PersonaList: the personas in force (Get-EpsCaPersonaList);
+    # none given = the template personas (an install before the seed)
+    param([object[]]$Policies, [string[]]$Ids = @(), [string[]]$Names = @(), [string[]]$Prefixes = @(), [string[]]$Patterns = @(), [string[]]$Personas = @(), [object[]]$PersonaList, [Collections.IDictionary]$PersonaTakes)
     $out = [System.Collections.Generic.List[string]]::new(); $err = [System.Collections.Generic.List[string]]::new(); $miss = [System.Collections.Generic.List[string]]::new()
     $add = { param($id) if (-not $out.Contains($id)) { $out.Add($id) } }
     foreach ($id in $Ids) { if ($id -notmatch $script:EpsCaGuid) { $err.Add("'$id' is not a policy id"); continue }; if (@($Policies | Where-Object { $_.id -eq $id }).Count) { & $add $id } else { $miss.Add($id) } }
@@ -54,13 +56,158 @@ function Select-EpsCaPolicies {
         if (-not $m.Count) { $miss.Add($w) } else { foreach ($x in $m) { & $add $x.id } }
     }
     if (@($Personas).Count) {
-        $cat = Get-EpsCaTemplateCatalog
+        $list = if ($null -ne $PersonaList) { @($PersonaList) } else { @(Get-EpsCaTemplatePersonas) }
+        $takes = if ($null -ne $PersonaTakes) { $PersonaTakes } else { Resolve-EpsCaPersonaPolicies -Policies $Policies -Personas $list }
         foreach ($pe in $Personas) {
-            $m = @($Policies | Where-Object { (Get-EpsCaPersona -DisplayName ([string]$_.displayName) -Catalog $cat) -ieq $pe } | Sort-Object displayName)
-            if (-not $m.Count) { $miss.Add("persona $pe") } else { foreach ($x in $m) { & $add $x.id } }
+            $key = @($takes.Keys | Where-Object { $_ -ieq $pe })[0]
+            $m = if ($key) { @($takes[$key]) } else { @() }
+            if (-not $m.Count) { $miss.Add("persona $pe") } else { foreach ($x in $m) { & $add $x } }
         }
     }
     @{ Ids = @($out); Errors = @($err); Unmatched = @($miss) }
+}
+
+# ---- the personas (CA-PERSONA, owner 2026-11-02: "it should be possible edit/delete/create existing monitors persona. this
+# functionality replaces the series button") ------------------------------------------------------------------------------
+# A persona = a name + picked policies (ids) + name rules (CA2 = every CA2xx; CA006 = the CA006 variants, never CA0060;
+# CA6* a wildcard). The template personas are the starting list: each is seeded ONCE as RULES = its template numbers
+# (Users-Internal = CA200, CA201, ...), so a new policy of such a template joins, and the admin sees and edits plain rules.
+$script:EpsCaPersonaNamePattern = '^[A-Za-z0-9_.-]{1,100}$'
+
+function Get-EpsCaTemplatePersonas {
+    # the template personas as persona definitions (the seed, and the list in force while eps.CaPersona is empty)
+    param($Catalog = (Get-EpsCaTemplateCatalog))
+    $by = [ordered]@{}
+    foreach ($t in @($Catalog.templates | Sort-Object { "$($_.id)" })) {
+        if (-not "$($t.persona)") { continue }
+        $n = ConvertTo-EpsCaPersonaName "$($t.persona)"
+        if (-not $by.Contains($n)) { $by[$n] = [System.Collections.Generic.List[string]]::new() }
+        if (-not $by[$n].Contains("$($t.id)")) { $by[$n].Add("$($t.id)") }
+    }
+    @(foreach ($k in $by.Keys) { [pscustomobject]@{ Name = $k; PolicyIds = @(); Rules = @($by[$k]); Source = 'template'; UpdatedAtUtc = $null; UpdatedBy = $null } })
+}
+
+function Get-EpsCaPersonaList {
+    # the personas in force: eps.CaPersona; the template personas while it is empty (an install before the seed)
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, PolicyIdsJson, RulesJson, Source, UpdatedAtUtc, UpdatedBy FROM eps.CaPersona ORDER BY Name')
+    if (-not $rows.Count) { return @(Get-EpsCaTemplatePersonas) }
+    $arr = { param($j) if ($j -is [string] -and $j.Trim()) { @(@($j | ConvertFrom-Json) | ForEach-Object { "$_" } | Where-Object { $_ }) } else { @() } }
+    @(foreach ($r in $rows) { [pscustomobject]@{ Name = [string]$r.Name; PolicyIds = @(& $arr $r.PolicyIdsJson); Rules = @(& $arr $r.RulesJson); Source = [string]$r.Source
+        UpdatedAtUtc = $(if ($r.UpdatedAtUtc -is [datetime]) { $r.UpdatedAtUtc }); UpdatedBy = $(if ($r.UpdatedBy -is [string]) { $r.UpdatedBy }) } })
+}
+
+function Test-EpsCaNameRule {
+    # one name rule against one policy name: a wildcard (* ?), or a prefix - a full number (CA006) never takes a longer
+    # number (CA0060); a shorter series (CA2) takes every policy that starts with it. The engine's ONE rule, also for the
+    # older series of a monitor (Select-EpsCaPolicies -Prefixes / -Patterns).
+    param([string]$Name, [string]$Rule)
+    if ($Rule -match '[*?]') { return [WildcardPattern]::new($Rule, [Management.Automation.WildcardOptions]::IgnoreCase).IsMatch($Name) }
+    if (-not $Name.StartsWith($Rule, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($Rule -notmatch '^(?i)CA\d{3}$') { return $true }
+    $Name.Length -eq $Rule.Length -or $Name.Substring($Rule.Length, 1) -notmatch '[0-9A-Za-z]'
+}
+
+function Resolve-EpsCaPersonaPolicies {
+    # each persona -> the ids of the policies it takes NOW: its picked policies that still exist + every policy a rule
+    # takes. -Policies: objects with id + displayName. Returns an ordered name -> string[] (the policies' own ids).
+    param([object[]]$Policies = @(), [object[]]$Personas = @())
+    $byId = @{}; foreach ($p in $Policies) { $byId["$($p.id)".ToLowerInvariant()] = "$($p.id)" }
+    $sorted = @($Policies | Sort-Object { "$($_.displayName)" })
+    $out = [ordered]@{}
+    foreach ($pe in $Personas) {
+        $ids = [System.Collections.Generic.List[string]]::new()
+        foreach ($id in @($pe.PolicyIds)) { $hit = $byId["$id".ToLowerInvariant()]; if ($hit -and -not $ids.Contains($hit)) { $ids.Add($hit) } }
+        # the rules compiled once (Test-EpsCaNameRule's logic, inline: a page load resolves every persona)
+        $rules = @(foreach ($r in @(@($pe.Rules) | ForEach-Object { "$_".Trim() } | Where-Object { $_ })) {
+            if ($r -match '[*?]') { @{ W = [WildcardPattern]::new($r, [Management.Automation.WildcardOptions]::IgnoreCase) } } else { @{ P = $r; Whole = ($r -match '^(?i)CA\d{3}$') } } })
+        if ($rules.Count) {
+            foreach ($p in $sorted) {
+                $n = "$($p.displayName)"
+                foreach ($r in $rules) {
+                    $hit = if ($r.W) { $r.W.IsMatch($n) } elseif (-not $n.StartsWith($r.P, [StringComparison]::OrdinalIgnoreCase)) { $false } elseif (-not $r.Whole -or $n.Length -eq $r.P.Length) { $true } else { "$($n[$r.P.Length])" -notmatch '[0-9A-Za-z]' }
+                    if ($hit) { if (-not $ids.Contains("$($p.id)")) { $ids.Add("$($p.id)") }; break }
+                }
+            }
+        }
+        $out["$($pe.Name)"] = @($ids)
+    }
+    $out
+}
+
+function Get-EpsCaPersonaView {
+    # the analyzer page (read only, from SQL): the policies with the personas and the monitors each is in NOW, the personas
+    # with what they take now and the monitors that name them (CA-PERSONA / CA-MONADD, owner 2026-11-02)
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc FROM eps.CaPolicy ORDER BY DisplayName')
+    $pol = @($rows | ForEach-Object { [pscustomobject]@{ id = "$($_.PolicyId)".ToLowerInvariant(); displayName = "$($_.DisplayName)" } })
+    $list = @(Get-EpsCaPersonaList -ConnectionString $ConnectionString)
+    $takes = Resolve-EpsCaPersonaPolicies -Policies $pol -Personas $list
+    $s = { param($v) @(@($v) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) }
+    $inMon = @{}; $inPer = @{}; $usedBy = @{}
+    foreach ($k in $takes.Keys) { foreach ($id in $takes[$k]) { if (-not $inPer[$id]) { $inPer[$id] = [System.Collections.Generic.List[string]]::new() }; $inPer[$id].Add($k) } }
+    foreach ($mo in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Definition FROM eps.CaMonitor ORDER BY Name')) {
+        $d = try { "$($mo.Definition)" | ConvertFrom-Json } catch { $null }
+        if (-not $d) { continue }
+        $sel = Select-EpsCaPolicies -Policies $pol -Ids @(& $s $d.policyIds) -Names @(& $s $d.policyNames) -Prefixes @(& $s $d.policyPrefixes) -Patterns @(& $s $d.policyPatterns) -Personas @(& $s $d.personas) -PersonaList $list -PersonaTakes $takes
+        foreach ($id in $sel.Ids) { $k = "$id".ToLowerInvariant(); if (-not $inMon[$k]) { $inMon[$k] = [System.Collections.Generic.List[string]]::new() }; $inMon[$k].Add([string]$mo.Name) }
+        foreach ($pn in @(& $s $d.personas)) { $k = $pn.ToLowerInvariant(); if (-not $usedBy[$k]) { $usedBy[$k] = [System.Collections.Generic.List[string]]::new() }; $usedBy[$k].Add([string]$mo.Name) }
+    }
+    $prow = @(foreach ($r in @(ConvertTo-EpsWebValue $rows)) {
+        $k = "$($r.PolicyId)".ToLowerInvariant()
+        $r | Add-Member -NotePropertyName Personas -NotePropertyValue @(if ($inPer[$k]) { $inPer[$k] }) -Force
+        $r | Add-Member -NotePropertyName Monitors -NotePropertyValue @(if ($inMon[$k]) { $inMon[$k] }) -Force
+        $r })
+    $pers = @(foreach ($p in $list) { [ordered]@{ name = $p.Name; source = $p.Source; policyIds = @($p.PolicyIds); rules = @($p.Rules); takes = @($takes[$p.Name])
+        monitors = @(if ($usedBy[$p.Name.ToLowerInvariant()]) { $usedBy[$p.Name.ToLowerInvariant()] })
+        updatedAtUtc = $(if ($p.UpdatedAtUtc) { [datetime]::SpecifyKind($p.UpdatedAtUtc, 'Utc').ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'") }); updatedBy = $p.UpdatedBy } })
+    @{ Policies = $prow; Personas = $pers; Seeded = [bool]@($list | Where-Object { $_.UpdatedAtUtc }).Count }
+}
+
+function Get-EpsCaMonitorPersonas {
+    # the personas a monitor's stored definition names (the JSON the GUI saved)
+    param([string]$Definition)
+    $d = try { $Definition | ConvertFrom-Json } catch { $null }
+    @(@($d.personas) | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+}
+
+function ConvertTo-EpsCaPersonaBody {
+    # a persona from the GUI, validated: @{ Ok; PolicyIds; Rules; NewName; Error }
+    param($Body, [string]$Name)
+    if ("$Name" -notmatch $script:EpsCaPersonaNamePattern) { return @{ Ok = $false; Error = 'a persona name is 1-100 letters, digits, - _ or .' } }
+    $s = { param($v) @(@($v) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) }
+    $ids = @(& $s $Body.policyIds | Select-Object -Unique); $rules = @(& $s $Body.rules | Select-Object -Unique)
+    $nn = "$($Body.newName)".Trim()
+    if ($nn -and $nn -notmatch $script:EpsCaPersonaNamePattern) { return @{ Ok = $false; Error = 'the new name: 1-100 letters, digits, - _ or .' } }
+    if (-not $ids.Count -and -not $rules.Count) { return @{ Ok = $false; Error = 'a persona takes at least one policy or one name rule (e.g. CA2 = every CA2xx)' } }
+    if ($ids.Count -gt 500) { return @{ Ok = $false; Error = 'at most 500 picked policies in one persona' } }
+    if ($rules.Count -gt 100) { return @{ Ok = $false; Error = 'at most 100 name rules in one persona' } }
+    foreach ($x in $ids) { if ($x -notmatch $script:EpsCaGuid) { return @{ Ok = $false; Error = "'$x' is not a policy id" } } }
+    foreach ($x in $rules) {
+        if ($x -match '[\u0000-\u001f,]' -or $x.Length -gt 100) { return @{ Ok = $false; Error = "the rule '$x' has a control character or a comma, or is too long" } }
+        if ($x -match '^[*?]*$') { return @{ Ok = $false; Error = "'$x' would take every policy - name a series, e.g. CA2 or CA2*" } }
+    }
+    @{ Ok = $true; PolicyIds = $ids; Rules = $rules; NewName = $nn }
+}
+
+function Initialize-EpsCaPersonas {
+    # the ONE seed (engine only): the template personas, written when the list is empty - the first analyzer run or
+    # persona change after the upgrade. Returns the number written (0 = the list was there already).
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $j = ConvertTo-Json -InputObject @(Get-EpsCaTemplatePersonas | ForEach-Object { @{ n = $_.Name; r = (ConvertTo-Json -InputObject @($_.Rules) -Compress) } }) -Compress -Depth 4
+    [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ j = $j } -Query @'
+SET XACT_ABORT ON;
+BEGIN TRAN;
+DECLARE @n INT = 0;
+IF NOT EXISTS (SELECT 1 FROM eps.CaPersona WITH (UPDLOCK, HOLDLOCK))
+BEGIN
+    INSERT INTO eps.CaPersona (Name, PolicyIdsJson, RulesJson, Source, UpdatedBy)
+    SELECT x.n, N'[]', x.r, 'template', N'seed (the template personas)' FROM OPENJSON(@j) WITH (n NVARCHAR(100) '$.n', r NVARCHAR(MAX) '$.r') AS x;
+    SET @n = @@ROWCOUNT;
+END
+COMMIT;
+SELECT @n;
+'@)
 }
 
 # ---- who a policy targets -------------------------------------------------------------------------------------------
@@ -392,8 +539,13 @@ function Invoke-EpsCaPolicyAnalyzer {
     & $Log 'Info' "read $($policies.Count) Conditional Access policies (read only - nothing is changed)"
     $inv = try { Update-EpsCaInventory -ConnectionString $ConnectionString -Policies $policies -Version $Version -Log $Log } catch { & $Log 'Warning' "the Conditional Access review failed (the analysis goes on): $($_.Exception.Message)"; $null }
     Save-EpsCaPolicyList -ConnectionString $ConnectionString -Policies $policies -Reviews $(if ($inv) { $inv.Reviews } else { @{} })
+    # the personas (CA-PERSONA): seeded once from the templates, then read at each run - a change to a persona joins
+    try { $seeded = Initialize-EpsCaPersonas -ConnectionString $ConnectionString; if ($seeded) { & $Log 'Info' "the persona list starts from the $seeded template personas (seeded once; edit them on the analyzer page)" } }
+    catch { & $Log 'Warning' "the persona list could not be seeded (the template personas are used): $($_.Exception.Message)" }
     if ($Request.ListOnly) { return @{ Analyses = @(); Impacted = 0 } }
-    $sel = Select-EpsCaPolicies -Policies $policies -Ids @($Request.Policies.Ids) -Names @($Request.Policies.Names) -Prefixes @($Request.Policies.Prefixes) -Patterns @($Request.Policies.Patterns) -Personas @($Request.Policies.Personas)
+    $plist = if (@($Request.Policies.Personas).Count) { @(Get-EpsCaPersonaList -ConnectionString $ConnectionString) } else { @() }
+    # the older series of a monitor (policyPrefixes / policyPatterns, before 2.0.24) are still honoured
+    $sel = Select-EpsCaPolicies -Policies $policies -Ids @($Request.Policies.Ids) -Names @($Request.Policies.Names) -Prefixes @($Request.Policies.Prefixes) -Patterns @($Request.Policies.Patterns) -Personas @($Request.Policies.Personas) -PersonaList $plist
     foreach ($e in $sel.Errors) { & $Log 'Warning' $e }; foreach ($u in $sel.Unmatched) { & $Log 'Warning' "no policy matches '$u'" }
     if (-not $sel.Ids.Count) { throw "no policy to analyse ($(@($sel.Errors + $sel.Unmatched) -join '; '))" }
     $mode = if ("$($Request.Mode)" -eq 'WhatIf') { 'WhatIf' } else { 'SignInLogs' }   # SignInLogs is the default (owner 2026-10-30)

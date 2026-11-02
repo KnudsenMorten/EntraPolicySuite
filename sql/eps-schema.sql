@@ -783,3 +783,23 @@ CREATE INDEX IX_SupportEvent_Latest ON eps.SupportEvent (ReceivedAtUtc DESC);
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 13)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (13, '2.0.16');
+
+-- ---- v14: the CA Policy Analyzer's personas (CA-PERSONA, owner 2026-11-02: "it should be possible edit/delete/create
+-- existing monitors persona. this functionality replaces the series button") ---------------------------------------------
+-- A persona = a name + picked policies (ids) + name rules (CA2 = every CA2xx; CA006 = only the CA006 variants; CA6* a
+-- wildcard). The engine seeds the template personas ONCE (each as rules = its template numbers) when the list is empty,
+-- and writes every change from the signed request (journaled in eps.ConfigChange). A monitor names personas and resolves
+-- them at each run, so a change joins. The web app only reads it.
+IF OBJECT_ID('eps.CaPersona') IS NULL
+CREATE TABLE eps.CaPersona (
+    Name          NVARCHAR(100)  NOT NULL PRIMARY KEY,
+    PolicyIdsJson NVARCHAR(MAX)  NOT NULL CONSTRAINT DF_CaPersona_Ids DEFAULT N'[]',      -- JSON array of policy ids
+    RulesJson     NVARCHAR(MAX)  NOT NULL CONSTRAINT DF_CaPersona_Rules DEFAULT N'[]',    -- JSON array of name rules
+    Source        NVARCHAR(20)   NOT NULL CONSTRAINT DF_CaPersona_Source DEFAULT 'custom', -- template (seeded) | custom
+    UpdatedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_CaPersona_At DEFAULT SYSUTCDATETIME(),
+    UpdatedBy     NVARCHAR(320)  NULL,
+    CONSTRAINT CK_CaPersona_Source CHECK (Source IN ('template', 'custom'))
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 14)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (14, '2.0.24');

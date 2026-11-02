@@ -2,6 +2,22 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.24 - one CA Policy Analyzer form, personas you manage
+- The CA Policy Analyzer has ONE form: pick a new monitor or an existing one at the top, then 1. which policies,
+  2. which sign-ins (the last 24 hours, 3, 7, 14 or 30 days) and 3. Analyse now or Save as monitor. Analyse first and
+  save the same choice as a monitor, or save it straight away. Edit on a monitor loads it into the same form.
+- The less common options (non-interactive sign-ins, guests, disabled accounts, reading a large log in parts) are under
+  a closed "More options". "Read the policy list" is now a small "Refresh the list" link beside the policy count.
+- Personas are a list you manage (Manage personas): create one, rename it, add or remove policies and name rules
+  (CA2 = every CA2xx, CA006 = the CA006 policies, CA6* = a wildcard), delete it. The template personas are the starting
+  list. A policy can be in several personas, or none. A monitor that names a persona follows a rename, and takes a
+  change at its next run. A persona a monitor uses is deleted only after the page names those monitors and you confirm.
+- The Series box is gone. A monitor saved with series keeps running them; the form shows them and lets you remove them.
+- Each policy in the list shows the monitors it is in. On the Conditional Access page, select policies and choose
+  "Add to monitor..." or "Remove from monitor...".
+- The persona groups sort as intended: Global first, the personas A-Z, policies without a persona last.
+- The analyzer still only reads: nothing changes a Conditional Access policy.
+
 ## 2.0.23 - bulk changes in one engine check, full-width pages
 - A bulk change (for example adopting many Conditional Access policies at once) is applied in ONE engine check:
   the engine takes every waiting configuration change together instead of one per check.
