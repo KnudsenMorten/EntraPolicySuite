@@ -166,7 +166,7 @@
       head.appendChild(th);
       var fc = el('th');
       if (c.type === 'cat') {
-        var vals = {}; rows.forEach(function (r) { vals[r[c.key] === null || r[c.key] === undefined ? '' : String(r[c.key])] = 1; });
+        var vals = {}; rows.forEach(function (r) { catVals(r, c).forEach(function (v) { vals[v] = 1; }); });
         var sum = el('summary', { text: 'any' });
         var box = el('div', { class: 'msel-list' });
         var picked = {};
@@ -197,11 +197,14 @@
       Array.prototype.forEach.call(filt.querySelectorAll('details.msel'), function (x) { x._reset(); x.open = false; });
       draw();
     });
+    // a 'cat' column's values for one row: one value, or - with multi (a separator) - each part of a joined list, so a row
+    // in two personas ("Users-Internal, Pilots") matches either (CA-LIMITS fix 3)
+    function catVals(r, c) { var v = r[c.key] === null || r[c.key] === undefined ? '' : String(r[c.key]); return c.multi && v ? v.split(c.multi) : [v]; }
     function cellText(r, c) { var v = r[c.key]; if (c.type === 'date') return fmtTime(v).toLowerCase(); return v === null || v === undefined ? '' : String(v).toLowerCase(); }
     function draw() {
       var list = rows.filter(function (r) {
         for (var k in state.f) { if (!state.f[k] || (Array.isArray(state.f[k]) && !state.f[k].length)) continue; var c = cols.filter(function (x) { return x.key === k; })[0];
-          if (c.type === 'cat') { if (state.f[k].indexOf(String(r[k] === null || r[k] === undefined ? '' : r[k])) < 0) return false; } else if (cellText(r, c).indexOf(state.f[k]) < 0) return false; }
+          if (c.type === 'cat') { var fv = state.f[k]; if (!catVals(r, c).some(function (v) { return fv.indexOf(v) >= 0; })) return false; } else if (cellText(r, c).indexOf(state.f[k]) < 0) return false; }
         if (state.q) { var hit = cols.some(function (c) { return cellText(r, c).indexOf(state.q) >= 0; }); if (!hit) return false; }
         return true;
       });
@@ -1445,7 +1448,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // first control picks a new or an existing monitor (CA-MONADD: "need an easy way to add/remove ca policy to
   // existing/new monitor"). CA-PERSONA ("it should be possible edit/delete/create existing monitors persona. this
   // functionality replaces the series button"): the personas are a list the admin manages (Manage personas).
-  var CA_OTHER = 'Other (no persona)';
+  // CA-LIMITS (owner 2026-11-02: "fix all 4 limits"; "templates is a import only feature. then it is the real policies in
+  // scope for mgmt and monitor, not the templates"): a persona and a monitor each have their own "left out" list; the
+  // groups here are the MANAGED personas over the real policies - a policy in none is under "No persona"
+  var CA_OTHER = 'No persona';
   var CA_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
   var CA_PERIODS = [[24, 'the last 24 hours'], [72, 'the last 3 days'], [168, 'the last 7 days'], [336, 'the last 14 days'], [720, 'the last 30 days']];
   // the persona groups: Global first, the personas A-Z, Other last (an explicit rank: the old sort keyed Other on a tilde, which localeCompare ignores)
@@ -1473,7 +1479,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var others = policies.filter(function (p) { return !(p.Personas || []).length; });
     if (others.length) groups[CA_OTHER] = others;
     var gnames = Object.keys(groups).sort(personaSort);
-    var st = { mon: '', picked: {}, personas: {}, open: {}, series: { prefixes: [], patterns: [], names: [] }, dropSeries: false };
+    var st = { mon: '', picked: {}, personas: {}, excluded: {}, open: {}, series: { prefixes: [], patterns: [], names: [] }, dropSeries: false };
 
     // the Monitor chooser: a new monitor, or an existing one (its selection loads into the tree)
     var chooser = el('select', { 'aria-label': 'Monitor' }, el('option', { value: '', text: 'New ...' }), monitors.map(function (m) { return el('option', { value: m.Name, text: m.Name + (m.Enabled ? '' : ' (off)') }); }));
@@ -1484,18 +1490,31 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var listBox = el('div', { class: 'plist' });
     var pickInfo = el('div', { class: 'smeta' });
     var seriesBox = el('div', { class: 'smeta' });
-    function covered(p) { return (p.Personas || []).some(function (x) { return st.personas[x]; }); }
+    // covered = the monitor takes the policy through a ticked persona or an older series rule (not one by one)
+    function bySeries(p) { if (st.dropSeries) return false; var rules = st.series.prefixes.concat(st.series.patterns); return rules.some(function (r) { return caRuleMatch(p.DisplayName, r); }) || st.series.names.some(function (x) { return x.toLowerCase() === textOf(p.DisplayName).toLowerCase(); }); }
+    function covered(p) { return (p.Personas || []).some(function (x) { return st.personas[x]; }) || bySeries(p); }
     function selection() {
       var n = {};
       Object.keys(st.personas).forEach(function (g) { if (st.personas[g]) (groups[g] || []).forEach(function (p) { n[String(p.PolicyId).toLowerCase()] = 1; }); });
       Object.keys(st.picked).forEach(function (id) { if (st.picked[id]) n[id] = 1; });
-      if (!st.dropSeries) { var rules = st.series.prefixes.concat(st.series.patterns); policies.forEach(function (p) { if (rules.some(function (r) { return caRuleMatch(p.DisplayName, r); })) n[String(p.PolicyId).toLowerCase()] = 1; }); }
-      return Object.keys(n);
+      policies.forEach(function (p) { if (bySeries(p)) n[String(p.PolicyId).toLowerCase()] = 1; });
+      // the monitor's own "left out" policies (CA-LIMITS) never count
+      return Object.keys(n).filter(function (id) { return !st.excluded[id]; });
     }
+    function leftOut() { return Object.keys(st.excluded).filter(function (k) { return st.excluded[k]; }); }
     function info() {
       var ps = Object.keys(st.personas).filter(function (k) { return st.personas[k]; });
       var ids = Object.keys(st.picked).filter(function (k) { return st.picked[k]; });
-      pickInfo.textContent = (ps.length ? 'Personas: ' + ps.join(', ') + '. ' : '') + (ids.length ? fmtNum(ids.length) + ' single policy(ies). ' : '') + 'Takes ' + fmtNum(selection().length) + ' policy(ies) now.';
+      var lo = leftOut();
+      clear(pickInfo);
+      pickInfo.appendChild(document.createTextNode((ps.length ? 'Personas: ' + ps.join(', ') + '. ' : '') + (ids.length ? fmtNum(ids.length) + ' single policy(ies). ' : '') + 'Takes ' + fmtNum(selection().length) + ' policy(ies) now.'));
+      if (lo.length) {
+        // left out of this monitor: each with a way to take it back
+        pickInfo.appendChild(el('div', { class: 'leftout' }, 'Left out of this monitor (' + fmtNum(lo.length) + '): ', lo.map(function (id) {
+          var p = byId[id];
+          return el('span', { class: 'mtag out' }, p ? p.DisplayName : id, ' ', el('button', { type: 'button', class: 'link', text: 'take back', title: 'take it back into this monitor', onclick: function () { delete st.excluded[id]; if (!p || !covered(p)) st.picked[id] = true; drawList(); } }));
+        })));
+      }
       clear(seriesBox);
       var old = st.series.prefixes.concat(st.series.patterns);
       if (old.length && !st.dropSeries) {
@@ -1526,12 +1545,19 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           el('span', { class: 'skey', text: ' ' + fmtNum(all.length) + ' policies' + (!isOther && st.personas[g] ? ' - all, also new ones' : nOn ? ' - ' + fmtNum(nOn) + ' picked' : '') })));
         if (!(st.open[g] || f)) return;
         items.forEach(function (p) {
-          var id = String(p.PolicyId).toLowerCase(), cov = covered(p);
-          var cb = el('input', { type: 'checkbox', title: cov ? 'in a ticked persona' : null }); cb.checked = cov || !!st.picked[id]; cb.disabled = cov;
-          cb.addEventListener('change', function () { st.picked[id] = cb.checked; drawList(); });
+          var id = String(p.PolicyId).toLowerCase(), cov = covered(p), out = !!st.excluded[id];
+          // CA-LIMITS: a policy a ticked persona (or an older series rule) takes can be unticked - it is then LEFT OUT of
+          // this monitor (excludePolicyIds); ticking it again takes it back
+          var cb = el('input', { type: 'checkbox', title: cov ? (out ? 'left out of this monitor - tick to take it back' : 'in a ticked persona - untick to leave it out of this monitor') : null });
+          cb.checked = !out && (cov || !!st.picked[id]);
+          cb.addEventListener('change', function () {
+            if (cb.checked) { delete st.excluded[id]; if (!cov) st.picked[id] = true; }
+            else { st.picked[id] = false; if (cov) st.excluded[id] = true; }
+            drawList();
+          });
           // the monitors the policy is in now (CA-MONADD)
           var tags = (p.Monitors || []).map(function (m) { return el('span', { class: 'mtag' + (m === st.mon ? ' on' : ''), title: 'in monitor ' + m, text: m }); });
-          listBox.appendChild(el('label', { class: 'pitem pindent' }, cb, ' ', p.DisplayName, el('span', { class: 'skey', text: ' ' + textOf(p.State) }), tags));
+          listBox.appendChild(el('label', { class: 'pitem pindent' }, cb, ' ', p.DisplayName, el('span', { class: 'skey', text: ' ' + textOf(p.State) }), out ? el('span', { class: 'mtag out', text: 'left out of this monitor' }) : null, tags));
         });
       });
       if (!policies.length) listBox.appendChild(el('div', { class: 'smeta', text: 'No policy list yet: Refresh the list asks the engine to read it (read only).' }));
@@ -1539,7 +1565,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     }
     var allOpen = el('button', { type: 'button', class: 'link', text: 'Expand all', onclick: function () { gnames.forEach(function (g) { st.open[g] = true; }); drawList(); } });
     var allShut = el('button', { type: 'button', class: 'link', text: 'Collapse all', onclick: function () { st.open = {}; drawList(); } });
-    var noneBtn = el('button', { type: 'button', class: 'link', text: 'Clear', onclick: function () { st.picked = {}; st.personas = {}; drawList(); } });
+    var noneBtn = el('button', { type: 'button', class: 'link', text: 'Clear', onclick: function () { st.picked = {}; st.personas = {}; st.excluded = {}; drawList(); } });
     var manageBtn = el('button', { type: 'button', class: 'secondary', text: 'Manage personas', onclick: function () { personaManager(data); } });
     filter.addEventListener('input', drawList);
     var refresh = el('button', { type: 'button', class: 'link', text: 'Refresh the list', onclick: function () { withReason('Refresh the policy list', 'Read only: the engine reads the Conditional Access policies again.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }); } });
@@ -1571,11 +1597,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
 
     function read() {
       var ser = st.dropSeries ? { prefixes: [], patterns: [], names: st.series.names } : st.series;
-      return { personas: Object.keys(st.personas).filter(function (k) { return st.personas[k]; }), policyIds: Object.keys(st.picked).filter(function (k) { return st.picked[k]; }),
-        policyNames: ser.names, policyPrefixes: ser.prefixes, policyPatterns: ser.patterns,
+      return { personas: Object.keys(st.personas).filter(function (k) { return st.personas[k]; }), policyIds: Object.keys(st.picked).filter(function (k) { return st.picked[k] && !st.excluded[k]; }),
+        excludePolicyIds: leftOut(), policyNames: ser.names, policyPrefixes: ser.prefixes, policyPatterns: ser.patterns,
         mode: 'SignInLogs', lookbackHours: period.value, sliceHours: slice.value.trim() || '0', includeNonInteractive: nonInt.checked, includeGuests: guests.checked, includeDisabled: disabled.checked };
     }
-    function describe(b) { return [b.personas.length ? b.personas.join(', ') : '', b.policyIds.length ? fmtNum(b.policyIds.length) + ' picked' : '', b.policyPrefixes.concat(b.policyPatterns).join(', ')].filter(function (x) { return x; }).join(' + '); }
+    function describe(b) { return [b.personas.length ? b.personas.join(', ') : '', b.policyIds.length ? fmtNum(b.policyIds.length) + ' picked' : '', b.policyPrefixes.concat(b.policyPatterns).join(', ')].filter(function (x) { return x; }).join(' + ') + (b.excludePolicyIds.length ? ' (' + fmtNum(b.excludePolicyIds.length) + ' left out)' : ''); }
     function analyse() {
       var b = read();
       if (!selection().length && !b.personas.length) { notice('Pick a persona or a policy first (step 1).', 'warn'); return; }
@@ -1593,8 +1619,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     function load(mn) {
       var m = monitors.filter(function (x) { return x.Name === mn; })[0];
       var def = {}; if (m) { try { def = JSON.parse(m.Definition || '{}') || {}; } catch (e) { def = {}; } }
-      st.mon = m ? m.Name : ''; chooser.value = st.mon; st.picked = {}; st.personas = {}; st.dropSeries = false;
+      st.mon = m ? m.Name : ''; chooser.value = st.mon; st.picked = {}; st.personas = {}; st.excluded = {}; st.dropSeries = false;
       (def.policyIds || []).forEach(function (id) { st.picked[String(id).toLowerCase()] = true; });
+      (def.excludePolicyIds || []).forEach(function (id) { st.excluded[String(id).toLowerCase()] = true; });
       (def.personas || []).forEach(function (x) { st.personas[x] = true; st.open[x] = true; });
       st.series = { prefixes: (def.policyPrefixes || []).slice(), patterns: (def.policyPatterns || []).slice(), names: (def.policyNames || []).slice() };
       var h = String(def.lookbackHours || 24);
@@ -1628,10 +1655,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     function list() {
       clear(body);
       body.appendChild(el('h3', { text: 'Personas' }));
-      body.appendChild(el('div', { class: 'smeta', text: 'A persona is a group of policies a monitor can name: picked policies and / or name rules (CA2 = every CA2xx, CA006 = the CA006 policies, CA6* = a wildcard). A monitor resolves its personas at each run, so a change here - or a new policy a rule takes - joins at its next run. The template personas are the starting list; change them like any other.' + (data.seeded ? '' : ' (The list is saved the first time the engine runs the analyzer or you change a persona.)') }));
+      body.appendChild(el('div', { class: 'smeta', text: 'A persona is a group of policies a monitor can name: picked policies and / or name rules (CA2 = every CA2xx, CA006 = the CA006 policies, CA6* = a wildcard). A monitor resolves its personas at each run, so a change here - or a new policy a rule takes - joins at its next run. A policy a rule takes can be unticked: it is left out of the persona. The starting list was made once from the built-in personas and your policies; change or delete any of them - an empty list stays empty.' + (data.seeded ? '' : ' (The starting list is made the first time the engine runs the analyzer or you change a persona.)') }));
       body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'New persona', onclick: function () { edit(null); } })));
-      body.appendChild(table(data.personas.map(function (pe) { return { Name: pe.name, Source: pe.source, Rules: (pe.rules || []).join(', '), Picked: (pe.policyIds || []).length, Takes: (pe.takes || []).length, Monitors: (pe.monitors || []).join(', '), _pe: pe }; }), [
-        { key: 'Name', label: 'Persona' }, { key: 'Rules', label: 'Name rules', wrap: true }, { key: 'Picked', label: 'Picked', type: 'num' }, { key: 'Takes', label: 'Takes now', type: 'num' },
+      body.appendChild(table(data.personas.map(function (pe) { return { Name: pe.name, Source: pe.source === 'custom' ? 'yours' : 'starting list', Rules: (pe.rules || []).join(', '), Picked: (pe.policyIds || []).length, Out: (pe.excludeIds || []).length, Takes: (pe.takes || []).length, Monitors: (pe.monitors || []).join(', '), _pe: pe }; }), [
+        { key: 'Name', label: 'Persona' }, { key: 'Rules', label: 'Name rules', wrap: true }, { key: 'Picked', label: 'Picked', type: 'num' }, { key: 'Out', label: 'Left out', type: 'num' }, { key: 'Takes', label: 'Takes now', type: 'num' },
         { key: 'Monitors', label: 'Used by monitors', wrap: true }, { key: 'Source', label: 'From', type: 'cat' },
         { key: '_a', label: '', render: function (r) { return el('span', null, el('button', { type: 'button', class: 'link', text: 'Edit', onclick: function () { edit(r._pe); } }), ' ', el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { del(r._pe); } })); } }],
         { sort: 'Name', dir: 1, empty: 'No persona yet.' }));
@@ -1640,6 +1667,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     function edit(pe) {
       clear(body);
       var picked = {}; ((pe && pe.policyIds) || []).forEach(function (id) { picked[String(id).toLowerCase()] = true; });
+      // CA-LIMITS: the persona's EXCLUDE list - a policy a rule takes, unticked, stays out; ticking it again takes it back
+      var excl = {}; ((pe && pe.excludeIds) || []).forEach(function (id) { excl[String(id).toLowerCase()] = true; });
       var nm = el('input', { type: 'text', 'aria-label': 'Persona name', maxlength: 100, placeholder: 'e.g. Users-Internal' }); nm.value = pe ? pe.name : '';
       var rules = el('input', { type: 'text', 'aria-label': 'Name rules', placeholder: 'e.g. CA2 (every CA2xx), CA006, CA6* - comma separated' }); rules.value = pe ? (pe.rules || []).join(', ') : '';
       var hits = el('div', { class: 'smeta' }), filter = el('input', { type: 'search', placeholder: 'filter policies', 'aria-label': 'Filter policies' });
@@ -1648,21 +1677,27 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         var rs = splitList(rules.value), f = filter.value.trim().toLowerCase();
         var byRule = policies.filter(function (p) { return rs.some(function (r) { return caRuleMatch(p.DisplayName, r); }); });
         var n = {}; byRule.forEach(function (p) { n[String(p.PolicyId).toLowerCase()] = 1; }); Object.keys(picked).forEach(function (k) { if (picked[k]) n[k] = 1; });
-        hits.textContent = 'The rules take ' + fmtNum(byRule.length) + (byRule.length ? ': ' + byRule.slice(0, 30).map(function (p) { return p.DisplayName; }).join(', ') + (byRule.length > 30 ? ', ...' : '') : '') + '. The persona takes ' + fmtNum(Object.keys(n).length) + ' policy(ies) now.';
+        var nOut = Object.keys(n).filter(function (k) { return excl[k]; }).length;
+        hits.textContent = 'The rules take ' + fmtNum(byRule.length) + (byRule.length ? ': ' + byRule.slice(0, 30).map(function (p) { return p.DisplayName; }).join(', ') + (byRule.length > 30 ? ', ...' : '') : '') + '.' + (nOut ? ' ' + fmtNum(nOut) + ' left out.' : '') + ' The persona takes ' + fmtNum(Object.keys(n).length - nOut) + ' policy(ies) now.';
         clear(box);
         policies.forEach(function (p) {
           if (f && textOf(p.DisplayName).toLowerCase().indexOf(f) < 0) return;
-          var id = String(p.PolicyId).toLowerCase(), viaRule = rs.some(function (r) { return caRuleMatch(p.DisplayName, r); });
-          var cb = el('input', { type: 'checkbox', title: viaRule ? 'taken by a name rule' : null }); cb.checked = viaRule || !!picked[id]; cb.disabled = viaRule;
-          cb.addEventListener('change', function () { picked[id] = cb.checked; draw(); });
-          box.appendChild(el('label', { class: 'pitem' }, cb, ' ', p.DisplayName, viaRule ? el('span', { class: 'skey', text: ' (by a rule)' }) : null));
+          var id = String(p.PolicyId).toLowerCase(), viaRule = rs.some(function (r) { return caRuleMatch(p.DisplayName, r); }), out = viaRule && !!excl[id];
+          var cb = el('input', { type: 'checkbox', title: viaRule ? (out ? 'left out - tick to take it back' : 'taken by a name rule - untick to leave it out') : null });
+          cb.checked = !out && (viaRule || !!picked[id]);
+          cb.addEventListener('change', function () {
+            if (cb.checked) { delete excl[id]; if (!viaRule) picked[id] = true; }
+            else { picked[id] = false; if (viaRule) excl[id] = true; }
+            draw();
+          });
+          box.appendChild(el('label', { class: 'pitem' }, cb, ' ', p.DisplayName, viaRule ? el('span', { class: 'skey', text: out ? ' (by a rule - left out)' : ' (by a rule)' }) : null));
         });
       }
       rules.addEventListener('input', draw); filter.addEventListener('input', draw);
       body.appendChild(el('h3', { text: pe ? 'Persona ' + pe.name : 'New persona' }));
       if (pe && (pe.monitors || []).length) body.appendChild(el('div', { class: 'smeta', text: 'Named by the monitor(s) ' + pe.monitors.join(', ') + ': a rename is followed by them; a change joins at their next run.' }));
       body.appendChild(el('div', { class: 'form' }, el('label', { class: 'wide' }, 'Name ', nm), el('label', { class: 'wide' }, 'Name rules ', rules), el('div', { class: 'wide' }, hits)));
-      body.appendChild(el('div', { class: 'toolbar' }, filter, el('span', { class: 'smeta', text: 'Tick single policies (a policy a rule takes is ticked already).' })));
+      body.appendChild(el('div', { class: 'toolbar' }, filter, el('span', { class: 'smeta', text: 'Tick single policies. A policy a rule takes is ticked already - untick it to leave it out.' })));
       body.appendChild(box);
       body.appendChild(el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Back', onclick: list }), el('button', { type: 'button', text: 'Save', onclick: function () {
         var n = nm.value.trim(), rs = splitList(rules.value), ids = Object.keys(picked).filter(function (k) { return picked[k]; });
@@ -1670,7 +1705,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         var clash = data.personas.filter(function (x) { return x.name.toLowerCase() === n.toLowerCase() && (!pe || x.name !== pe.name); })[0];
         if (clash) { notice('A persona ' + clash.name + ' exists already.', 'warn'); return; }
         if (!rs.length && !ids.length) { notice('A persona takes at least one policy or one name rule.', 'warn'); return; }
-        var b = { policyIds: ids, rules: rs }; if (pe && n !== pe.name) b.newName = n;
+        // excludeIds: only the left-out policies a rule still takes (an exclude without a rule means nothing)
+        var xs = policies.filter(function (p) { var id = String(p.PolicyId).toLowerCase(); return excl[id] && rs.some(function (r) { return caRuleMatch(p.DisplayName, r); }); }).map(function (p) { return String(p.PolicyId).toLowerCase(); });
+        var b = { policyIds: ids, rules: rs, excludeIds: xs }; if (pe && n !== pe.name) b.newName = n;
         close();
         withReason(pe ? (b.newName ? 'Rename persona ' + pe.name + ' to ' + n : 'Save persona ' + n) : 'New persona ' + n, (b.newName && (pe.monitors || []).length ? 'The monitor(s) ' + pe.monitors.join(', ') + ' follow the new name. ' : '') + 'Monitors take the change at their next run. Nothing in the tenant changes.', function (reason) {
           b.reason = reason; return api('PUT', '/api/ca/personas/' + encodeURIComponent(pe ? pe.name : n), b); });
@@ -1703,7 +1740,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(el('h3', { text: 'Monitors' }));
       p.appendChild(el('div', { class: 'guide', text: 'A monitor is a saved analysis that runs on a schedule - several side by side, e.g. one per persona (Users-Internal, Admins, ...) and one for the global policies (CA00x). A persona takes all its policies, also ones added later. An alert mail goes out only when users are impacted, to the monitor\'s own recipients (a team) or else to the alert recipients in Settings. Edit loads a monitor into the form above.' }));
       var mcols = [{ key: 'Name', label: 'Monitor' }, { key: 'Schedule', label: 'Schedule' }, { key: 'Enabled', label: 'On', type: 'cat' },
-        { key: 'Definition', label: 'Policies', wrap: true, render: function (m) { try { var d = JSON.parse(m.Definition); var ids = (d.policyIds || []).length; var old = (d.policyPrefixes || []).concat(d.policyPatterns || []); return [].concat((d.personas || []).map(function (x) { return 'persona ' + x; }), ids ? [ids + ' picked'] : [], old.length ? ['older series ' + old.join(', ')] : []).join(', ') + ((d.alertTo || []).length ? ' · alert to ' + d.alertTo.join(', ') : ''); } catch (e) { return ''; } } },
+        { key: 'Definition', label: 'Policies', wrap: true, render: function (m) { try { var d = JSON.parse(m.Definition); var ids = (d.policyIds || []).length; var old = (d.policyPrefixes || []).concat(d.policyPatterns || []); return [].concat((d.personas || []).map(function (x) { return 'persona ' + x; }), ids ? [ids + ' picked'] : [], old.length ? ['older series ' + old.join(', ')] : [], (d.excludePolicyIds || []).length ? [d.excludePolicyIds.length + ' left out'] : []).join(', ') + ((d.alertTo || []).length ? ' · alert to ' + d.alertTo.join(', ') : ''); } catch (e) { return ''; } } },
         { key: 'LastStartedUtc', label: 'Last start', type: 'date' }, { key: 'LastStartResult', label: 'Result', wrap: true }];
       if (admin) mcols.push({ key: '_e', label: '', render: function (m) { return el('span', null, el('button', { type: 'button', class: 'link', text: 'Edit', onclick: function () { form.load(m.Name); } }),
         el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { withReason('Delete monitor ' + m.Name, 'Its analyses stay.', function (reason) { return api('DELETE', '/api/ca/monitors/' + encodeURIComponent(m.Name), { reason: reason }); }); } })); } });
@@ -1711,12 +1748,16 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     });
   }
   // CA-MONADD on the Conditional Access page: the selected policies into / out of a monitor - pick the monitor, ONE
-  // confirmation, ONE change of that monitor (its picked policies)
+  // confirmation, ONE change of that monitor. CA-LIMITS (owner 2026-11-02: "fix all 4 limits"): Remove takes out ANY
+  // policy - a single-picked one is unpicked; one that comes through a persona or an older series rule goes on the
+  // monitor's own "left out" list (excludePolicyIds). Add takes a left-out policy back. The confirmation says per policy
+  // what happens.
   function caMonitorPick(kind, sel) {
-    Promise.all([api('GET', '/api/ca/monitors'), api('GET', '/api/ca/policies')]).then(function (both) {
-      var mons = both[0].rows || [];
+    Promise.all([api('GET', '/api/ca/monitors'), api('GET', '/api/ca/policies'), api('GET', '/api/ca/personas')]).then(function (all) {
+      var mons = all[0].rows || [];
       if (!mons.length) { notice('No monitor yet - make one on the CA Policy Analyzer page (Save as monitor).', 'warn'); return; }
-      var inMon = {}; (both[1].rows || []).forEach(function (r) { inMon[String(r.PolicyId).toLowerCase()] = r.Monitors || []; });
+      var pols = all[1].rows || [], takes = {};
+      (all[2].rows || []).forEach(function (pe) { takes[pe.name.toLowerCase()] = (pe.takes || []).map(function (x) { return String(x).toLowerCase(); }); });
       var d = el('dialog', { class: 'rg-dlg', 'aria-label': 'Pick the monitor' }); document.body.appendChild(d);
       var close = function () { if (d.open) d.close(); if (d.parentNode) d.parentNode.removeChild(d); };
       d.addEventListener('close', function () { if (d.parentNode) d.parentNode.removeChild(d); });
@@ -1726,29 +1767,50 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       d.appendChild(el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close }), el('button', { type: 'button', text: 'Next', onclick: function () {
         var m = mons.filter(function (x) { return x.Name === pick.value; })[0]; close(); if (!m) return;
         var def = {}; try { def = JSON.parse(m.Definition || '{}') || {}; } catch (e) { def = {}; }
-        var ids = (def.policyIds || []).map(function (x) { return String(x).toLowerCase(); });
-        var idOf = function (r) { return String(r.PolicyId).toLowerCase(); };
-        var title, text, next;
-        if (kind === 'add') {
-          var todo = sel.filter(function (r) { return (inMon[idOf(r)] || []).indexOf(m.Name) < 0 && ids.indexOf(idOf(r)) < 0; });
-          if (!todo.length) { notice('All selected policies are in monitor ' + m.Name + ' already.'); return; }
-          next = ids.concat(todo.map(idOf));
-          title = 'Add ' + fmtNum(todo.length) + ' policy(ies) to monitor ' + m.Name;
-          text = todo.map(function (r) { return r.DisplayName; }).slice(0, 10).join(', ') + (todo.length > 10 ? ', ...' : '') + (todo.length < sel.length ? ' (' + fmtNum(sel.length - todo.length) + ' are in it already)' : '') + '. It analyses them from its next run - read only.';
-        } else {
-          var mine = sel.filter(function (r) { return ids.indexOf(idOf(r)) >= 0; });
-          var stay = sel.filter(function (r) { return ids.indexOf(idOf(r)) < 0 && (inMon[idOf(r)] || []).indexOf(m.Name) >= 0; });
-          if (!mine.length) { notice(stay.length ? 'The selected policies are in monitor ' + m.Name + ' through a persona (or an older series rule), not one by one - change the persona (Manage personas) or the monitor instead.' : 'None of the selected policies is in monitor ' + m.Name + '.', 'warn'); return; }
-          var gone = mine.map(idOf); next = ids.filter(function (x) { return gone.indexOf(x) < 0; });
-          title = 'Remove ' + fmtNum(mine.length) + ' policy(ies) from monitor ' + m.Name;
-          text = mine.map(function (r) { return r.DisplayName; }).slice(0, 10).join(', ') + (mine.length > 10 ? ', ...' : '') + '.' + (stay.length ? ' ' + fmtNum(stay.length) + ' other(s) stay: they are in it through a persona or an older series rule.' : '');
-        }
-        withReason(title, text, function (reason) { def.policyIds = next; return api('PUT', '/api/ca/monitors/' + encodeURIComponent(m.Name), { definition: def, schedule: m.Schedule, enabled: !!m.Enabled, reason: reason }); });
+        var plan = caMonitorPlan(kind, def, sel, takes, pols);
+        if (!plan.changed) { notice(plan.lines.join(' '), 'warn'); return; }
+        var title = (kind === 'add' ? 'Add to monitor ' : 'Remove from monitor ') + m.Name + ': ' + plan.summary;
+        withReason(title, plan.lines.join('\n') + '\n' + (kind === 'add' ? 'It analyses them from its next run - read only.' : 'The policies themselves stay as they are.'), function (reason) {
+          return api('PUT', '/api/ca/monitors/' + encodeURIComponent(m.Name), { definition: plan.def, schedule: m.Schedule, enabled: !!m.Enabled, reason: reason }); });
       } })));
       d.showModal();
     }).catch(function (e) { notice('Could not read the monitors: ' + e.message, 'warn'); });
   }
-  function drawCaAnalysis(p, id) {
+  // the change to ONE monitor's definition and a plain line per policy - kept apart from the dialog so it can be read
+  // on its own: { def, changed, lines, summary }
+  function caMonitorPlan(kind, def, sel, takes, pols) {
+    var lc = function (x) { return String(x).toLowerCase(); };
+    var nd = JSON.parse(JSON.stringify(def || {}));
+    var ids = (nd.policyIds || []).map(lc), out = (nd.excludePolicyIds || []).map(lc);
+    var nameOf = {}; (pols || []).forEach(function (p) { nameOf[lc(p.PolicyId)] = p.DisplayName; });
+    // through what else the monitor takes a policy: a persona it names, or an older series rule
+    var via = function (r) {
+      var id = lc(r.PolicyId), why = [];
+      (nd.personas || []).forEach(function (pn) { if ((takes[lc(pn)] || []).indexOf(id) >= 0) why.push('persona ' + pn); });
+      var rules = (nd.policyPrefixes || []).concat(nd.policyPatterns || []);
+      if (rules.some(function (x) { return caRuleMatch(r.DisplayName, x); }) || (nd.policyNames || []).some(function (x) { return lc(x) === lc(r.DisplayName); })) why.push('an older series rule');
+      return why;
+    };
+    var lines = [], n = { added: 0, back: 0, unpicked: 0, left: 0, none: 0 };
+    sel.forEach(function (r) {
+      var id = lc(r.PolicyId), nm = r.DisplayName || nameOf[id] || id, why = via(r), isPicked = ids.indexOf(id) >= 0, isOut = out.indexOf(id) >= 0;
+      if (kind === 'add') {
+        if (isOut) { out = out.filter(function (x) { return x !== id; }); if (!why.length && !isPicked) ids.push(id); n.back++; lines.push(nm + ': taken back (it was left out of this monitor).'); }
+        else if (isPicked || why.length) { n.none++; lines.push(nm + ': in it already' + (why.length ? ' (through ' + why.join(', ') + ')' : '') + ' - nothing changes.'); }
+        else { ids.push(id); n.added++; lines.push(nm + ': added.'); }
+      } else {
+        if (isOut) { n.none++; lines.push(nm + ': left out already - nothing changes.'); return; }
+        if (!isPicked && !why.length) { n.none++; lines.push(nm + ': not in this monitor - nothing changes.'); return; }
+        if (isPicked) ids = ids.filter(function (x) { return x !== id; });
+        if (why.length) { out.push(id); n.left++; lines.push(nm + ': left out of this monitor' + (isPicked ? ' and unpicked' : '') + ' (it comes through ' + why.join(', ') + ').'); }
+        else { n.unpicked++; lines.push(nm + ': removed (it was picked one by one).'); }
+      }
+    });
+    nd.policyIds = ids; nd.excludePolicyIds = out;
+    var parts = kind === 'add' ? [[n.added, 'added'], [n.back, 'taken back'], [n.none, 'in it already']] : [[n.unpicked, 'removed'], [n.left, 'left out'], [n.none, 'unchanged']];
+    return { def: nd, changed: kind === 'add' ? (n.added + n.back) > 0 : (n.unpicked + n.left) > 0, lines: lines,
+      summary: parts.filter(function (x) { return x[0]; }).map(function (x) { return fmtNum(x[0]) + ' ' + x[1]; }).join(', ') };
+  }  function drawCaAnalysis(p, id) {
     var all = false;
     var host = el('div');
     var load = function () {
@@ -2024,7 +2086,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       }
       p.appendChild(el('h3', { text: 'Policies' }));
       var cols = [{ key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } },
-        { key: 'TemplateId', label: 'Template', type: 'cat' }, { key: 'Persona', label: 'Persona', type: 'cat' }, { key: 'StageShown', label: 'Stage', type: 'cat', cls: function (r) { return r.StageMismatch ? 'c-danger' : ''; } },
+        { key: 'TemplateId', label: 'Template', type: 'cat' }, { key: 'Persona', label: 'Persona', type: 'cat', multi: ', ' }, { key: 'StageShown', label: 'Stage', type: 'cat', cls: function (r) { return r.StageMismatch ? 'c-danger' : ''; } },
         { key: 'State', label: 'State', type: 'cat' }, { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
         { key: 'BreakGlass', label: 'Break-glass', type: 'cat', cls: function (r) { return CAP_BG_CLS[r.BreakGlass] || ''; } }, { key: 'Adoption', label: 'Adopted', type: 'cat' },
         { key: 'Findings', label: 'Findings', type: 'cat' }, { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];

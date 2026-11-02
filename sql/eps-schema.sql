@@ -803,3 +803,12 @@ CREATE TABLE eps.CaPersona (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 14)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (14, '2.0.24');
+
+-- ---- v15: a persona's exclude list (CA-LIMITS, owner 2026-11-02: "fix all 4 limits") ----------------------------------
+-- A persona takes (its picked policies + the policies its rules take) minus ExcludeIdsJson. The seed is now marked once
+-- in eps.Setting 'CaAnalyzer.PersonasSeeded' (written by the engine), so an empty list after the seed stays empty.
+IF COL_LENGTH('eps.CaPersona', 'ExcludeIdsJson') IS NULL
+ALTER TABLE eps.CaPersona ADD ExcludeIdsJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_CaPersona_Excl DEFAULT N'[]';  -- JSON array of policy ids
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 15)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (15, '2.0.25');

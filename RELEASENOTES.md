@@ -2,6 +2,20 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.25 - personas and monitors: leave out any policy
+- A persona can leave out a policy its name rules take: in Manage personas, untick it and it stays out; tick it again
+  to take it back.
+- "Remove from monitor..." on the Conditional Access page now removes any policy. A policy you picked one by one is
+  unpicked; a policy that comes in through a persona or an older series rule is left out of that monitor. The
+  confirmation says per policy what happens. "Add to monitor..." takes a left-out policy back.
+- The CA Policy Analyzer form shows a monitor's left-out policies as "left out of this monitor", each with "take back".
+  Unticking a policy that a ticked persona takes leaves it out of that monitor.
+- The Persona column on the Conditional Access page shows the personas you manage: every persona that takes the policy
+  ("no persona" when none). Filtering on a persona finds a policy that is in several.
+- Personas and monitors work on your real policies. The built-in personas are a starting list, made once from your
+  policies when the analyzer first runs; after that it is yours. You can delete the last persona: an empty list stays
+  empty. Policies in no persona are listed under "No persona".
+- The analyzer still only reads: nothing changes a Conditional Access policy.
 ## 2.0.24 - one CA Policy Analyzer form, personas you manage
 - The CA Policy Analyzer has ONE form: pick a new monitor or an existing one at the top, then 1. which policies,
   2. which sign-ins (the last 24 hours, 3, 7, 14 or 30 days) and 3. Analyse now or Save as monitor. Analyse first and

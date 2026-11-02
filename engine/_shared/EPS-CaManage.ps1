@@ -81,18 +81,10 @@ function Get-EpsCaList {
     , @(@($v) | Where-Object { $null -ne $_ -and "$_" -ne '' } | ForEach-Object { "$_" })
 }
 
-function Get-EpsCaPersona {
-    # the persona a policy belongs to (its template's), for grouping in the analyzer (owner 2026-11-02: "group per persona
-    # fx Users-Internal. we monitor per persona and global rules ca00x typically"). v1's templates spell two personas two
-    # ways (Users-Internals / Users-Internal, Users-Internal-Developerss): grouped as one - the templates stay as v1 has them.
-    param([string]$DisplayName, $Catalog = (Get-EpsCaTemplateCatalog))
-    $t = (Get-EpsCaNameMatch -DisplayName $DisplayName -Catalog $Catalog).Template
-    if (-not $t -or -not "$($t.persona)") { return 'Other (no template)' }
-    ConvertTo-EpsCaPersonaName "$($t.persona)"
-}
-
 function ConvertTo-EpsCaPersonaName {
-    # v1's two spelling slips folded into one persona each (the templates stay as v1 has them)
+    # v1's two spelling slips folded into one persona each (the templates stay as v1 has them) - the persona IMPORT only.
+    # (2.0.25: the template persona of a policy is no longer shown or used - the Persona column and the analyzer show the
+    # MANAGED personas, Get-EpsCaPolicyPersonaMap; owner 2026-11-02 "templates is a import only feature")
     param([string]$Persona)
     switch -Regex ($Persona) { '^Users-Internals$' { 'Users-Internal' } '^Users-Internal-Developerss$' { 'Users-Internal-Developers' } default { $Persona } }
 }
@@ -461,12 +453,15 @@ function Get-EpsCaOverview {
     param([Parameter(Mandatory)][string]$ConnectionString)
     $adopt = @{}; foreach ($a in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, Status, TemplateId, StageAtAdopt, AdoptedBy, AdoptedAtUtc, ReleasedBy, ReleasedAtUtc FROM eps.CaAdoption')) { $adopt["$($a.PolicyId)".ToLowerInvariant()] = $a }
     $open = @{}; foreach ($f in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT PolicyId, Kind FROM eps.CaFinding WHERE Status = 'Open'")) { $k = "$($f.PolicyId)".ToLowerInvariant(); $open[$k] = @($open[$k]) + @([string]$f.Kind) | Where-Object { $_ } }
-    $rows = @(foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc, ReviewJson FROM eps.CaPolicy ORDER BY DisplayName')) {
+    $pol = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc, ReviewJson FROM eps.CaPolicy ORDER BY DisplayName')
+    # the MANAGED personas that take each policy now (CA-LIMITS fix 3; none = "no persona") - eps.CaPersona, never the templates
+    $inPer = Get-EpsCaPolicyPersonaMap -ConnectionString $ConnectionString -Policies @($pol | ForEach-Object { [pscustomobject]@{ id = "$($_.PolicyId)".ToLowerInvariant(); displayName = "$($_.DisplayName)" } })
+    $rows = @(foreach ($r in $pol) {
         $rv = if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20 } else { @{} }
         $k = "$($r.PolicyId)".ToLowerInvariant(); $a = $adopt[$k]
         [pscustomobject][ordered]@{
             PolicyId = "$($r.PolicyId)"; DisplayName = [string]$r.DisplayName; State = [string]$r.State; ModifiedAtUtc = $r.ModifiedAtUtc; SeenAtUtc = $r.SeenAtUtc
-            TemplateId = $rv.templateId; Persona = (Get-EpsCaPersona -DisplayName ([string]$r.DisplayName)); TemplateVersion = $rv.templateVersion; InLibrary = [bool]$rv.inLibrary; NameStage = $rv.nameStage; Stage = $rv.stage; StageNote = $rv.stageNote
+            TemplateId = $rv.templateId; Persona = $(if ($inPer[$k]) { @($inPer[$k]) -join ', ' } else { 'no persona' }); TemplateVersion = $rv.templateVersion; InLibrary = [bool]$rv.inLibrary; NameStage = $rv.nameStage; Stage = $rv.stage; StageNote = $rv.stageNote
             StageMismatch = [bool]$rv.stageMismatch; Matches = $(if ($rv.inLibrary) { [bool]$rv.matches } else { $null }); DiffCount = [int]$rv.diffCount
             BreakGlass = $(if ($null -eq $rv.breakGlass) { 'unknown' } elseif ($rv.breakGlass.exempt) { 'exempt' } elseif ($rv.breakGlass.ok -eq $true) { 'excluded' } elseif ($rv.breakGlass.ok -eq $false) { 'MISSING' } else { 'unknown' })
             BreakGlassText = $(if ($rv.breakGlass) { $rv.breakGlass.text }); Hash = $rv.hash

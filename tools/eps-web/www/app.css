@@ -302,3 +302,6 @@ details.more .form { display:flex; flex-wrap:wrap; gap:6px 14px; margin:6px 0 0 
 details.more .form .wide { flex:1 1 100%; }
 .mtag { display:inline-block; font-size:10.5px; line-height:15px; padding:0 6px; margin-left:5px; border-radius:8px; border:1px solid var(--border); background:var(--surface-alt); color:var(--text-muted); }
 .mtag.on { border-color:var(--accent); color:var(--text); }
+.mtag.out { border-style:dashed; }   /* CA-LIMITS: left out of this monitor */
+.leftout { margin-top:4px; }
+#reasonText { white-space:pre-line; }   /* one line per policy in a bulk confirmation */
