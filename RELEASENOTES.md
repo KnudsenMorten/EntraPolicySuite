@@ -2,6 +2,19 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.33 - every policy has its persona, template library 2.0-v1.1
+- A Conditional Access policy shows its persona even when none of your managed personas takes it: its template's
+  persona, or, for a policy without a template, the persona its name says. CA000-CA0xx are Global, CA095-CA099
+  BreakGlassAccounts. Your managed personas still come first.
+- **Template library 2.0-v1.1:** each template's persona now comes from the template's name, which fixes v1's spelling
+  slips (Users-Internals, Users-Internal-Developerss, Users-Externals) and CA262. The 29 corrected templates are version
+  v1.1. Conditional Access > Template updates shows each change, old against new, for you to adopt.
+- Personas you don't manage yet are marked as coming from the template in Manage personas. Editing one makes it yours.
+- CA Policy Analyzer: the "read a large log in parts" field is gone. EPS decides: a window longer than a day is read a
+  day at a time.
+- Get started opens with how to bring v1 over: the tagging rules in the browser (Tagging Rules > Import CSV), or
+  everything with the import script, step by step.
+- Tagging Rules grid: one number column, # (the run order). The rule's id shows when you point at the number.
 ## 2.0.32 - the menus open
 - The six menus opened in 2.0.31 but stayed hidden under the menu bar. They now fold out, on a click and when you point
   at them.

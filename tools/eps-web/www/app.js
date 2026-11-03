@@ -566,7 +566,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var GRID_UNDO = 100;
   var gridActive = null;   // the grid on screen: its copy / paste (the document's clipboard events land here)
   function gridCols(ot) {
-    var c = [{ key: 'pos', label: '#', ro: true }, { key: 'id', label: 'Rule', ro: true }, { key: 'enabled', label: 'On', kind: 'bool' }];
+    var c = [{ key: 'pos', label: '#', ro: true }, { key: 'enabled', label: 'On', kind: 'bool' }];   // the rule id is on the # cell's hover (owner 2026-11-03: # and Rule were redundant)
     if (ot === 'User') c.push({ key: 'persona', label: 'Persona' });
     c.push({ key: 'tagType', label: 'Tag type', kind: 'tagtype' });
     if (ot === 'User') { c.push({ key: 'tagValueAD', label: 'Value (AD-synced)', kind: 'value' }); c.push({ key: 'tagValueCloud', label: 'Value (cloud)', kind: 'value' }); }
@@ -813,9 +813,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           if (isDraft(w, c)) cls.push('rg-draft');
           if (c.wide) cls.push('rg-wide');
           if (c.key === 'pos' || c.key === 'id' || c.key === 'matched') cls.push('num');
-          var v = cellGet(w, c), tip = c.wide && v.length > 40 ? v : null, grab = false;
+          var v = cellGet(w, c), tip = c.wide && v.length > 40 ? v : (c.key === 'pos' && w.id ? 'Rule ' + w.id : null), grab = false;
           if (ci === 0 && admin && w.id && !w.ro) {
-            if (dragOk) { grab = true; cls.push('rg-grab'); tip = 'Select the rules, then drag their # to a new place in the run order'; }
+            if (dragOk) { grab = true; cls.push('rg-grab'); tip = 'Rule ' + w.id + ' - select the rules, then drag their # to a new place in the run order'; }
             else tip = 'Clear the search and filters to drag rules to a new place (Move works with a filter too)';
           }
           tr.appendChild(el('td', { 'data-r': String(ri), 'data-c': String(ci), class: cls.join(' '), title: tip, draggable: grab ? 'true' : null, text: c.key === 'matched' && v !== '' ? fmtNum(v) : v }));
@@ -1580,7 +1580,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('label', { class: 'wide' }, nonInt, ' Include non-interactive sign-ins (apps signing in for the user - a much larger log)'),
         el('label', { class: 'wide' }, guests, ' Include guests'),
         el('label', { class: 'wide' }, disabled, ' Include disabled accounts'),
-        el('label', { class: 'wide' }, 'Read a large log in parts of ', slice, ' hours (0 = all at once)')));
+        // CA-ANALYZER-PARTS (owner 2026-11-03: "this is too complex for people to dcide on"): EPS decides how it reads a
+        // large log - the field is gone; a window longer than a day is read a day at a time
+        el('p', { class: 'smeta', text: 'A window longer than a day is read a day at a time - EPS decides this, there is nothing to set.' })));
 
     // 3. Analyse now / Save as monitor; name, schedule, on and Alert to only for saving
     var name = el('input', { type: 'text', 'aria-label': 'Monitor name', maxlength: 100, placeholder: 'e.g. users-internal' });
@@ -1657,7 +1659,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       body.appendChild(el('h3', { text: 'Personas' }));
       body.appendChild(el('div', { class: 'smeta', text: 'A persona is a group of policies a monitor can name: picked policies and / or name rules (CA2 = every CA2xx, CA006 = the CA006 policies, CA6* = a wildcard). A monitor resolves its personas at each run, so a change here - or a new policy a rule takes - joins at its next run. A policy a rule takes can be unticked: it is left out of the persona. The starting list was made once from the built-in personas and your policies; change or delete any of them - an empty list stays empty.' + (data.seeded ? '' : ' (The starting list is made the first time the engine runs the analyzer or you change a persona.)') }));
       body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'New persona', onclick: function () { edit(null); } })));
-      body.appendChild(table(data.personas.map(function (pe) { return { Name: pe.name, Source: pe.source === 'custom' ? 'yours' : 'starting list', Rules: (pe.rules || []).join(', '), Picked: (pe.policyIds || []).length, Out: (pe.excludeIds || []).length, Takes: (pe.takes || []).length, Monitors: (pe.monitors || []).join(', '), _pe: pe }; }), [
+      body.appendChild(table(data.personas.map(function (pe) { return { Name: pe.name, Source: pe.managed === false ? 'from the template (not managed yet - edit to manage it)' : (pe.source === 'custom' ? 'yours' : 'starting list'), Rules: (pe.rules || []).join(', '), Picked: (pe.policyIds || []).length, Out: (pe.excludeIds || []).length, Takes: (pe.takes || []).length, Monitors: (pe.monitors || []).join(', '), _pe: pe }; }), [
         { key: 'Name', label: 'Persona' }, { key: 'Rules', label: 'Name rules', wrap: true }, { key: 'Picked', label: 'Picked', type: 'num' }, { key: 'Out', label: 'Left out', type: 'num' }, { key: 'Takes', label: 'Takes now', type: 'num' },
         { key: 'Monitors', label: 'Used by monitors', wrap: true }, { key: 'Source', label: 'From', type: 'cat' },
         { key: '_a', label: '', render: function (r) { return el('span', null, el('button', { type: 'button', class: 'link', text: 'Edit', onclick: function () { edit(r._pe); } }), ' ', el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { del(r._pe); } })); } }],
@@ -2418,6 +2420,23 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
     p.appendChild(el('div', { class: 'guide', text: 'Everything EntraPolicySuite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
+    // V1-IMPORT-GUIDE (owner 2026-11-03: "i am missing instructions on how to import v1 csv files for eps, where is the
+    // docs for that in the gui"): the two ways in, step by step
+    var v1 = el('details', { class: 'gs-step', open: true });
+    v1.appendChild(el('summary', null, el('strong', { text: 'Coming from v1? Import it first' })));
+    v1.appendChild(el('p', { text: 'Two ways, depending on what you want to bring over. v1\'s files are only read, never changed.' }));
+    v1.appendChild(el('h4', { text: 'A. Only the tagging rules - here in the browser (Admin)' }));
+    v1.appendChild(el('ol', null,
+      el('li', { text: 'Open Tagging > Tagging Rules, pick Users (or Devices), and press "Import CSV ...".' }),
+      el('li', { text: 'Choose "v1 files" and pick the files from v1\'s DATA folder: for users Identity_Tagging.csv and Identity_Tagging_AccountInfo.csv; for devices Device_Tagging.csv and Device_Tagging_AccountInfo.csv. Leave out Identity_Tagging_Demo_Reset.csv.' }),
+      el('li', { text: 'Look at the plan it shows (the rule cards it makes, any row it cannot read, the hints) and confirm. "Replace" swaps out an earlier v1 import; rules made here are never touched.' })));
+    v1.appendChild(el('h4', { text: 'B. Everything - rules, tag types, settings, break-glass accounts, target groups, admin units, service tags' }));
+    v1.appendChild(el('ol', null,
+      el('li', { text: 'On a machine that can reach v1\'s folder (e.g. C:\\SCRIPTS with DATA in it), open PowerShell 7 in the EntraPolicySuite release folder (tools\\setup).' }),
+      el('li', null, 'See the plan, nothing is written: ', el('code', { text: '.\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS' })),
+      el('li', null, 'Write it: ', el('code', { text: ".\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS -Apply -ConnectionString 'Server=tcp:<your SQL server>.database.windows.net;Database=eps;Encrypt=True'" }), ' - run it as a member of the SQL admin group you gave the install (the server name is in the install\'s summary and in Azure).'),
+      el('li', { text: 'Then press "Check now" below: every step shows what the import filled and what is still missing.' })));
+    p.appendChild(v1);
     return api('GET', '/api/onboarding').then(function (j) {
       var steps = j.steps || [];
       var done = steps.filter(function (s) { return s.state === 'ok'; }).length;

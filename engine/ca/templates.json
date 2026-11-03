@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "product": "EntraPolicySuite",
-  "library": "2.0-v1",
-  "note": "The Conditional Access template library (DESIGN §5.1) as data. Converted from v1's CA-Scripts-Active by internal/tools/ConvertFrom-EpsV1CaTemplates.ps1 - do not edit by hand; change the converter or add a new template version. Every id is a role reference ({...}), never a tenant's value. READ ONLY in this release: EntraPolicySuite only COMPARES a tenant's policies with these templates; nothing is ever written to Conditional Access.",
+  "library": "2.0-v1.1",
+  "note": "The Conditional Access template library (DESIGN §5.1) as data. Converted from v1's CA-Scripts-Active by internal/tools/ConvertFrom-EpsV1CaTemplates.ps1 - do not edit by hand; change the converter or add a new template version. Every id is a role reference ({...}), never a tenant's value. EntraPolicySuite COMPARES a tenant's policies with these templates; the one write is a SuperAdmin's stage move of an adopted policy (CA-LIFECYCLE) - a template never writes a policy.",
   "stages": [
     "Initial",
     "Pilot1",
@@ -1917,9 +1917,9 @@
     },
     {
       "id": "CA200",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA200-Users-Internal-AllApps-AnyPlatform-MFA-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -1974,13 +1974,15 @@
           "{group:Users_Internal_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA201",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA201-Users-Internal-AllApps-AnyPlatform-PersistentBrowser-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2035,13 +2037,15 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA202",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA202-Users-Internal-Office365-Windows-CompliantDevice-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2107,7 +2111,9 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA203",
@@ -2177,9 +2183,9 @@
     },
     {
       "id": "CA204",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA204-Users-Internal-AllApps-WindowsMacOS-UnmanagedDevices-SigninFrequency-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2249,13 +2255,15 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA205",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA205-Users-Internal-AllApps-AnyPlatform-MediumHighSigninRisk-MFA-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2314,13 +2322,15 @@
           "{group:Users_Internal_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA206",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA206-Users-Internal-MicrosoftIntuneEnrollment-AnyPlatform-MFA-Enforce",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2375,13 +2385,15 @@
           "{group:Users_Internal_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA207",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA207-Users-Internal-Office365-AnyPlatform-Unmanaged-AppEnforcedRestrictions-BlockDownload",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2442,13 +2454,15 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA208",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA208-Users-Internal-Office365-iOSAndroid-Unmanaged-RequireAppProtection",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2515,13 +2529,15 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA209",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA209-Users-Internal-SelectedApps-AnyPlatform-Block",
-      "persona": "Users-Internals",
+      "persona": "Users-Internal",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2576,7 +2592,9 @@
           "{group:Users_Internal_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal' from the policy name (v1's Policy Persona Target said 'Users-Internals')"
+      ]
     },
     {
       "id": "CA210",
@@ -2913,9 +2931,9 @@
     },
     {
       "id": "CA251",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA251-Users-Internal-Developers-AllApps-AnyPlatform-PersistentBrowser-Enforce",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -2970,7 +2988,9 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA252",
@@ -3112,9 +3132,9 @@
     },
     {
       "id": "CA254",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA254-Users-Internal-Developers-AllApps-WindowsMacOS-UnmanagedDevices-SigninFrequency-Enforce",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3178,13 +3198,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA255",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA255-Users-Internal-Developers-AllApps-AnyPlatform-MediumHighSigninRisk-MFA-Enforce",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3243,13 +3265,15 @@
           "{group:Users_Internal_Developers_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA256",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA256-Users-Internal-Developers-MicrosoftIntuneEnrollment-AnyPlatform-MFA-Enforce",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3304,13 +3328,15 @@
           "{group:Users_Internal_Developers_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA257",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA257-Users-Internal-Developers-Office365-AnyPlatform-Unmanaged-AppEnforcedRestrictions-BlockDownload",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3365,13 +3391,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA258",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA258-Users-Internal-Developers-Office365-iOSAndroid-Unmanaged-RequireAppProtection",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3432,13 +3460,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA259",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA259-Users-Internal-Developers-SelectedApps-AnyPlatform-Block",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3493,13 +3523,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA260",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA260-Users-Internal-Developers-EntraGSA-Windows-MFACompliant-Enforce",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3561,13 +3593,15 @@
           "{group:Users_Internal_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA261",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA261-Users-Internal-Developers-Office365-InsiderRiskElevated-Block",
-      "persona": "Users-Internal-Developerss",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3623,13 +3657,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Users-Internal-Developerss')"
+      ]
     },
     {
       "id": "CA262",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA262-Users-Internal-Developers-AllApps-AnyPlatform-SigninFrequency-Enforce",
-      "persona": "Admins",
+      "persona": "Users-Internal-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3687,13 +3723,15 @@
           "{group:Users_Internal_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-Internal-Developers' from the policy name (v1's Policy Persona Target said 'Admins')"
+      ]
     },
     {
       "id": "CA300",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA300-Users-External-AllApps-AnyPlatform-MFA-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3748,13 +3786,15 @@
           "{group:Users_External_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA301",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA301-Users-External-AllApps-AnyPlatform-MediumHighSigninRisk-MFA-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3813,13 +3853,15 @@
           "{group:Users_External_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA302",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA302-Users-External-AllApps-AnyPlatform-SigninFrequency-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3877,13 +3919,15 @@
           "{group:Users_External_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA303",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA303-Users-External-AllApps-AnyPlatform-PersistentBrowser-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3938,13 +3982,15 @@
           "{group:Users_External_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA304",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA304-Users-External-SelectedApps-AnyPlatform-Block",
-      "persona": "Users-Externals",
+      "persona": "Users-External",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -3999,13 +4045,15 @@
           "{group:Users_External_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA350",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA350-Users-External-Developers-AllApps-AnyPlatform-MFA-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -4060,13 +4108,15 @@
           "{group:Users_External_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External-Developers' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA351",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA351-Users-External-Developers-AllApps-AnyPlatform-MediumHighSigninRisk-MFA-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -4125,13 +4175,15 @@
           "{group:Users_External_Developers_MFA_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External-Developers' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA352",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA352-Users-External-Developers-AllApps-AnyPlatform-SigninFrequency-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -4189,13 +4241,15 @@
           "{group:Users_External_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External-Developers' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA353",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA353-Users-External-Developers-AllApps-AnyPlatform-PersistentBrowser-Enforce",
-      "persona": "Users-Externals",
+      "persona": "Users-External-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -4250,13 +4304,15 @@
           "{group:Users_External_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External-Developers' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA354",
-      "version": "v1.0",
+      "version": "v1.1",
       "name": "CA354-Users-External-Developers-SelectedApps-AnyPlatform-Block",
-      "persona": "Users-Externals",
+      "persona": "Users-External-Developers",
       "breakGlassPolicy": false,
       "incomplete": false,
       "groups": {
@@ -4311,7 +4367,9 @@
           "{group:Users_External_Developers_All}"
         ]
       },
-      "gaps": []
+      "gaps": [
+        "persona: 'Users-External-Developers' from the policy name (v1's Policy Persona Target said 'Users-Externals')"
+      ]
     },
     {
       "id": "CA400",
