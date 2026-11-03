@@ -1115,7 +1115,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // grids. filter options" - the mock-up approved: "love it"). A grid grouped by persona (each rule = one condition
   // group, its conditions ANDed, the alternatives for a tag type ORed in run order), filters with counts, a side panel
   // for the selected rule and "Try on a user". Staged changes from the commit queue show in place.
-  var RULES = { view: store.get('eps.rules.view', 'cards'), groupBy: store.get('eps.rules.groupBy', 'persona'), q: '',tags: {}, states: {}, conds: {}, closed: {}, sel: null, tryReq: null, tryOut: null };
+  var RULES = { view: store.get('eps.rules.view', 'cards'), groupBy: store.get('eps.rules.groupBy', 'persona'), q: '',tags: {}, states: {}, conds: {}, open: {}, sel: null, tryReq: null, tryOut: null };
   var RULE_STATE_TEXT = { off: 'Off', staged: 'Staged - not applied', hint: 'Hint', on: 'On' };
   function drawRules(p, ot, j) {
     var admin = isRole('Admin'), S = RULES;
@@ -1212,16 +1212,16 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         list.forEach(function (r) { keys[0](r).forEach(function (g) { if (!gmap[g]) { gmap[g] = []; gorder.push(g); } gmap[g].push(r); }); });
         // expand / collapse every group at once (owner 2026-11-02: "i need a expand/collapse all button in the rules")
         if (gorder.length > 1) main.appendChild(el('div', { class: 'toolbar' },
-          el('button', { type: 'button', class: 'link', text: 'Expand all', onclick: function () { S.closed = {}; drawMain(); } }),
-          el('button', { type: 'button', class: 'link', text: 'Collapse all', onclick: function () { gorder.forEach(function (g) { S.closed[g] = true; }); drawMain(); } })));
+          el('button', { type: 'button', class: 'link', text: 'Expand all', onclick: function () { gorder.forEach(function (g) { S.open[g] = true; }); drawMain(); } }),
+          el('button', { type: 'button', class: 'link', text: 'Collapse all', onclick: function () { S.open = {}; drawMain(); } })));
         if (!gorder.length) main.appendChild(el('div', { class: 'empty', text: rows.length ? 'No rule matches the filters.' : 'No rules yet. Import them (Grid > Import CSV: this app\'s export or the v1 files), or make a new rule.' }));
         gorder.forEach(function (g) {
           var grs = gmap[g].slice().sort(function (a, b) { return (a.pos || 1e9) - (b.pos || 1e9); });
-          var open = !S.closed[g];
+          var open = !!S.open[g] || !!S.q;   // collapsed by default (owner 2026-11-03); a search shows what it found
           var tts = uniq(grs.map(function (r) { return r.tagType; }));
           var maxM = grs.reduce(function (m, r) { return Math.max(m, r.matched || 0); }, 0);
           var sec = el('section', { class: 'rx-group' });
-          sec.appendChild(el('button', { type: 'button', class: 'rx-ghead', 'aria-expanded': open ? 'true' : 'false', onclick: function () { S.closed[g] = open; drawMain(); } },
+          sec.appendChild(el('button', { type: 'button', class: 'rx-ghead', 'aria-expanded': open ? 'true' : 'false', onclick: function () { S.open[g] = !open; drawMain(); } },
             el('span', { class: 'rx-caret', 'aria-hidden': 'true', text: open ? '▾' : '▸' }), el('strong', { text: g }),
             el('span', { class: 'count', text: grs.length + ' rule' + (grs.length === 1 ? '' : 's') + (S.groupBy === 'persona' ? ' · ' + tts.length + ' tag type' + (tts.length === 1 ? '' : 's') : '') }),
             j.matchedRun ? el('span', { class: 'rx-gm', text: fmtNum(maxM) + ' matched (largest rule)' }) : null));
@@ -1248,7 +1248,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
                 tb.appendChild(tr);
               });
               body.appendChild(el('div', { class: 'rx-scroll' }, el('table', { class: 'rx-table' },
-                el('thead', null, el('tr', null, el('th', { class: 'num', scope: 'col', text: 'Order' }), el('th', { scope: 'col', text: 'Conditions (all must match)' }), el('th', { scope: 'col', text: 'Value' }), el('th', { class: 'num', scope: 'col', text: 'Matched' }), el('th', { scope: 'col', text: 'State' }))), tb)));
+                el('thead', null, el('tr', null, el('th', { class: 'num', scope: 'col', text: 'Order' }), el('th', { scope: 'col', text: 'Conditions (all must match)' }), el('th', { scope: 'col', text: 'Tag Value' }), el('th', { class: 'num', scope: 'col', text: 'Matched', title: 'How many accounts this rule matched in the last run' }), el('th', { scope: 'col', text: 'State' }))), tb)));
             });
           }
           main.appendChild(sec);
@@ -1338,7 +1338,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       };
 
       search.addEventListener('input', function () { S.q = search.value; drawMain(); });
-      group.addEventListener('change', function () { S.groupBy = group.value; S.closed = {}; store.set('eps.rules.groupBy', group.value); drawMain(); });
+      group.addEventListener('change', function () { S.groupBy = group.value; S.open = {}; store.set('eps.rules.groupBy', group.value); drawMain(); });
       if (S.sel && !rows.some(function (r) { return r.id && S.sel && r.id === S.sel.id; })) S.sel = null;
       if (S.sel) S.sel = rows.filter(function (r) { return r.id === S.sel.id; })[0];
       drawMain(); side(S.sel);

@@ -311,3 +311,5 @@ details.more .form .wide { flex:1 1 100%; }
 .gs-step > summary { cursor:pointer; }
 .fld { display:block; margin:8px 0; }
 .fld > span { display:block; font-weight:600; margin-bottom:2px; }
+/* BRAND-EPS (owner 2026-11-03): EPS, with the full name in smaller letters */
+.brand-long { font-size:0.55em; font-weight:400; color:var(--text-muted); margin-left:6px; letter-spacing:0.02em; }

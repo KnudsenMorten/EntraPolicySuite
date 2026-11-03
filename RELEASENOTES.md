@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.29 - alerts to Invardia accepted, EPS in the header, rules collapsed
+- Alerts sent to Invardia (for installs that report) carry only the fields Invardia's alert contract takes. Before
+  this, Invardia refused every alert (HTTP 422), and the Uplink job reported PartlyFailed at each run.
+- The header says **EPS**, with "Entra Policy Suite" in smaller letters.
+- Tagging Rules: the groups start collapsed (Expand all opens them; a search shows what it finds). The value column says
+  **Tag Value**, and Matched explains itself when you point at it: how many accounts the rule matched in the last run.
+- Get started: the mail-sender step's text no longer reads like a command.
 ## 2.0.28 - Get started
 - A new page, **Get started**, lists what EntraPolicySuite needs before the templates, tagging and reports work: what
   v1's scripts set up first. **Check now** reads the tenant and changes nothing. Each item shows as ready, missing or

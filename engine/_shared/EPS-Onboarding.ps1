@@ -87,7 +87,7 @@ function Get-EpsSetupSteps {
     }
     $ex = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights.Exchange) { 'unknown' } elseif ($Rights.Exchange) { 'ok' } else { 'missing' }
     $out.Add([ordered]@{ key = 'exchange-recipient-admin'; title = 'Engine holds the Exchange Recipient Administrator role'; state = $ex; since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = "for $($d.exchangeRole.for)" })
-    $out.Add([ordered]@{ key = 'mail-sender'; title = 'An alert mail sender is set up'; state = $(if (-not $MailMode) { 'unknown' } elseif ($MailMode -eq 'none') { 'missing' } else { 'ok' }); since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = 'Initialize-EpsMailSender.ps1, run by an Exchange admin' })
+    $out.Add([ordered]@{ key = 'mail-sender'; title = 'An alert mail sender is set up'; state = $(if (-not $MailMode) { 'unknown' } elseif ($MailMode -eq 'none') { 'missing' } else { 'ok' }); since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = 'set up once by an Exchange admin (the mail sender setup script), then Settings > Mail' })
     foreach ($s in $out) { if ($s.detail.Length -gt 200) { $s.detail = $s.detail.Substring(0, 200) } }
     @($out)
 }
