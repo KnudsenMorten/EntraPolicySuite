@@ -877,3 +877,25 @@ CREATE TABLE eps.OnboardingCheck (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 18)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (18, '2.0.28');
+
+-- ---- v19: ID-ACTIONS, an action per user in the identity report (owner 2026-11-03: "we need a way to add 4 fields per
+-- user: notes + action (dropdwn) like disable, delete, investigate, remove sync cloud + ActionWho (text field) +
+-- ActionStatus (not started, in progress, closed)") -----------------------------------------------------------------------
+-- Kept by the object id, so it stays across report runs; merged into each row when the report is read (filter, sort,
+-- pivot, export). A record for follow-up: EPS does not act on it. The engine writes it (an Admin's request); the web reads.
+IF OBJECT_ID('eps.IdentityAction') IS NULL
+CREATE TABLE eps.IdentityAction (
+    Kind          NVARCHAR(10)   NOT NULL,                -- User
+    ObjectId      NVARCHAR(64)   NOT NULL,
+    Name          NVARCHAR(400)  NULL,                    -- the display name when it was set (for the journal)
+    Notes         NVARCHAR(2000) NULL,
+    Action        NVARCHAR(40)   NULL,                    -- Disable | Delete | Investigate | Remove from cloud sync
+    ActionWho     NVARCHAR(200)  NULL,
+    ActionStatus  NVARCHAR(20)   NULL,                    -- Not started | In progress | Closed
+    UpdatedBy     NVARCHAR(320)  NULL,
+    UpdatedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_IdentityAction_At DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_IdentityAction PRIMARY KEY (Kind, ObjectId)
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 19)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (19, '2.0.30');

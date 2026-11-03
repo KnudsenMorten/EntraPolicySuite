@@ -2,6 +2,17 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.30 - an action per user in the identity report
+- Every user in the identity report has four follow-up fields: **Action** (Disable, Delete, Investigate, Remove from
+  cloud sync), **Status** (Not started, In progress, Closed), **Who** (who is responsible) and **Notes**.
+- Tick users, or take every user a view and its filters show (up to 5,000), and set the fields on all of them at once.
+  For example: filter to the service accounts that are synced to the cloud, then set "Remove from cloud sync", the team,
+  and a note.
+- A field you leave as it is stays unchanged; "clear" empties it.
+- The fields are kept per user across report runs. They show in every user view and can be filtered, sorted, pivoted and
+  exported like any other column.
+- Setting them needs Admin and is journaled and audited. It is a record for follow-up: nothing in the tenant or AD
+  changes.
 ## 2.0.29 - alerts to Invardia accepted, EPS in the header, rules collapsed
 - Alerts sent to Invardia (for installs that report) carry only the fields Invardia's alert contract takes. Before
   this, Invardia refused every alert (HTTP 422), and the Uplink job reported PartlyFailed at each run.

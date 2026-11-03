@@ -640,3 +640,71 @@ function Invoke-EpsIdentityReportJob {
     }
     [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes }
 }
+
+# ---- ID-ACTIONS: an action per user (owner 2026-11-03: "we need a way to add 4 fields per user: notes + action
+# (dropdwn) like disable, delete, investigate, remove sync cloud + ActionWho (text field) + ActionStatus (not started, in
+# progress, closed). it must be possible to do multiselect ..."). A record for follow-up - EPS never acts on it.
+$script:EpsIdentityActionValues = @('Disable', 'Delete', 'Investigate', 'Remove from cloud sync')
+$script:EpsIdentityActionStates = @('Not started', 'In progress', 'Closed')
+$script:EpsIdentityActionColumns = [ordered]@{ Action = 'text'; ActionStatus = 'text'; ActionWho = 'text'; Notes = 'text' }
+function Get-EpsIdentityActionLists { @{ actions = @($script:EpsIdentityActionValues); states = @($script:EpsIdentityActionStates) } }
+
+function Test-EpsIdentityActionSet {
+    # the fields to set: each one present = set it ('' clears it), absent = left as it is. @{ Ok; Error; Set (field -> value | $null) }
+    param($Set)
+    if ($null -eq $Set) { return @{ Ok = $false; Error = 'set: which fields to change (notes, action, actionWho, actionStatus)' } }
+    $names = @(if ($Set -is [System.Collections.IDictionary]) { $Set.Keys } else { $Set.PSObject.Properties.Name })
+    $get = { param($n) if ($Set -is [System.Collections.IDictionary]) { $Set[$n] } else { $Set.$n } }
+    $out = [ordered]@{}
+    foreach ($n in $names) {
+        $v = & $get $n; $s = if ($null -eq $v) { '' } else { "$v".Trim() }
+        switch ($n) {
+            'action'       { if ($s -and $s -notin $script:EpsIdentityActionValues) { return @{ Ok = $false; Error = "action: one of $($script:EpsIdentityActionValues -join ', ') (or empty to clear)" } }; $out.Action = $(if ($s) { $s }) }
+            'actionStatus' { if ($s -and $s -notin $script:EpsIdentityActionStates) { return @{ Ok = $false; Error = "actionStatus: one of $($script:EpsIdentityActionStates -join ', ') (or empty to clear)" } }; $out.ActionStatus = $(if ($s) { $s }) }
+            'actionWho'    { if ($s.Length -gt 200) { return @{ Ok = $false; Error = 'actionWho: at most 200 characters' } }; $out.ActionWho = $(if ($s) { $s }) }
+            'notes'        { if ($s.Length -gt 2000) { return @{ Ok = $false; Error = 'notes: at most 2000 characters' } }; $out.Notes = $(if ($s) { $s }) }
+            default        { return @{ Ok = $false; Error = "set.$($n): not a field (notes, action, actionWho, actionStatus)" } }
+        }
+    }
+    if (-not $out.Count) { return @{ Ok = $false; Error = 'set: nothing to change' } }
+    @{ Ok = $true; Set = $out }
+}
+
+function Save-EpsIdentityActions {
+    <#
+      Sets the given fields on many users at once (the others stay as they are); a user whose four fields end up empty
+      loses his row. Only users in the latest snapshot. One journal entry for the whole change. Returns @{ Count; Unknown }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string[]]$ObjectIds, [Parameter(Mandatory)]$Set, [Parameter(Mandatory)][string]$Actor)
+    $run = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT TOP 1 RunId FROM eps.IdentitySnapshot ORDER BY CreatedAtUtc DESC')[0]
+    if (-not $run) { return @{ Count = 0; Unknown = @($ObjectIds) } }
+    $ids = @($ObjectIds | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
+    $idj = ConvertTo-Json -InputObject @($ids) -Compress
+    $known = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = [guid]$run.RunId; j = $idj } -Query "SELECT r.ObjectId, r.Name FROM eps.IdentityRow r JOIN OPENJSON(@j) AS x ON LOWER(r.ObjectId) = x.[value] WHERE r.RunId = @r AND r.Kind = 'User'")
+    $unknown = @($ids | Where-Object { @($known | ForEach-Object { "$($_.ObjectId)".ToLowerInvariant() }) -notcontains $_ })
+    if (-not $known.Count) { return @{ Count = 0; Unknown = $unknown } }
+    $rows = ConvertTo-Json -InputObject @($known | ForEach-Object { @{ i = "$($_.ObjectId)"; n = $(if ($_.Name -isnot [DBNull]) { "$($_.Name)" }) } }) -Compress
+    $has = { param($f) $Set.Contains($f) }
+    $p = @{ j = $rows; by = $Actor
+            hn = [bool](& $has 'Notes'); vn = $(if ($Set.Notes) { $Set.Notes } else { [DBNull]::Value })
+            ha = [bool](& $has 'Action'); va = $(if ($Set.Action) { $Set.Action } else { [DBNull]::Value })
+            hw = [bool](& $has 'ActionWho'); vw = $(if ($Set.ActionWho) { $Set.ActionWho } else { [DBNull]::Value })
+            hs = [bool](& $has 'ActionStatus'); vs = $(if ($Set.ActionStatus) { $Set.ActionStatus } else { [DBNull]::Value }) } +
+         (New-EpsJournalParameters -Actor $Actor -Entity 'IdentityAction' -Key "$($known.Count) user(s)" -Action 'Update' -Before $null -After (@{ users = @($known | ForEach-Object { "$($_.ObjectId)" }); set = $Set } | ConvertTo-Json -Compress -Depth 4))
+    [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $p -Query @"
+SET XACT_ABORT ON; BEGIN TRAN;
+MERGE eps.IdentityAction AS t
+USING (SELECT x.i AS ObjectId, x.n AS Name FROM OPENJSON(@j) WITH (i NVARCHAR(64) '`$.i', n NVARCHAR(400) '`$.n') AS x) AS s
+ON t.Kind = 'User' AND t.ObjectId = s.ObjectId
+WHEN MATCHED THEN UPDATE SET Name = s.Name,
+    Notes = CASE WHEN @hn = 1 THEN @vn ELSE t.Notes END, Action = CASE WHEN @ha = 1 THEN @va ELSE t.Action END,
+    ActionWho = CASE WHEN @hw = 1 THEN @vw ELSE t.ActionWho END, ActionStatus = CASE WHEN @hs = 1 THEN @vs ELSE t.ActionStatus END,
+    UpdatedBy = @by, UpdatedAtUtc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT (Kind, ObjectId, Name, Notes, Action, ActionWho, ActionStatus, UpdatedBy)
+    VALUES ('User', s.ObjectId, s.Name, CASE WHEN @hn = 1 THEN @vn END, CASE WHEN @ha = 1 THEN @va END, CASE WHEN @hw = 1 THEN @vw END, CASE WHEN @hs = 1 THEN @vs END, @by);
+DELETE FROM eps.IdentityAction WHERE Kind = 'User' AND Notes IS NULL AND Action IS NULL AND ActionWho IS NULL AND ActionStatus IS NULL;
+$(Get-EpsJournalSql)
+COMMIT;
+"@)
+    @{ Count = $known.Count; Unknown = $unknown }
+}

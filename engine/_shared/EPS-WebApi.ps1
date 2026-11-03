@@ -740,7 +740,27 @@ function Get-EpsWebRoutes {
             $cols = @{}; if ($run) { foreach ($k in 'User', 'Device') { $cols[$k] = Get-EpsIdentityColumns -ConnectionString $cs -RunId $run.RunId -Kind $k } }
             New-EpsWebResponse -Body @{ snapshot = $(if ($run) { @(ConvertTo-EpsWebValue ($run | Select-Object RunId, CreatedAtUtc, Users, Devices, NotesJson))[0] }); views = $views
                 pivots = $(if ($run -and $run.PivotsJson) { $run.PivotsJson | ConvertFrom-Json } else { @() }); history = $hist; ad = $ad; columns = $cols
-                enabled = "$(Get-EpsSetting -ConnectionString $cs -Name 'IdentityReport.Enabled' -Default 'false')" -eq 'true'; me = $c.Caller.identity; role = $c.Role } } }
+                enabled = "$(Get-EpsSetting -ConnectionString $cs -Name 'IdentityReport.Enabled' -Default 'false')" -eq 'true'; me = $c.Caller.identity; role = $c.Role; actionLists = (Get-EpsIdentityActionLists) } } }
+        # ID-ACTIONS (owner 2026-11-03: "it must be possible to do multiselect and set the actions + responsible + set text")
+        @{ Method = 'POST'; Pattern = '^/api/identity/actions$'; Summary = 'Set the follow-up fields (notes, action, who, status) on many users at once. A record only: nothing in the tenant changes.'; Body = 'ids: the users'' object ids, or selection: { view, filters, q } (every user it shows, at most 5,000); set: { notes, action, actionWho, actionStatus } - a field left out stays, an empty one is cleared; reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'identity.action.set'; NeedsReason = $true; Handler = { param($c, $m)
+            $b = $c.Body; $cs = $c.Ctx.ConnectionString
+            $ts = Test-EpsIdentityActionSet -Set $b.set
+            if (-not $ts.Ok) { return New-EpsWebResponse -Status 400 -Body @{ error = $ts.Error } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = $ts.Error } }
+            $ids = @($b.ids | Where-Object { $_ } | ForEach-Object { "$_" })
+            if (-not $ids.Count -and $b.selection) {
+                $sel = $b.selection; $qq = @{ view = "$($sel.view)"; filters = $(if ($sel.filters) { ConvertTo-Json -InputObject @($sel.filters) -Compress -Depth 5 } else { '' }); q = "$($sel.q)" }
+                $q = Resolve-EpsIdentityQuery -ConnectionString $cs -Query $qq
+                if (-not $q.Ok) { return New-EpsWebResponse -Status $q.Status -Body @{ error = $q.Error } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = $q.Error } }
+                if ($q.Kind -ne 'User') { return New-EpsWebResponse -Status 400 -Body @{ error = 'the follow-up fields are per user: pick a user view' } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = 'not a user view' } }
+                $ids = @(Invoke-EpsSql -ConnectionString $cs -Parameters $q.Parameters -Query "SELECT TOP 5001 r.ObjectId $($q.From) $($q.Where)" | ForEach-Object { "$($_.ObjectId)" })
+            }
+            if (-not $ids.Count) { return New-EpsWebResponse -Status 400 -Body @{ error = 'ids or selection: which users' } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = 'no users' } }
+            if ($ids.Count -gt 5000) { return New-EpsWebResponse -Status 413 -Body @{ error = 'more than 5,000 users - narrow the filter' } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = 'over 5000' } }
+            if (@($ids | Where-Object { $_ -notmatch '^[0-9a-fA-F-]{36}$' }).Count) { return New-EpsWebResponse -Status 400 -Body @{ error = 'ids: user object ids' } -Audit @{ Target = 'IdentityAction'; Outcome = 'refused'; OutcomeText = 'bad id' } }
+            $s = Save-EpsIdentityActions -ConnectionString $cs -ObjectIds $ids -Set $ts.Set -Actor $c.Caller.identity
+            New-EpsWebResponse -Body @{ ok = $true; count = $s.Count; unknown = @($s.Unknown).Count; text = "Set on $($s.Count) user(s)$(if (@($s.Unknown).Count) { "; $(@($s.Unknown).Count) not in the latest report" }). A record only - nothing in the tenant changed." } `
+                -Audit @{ Target = "IdentityAction|$($s.Count) user(s)"; After = @{ count = $s.Count; set = $ts.Set } } } }
         @{ Method = 'GET'; Pattern = '^/api/identity/rows$'; Summary = 'The rows of one view: filtered, sorted and one page at a time.'; Body = 'view; filters (JSON list of column / op / value); q; sort; dir; columns; page; pageSize'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $q = Resolve-EpsIdentityQuery -ConnectionString $c.Ctx.ConnectionString -Query $c.Query
@@ -1185,6 +1205,8 @@ function Get-EpsIdentityColumns {
         }
     }
     foreach ($n in @($cols.Keys)) { if (-not $cols[$n]) { $cols[$n] = 'text' } }
+    # ID-ACTIONS (owner 2026-11-03): the four follow-up fields on every user row (merged in by Resolve-EpsIdentityQuery)
+    if ($Kind -eq 'User') { foreach ($n in $script:EpsIdentityActionColumns.Keys) { $cols[$n] = $script:EpsIdentityActionColumns[$n] } }
     if ($script:EpsIdColumnCache.Count -gt 20) { $script:EpsIdColumnCache.Clear() }
     $script:EpsIdColumnCache[$key] = $cols
     $cols
@@ -1240,7 +1262,7 @@ function Resolve-EpsIdentityQuery {
     $f = ConvertTo-EpsListFilterSql -Filters $filters -Search "$($Query.q)" -Columns $cols
     if (-not $f.Ok) { return @{ Ok = $false; Status = 400; Error = $f.Error } }
     $p = $f.Parameters + @{ run = [guid]$run.RunId; kind = $view.Kind }
-    $from = 'FROM eps.IdentityRow r'
+    $from = "FROM (SELECT x.RunId, x.Kind, x.ObjectId, x.Name, CASE WHEN a.ObjectId IS NULL THEN x.Data ELSE JSON_MODIFY(JSON_MODIFY(JSON_MODIFY(JSON_MODIFY(x.Data, '`$.Notes', a.Notes), '`$.Action', a.Action), '`$.ActionWho', a.ActionWho), '`$.ActionStatus', a.ActionStatus) END AS Data FROM eps.IdentityRow x LEFT JOIN eps.IdentityAction a ON a.Kind = x.Kind AND a.ObjectId = x.ObjectId) r"
     if ($view.Group -ne 'Lists') { $p.view = $view.Name; $from += ' JOIN eps.IdentityViewMember m ON m.RunId = r.RunId AND m.Kind = r.Kind AND m.ObjectId = r.ObjectId AND m.ViewName = @view' }
     @{ Ok = $true; Run = $run; View = $view; Kind = $view.Kind; Columns = $cols; From = $from; Where = "WHERE r.RunId = @run AND r.Kind = @kind$($f.Sql)"; Parameters = $p }
 }

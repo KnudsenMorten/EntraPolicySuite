@@ -1839,6 +1839,39 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var ID_OPS = [['contains', 'contains'], ['notContains', 'does not contain'], ['equals', 'is'], ['startsWith', 'starts with'], ['anyOf', 'is one of'], ['atLeast', 'at least'], ['atMost', 'at most']];
   var ID_SEV_CLS = { High: 'c-danger', Medium: 'c-warning', Low: '', Info: 'smeta' };
   function newUuid() { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) { var r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }); }
+  // ID-ACTIONS (owner 2026-11-03: "we need a way to add 4 fields per user: notes + action (dropdwn) like disable, delete,
+  // investigate, remove sync cloud + ActionWho (text field) + ActionStatus (not started, in progress, closed). it must be
+  // possible to do multiselect"): one dialog for many users; a field left on "leave as it is" is not changed
+  function idActionDialog(lists, what, body) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Set action' });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var KEEP = '__keep', CLEAR = '';
+    var pick = function (vals) { return el('select', null, [el('option', { value: KEEP, text: '(leave as it is)' }), el('option', { value: CLEAR, text: '(clear)' })].concat(vals.map(function (v) { return el('option', { value: v, text: v }); }))); };
+    var act = pick(lists.actions || []), stat = pick(lists.states || []);
+    var who = el('input', { type: 'text', maxlength: 200, placeholder: '(leave as it is) - e.g. the AD team / a name', style: 'width:100%' });
+    var notes = el('textarea', { rows: 3, maxlength: 2000, placeholder: '(leave as it is) - e.g. service account, not needed in the cloud: take it out of the sync scope', style: 'width:100%' });
+    var clrWho = el('input', { type: 'checkbox' }), clrNotes = el('input', { type: 'checkbox' });
+    d.appendChild(el('h3', { text: 'Set action on ' + what }));
+    d.appendChild(el('div', { class: 'guide', text: 'A record for follow-up, kept per user across report runs and shown in every view (filter, sort, pivot, export). Nothing in the tenant or AD changes.' }));
+    [['Action', act], ['Status', stat]].forEach(function (x) { d.appendChild(el('label', { class: 'fld' }, el('span', { text: x[0] }), x[1])); });
+    d.appendChild(el('label', { class: 'fld' }, el('span', { text: 'Who (responsible)' }), who, el('label', null, clrWho, ' clear it')));
+    d.appendChild(el('label', { class: 'fld' }, el('span', { text: 'Notes' }), notes, el('label', null, clrNotes, ' clear it')));
+    var go = el('button', { type: 'button', text: 'Set' });
+    go.addEventListener('click', function () {
+      var set = {};
+      if (act.value !== KEEP) set.action = act.value;
+      if (stat.value !== KEEP) set.actionStatus = stat.value;
+      if (clrWho.checked) set.actionWho = ''; else if (who.value.trim()) set.actionWho = who.value.trim();
+      if (clrNotes.checked) set.notes = ''; else if (notes.value.trim()) set.notes = notes.value.trim();
+      if (!Object.keys(set).length) { notice('Nothing to change: pick an action, a status, a name or a note.', 'warn'); return; }
+      close();
+      withReason('Set action on ' + what, 'Sets the follow-up fields only - nothing in the tenant or AD changes.', function (reason) { body.set = set; body.reason = reason; return api('POST', '/api/identity/actions', body); });
+    });
+    d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+  }
   function drawIdentity(p, arg) {
     return Promise.all([api('GET', '/api/identity'), api('GET', '/api/identity/saved')]).then(function (res) {
       var j = res[0], saved = res[1].rows || [];
@@ -1927,7 +1960,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         def = def || {};
         var allCols = Object.keys((j.columns || {})[v.kind] || {}), types = (j.columns || {})[v.kind] || {};
         var st = { filters: (def.filters || []).slice(), q: def.search || '', sort: def.sort ? def.sort.col : null, dir: def.sort ? def.sort.dir : 1,
-          columns: (def.columns && def.columns.length ? def.columns : v.columns).filter(function (c) { return allCols.indexOf(c) >= 0; }), page: 1, pageSize: def.pageSize || 100, pivot: def.pivot || null };
+          columns: (def.columns && def.columns.length ? def.columns : v.columns).filter(function (c) { return allCols.indexOf(c) >= 0; }), page: 1, pageSize: def.pageSize || 100, pivot: def.pivot || null, sel: {} };
+        var canAct = admin && v.kind === 'User';
+        if (v.kind === 'User' && !(def.columns && def.columns.length)) ['Action', 'ActionStatus', 'ActionWho', 'Notes'].forEach(function (c) { if (allCols.indexOf(c) >= 0 && st.columns.indexOf(c) < 0) st.columns.push(c); });
         if (!st.columns.length) st.columns = allCols.slice(0, 8);
         clear(pane);
         pane.appendChild(el('h3', null, savedRow ? savedRow.Name + ' ' : v.title + ' ', v.severity ? el('span', { class: 'badge' + (v.severity === 'High' ? ' danger' : ''), text: v.severity }) : null, savedRow ? el('span', { class: 'smeta', text: ' (based on ' + v.title + ')' }) : null));
@@ -1992,6 +2027,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           if (!last) return;
           var cols = st.columns.map(function (c) { var t = types[c]; return { key: c, label: c, type: t === 'number' ? 'num' : (t === 'date' ? 'date' : null) }; });
           var t = el('table', { class: 'grid' }), hr = el('tr'), tb = el('tbody');
+          var selIds = function () { return Object.keys(st.sel).filter(function (k) { return st.sel[k]; }); };
+          if (canAct) {
+            var all = el('input', { type: 'checkbox', 'aria-label': 'Select every user on this page' });
+            all.checked = last.rows.length > 0 && last.rows.every(function (r) { return st.sel[r.Id]; });
+            all.addEventListener('change', function () { last.rows.forEach(function (r) { st.sel[r.Id] = all.checked; }); drawGrid(); });
+            hr.appendChild(el('th', { class: 'sel' }, all));
+          }
           cols.forEach(function (c) {
             var th = el('th', { class: c.type === 'num' ? 'num' : null, scope: 'col', text: c.label + (st.sort === c.key ? (st.dir > 0 ? ' ▲' : ' ▼') : '') });
             th.addEventListener('click', function () { if (st.sort === c.key) st.dir = -st.dir; else { st.sort = c.key; st.dir = 1; } st.page = 1; reload(); });
@@ -1999,6 +2041,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           });
           last.rows.forEach(function (r) {
             var tr = el('tr');
+            if (canAct) { var cb = el('input', { type: 'checkbox', 'aria-label': 'Select ' + (r.UserPrincipalName || r.DisplayName || r.Id) }); cb.checked = !!st.sel[r.Id]; cb.addEventListener('change', function () { st.sel[r.Id] = cb.checked; drawGrid(); }); tr.appendChild(el('td', { class: 'sel' }, cb)); }
             cols.forEach(function (c) {
               var val = r[c.key], td = el('td', { class: c.type === 'num' ? 'num' : '' });
               if (c.type === 'date') td.appendChild(timeEl(val)); else if (c.type === 'num') td.textContent = fmtNum(val);
@@ -2015,6 +2058,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           var size = el('select', { 'aria-label': 'Rows per page' }, [25, 50, 100, 200].map(function (n) { return el('option', { value: n, text: n + ' per page' }); })); size.value = String(st.pageSize);
           size.addEventListener('change', function () { st.pageSize = Number(size.value); st.page = 1; reload(); });
           clear(gridHost).appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'count', text: last.total ? fmtNum(from) + '-' + fmtNum(to) + ' of ' + fmtNum(last.total) : '0 rows - nothing open here' }), size));
+          if (canAct && last.total) {
+            var n = selIds().length;
+            gridHost.appendChild(el('div', { class: 'toolbar' },
+              el('span', { class: 'count', text: n ? n + ' selected' : 'Tick users to set an action, or:' }),
+              n ? el('button', { type: 'button', text: 'Set action on ' + n + '...', onclick: function () { idActionDialog(j.actionLists || {}, n + ' user(s)', { ids: selIds() }); } }) : null,
+              el('button', { type: 'button', class: 'secondary', text: 'Set action on all ' + fmtNum(last.total) + ' shown by this view...', disabled: last.total > 5000, title: last.total > 5000 ? 'at most 5,000 - narrow the filter' : 'every user that matches the view, its filters and the search', onclick: function () { idActionDialog(j.actionLists || {}, 'all ' + fmtNum(last.total) + ' user(s) of this view', { selection: { view: v.name, filters: st.filters, q: st.q } }); } }),
+              n ? el('button', { type: 'button', class: 'link', text: 'Clear selection', onclick: function () { st.sel = {}; drawGrid(); } }) : null));
+          }
           gridHost.appendChild(el('div', { class: 'twrap' }, t));
           gridHost.appendChild(el('div', { class: 'pager' }, prevB, nextB));
         }

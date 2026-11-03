@@ -25,6 +25,7 @@ $script:EpsAuditActions = @(
     'ca.template.take'              # Template updates (TEMPLATE-UPDATES, 2.0.26): a newer library's persona changes taken / template changes marked seen - no policy is written
     'ca.persona.change', 'ca.persona.delete'   # the analyzer's personas (CA-PERSONA, 2.0.24): create / edit / rename, delete (journal: eps.ConfigChange)
     'ca.policy.adopt', 'ca.policy.release'   # Conditional Access: the operator RECORDS that he adopts / releases a policy - nothing in the tenant changes
+    'identity.action.set'           # ID-ACTIONS (2.0.30): the follow-up fields set on users (EPS data only)
     'onboarding.check', 'breakglass.change'   # GET-STARTED (2.0.28): the engine checks the onboarding steps (reads only); the break-glass list edited (EPS data)
     'ca.policy.stage'               # CA-LIFECYCLE (2.0.27): a SuperAdmin moves ONE adopted policy ONE stage - the engine's one Conditional Access write
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names
