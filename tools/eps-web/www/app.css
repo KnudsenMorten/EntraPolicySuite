@@ -325,3 +325,8 @@ details.more .form .wide { flex:1 1 100%; }
 .nav-item-l { display:block; }
 .nav-item-d { display:block; font-size:11.5px; color:var(--text-muted); font-weight:400; line-height:1.35; }
 @media (max-width:700px) { .nav-grp { display:block; } .nav-grp-menu { position:static; box-shadow:none; border:0; min-width:0; padding-left:12px; } }
+/* MENU-1 fix (owner 2026-11-03: "menus are not folding out when i move mouse over or click, they seem dead"): the strip
+   scrolled sideways (overflow-x:auto), and a scrolling box CLIPS the dropdown under it - so the strip wraps instead,
+   and a group opens on hover too (click / keyboard as before) */
+#tabs { overflow:visible; flex-wrap:wrap; }
+@media (hover:hover) and (min-width:701px) { .nav-grp:hover > .nav-grp-menu, .nav-grp:focus-within > .nav-grp-menu { display:block; } }
