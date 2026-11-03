@@ -812,3 +812,24 @@ ALTER TABLE eps.CaPersona ADD ExcludeIdsJson NVARCHAR(MAX) NOT NULL CONSTRAINT D
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 15)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (15, '2.0.25');
+
+-- ---- v16: what the install has TAKEN of the template library (TEMPLATE-UPDATES, owner 2026-11-02: "templates can be used
+-- for updates if new features are added but always operator controlled. easy to see chg is importantant") ----------------
+-- One row per CA number: the template as taken (the "before" of the next update; NULL = not taken / its removal taken) and
+-- the persona its number was taken into (NULL = none taken). The engine writes the baseline once (the library the install
+-- imported) and what the operator takes from the Template updates view; the web app only reads it. A newer library changes
+-- nothing by itself, and nothing here ever writes a Conditional Access policy.
+IF OBJECT_ID('eps.CaTemplateTaken') IS NULL
+CREATE TABLE eps.CaTemplateTaken (
+    TemplateId    NVARCHAR(20)   NOT NULL PRIMARY KEY,   -- CA000 .. CA800
+    Version       NVARCHAR(20)   NULL,
+    TemplateJson  NVARCHAR(MAX)  NULL,                   -- the compared parts of the template, canonical JSON
+    TemplateHash  CHAR(64)       NULL,
+    Persona       NVARCHAR(100)  NULL,                   -- the persona the number was taken into ('' = none)
+    Library       NVARCHAR(40)   NOT NULL,               -- the library it was taken from
+    TakenAtUtc    DATETIME2      NOT NULL CONSTRAINT DF_CaTemplateTaken_At DEFAULT SYSUTCDATETIME(),
+    TakenBy       NVARCHAR(320)  NULL
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 16)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (16, '2.0.26');

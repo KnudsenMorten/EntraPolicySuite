@@ -275,6 +275,238 @@ SELECT @n;
 '@)
 }
 
+# ---- template updates (TEMPLATE-UPDATES, owner 2026-11-02: "templates can be used for updates if new features are added
+# but always operator controlled. easy to see chg is importantant") ----------------------------------------------------------
+# eps.CaTemplateTaken records, per template, what this install has TAKEN: the template as it was (the "before" of the next
+# update) and the persona its number was taken into. A release with a newer library changes NOTHING by itself: the view
+# compares the shipped library with what was taken and lists what is new / changed / removed, with a readable before /
+# after, and the persona changes. The operator takes what he wants: a persona change is applied to eps.CaPersona (or
+# skipped), a template change is only marked as seen - policies are shown and exported, never written (Test-EpsNoCaWrite).
+# The baseline is written once, by the engine: the library the install imported (2.0.26 ships the same library 2.0-v1 that
+# every earlier install imported, so its baseline is exact).
+$script:EpsCaTemplateFields = 'version', 'name', 'persona', 'breakGlassPolicy', 'incomplete', 'groups', 'body', 'prod'
+$script:EpsCaTemplateIdRx = '^CA\d{3}$'
+
+function ConvertTo-EpsCaSorted {
+    # a value with its keys sorted and its lists of plain values sorted - the same template always gives the same JSON
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary] -or $Value -is [System.Management.Automation.PSCustomObject]) {
+        $keys = if ($Value -is [System.Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        $o = [ordered]@{}
+        foreach ($k in @($keys | Sort-Object { "$_" } -CaseSensitive)) { $o["$k"] = ConvertTo-EpsCaSorted $(if ($Value -is [System.Collections.IDictionary]) { $Value[$k] } else { $Value.$k }) }
+        return $o
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = @(foreach ($i in $Value) { , (ConvertTo-EpsCaSorted $i) })
+        if (-not @($items | Where-Object { $null -ne $_ -and $_ -isnot [string] -and $_ -isnot [ValueType] }).Count) { $items = @($items | Sort-Object { "$_" } -CaseSensitive) }
+        return , @($items)
+    }
+    $Value
+}
+
+function ConvertTo-EpsCaTemplateRecord {
+    # the parts of a template an update compares: @{ Json; Hash; Persona } (Persona: the persona name as a persona is named)
+    param([Parameter(Mandatory)]$Template)
+    $o = [ordered]@{}
+    foreach ($k in $script:EpsCaTemplateFields) { $v = if ($Template -is [System.Collections.IDictionary]) { $Template[$k] } else { $Template.$k }; if ($null -ne $v) { $o[$k] = $v } }
+    $j = ConvertTo-Json -InputObject (ConvertTo-EpsCaSorted $o) -Compress -Depth 30
+    @{ Json = $j; Hash = (-join ([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($j)) | ForEach-Object { $_.ToString('x2') }))
+       Persona = $(if ("$($o['persona'])") { ConvertTo-EpsCaPersonaName "$($o['persona'])" } else { '' }) }
+}
+
+function Format-EpsCaTemplateValue {
+    # one compared value (compact JSON) as an operator reads it: a list = its items, a value = itself, nothing = (none)
+    param([string]$Json)
+    if (-not $Json) { return '(none)' }
+    $v = try { $Json | ConvertFrom-Json -AsHashtable -Depth 30 -NoEnumerate } catch { return $Json }
+    if ($null -eq $v) { return '(none)' }
+    if ($v -is [string] -or $v -is [ValueType]) { return "$v" }
+    if ($v -is [System.Collections.IList]) {
+        if (-not $v.Count) { return '(none)' }
+        if (-not @($v | Where-Object { $null -ne $_ -and $_ -isnot [string] -and $_ -isnot [ValueType] }).Count) { return (@($v | ForEach-Object { "$_" }) -join ', ') }
+    }
+    ConvertTo-Json -InputObject $v -Compress -Depth 30
+}
+
+function Get-EpsCaTemplateChanges {
+    # the changed fields of one template, side by side: @{ field; before; after } - readable, never raw JSON of the whole
+    param([string]$BeforeJson, [string]$AfterJson)
+    $b = if ($BeforeJson) { $BeforeJson | ConvertFrom-Json -AsHashtable -Depth 30 } else { [ordered]@{} }
+    $a = if ($AfterJson) { $AfterJson | ConvertFrom-Json -AsHashtable -Depth 30 } else { [ordered]@{} }
+    # down to the leaves on BOTH sides: a section only one side has (a new sessionControls) is told setting by setting
+    $walk = $null
+    $walk = { param($x, $y, [string]$path)
+        $mx = $x -is [System.Collections.IDictionary]; $my = $y -is [System.Collections.IDictionary]
+        if (($mx -or $null -eq $x) -and ($my -or $null -eq $y) -and ($mx -or $my)) {
+            foreach ($k in @(@(if ($mx) { $x.Keys }) + @(if ($my) { $y.Keys }) | Select-Object -Unique | Sort-Object)) {
+                & $walk $(if ($mx) { $x[$k] }) $(if ($my) { $y[$k] }) $(if ($path) { "$path.$k" } else { "$k" })
+            }
+            return
+        }
+        $ja = if ($null -eq $x) { '' } else { ConvertTo-Json -InputObject $x -Compress -Depth 30 }
+        $jb = if ($null -eq $y) { '' } else { ConvertTo-Json -InputObject $y -Compress -Depth 30 }
+        if ($ja -cne $jb) { [ordered]@{ path = $path; before = $ja; after = $jb } }
+    }
+    @(foreach ($d in @(& $walk $b $a '')) {
+        $f = "$($d.path)"
+        $f = if ($f -like 'body.*') { $f.Substring(5) } elseif ($f -like 'prod.*') { 'at Prod: ' + $f.Substring(5) } elseif ($f -like 'groups.*') { 'group names: ' + $f.Substring(7) } else { $f }
+        [ordered]@{ field = $f; before = (Format-EpsCaTemplateValue $d.before); after = (Format-EpsCaTemplateValue $d.after) } })
+}
+
+function Initialize-EpsCaTemplateBaseline {
+    # the ONE baseline (engine only): when nothing is recorded yet, every shipped template is recorded as taken - the
+    # library the install imported. Returns the number of templates recorded (0 = recorded before).
+    param([Parameter(Mandatory)][string]$ConnectionString, $Catalog = (Get-EpsCaTemplateCatalog))
+    $rows = @(foreach ($t in @($Catalog.templates)) { $r = ConvertTo-EpsCaTemplateRecord $t; @{ i = "$($t.id)"; v = "$($t.version)"; j = $r.Json; h = $r.Hash; p = $r.Persona } })
+    $p = @{ j = (ConvertTo-Json -InputObject @($rows) -Compress -Depth 4); lib = "$($Catalog.library)" }
+    [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters $p -Query @'
+SET XACT_ABORT ON;
+BEGIN TRAN;
+DECLARE @n INT = 0;
+IF NOT EXISTS (SELECT 1 FROM eps.CaTemplateTaken WITH (UPDLOCK, HOLDLOCK))
+BEGIN
+    INSERT INTO eps.CaTemplateTaken (TemplateId, Version, TemplateJson, TemplateHash, Persona, Library, TakenBy)
+    SELECT x.i, x.v, x.j, x.h, x.p, @lib, N'baseline (the library this install imported)'
+    FROM OPENJSON(@j) WITH (i NVARCHAR(20) '$.i', v NVARCHAR(20) '$.v', j NVARCHAR(MAX) '$.j', h CHAR(64) '$.h', p NVARCHAR(100) '$.p') AS x;
+    SET @n = @@ROWCOUNT;
+END
+COMMIT;
+SELECT @n;
+'@)
+}
+
+function Get-EpsCaTemplateUpdates {
+    <#
+      What a newer template library brings, against what this install has taken (read only, SQL + the shipped catalog):
+        Templates: @{ id; kind = new | changed | removed; versionBefore; versionAfter; nameBefore; nameAfter; changes;
+                      policies = the real policies with that CA number, each with how it differs from the NEW template }
+        Personas:  @{ name; add = CA numbers the library puts in it; remove = numbers it takes out; exists; has }
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, $Catalog = (Get-EpsCaTemplateCatalog))
+    $taken = @{}
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT TemplateId, Version, TemplateJson, TemplateHash, Persona, Library, TakenAtUtc, TakenBy FROM eps.CaTemplateTaken')) { $taken["$($r.TemplateId)".ToUpperInvariant()] = $r }
+    $str = { param($x) if ($null -eq $x -or $x -is [DBNull]) { $null } else { [string]$x } }
+    $libs = @($taken.Values | Where-Object { & $str $_.TemplateJson } | Group-Object { "$($_.Library)" } | Sort-Object Count -Descending | ForEach-Object Name)
+    $out = @{ Recorded = [bool]$taken.Count; Library = "$($Catalog.library)"; Taken = @($libs); Templates = @(); Personas = @() }
+    if (-not $taken.Count) { return $out }
+    $pol = @{}
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, DisplayName, State, ReviewJson FROM eps.CaPolicy ORDER BY DisplayName')) {
+        $rv = if (& $str $r.ReviewJson) { try { $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20 } catch { @{} } } else { @{} }
+        $k = "$($rv.templateId)".ToUpperInvariant(); if (-not $k) { continue }
+        if (-not $pol[$k]) { $pol[$k] = [System.Collections.Generic.List[object]]::new() }
+        $pol[$k].Add([ordered]@{ policyId = "$($r.PolicyId)".ToLowerInvariant(); displayName = [string]$r.DisplayName; state = [string]$r.State; stage = $rv.stage
+            matches = [bool]$rv.matches; diffCount = [int]$rv.diffCount; diff = @(@($rv.diff) | Where-Object { $_ } | ForEach-Object { [ordered]@{ setting = $_.path; template = $_.expected; tenant = $_.actual } }) })
+    }
+    $tpl = [System.Collections.Generic.List[object]]::new()
+    $shipPersona = @{}; $ship = @{}
+    foreach ($t in @($Catalog.templates | Sort-Object { "$($_.id)" })) {
+        $id = "$($t.id)".ToUpperInvariant(); $rec = ConvertTo-EpsCaTemplateRecord $t; $ship[$id] = $true; $shipPersona[$id] = $rec.Persona
+        $row = $taken[$id]; $bj = if ($row) { & $str $row.TemplateJson }
+        if ($bj -and "$($row.TemplateHash)" -eq $rec.Hash) { continue }
+        $tpl.Add([ordered]@{ id = $id; kind = $(if ($bj) { 'changed' } else { 'new' }); versionBefore = $(if ($bj) { & $str $row.Version }); versionAfter = "$($t.version)"
+            nameBefore = $(if ($bj) { "$(($bj | ConvertFrom-Json).name)" }); nameAfter = "$($t.name)"; persona = $rec.Persona
+            changes = @(if ($bj) { Get-EpsCaTemplateChanges -BeforeJson $bj -AfterJson $rec.Json }); policies = @(if ($pol[$id]) { $pol[$id] }) })
+    }
+    foreach ($id in @($taken.Keys | Sort-Object)) {
+        $row = $taken[$id]; $bj = & $str $row.TemplateJson
+        if ($ship[$id] -or -not $bj) { continue }
+        $tpl.Add([ordered]@{ id = $id; kind = 'removed'; versionBefore = (& $str $row.Version); versionAfter = $null; nameBefore = "$(($bj | ConvertFrom-Json).name)"; nameAfter = $null
+            persona = ''; changes = @(); policies = @(if ($pol[$id]) { $pol[$id] }) })
+    }
+    # persona changes: a number whose shipped persona differs from the persona it was taken into (not taken = none)
+    $chg = [ordered]@{}
+    $addTo = { param($n, $side, $id) if (-not $n) { return }; if (-not $chg.Contains($n)) { $chg[$n] = @{ add = [System.Collections.Generic.List[string]]::new(); remove = [System.Collections.Generic.List[string]]::new() } }; $chg[$n][$side].Add($id) }
+    foreach ($id in @(@($ship.Keys) + @($taken.Keys) | Select-Object -Unique | Sort-Object)) {
+        $now = if ($ship[$id]) { "$($shipPersona[$id])" } else { '' }
+        $was = if ($taken[$id]) { "$(& $str $taken[$id].Persona)" } else { '' }
+        if ($now -ceq $was) { continue }
+        & $addTo $was 'remove' $id; & $addTo $now 'add' $id
+    }
+    $managed = @{}; foreach ($p in @(Get-EpsCaPersonaList -ConnectionString $ConnectionString)) { $managed[$p.Name.ToLowerInvariant()] = $p }
+    $out.Personas = @(foreach ($n in $chg.Keys) {
+        $m = $managed[$n.ToLowerInvariant()]
+        [ordered]@{ name = $n; add = @($chg[$n].add); remove = @($chg[$n].remove); exists = [bool]$m; rules = @(if ($m) { $m.Rules }) } })
+    $out.Templates = $tpl.ToArray()
+    $out
+}
+
+function Invoke-EpsCaTemplateTake {
+    <#
+      The operator takes (engine only, from his signed request): -Templates = CA numbers whose new / changed / removed
+      template he has seen (recorded as taken - nothing else changes; policies are never written); -Personas = @{ name;
+      apply } - apply: the persona's numbers are added to / removed from eps.CaPersona as rules (a persona that does not
+      exist is created; a removed number also drops the policies picked by that number); skip: recorded as taken only.
+      One transaction, journaled (eps.ConfigChange). Returns @{ Templates; Personas; Applied; Skipped; NotPending; Changes }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string[]]$Templates = @(), [object[]]$Personas = @(), [Parameter(Mandatory)][string]$Actor, $Catalog = (Get-EpsCaTemplateCatalog))
+    [void](Initialize-EpsCaTemplateBaseline -ConnectionString $ConnectionString -Catalog $Catalog)
+    $u = Get-EpsCaTemplateUpdates -ConnectionString $ConnectionString -Catalog $Catalog
+    $byT = @{}; foreach ($t in $u.Templates) { $byT[$t.id] = $t }
+    $byP = @{}; foreach ($p in $u.Personas) { $byP[$p.name.ToLowerInvariant()] = $p }
+    $ship = @{}; foreach ($t in @($Catalog.templates)) { $ship["$($t.id)".ToUpperInvariant()] = $t }
+    $res = @{ Templates = [System.Collections.Generic.List[string]]::new(); Applied = [System.Collections.Generic.List[string]]::new(); Skipped = [System.Collections.Generic.List[string]]::new(); NotPending = [System.Collections.Generic.List[string]]::new(); Changes = [System.Collections.Generic.List[object]]::new() }
+    $sql = [System.Text.StringBuilder]::new(); $prm = @{ by = $Actor; lib = "$($Catalog.library)" }; $k = 0
+    $journal = { param($entity, $key, $action, $before, $after)
+        $prm["e$k"] = $entity; $prm["k$k"] = $key; $prm["a$k"] = $action; $prm["b$k"] = $before; $prm["f$k"] = $after
+        [void]$sql.Append("INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source) VALUES (@by, @e$k, @k$k, @a$k, @b$k, @f$k, 'gui'); ") }
+    foreach ($id in @($Templates | ForEach-Object { "$_".Trim().ToUpperInvariant() } | Where-Object { $_ } | Select-Object -Unique)) {
+        $t = $byT[$id]
+        if (-not $t) { $res.NotPending.Add($id); continue }
+        $prm["t$k"] = $id
+        if ($t.kind -eq 'removed') {
+            [void]$sql.Append("UPDATE eps.CaTemplateTaken SET Version = NULL, TemplateJson = NULL, TemplateHash = NULL, Library = @lib, TakenAtUtc = SYSUTCDATETIME(), TakenBy = @by WHERE TemplateId = @t$k; ")
+        } else {
+            $rec = ConvertTo-EpsCaTemplateRecord $ship[$id]
+            $prm["v$k"] = "$($ship[$id].version)"; $prm["j$k"] = $rec.Json; $prm["h$k"] = $rec.Hash
+            [void]$sql.Append("MERGE eps.CaTemplateTaken AS x USING (SELECT @t$k AS TemplateId) AS s ON x.TemplateId = s.TemplateId WHEN MATCHED THEN UPDATE SET Version = @v$k, TemplateJson = @j$k, TemplateHash = @h$k, Library = @lib, TakenAtUtc = SYSUTCDATETIME(), TakenBy = @by WHEN NOT MATCHED THEN INSERT (TemplateId, Version, TemplateJson, TemplateHash, Persona, Library, TakenBy) VALUES (@t$k, @v$k, @j$k, @h$k, NULL, @lib, @by); ")
+        }
+        & $journal 'CaTemplateTaken' $id 'Update' (@{ kind = $t.kind; version = $t.versionBefore } | ConvertTo-Json -Compress) (@{ version = $t.versionAfter; library = "$($Catalog.library)" } | ConvertTo-Json -Compress)
+        $res.Templates.Add($id); $res.Changes.Add([ordered]@{ template = $id; kind = $t.kind }); $k++
+    }
+    $policies = $null
+    foreach ($pe in @($Personas | Where-Object { $_ })) {
+        $n = "$($pe.name)".Trim(); $p = $byP[$n.ToLowerInvariant()]
+        if (-not $p) { $res.NotPending.Add("persona $n"); continue }
+        $apply = $pe.apply -eq $true
+        # the persona each number is taken into now: its shipped persona (a removed template: none)
+        foreach ($id in @(@($p.add) + @($p.remove) | Select-Object -Unique)) {
+            $prm["t$k"] = $id; $prm["p$k"] = $(if ($ship[$id]) { (ConvertTo-EpsCaTemplateRecord $ship[$id]).Persona } else { '' })
+            [void]$sql.Append("MERGE eps.CaTemplateTaken AS x USING (SELECT @t$k AS TemplateId) AS s ON x.TemplateId = s.TemplateId WHEN MATCHED THEN UPDATE SET Persona = @p$k, TakenAtUtc = SYSUTCDATETIME(), TakenBy = @by WHEN NOT MATCHED THEN INSERT (TemplateId, Persona, Library, TakenBy) VALUES (@t$k, @p$k, @lib, @by); ")
+            $k++
+        }
+        if (-not $apply) { & $journal 'CaTemplateTaken' "persona $($p.name)" 'Update' (@{ add = @($p.add); remove = @($p.remove) } | ConvertTo-Json -Compress) (@{ skipped = $true } | ConvertTo-Json -Compress); $k++; $res.Skipped.Add($p.name); $res.Changes.Add([ordered]@{ persona = $p.name; applied = $false }); continue }
+        $cur = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ n = $p.name } -Query 'SELECT Name, PolicyIdsJson, RulesJson, ExcludeIdsJson FROM eps.CaPersona WHERE Name = @n')[0]
+        $arr = { param($j) if ($j -is [string] -and $j.Trim()) { @(@($j | ConvertFrom-Json) | ForEach-Object { "$_" } | Where-Object { $_ }) } else { @() } }
+        $rules = [System.Collections.Generic.List[string]]::new(); foreach ($r in @(if ($cur) { & $arr $cur.RulesJson })) { $rules.Add($r) }
+        $ids = @(if ($cur) { & $arr $cur.PolicyIdsJson }); $exc = @(if ($cur) { & $arr $cur.ExcludeIdsJson })
+        foreach ($id in $p.add) { if (-not @($rules | Where-Object { $_ -ieq $id }).Count) { $rules.Add($id) } }
+        if (@($p.remove).Count) {
+            foreach ($id in $p.remove) { foreach ($r in @($rules | Where-Object { $_ -ieq $id })) { [void]$rules.Remove($r) } }
+            if ($null -eq $policies) { $policies = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT PolicyId, DisplayName FROM eps.CaPolicy') }
+            $drop = @($policies | Where-Object { $dn = "$($_.DisplayName)"; @($p.remove | Where-Object { Test-EpsCaNameRule -Name $dn -Rule $_ }).Count } | ForEach-Object { "$($_.PolicyId)".ToLowerInvariant() })
+            $ids = @($ids | Where-Object { $drop -notcontains "$_".ToLowerInvariant() })
+        }
+        $before = if ($cur) { [ordered]@{ name = $p.name; policyIds = @(& $arr $cur.PolicyIdsJson); rules = @(& $arr $cur.RulesJson); excludeIds = $exc } | ConvertTo-Json -Compress -Depth 4 }
+        $after = [ordered]@{ name = $p.name; policyIds = @($ids); rules = @($rules); excludeIds = $exc } | ConvertTo-Json -Compress -Depth 4
+        $prm["n$k"] = $p.name; $prm["i$k"] = (ConvertTo-Json -InputObject @($ids) -Compress); $prm["r$k"] = (ConvertTo-Json -InputObject @($rules) -Compress)
+        if (-not $rules.Count -and -not $ids.Count -and $cur) {
+            [void]$sql.Append("DELETE FROM eps.CaPersona WHERE Name = @n$k; ")   # the library took every number out: the persona goes too
+            & $journal 'CaPersona' $p.name 'Delete' $before $null
+        } elseif ($cur) {
+            [void]$sql.Append("UPDATE eps.CaPersona SET PolicyIdsJson = @i$k, RulesJson = @r$k, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @by WHERE Name = @n$k; ")
+            & $journal 'CaPersona' $p.name 'Update' $before $after
+        } elseif ($rules.Count) {
+            [void]$sql.Append("INSERT INTO eps.CaPersona (Name, PolicyIdsJson, RulesJson, ExcludeIdsJson, Source, UpdatedBy) VALUES (@n$k, @i$k, @r$k, N'[]', 'template', @by); ")
+            & $journal 'CaPersona' $p.name 'Create' $null $after
+        }
+        $k++; $res.Applied.Add($p.name); $res.Changes.Add([ordered]@{ persona = $p.name; applied = $true; add = @($p.add); remove = @($p.remove) })
+    }
+    if ($sql.Length) { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $prm -Query "SET XACT_ABORT ON; BEGIN TRAN; $($sql.ToString()) COMMIT;") }
+    $res
+}
+
 # ---- who a policy targets -------------------------------------------------------------------------------------------
 function Get-EpsCaTargeting {
     param([Parameter(Mandatory)]$Policy)
@@ -608,6 +840,9 @@ function Invoke-EpsCaPolicyAnalyzer {
     # eps.CaPersona at each run - a change to a persona joins; the catalog is not read again
     try { $seeded = Initialize-EpsCaPersonas -ConnectionString $ConnectionString -Policies $policies; if ($seeded) { & $Log 'Info' "the persona list starts with $seeded personas imported once from the template library (edit them on the analyzer page)" } }
     catch { & $Log 'Warning' "the persona list could not be imported: $($_.Exception.Message)" }
+    # TEMPLATE-UPDATES: the library this install imported is recorded ONCE as taken (a newer library is then only SHOWN)
+    try { $base = Initialize-EpsCaTemplateBaseline -ConnectionString $ConnectionString; if ($base) { & $Log 'Info' "recorded the template library $((Get-EpsCaTemplateCatalog).library) as taken ($base templates): a newer library is shown under Conditional Access > Template updates, nothing changes by itself" } }
+    catch { & $Log 'Warning' "the template baseline could not be recorded: $($_.Exception.Message)" }
     if ($Request.ListOnly) { return @{ Analyses = @(); Impacted = 0 } }
     $plist = if (@($Request.Policies.Personas).Count) { @(Get-EpsCaPersonaList -ConnectionString $ConnectionString) } else { @() }
     # the older series of a monitor (policyPrefixes / policyPatterns, before 2.0.24) are still honoured; the monitor's own

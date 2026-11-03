@@ -2,6 +2,19 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.26 - template updates you control
+- Conditional Access has a new tab, **Template updates**. When a release brings a newer template library, nothing
+  changes by itself. The tab lists what is new, changed or removed since the library your install took. For each
+  changed template it shows the settings side by side (before and after), and how each of your policies with that
+  CA number differs from the new template. Each template can be exported as JSON, as it is now and as you took it.
+- Persona changes in the library (a CA number added to a persona, or taken out) are listed per persona. **Apply** adds
+  or removes the numbers as name rules in your persona, and creates the persona if you do not have it. **Skip** leaves
+  your persona as it is. Either way the change is not offered again.
+- A template change is only **marked as seen**. The next update then compares from that version. Your policies are never
+  changed: if you want what a new template does, make the change yourself in the tenant.
+- Every take needs Admin, has a reason, and is applied by the engine, journaled and audited.
+- This release has the same library as before (2.0-v1), so the tab says "Nothing new". The engine records the library
+  your install took at its next read of the policy list.
 ## 2.0.25 - personas and monitors: leave out any policy
 - A persona can leave out a policy its name rules take: in Manage personas, untick it and it stays out; tick it again
   to take it back.

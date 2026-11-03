@@ -2046,7 +2046,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var CAP_BG_CLS = { MISSING: 'c-danger', unknown: 'smeta' };
   function capSubnav(p, on) {
     var seg = el('div', { class: 'rx-seg' });
-    [['', 'Policies'], ['doc', 'Documentation'], ['templates', 'Templates']].forEach(function (x) {
+    [['', 'Policies'], ['doc', 'Documentation'], ['templates', 'Templates'], ['updates', 'Template updates']].forEach(function (x) {
       seg.appendChild(el('button', { type: 'button', class: on === x[0] ? 'on' : null, text: x[1], onclick: function () { location.hash = '#capolicies' + (x[0] ? '/' + x[0] : ''); } }));
     });
     p.appendChild(seg);
@@ -2165,6 +2165,89 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(slot);
     });
   }
+  // TEMPLATE-UPDATES (owner 2026-11-02: "templates can be used for updates if new features are added but always operator
+  // controlled. easy to see chg is importantant"): what a newer library brings, against what this install has taken. A
+  // persona change is applied to the persona (or skipped); a template change is only marked as seen - nothing here writes
+  // a Conditional Access policy.
+  var TU_KIND = { 'new': 'new template', changed: 'changed', removed: 'removed from the library' };
+  function tuTake(title, text, body) {
+    withReason(title, text, function (reason) { body.reason = reason; return api('POST', '/api/ca/template-updates/take', body); });
+  }
+  function tuPersonaTake(rows, apply) {
+    var names = rows.map(function (r) { return r.name; });
+    tuTake((apply ? 'Apply to the persona' : 'Skip the persona change') + (rows.length > 1 ? 's (' + rows.length + ')' : ': ' + names[0]),
+      apply ? 'The CA numbers are added to / taken out of ' + names.join(', ') + ' as name rules (a persona that does not exist is created). The monitors that name it take the change at their next run. No Conditional Access policy is changed.'
+        : 'Recorded as taken without changing ' + names.join(', ') + ' - it will not be offered again.',
+      { personas: names.map(function (n) { return { name: n, apply: apply }; }) });
+  }
+  function tuSeen(rows) {
+    var ids = rows.map(function (r) { return r.id; });
+    tuTake('Mark as seen' + (ids.length > 1 ? ' (' + ids.length + ')' : ': ' + ids[0]),
+      'Records that you have seen the change to ' + (ids.length > 5 ? ids.slice(0, 5).join(', ') + ' ...' : ids.join(', ')) + ': the next update compares from this version. Nothing else changes - your policies stay as they are; change them yourself in the tenant if you want the new template.',
+      { templates: ids });
+  }
+  function tuDetail(slot, t) {
+    clear(slot);
+    slot.appendChild(el('h3', { text: t.id + ' - ' + (TU_KIND[t.kind] || t.kind) + (t.versionBefore || t.versionAfter ? ' (' + textOf(t.versionBefore || 'not taken') + ' -> ' + textOf(t.versionAfter || 'gone') + ')' : '') }));
+    if (t.nameBefore !== t.nameAfter) slot.appendChild(el('p', { text: 'Name: ' + textOf(t.nameBefore || '(none)') + ' -> ' + textOf(t.nameAfter || '(none)') }));
+    slot.appendChild(el('div', { class: 'toolbar' },
+      t.versionAfter ? el('a', { href: '/api/ca/template-updates/export?' + qs({ id: t.id }), text: 'Export the new template (JSON)' }) : null, ' ',
+      t.versionBefore ? el('a', { href: '/api/ca/template-updates/export?' + qs({ id: t.id, which: 'before' }), text: 'Export as taken before (JSON)' }) : null));
+    if (t.kind === 'changed') {
+      slot.appendChild(el('h3', { text: 'What changed in the template' }));
+      slot.appendChild(table(t.changes || [], [{ key: 'field', label: 'Setting', type: 'cat' }, { key: 'before', label: 'Before', wrap: true }, { key: 'after', label: 'After', wrap: true }], { empty: 'No field differs (only the order of a list).' }));
+    } else if (t.kind === 'new') slot.appendChild(el('p', { text: 'A template this install has not taken before' + (t.persona ? ' (persona ' + t.persona + ')' : '') + '. Its body: export it, or open it under Templates.' }));
+    else slot.appendChild(el('p', { text: 'The library no longer has this template. Your policies with this number are not touched.' }));
+    var pols = t.policies || [];
+    slot.appendChild(el('h3', { text: 'Your policies with ' + t.id + ' against the ' + (t.kind === 'removed' ? 'old' : 'new') + ' template' }));
+    if (!pols.length) { slot.appendChild(el('p', { text: 'None of your policies carries ' + t.id + ' in its name.' })); return; }
+    var rows = [];
+    pols.forEach(function (x) {
+      if (!x.diff || !x.diff.length) rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: t.kind === 'removed' ? '' : 'as the template', template: '', tenant: '' });
+      else x.diff.forEach(function (d) { rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: d.setting, template: d.template, tenant: d.tenant }); });
+    });
+    slot.appendChild(el('div', { class: 'guide', text: 'Shown only. EntraPolicySuite never changes a Conditional Access policy: if you want what the new template does, make the change yourself in the tenant (export the template for reference), then read the policy list again.' }));
+    slot.appendChild(table(rows, [{ key: 'displayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.policyId, text: r.displayName }); } }, { key: 'stage', label: 'Stage', type: 'cat' },
+      { key: 'setting', label: 'Setting', type: 'cat' }, { key: 'template', label: 'Template wants', wrap: true }, { key: 'tenant', label: 'Your policy has', wrap: true }], { sort: 'displayName', dir: 1 }));
+    slot.scrollIntoView();
+  }
+  function drawCaTemplateUpdates(p) {
+    capSubnav(p, 'updates');
+    var admin = isRole('Admin');
+    p.appendChild(el('div', { class: 'guide', text: 'A new release can bring a newer template library. Nothing changes by itself: this page shows what is new or changed since the library this install took, and you decide. A persona change is applied to your persona (or skipped). A template change is only shown - with your policies against the new template and an export - and marked as seen. No Conditional Access policy is ever changed from here.' }));
+    var slot = el('div');
+    return api('GET', '/api/ca/template-updates').then(function (j) {
+      var tpl = j.templates || [], per = j.personas || [];
+      p.appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'count', text: 'This release: library ' + textOf(j.library) + ' · this install took: ' + ((j.taken || []).length ? j.taken.join(', ') : 'not recorded yet') })));
+      if (!j.recorded) {
+        p.appendChild(el('p', { text: 'Not recorded yet: the engine records the library this install imported at its next read of the policy list.' }));
+        if (admin) p.appendChild(el('div', { class: 'toolbar' }, capReadButton()));
+        return;
+      }
+      if (!tpl.length && !per.length) { p.appendChild(el('p', { text: 'Nothing new: this install has taken everything in library ' + textOf(j.library) + '.' })); return; }
+      p.appendChild(el('div', { class: 'cards' }, card(tpl.filter(function (t) { return t.kind === 'new'; }).length, 'new templates'), card(tpl.filter(function (t) { return t.kind === 'changed'; }).length, 'changed templates'),
+        card(tpl.filter(function (t) { return t.kind === 'removed'; }).length, 'removed templates'), card(per.length, 'persona changes')));
+      if (per.length) {
+        p.appendChild(el('h3', { text: 'Persona changes' }));
+        per.forEach(function (x) { x.adds = (x.add || []).join(', '); x.removes = (x.remove || []).join(', '); x.now = x.exists ? 'rules: ' + ((x.rules || []).join(', ') || '(none)') : 'no such persona - Apply creates it'; });
+        var pcols = [{ key: 'name', label: 'Persona', type: 'cat' }, { key: 'adds', label: 'The library adds', wrap: true }, { key: 'removes', label: 'The library takes out', wrap: true }, { key: 'now', label: 'Your persona now', wrap: true }];
+        if (admin) pcols.push({ key: '_a', label: '', render: function (r) { return el('span', null, el('button', { type: 'button', class: 'secondary', text: 'Apply', onclick: function () { tuPersonaTake([r], true); } }), ' ',
+          el('button', { type: 'button', class: 'link', text: 'Skip', onclick: function () { tuPersonaTake([r], false); } })); } });
+        p.appendChild(table(per, pcols, { sort: 'name', dir: 1, bulk: admin ? [{ label: 'Apply to the personas', run: function (sel) { tuPersonaTake(sel, true); } }, { label: 'Skip', run: function (sel) { tuPersonaTake(sel, false); } }] : [] }));
+      }
+      if (tpl.length) {
+        p.appendChild(el('h3', { text: 'Templates' }));
+        tpl.forEach(function (t) { t.kindText = TU_KIND[t.kind] || t.kind; t.versions = textOf(t.versionBefore || '-') + ' -> ' + textOf(t.versionAfter || '-'); t.name = t.nameAfter || t.nameBefore; t.changeCount = (t.changes || []).length;
+          var ps = t.policies || []; t.yours = ps.length ? fmtNum(ps.length) + ' (' + fmtNum(ps.filter(function (x) { return !x.matches; }).length) + ' differ)' : 'none'; });
+        var tcols = [{ key: 'id', label: 'Template', render: function (t) { return el('button', { type: 'button', class: 'link', text: t.id, onclick: function () { tuDetail(slot, t); } }); } },
+          { key: 'kindText', label: 'What', type: 'cat' }, { key: 'versions', label: 'Version' }, { key: 'name', label: 'Name', wrap: true }, { key: 'persona', label: 'Persona', type: 'cat' },
+          { key: 'changeCount', label: 'Changed settings', type: 'num' }, { key: 'yours', label: 'Your policies' }];
+        if (admin) tcols.push({ key: '_a', label: '', render: function (t) { return el('button', { type: 'button', class: 'link', text: 'Mark as seen', onclick: function () { tuSeen([t]); } }); } });
+        p.appendChild(table(tpl, tcols, { sort: 'id', dir: 1, bulk: admin ? [{ label: 'Mark as seen', run: function (sel) { tuSeen(sel); } }] : [] }));
+      }
+      p.appendChild(slot);
+    });
+  }
 
   var PAGES = [
     { id: 'overview', label: 'Overview', role: 'Reader', draw: function (p) {
@@ -2248,6 +2331,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     { id: 'capolicies', label: 'Conditional Access', role: 'Reader', draw: function (p, arg) {
       if (arg === 'doc') return drawCaDoc(p);
       if (arg === 'templates') return drawCaTemplates(p);
+      if (arg === 'updates') return drawCaTemplateUpdates(p);
       if (arg) { p.removeChild(p.lastChild); return drawCaPolicy(p, arg); }
       return drawCaPolicies(p); } },
     { id: 'ca', label: 'CA Policy Analyzer', role: 'Reader', draw: function (p, arg) { if (arg) { p.removeChild(p.lastChild); return drawCaAnalysis(p, arg); } return drawCa(p); } },

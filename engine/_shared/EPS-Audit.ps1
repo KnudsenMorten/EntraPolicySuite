@@ -22,6 +22,7 @@ $script:EpsAuditActions = @(
     'condition.change', 'condition.delete'   # the customer's own property condition types
     'scope.change', 'scope.delete'  # saved scopes ("pilot users")
     'ca.analyze.request', 'ca.export', 'ca.monitor.change', 'ca.monitor.delete'   # the CA Policy Analyzer (read only towards the tenant)
+    'ca.template.take'              # Template updates (TEMPLATE-UPDATES, 2.0.26): a newer library's persona changes taken / template changes marked seen - no policy is written
     'ca.persona.change', 'ca.persona.delete'   # the analyzer's personas (CA-PERSONA, 2.0.24): create / edit / rename, delete (journal: eps.ConfigChange)
     'ca.policy.adopt', 'ca.policy.release'   # Conditional Access: the operator RECORDS that he adopts / releases a policy - nothing in the tenant changes
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names

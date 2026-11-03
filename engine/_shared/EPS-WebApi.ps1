@@ -583,6 +583,46 @@ function Get-EpsWebRoutes {
             $mn = @($users | ForEach-Object { [string]$_.Name })
             $txt = "Persona $name deleted." + $(if ($mn.Count) { " Taken out of the monitor(s) $($mn -join ', ')." } else { '' }) + $(if ($off.Count) { " $($off -join ', ') named nothing else and is switched off." } else { '' })
             New-EpsWebResponse -Body @{ ok = $true; monitors = $mn; switchedOff = @($off); text = $txt } -Audit @{ Target = "CaPersona|$name"; Before = ($before | ConvertFrom-Json); After = @{ monitors = $mn; switchedOff = @($off) } } } }
+        # ---- template updates (TEMPLATE-UPDATES, owner 2026-11-02: "templates can be used for updates if new features are
+        # added but always operator controlled. easy to see chg is importantant"): a newer library changes nothing by itself;
+        # the view shows what is new / changed against what this install has taken, the operator takes persona changes,
+        # and a template change is only marked as seen - policies are shown and exported, never written. ----
+        @{ Method = 'GET'; Pattern = '^/api/ca/template-updates$'; Summary = 'What a newer template library brings against what this install has taken: new, changed and removed templates with a readable before and after, and the persona changes.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $u = Get-EpsCaTemplateUpdates -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body @{ recorded = $u.Recorded; library = $u.Library; taken = @($u.Taken); templates = @($u.Templates); personas = @($u.Personas) } } }
+        @{ Method = 'GET'; Pattern = '^/api/ca/template-updates/export$'; Summary = 'One template of the shipped library (or as this install took it) as a JSON file.'; Body = 'id: the CA number; which: after (the shipped template, default) or before (as taken)'; Answer = 'file (JSON)'; Public = $true
+           Role = 'Reader'; Action = 'ca.export'; Handler = { param($c, $m)
+            $id = "$($c.Query.id)".Trim().ToUpperInvariant()
+            if ($id -notmatch $script:EpsCaTemplateIdRx) { return New-EpsWebError 400 'id: a CA number, e.g. CA101' }
+            if ("$($c.Query.which)" -eq 'before') {
+                $j = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters @{ i = $id } -Query 'SELECT TemplateJson FROM eps.CaTemplateTaken WHERE TemplateId = @i'
+                if ($null -eq $j -or $j -is [DBNull]) { return New-EpsWebError 404 "$id was not taken before" }
+                $body = [ordered]@{ id = $id }; $h = "$j" | ConvertFrom-Json -AsHashtable -Depth 30; foreach ($k in $h.Keys) { $body[$k] = $h[$k] }; $file = "$id-taken"
+            } else {
+                $t = (Get-EpsCaTemplateCatalog).ById[$id]
+                if (-not $t) { return New-EpsWebError 404 "$id is not in the shipped library" }
+                $body = $t; $file = "$id-$($t.version)"
+            }
+            New-EpsWebResponse -Body ($body | ConvertTo-Json -Depth 30) -ContentType 'application/json; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.json""" } -Audit @{ Target = "CaTemplate|$id"; After = @{ which = $(if ("$($c.Query.which)" -eq 'before') { 'before' } else { 'after' }) } } } }
+        @{ Method = 'POST'; Pattern = '^/api/ca/template-updates/take$'; Summary = 'Take what a newer template library brings: persona changes applied to the personas or skipped, template changes marked as seen; no policy is written.'; Body = 'templates: CA numbers whose change you have seen; personas: [{ name, apply: true = change the persona, false = skip }]'; Public = $true
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.template.take'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = 'CaTemplateTaken'
+            $ids = @(@($c.Body.templates) | ForEach-Object { "$_".Trim().ToUpperInvariant() } | Where-Object { $_ } | Select-Object -Unique)
+            $pers = @(@($c.Body.personas) | Where-Object { $_ })
+            $bad = if (-not $ids.Count -and -not $pers.Count) { 'take at least one template or one persona change' }
+                elseif ($ids.Count -gt 1000 -or $pers.Count -gt 200) { 'too many items in one request' }
+                elseif (@($ids | Where-Object { $_ -notmatch $script:EpsCaTemplateIdRx }).Count) { "'$(@($ids | Where-Object { $_ -notmatch $script:EpsCaTemplateIdRx })[0])' is not a CA number" }
+                elseif (@($pers | Where-Object { "$($_.name)" -notmatch $script:EpsCaPersonaNamePattern -or $_.apply -isnot [bool] }).Count) { 'each persona change: a name and apply true or false' }
+            if ($bad) { return New-EpsWebResponse -Status 400 -Body @{ error = $bad } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $bad } }
+            $r = Invoke-EpsCaTemplateTake -ConnectionString $c.Ctx.ConnectionString -Templates $ids -Personas $pers -Actor ([string]$c.Caller.identity)
+            $parts = @()
+            if ($r.Templates.Count) { $parts += "$($r.Templates.Count) template change(s) marked as seen" }
+            if ($r.Applied.Count) { $parts += "persona(s) changed: $($r.Applied -join ', ')" }
+            if ($r.Skipped.Count) { $parts += "persona change(s) skipped: $($r.Skipped -join ', ')" }
+            if ($r.NotPending.Count) { $parts += "not pending (taken already or no change): $($r.NotPending -join ', ')" }
+            if (-not ($r.Templates.Count + $r.Applied.Count + $r.Skipped.Count)) { return New-EpsWebResponse -Status 409 -Body @{ error = "nothing to take - $($parts -join '; ')"; notPending = @($r.NotPending) } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'nothing pending' } }
+            New-EpsWebResponse -Body @{ ok = $true; templates = @($r.Templates); applied = @($r.Applied); skipped = @($r.Skipped); notPending = @($r.NotPending); text = "$($parts -join '; '). No Conditional Access policy was changed." } -Audit @{ Target = $t; After = @{ changes = @($r.Changes); notPending = @($r.NotPending) } } } }
 
         # ---- Conditional Access management, the READ-ONLY half (DESIGN §5.1; owner 2026-10-30: "dont touch any ca policy
         # stuff ... otherwise i can be locked out of my tenant"). The web app reads what the engine stored; Adopt / Release
