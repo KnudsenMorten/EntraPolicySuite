@@ -2,6 +2,9 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.39 - the region check explains an Azure Policy
+- When an Azure Policy in your subscription refuses the region check's test resources, the install now says so in plain
+  words and names the policy, then goes on. Before, it showed only Azure's generic message.
 ## 2.0.38 - private network install fixed, the region is checked first
 - Fixed: a private network install stopped at its first private endpoint ("the private endpoint ... gives no address").
   The install now reads each endpoint's addresses from its network interface.

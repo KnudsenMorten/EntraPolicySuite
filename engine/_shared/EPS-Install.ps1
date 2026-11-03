@@ -85,10 +85,18 @@ function Test-EpsRegionAccepts {
     if ([int]$r.Status -ge 200 -and [int]$r.Status -lt 300) { return @{ Accepts = $true; Reason = 'validated' } }
     $err = try { ("$($r.Body)" | ConvertFrom-Json).error } catch { $null }
     $codes = [System.Collections.Generic.List[string]]::new(); $msgs = [System.Collections.Generic.List[string]]::new()
-    $walk = { param($x) if (-not $x) { return }; if ($x.code) { $codes.Add("$($x.code)") }; if ($x.message) { $msgs.Add("$($x.message)") }; foreach ($d in @($x.details)) { & $walk $d } }
+    $policies = [System.Collections.Generic.List[string]]::new()
+    $walk = { param($x) if (-not $x) { return }; if ($x.code) { $codes.Add("$($x.code)") }; if ($x.message) { $msgs.Add("$($x.message)") }
+        foreach ($ai in @($x.additionalInfo)) { $n = "$($ai.info.policyAssignmentDisplayName)"; if (-not $n) { $n = "$($ai.info.policyAssignmentName)" }; if ($n -and -not $policies.Contains($n)) { $policies.Add($n) } }
+        foreach ($d in @($x.details)) { & $walk $d } }
     & $walk $err
     if ($codes -contains 'RequestDisallowedByAzure' -or (@($msgs) -join ' ') -match '(?i)not accepting new customers') {
         return @{ Accepts = $false; Reason = "$(@($msgs | Where-Object { $_ -match '(?i)not accepting|disallowed' })[0])" }
+    }
+    # REGION-CHECK-POLICY (the 2.0.38 internal deploy): an Azure Policy refused the check's throwaway resources - said in
+    # plain words, the policy named when Azure names it. Never a stop: the real resources may comply where these did not.
+    if ($codes -contains 'RequestDisallowedByPolicy' -or (@($msgs) -join ' ') -match '(?i)policy violation') {
+        return @{ Accepts = $null; Reason = "not checked: an Azure Policy in your subscription refuses the check's test resources$(if ($policies.Count) { " ($($policies -join ', '))" })" }
     }
     @{ Accepts = $null; Reason = "not checked: HTTP $($r.Status) $(@($codes)[0]) $(@($msgs)[0])".Trim() }
 }
