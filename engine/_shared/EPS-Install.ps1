@@ -54,7 +54,10 @@ function Get-EpsRegionCheckTemplate {
     $x = ([guid]::NewGuid().ToString('N')).Substring(0, 8)
     @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'; contentVersion = '1.0.0.0'; resources = @(
         @{ type = 'Microsoft.ManagedIdentity/userAssignedIdentities'; apiVersion = '2023-01-31'; name = "id-eps-rc-$x"; location = $Location }
-        @{ type = 'Microsoft.Storage/storageAccounts'; apiVersion = '2023-01-01'; name = "stepsrc$x"; location = $Location; kind = 'StorageV2'; sku = @{ name = 'Standard_LRS' } }
+        # the SAME settings the install's real storage account gets (2.0.39 live: a customer policy 'Storage Account to use the latest
+        # TLS version' refused the bare one, so the check said nothing) - a policy that the real one passes passes the check too
+        @{ type = 'Microsoft.Storage/storageAccounts'; apiVersion = '2023-01-01'; name = "stepsrc$x"; location = $Location; kind = 'StorageV2'; sku = @{ name = 'Standard_LRS' }
+           properties = @{ allowSharedKeyAccess = $false; minimumTlsVersion = 'TLS1_2'; allowBlobPublicAccess = $false; supportsHttpsTrafficOnly = $true; defaultToOAuthAuthentication = $true } }
         @{ type = 'Microsoft.App/managedEnvironments'; apiVersion = '2024-03-01'; name = "cae-eps-rc-$x"; location = $Location; properties = @{} }
         @{ type = 'Microsoft.ContainerRegistry/registries'; apiVersion = '2023-07-01'; name = "acrepsrc$x"; location = $Location; sku = @{ name = 'Basic' }; properties = @{} }
         @{ type = 'Microsoft.Sql/servers'; apiVersion = '2023-08-01-preview'; name = "sql-eps-rc-$x"; location = $(if ($SqlLocation) { $SqlLocation } else { $Location })
@@ -76,8 +79,15 @@ function Test-EpsRegionAccepts {
         $body = @{ properties = @{ mode = 'Incremental'; template = (Get-EpsRegionCheckTemplate -Location $Location -SqlLocation $SqlLocation -TenantId $(if ($TenantId) { $TenantId } else { '00000000-0000-0000-0000-000000000000' })) } }
     } else {
         $path = "subscriptions/$SubscriptionId/providers/Microsoft.Resources/deployments/$name/validate"
+        # RULE9-NEW-RG (the NET-1 re-run 2026-11-03; framework rule 9 corrected): a resource group ALONE validates 200 even in a
+        # refused region - Azure refuses per RESOURCE. So the subscription-scope template carries the resource group AND a
+        # nested deployment into it holding the services' minimal resources (SI's form, proven live the same day).
+        $inner = Get-EpsRegionCheckTemplate -Location $Location -SqlLocation $SqlLocation -TenantId $(if ($TenantId) { $TenantId } else { '00000000-0000-0000-0000-000000000000' })
         $body = @{ location = $Location; properties = @{ mode = 'Incremental'; template = @{ '$schema' = 'https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#'; contentVersion = '1.0.0.0'
-            resources = @(@{ type = 'Microsoft.Resources/resourceGroups'; apiVersion = '2021-04-01'; name = $ResourceGroup; location = $Location }) } } }
+            resources = @(
+                @{ type = 'Microsoft.Resources/resourceGroups'; apiVersion = '2021-04-01'; name = $ResourceGroup; location = $Location }
+                @{ type = 'Microsoft.Resources/deployments'; apiVersion = '2021-04-01'; name = 'eps-region-check-services'; resourceGroup = $ResourceGroup
+                   dependsOn = @("[resourceId('Microsoft.Resources/resourceGroups', '$ResourceGroup')]"); properties = @{ mode = 'Incremental'; template = $inner } }) } } }
     }
     try {
         $r = & $script:EpsHttp 'POST' "$script:EpsArmRoot/$path`?api-version=2021-04-01" @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } ($body | ConvertTo-Json -Depth 30 -Compress)

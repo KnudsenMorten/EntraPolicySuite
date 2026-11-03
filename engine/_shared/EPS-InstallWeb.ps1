@@ -92,7 +92,10 @@ function New-EpsKeyVaultBody {
     $b = [ordered]@{ location = $Location; tags = [ordered]@{ product = 'EntraPolicySuite'; purpose = 'signin-front' }
         properties = [ordered]@{ tenantId = $TenantId; sku = [ordered]@{ family = 'A'; name = 'standard' }; enableRbacAuthorization = $true
                                  enableSoftDelete = $true; softDeleteRetentionInDays = 90; enablePurgeProtection = $true; publicNetworkAccess = 'Enabled' } }
-    if ($Private) { $b.properties.publicNetworkAccess = 'Disabled'; $b.properties.networkAcls = [ordered]@{ defaultAction = 'Deny'; bypass = 'None' } }
+    # framework installer rule 11 (NET1-KV-ARM-KEY, the NET-1 re-run 2026-11-03; SI's setting at a private customer): private
+    # from birth = public access off + Deny + bypass AzureServices (ARM's key operations - the wrap key - are refused
+    # without it: 400 ForbiddenByConnection) + no IP / network rules; reached through its private endpoint
+    if ($Private) { $b.properties.publicNetworkAccess = 'Disabled'; $b.properties.networkAcls = [ordered]@{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } }
     $b
 }
 
@@ -206,7 +209,9 @@ function Invoke-EpsWebRegistrationStep {
     if (-not $sp.appRoleAssignmentRequired) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/servicePrincipals/$($sp.id)" -Body @{ appRoleAssignmentRequired = $true }) }
     $graphSp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($script:EpsWeb.GraphAppId)'&`$select=id" -All)[0]
     foreach ($g in @(@{ Resource = $graphSp.id; Scope = 'openid profile offline_access User.Read' }, @{ Resource = $sp.id; Scope = $script:EpsWeb.Scope })) {
-        $have = @(Invoke-EpsGraph -Path "v1.0/oauth2PermissionGrants?`$filter=clientId eq '$($sp.id)' and resourceId eq '$($g.Resource)'" -All | Where-Object { $_.consentType -eq 'AllPrincipals' })[0]
+        # GRAPH-CONSENT-RETRY (the NET-1 re-run 2026-11-03): right after the service principal is made, this query can 404 ("Resource '' does
+        # not exist ...") until Graph replicates it - the same bounded retry as the lookup above
+        $have = Invoke-EpsWithRetry { @(Invoke-EpsGraph -Path "v1.0/oauth2PermissionGrants?`$filter=clientId eq '$($sp.id)' and resourceId eq '$($g.Resource)'" -All | Where-Object { $_.consentType -eq 'AllPrincipals' })[0] }
         $missing = @($g.Scope -split ' ' | Where-Object { " $($have.scope) " -notmatch " $([regex]::Escape($_)) " })
         if (-not $have) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/oauth2PermissionGrants' -Body @{ clientId = $sp.id; consentType = 'AllPrincipals'; resourceId = $g.Resource; scope = $g.Scope }) } }
         elseif ($missing) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/oauth2PermissionGrants/$($have.id)" -Body @{ scope = ("$($have.scope) $($missing -join ' ')").Trim() }) }

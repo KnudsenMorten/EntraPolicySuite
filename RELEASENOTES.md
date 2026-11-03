@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.40 - private network install: the Key Vault key, a stricter region check
+- Fixed: a private network install stopped at the Key Vault key. The private Key Vault still has public access off and
+  no IP or network rules, and now lets trusted Azure services through, so the install can create its key.
+- The region check now also catches a refused region on a fresh install (no resource group yet), and its test storage
+  account uses the same settings as the real one, so a policy your install passes does not stop the check.
+- The web sign-in step waits for Microsoft Entra to show the new app before it gives consent, instead of failing once.
 ## 2.0.39 - the region check explains an Azure Policy
 - When an Azure Policy in your subscription refuses the region check's test resources, the install now says so in plain
   words and names the policy, then goes on. Before, it showed only Azure's generic message.

@@ -805,8 +805,8 @@ function Invoke-EpsLockdownStep {
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     $targets = @(
         @{ Path = "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)"; Api = $script:EpsApi.sql; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled' } } }
-        @{ Path = "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)"; Api = $script:EpsWeb.KvApi; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'None' } } } }
-        @{ Path = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)"; Api = $script:EpsApi.st; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'None' } } } }
+        @{ Path = "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)"; Api = $script:EpsWeb.KvApi; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } } } }   # rule 11: lockdown keeps the bypass
+        @{ Path = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)"; Api = $script:EpsApi.st; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } } } }   # rule 11: lockdown keeps the bypass
         @{ Path = "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)"; Api = $script:EpsApi.acr; Patch = @{ properties = @{ publicNetworkAccess = 'Disabled'; networkRuleBypassOptions = 'None' } } }
     )
     foreach ($fw in 'AllowAllWindowsAzureIps', 'AllowSetupHost') { [void](Invoke-EpsArm -Method DELETE -Path "$($targets[0].Path)/firewallRules/$fw" -ApiVersion $script:EpsApi.sql -AllowNotFound) }
