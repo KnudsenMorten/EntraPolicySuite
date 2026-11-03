@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.36 - move a policy to any stage, the stage preview shows names
+- Conditional Access: a SuperAdmin can move an adopted policy to any stage - Pilot1, Pilot2, Pilot3 or Prod, up or
+  down - or disable it. A move that skips stages says which. The Move stage column has one "Move to ..." list per policy.
+- Fixed: the move dialog showed "System.Object[]" instead of the users and groups the policy has now, and listed them
+  as a change even when they stayed the same.
+- The environment name in the page header, in alert mails and in the report to Invardia is now the name Invardia keeps
+  for the install, when it reports to Invardia. The Environment name setting is the fallback.
 ## 2.0.35 - a private install checks everything first, a shorter install line
 - A private network install now checks everything it needs before it creates anything: your network and its two
   subnets, the hub network, and every private DNS zone EntraPolicySuite uses in your central DNS zones resource group.

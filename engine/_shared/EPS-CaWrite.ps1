@@ -40,7 +40,7 @@ function Resolve-EpsCaStageIds {
 
 function Invoke-EpsCaStageMove {
     <#
-      Moves ONE adopted policy ONE stage (the operator's request, applied by the engine):
+      Moves ONE adopted policy to another stage (any stage, owner 2026-11-03) (the operator's request, applied by the engine):
         1. the policy must be adopted; it is read LIVE (GET) and must be exactly the policy the operator looked at
            (-Expected = the review hash he saw) - else refused, nothing written
         2. the plan is made again from the live policy (Get-EpsCaStagePlan) and the names resolved to ids (GET)

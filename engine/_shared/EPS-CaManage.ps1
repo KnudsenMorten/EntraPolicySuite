@@ -384,7 +384,7 @@ function Get-EpsCaReview {
     }
 }
 
-# ---- CA-LIFECYCLE: move ONE adopted policy ONE stage - the PLAN (pure; owner 2026-11-03 "in ca policy i need buttons to
+# ---- CA-LIFECYCLE: move ONE adopted policy to any stage (owner 2026-11-03, was one stage) - the PLAN (pure; owner 2026-11-03 "in ca policy i need buttons to
 # easily controll and movevto another lufecycle phase like pilot1, pilot2", "Write on approval", "SuperAdmin only").
 # Nothing here writes: the plan says, in NAMES, what the move changes - the page shows it, and the engine
 # (EPS-CaWrite.ps1, Invoke-EpsCaStageMove) recomputes it from the live policy before its one write.
@@ -396,12 +396,13 @@ $script:EpsCaStateWord = @{ disabled = 'off'; enabledForReportingButNotEnforced 
 $script:EpsCaUserKeywords = @('All', 'None', 'GuestsOrExternalUsers')
 
 function Get-EpsCaStageMoves {
-    # the moves from a stage: one stage down (to Initial = Disable), one stage up, and Disable from any stage but Initial
+    # the moves from a stage (owner 2026-11-03: "the move should allow me to move to any lifecycle phase" / "not just one
+    # back"): ANY of Pilot1 / Pilot2 / Pilot3 / Prod but the one it is at, and Disable (= off, v1's Initial) from any
+    # stage but Initial. A policy at no template stage (Custom) only Disables.
     param([string]$Stage)
     $o = $script:EpsCaStageOrder; $i = [array]::IndexOf($o, $Stage)
     $m = [System.Collections.Generic.List[string]]::new()
-    if ($i -gt 1) { $m.Add($o[$i - 1]) }
-    if ($i -ge 0 -and $i -lt $o.Count - 1) { $m.Add($o[$i + 1]) }
+    if ($i -ge 0) { foreach ($s in $o) { if ($s -ne 'Initial' -and $s -ne $Stage) { $m.Add($s) } } }
     if ($Stage -and $Stage -ne 'Initial') { $m.Add('Disabled') }
     $m.ToArray()   # callers wrap it in @()
 }
@@ -410,7 +411,7 @@ function Get-EpsCaStagePlan {
     <#
       What moving ONE policy to -To changes, in names: @{ ok; reason; from; to; templateId; displayNameBefore / After;
       stateBefore / After; changes = @{ field; before; after }; set = path -> @{ kind; values (names / keywords) };
-      notes; breakGlass (the review's) }. Refused (ok = $false, reason) when the move is not one stage, the policy has
+      notes; breakGlass (the review's) }. Refused (ok = $false, reason) when -To is not a move from its stage, the policy has
       no template, is a test copy, or a value cannot be named exactly (the targeting method not set, a group role or a
       break-glass account missing). -Policy: the body (hashtable); -Review: Get-EpsCaReview's.
     #>
@@ -420,7 +421,12 @@ function Get-EpsCaStagePlan {
                         changes = [System.Collections.Generic.List[object]]::new(); set = [ordered]@{}; notes = [System.Collections.Generic.List[string]]::new(); breakGlass = $Review.breakGlass }
     $no = { param($why) $plan.reason = $why; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes); $plan }
     $moves = @(Get-EpsCaStageMoves $from)
-    if ($To -notin $moves) { return & $no $(if ($moves.Count) { "from $from it moves one stage at a time: to $($moves -join ' or ')" } else { "the policy is at $from - there is no move from there" }) }
+    if ($To -notin $moves) { return & $no $(if ($moves.Count) { "from $from it moves to $($moves -join ', ')" } else { "the policy is at $from - there is no move from there" }) }
+    $fi = [array]::IndexOf($script:EpsCaStageOrder, $from); $ti = [array]::IndexOf($script:EpsCaStageOrder, $To)
+    if ($fi -ge 0 -and $ti -ge 0 -and [math]::Abs($ti - $fi) -gt 1) {
+        $skip = @($script:EpsCaStageOrder[([math]::Min($fi, $ti) + 1)..([math]::Max($fi, $ti) - 1)] | Where-Object { $_ -ne 'Initial' })
+        if ($skip.Count) { $plan.notes.Add("This skips $($skip -join ', '): the policy goes from $from straight to $To.") }
+    }
     $word = { param($s) if ($script:EpsCaStateWord[$s]) { $script:EpsCaStateWord[$s] } else { "$s" } }
     if ($To -eq 'Disabled') {
         $plan.stateAfter = 'disabled'
@@ -446,7 +452,7 @@ function Get-EpsCaStagePlan {
                 $vals.Add("$($s[0])")
             }
         }
-        $before = @(Get-EpsCaActualValues -Policy $Policy -Path $path -Kind $kind -Names $Names)
+        $before = Get-EpsCaActualValues -Policy $Policy -Path $path -Kind $kind -Names $Names   # NOT @(...): the function returns its list whole (", @()"), a second @() nested it - "System.Object[]" in the preview and every list "changed" (owner 2026-11-03)
         $a = (@($before | ForEach-Object { "$_".ToLowerInvariant() } | Sort-Object) -join '|'); $b = (@($vals | ForEach-Object { "$_".ToLowerInvariant() } | Sort-Object) -join '|')
         if ($a -ne $b) { $plan.changes.Add([ordered]@{ field = (($path -replace '^conditions\.users\.', '') -creplace '([a-z])([A-Z])', '$1 $2').ToLowerInvariant(); before = $(if ($before.Count) { $before -join ', ' } else { '(none)' }); after = $(if ($vals.Count) { $vals -join ', ' } else { '(none)' }) }) }
         $plan.set[$path] = [ordered]@{ kind = $kind; values = @($vals) }

@@ -2117,15 +2117,15 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/release', { reason: reason }); });
   }
   // CA-LIFECYCLE (owner 2026-11-03: "in ca policy i need buttons to easily controll and movevto another lufecycle phase
-  // like pilot1, pilot2"; "Write on approval", "SuperAdmin only"): ONE adopted policy moves ONE stage. The dialog shows
+  // like pilot1, pilot2"; "Write on approval", "SuperAdmin only"): ONE adopted policy moves to ANY stage (owner 2026-11-03). The dialog shows
   // what changes (from the last read); the engine reads the policy again, refuses when it changed since or when the
   // break-glass accounts would not stay excluded, makes the one change and reads it back.
   var CAP_STAGES = ['Initial', 'Pilot1', 'Pilot2', 'Pilot3', 'Prod'];
   var CAP_STAGE_TEXT = { Initial: 'off', Pilot1: 'report-only, pilot group', Pilot2: 'on, pilot group', Pilot3: 'on, wider pilot', Prod: 'on, its targets' };
   function capMoves(stage) {
+    // owner 2026-11-03: "the move should allow me to move to any lifecycle phase" / "not just one back"
     var i = CAP_STAGES.indexOf(stage), m = [];
-    if (i > 1) m.push(CAP_STAGES[i - 1]);
-    if (i >= 0 && i < CAP_STAGES.length - 1) m.push(CAP_STAGES[i + 1]);
+    if (i >= 0) CAP_STAGES.forEach(function (s) { if (s !== 'Initial' && s !== stage) m.push(s); });
     if (stage && stage !== 'Initial') m.push('Disabled');
     return m;
   }
@@ -2183,7 +2183,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
-    p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy one stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy to another stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
     capSubnav(p, '');
     return api('GET', '/api/capolicies').then(function (j) {
       var rows = j.rows || [];
@@ -2211,9 +2211,15 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         { key: 'Findings', label: 'Findings', type: 'cat' }, { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];
       if (owner) cols.push({ key: '_s', label: 'Move stage', render: function (r) {
         if (r.Adoption !== 'Adopted') return null;
-        var w = el('span');
-        capMoves(r.Stage).forEach(function (to) { w.appendChild(el('button', { type: 'button', class: 'link', text: to === 'Disabled' ? 'Disable' : (CAP_STAGES.indexOf(to) < CAP_STAGES.indexOf(r.Stage) ? '< ' + to : to + ' >'), title: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); w.appendChild(document.createTextNode(' ')); });
-        return w; } });
+        // owner 2026-11-03 ("move to any lifecycle phase"): one picker per row - every stage it can go to, and Disable.
+        // Picking one only opens the move dialog (what changes, the confirmation); the picker goes back to its label.
+        var mv = capMoves(r.Stage);
+        if (!mv.length) return null;
+        var sel = el('select', { 'aria-label': 'Move ' + r.DisplayName + ' to another stage' }, [el('option', { value: '', text: 'Move to ...' })].concat(mv.map(function (to) {
+          return el('option', { value: to, text: to === 'Disabled' ? 'Disable (off)' : capMoveLabel(r.Stage, to) + ' (' + CAP_STAGE_TEXT[to] + ')' }); })));
+        sel.addEventListener('click', function (e) { e.stopPropagation(); });   // never the row's own click
+        sel.addEventListener('change', function () { var to = sel.value; sel.value = ''; if (to) capStage(r, to); });
+        return sel; } });
       if (owner) cols.push({ key: '_a', label: '', render: function (r) {
         if (r.Adoption === 'Adopted') return el('button', { type: 'button', class: 'link', text: 'Release', onclick: function () { capRelease(r); } });
         return el('button', { type: 'button', class: 'secondary', text: 'Adopt', onclick: function () { capAdopt(r); } }); } });
@@ -2247,7 +2253,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
       p.appendChild(el('h3', { text: 'Stage' }));
       if (owner && ad && ad.Status === 'Adopted') {
-        p.appendChild(el('div', { class: 'guide', text: 'Move this policy ONE stage: Initial (off) -> Pilot1 (report-only for the pilot group) -> Pilot2 / Pilot3 (on for the pilot group) -> Prod (on for its targets), back down, or Disable. Each move shows what changes before you approve it, and CHANGES the policy in your tenant.' }));
+        p.appendChild(el('div', { class: 'guide', text: 'Move this policy to any stage: Pilot1 (report-only for the pilot group), Pilot2 / Pilot3 (on for the pilot group), Prod (on for its targets), or Disable (off, as Initial). Each move shows what changes before you approve it, and CHANGES the policy in your tenant.' }));
         p.appendChild(capStageBar(row));
       } else p.appendChild(el('p', { class: 'smeta', text: 'Now ' + textOf(rv.stage) + '. ' + (ad && ad.Status === 'Adopted' ? 'A SuperAdmin moves it between stages.' : 'Adopt it first to move it between stages from here.') }));
       if ((j.moves || []).length) p.appendChild(table(j.moves, [{ key: 'MovedAtUtc', label: 'When', type: 'date' }, { key: 'FromStage', label: 'From', type: 'cat' }, { key: 'ToStage', label: 'To', type: 'cat' },

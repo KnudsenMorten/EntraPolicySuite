@@ -63,7 +63,7 @@ function Get-EpsWebRoutes {
         @{ Method = 'GET'; Pattern = '^/api/me$'; Summary = 'Who you are in this app: your name, your role, the version and the environment.'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             New-EpsWebResponse -Body ([ordered]@{ identity = $c.Caller.identity; name = $c.Caller.name; role = $c.Role; version = $c.Ctx.Version; edition = 'Community'
-                environment = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.EnvironmentName' -Default '')"
+                environment = (Get-EpsEnvironmentName -ConnectionString $c.Ctx.ConnectionString)
                 tenantName = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.TenantName' -Default '')"; tenantId = $c.Ctx.AuthConfig.TenantId
                 noSuperAdmin = -not [int](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.WebAccess WHERE Role = 'SuperAdmin'") }) } }
         # the API reference (framework APIDOC-1): generated from THIS table, for the version that runs, filtered to the
@@ -658,7 +658,7 @@ function Get-EpsWebRoutes {
             $plan.adopted = [bool]($ad -and "$($ad.Status)" -eq 'Adopted')
             if ($plan.ok -and -not $plan.adopted) { $plan.ok = $false; $plan.reason = 'only an adopted policy moves through the stages - adopt it first' }
             New-EpsWebResponse -Body $plan } }
-        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/stage$'; Summary = 'Move one adopted Conditional Access policy one stage, or disable it, after the engine checks it again (break-glass included).'; Body = 'to; expected: the review hash as you saw it; reason'; Public = $false
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/stage$'; Summary = 'Move one adopted Conditional Access policy to another stage, or disable it, after the engine checks it again (break-glass included).'; Body = 'to; expected: the review hash as you saw it; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.stage'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"; $to = "$($c.Body.to)"
             if ($to -notin @($script:EpsCaStageOrder) + 'Disabled') { return New-EpsWebResponse -Status 400 -Body @{ error = 'to: one of Pilot1, Pilot2, Pilot3, Prod or Disabled' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "bad stage '$to'" } }

@@ -18,7 +18,7 @@
 #
 # The rules of sync/_AitUplink.ps1 (redaction, the closed lists) are COPIED here on purpose (isolation beats DRY: sync/
 # ships to every customer with no review step). Dot-source EPS-SqlStore, EPS-Graph (Get-EpsToken, $script:EpsHttp),
-# EPS-Scheduler (Get-EpsSetting) and EPS-Audit first.
+# EPS-Scheduler (Get-EpsSetting), EPS-Audit and EPS-Mail (Get-EpsEnvironmentName) first.
 
 Set-StrictMode -Off
 
@@ -372,7 +372,7 @@ function Get-EpsUplinkHeartbeatFacts {
     $lastMail = & $q 'SELECT MAX(t) FROM (SELECT MAX(AlertedAtUtc) AS t FROM eps.TamperEvent UNION ALL SELECT MAX(AlertedAtUtc) FROM eps.CaFinding) x'
     @{
         Counts = $counts
-        EnvironmentName = $(try { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Platform.EnvironmentName' -Default '')" } catch { '' })
+        EnvironmentName = (Get-EpsEnvironmentName -ConnectionString $ConnectionString)
         Jobs = @($jobs)
         Update = @{ Installed = $Version }
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
@@ -528,6 +528,27 @@ function Send-EpsUplinkRecord {
     @{ Ok = $false; Status = $status; Body = $body; Reason = "HTTP $status$(if ($fields) { " (fields: $($fields -join ', '))" })"; Fields = $fields }
 }
 
+function Get-EpsInvardiaEnvironment {
+    <#
+      NAM-02: Invardia is master of the environment name. GET https://<uplink host>/api/enrollments/environment with the
+      same install-key header the uplink sends -> { environmentId, environmentName, kind, handle, tenantId, customer,
+      managedBy, displayName }. Returns @{ Ok; Value (the fields EPS keeps, or $null); Reason }. Never throws; the key is
+      never in Reason.
+    #>
+    param([Parameter(Mandatory)][string]$Key, [string]$Endpoint = $script:EpsUplinkEndpoint)
+    if ("$Endpoint" -notmatch '^https://') { return @{ Ok = $false; Value = $null; Reason = 'refused: the uplink endpoint must be https' } }
+    $url = "https://$(([uri]$Endpoint).Authority)/api/enrollments/environment"
+    try { $r = & $script:EpsHttp 'GET' $url @{ 'X-Ait-Uplink-Code' = "$Key".Trim(); Accept = 'application/json' } $null }
+    catch { return @{ Ok = $false; Value = $null; Reason = "failed: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $Key -Max 200)" } }
+    $status = [int]$r.Status
+    if ($status -lt 200 -or $status -ge 300) { return @{ Ok = $false; Value = $null; Reason = "HTTP $status" } }
+    $b = try { "$($r.Body)" | ConvertFrom-Json } catch { $null }
+    $name = if ($b) { ConvertTo-EpsUplinkRedacted -Text "$($b.displayName)" -Key $Key -Max 120 } else { '' }
+    if (-not "$name".Trim()) { return @{ Ok = $false; Value = $null; Reason = "HTTP $status without a displayName" } }
+    @{ Ok = $true; Reason = "HTTP $status"; Value = [ordered]@{ displayName = "$name".Trim(); environmentName = (ConvertTo-EpsUplinkRedacted -Text "$($b.environmentName)" -Key $Key -Max 120)
+        handle = (ConvertTo-EpsUplinkRedacted -Text "$($b.handle)" -Key $Key -Max 80); kind = (ConvertTo-EpsUplinkRedacted -Text "$($b.kind)" -Key $Key -Max 40) } }
+}
+
 # ---------------------------------------------------------------------------------------------------- the support state
 function ConvertFrom-EpsUplinkSupportAnswer {
     <#
@@ -613,7 +634,7 @@ function Invoke-EpsUplinkCycle {
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version, [string]$TenantId = $env:EPS_TENANT_ID, [datetime]$NowUtc = [datetime]::UtcNow,
           [int]$PauseMs = $script:EpsUplinkPauseMs, [string]$WebUrl = $env:EPS_WEB_URL, [string]$Endpoint = $script:EpsUplinkEndpoint, [scriptblock]$Log = { param($l, $m) })
-    $res = @{ Mode = 'disabled'; Posts = 0; Heartbeat = ''; Runs = 0; Alerts = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
+    $res = @{ Mode = 'disabled'; Posts = 0; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
     $say = { param($l, $m) $res.Lines.Add($m); & $Log $l $m }
     $finish = { param($line) try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'last' -Value "$(ConvertTo-EpsUplinkIso $NowUtc) $line" } catch { }; $res }
     try {
@@ -647,6 +668,14 @@ function Invoke-EpsUplinkCycle {
             & $say 'Info' "uplink: heartbeat sent ($($res.Heartbeat))"
             $sup = ConvertFrom-EpsUplinkSupportAnswer -Body $r.Body -NowUtc $NowUtc
             if ($sup) { try { $res.Support = Save-EpsSupportState -ConnectionString $ConnectionString -State $sup -NowUtc $NowUtc; & $say 'Info' $res.Support } catch { & $say 'Warning' "uplink: the support state could not be recorded: $($_.Exception.Message)" } }
+            # NAM-02: Invardia's environment name, read with each heartbeat; only a good answer replaces the kept one
+            # (offline / refused = the last good name stays). Not a POST: outside the POST budget.
+            $envr = Get-EpsInvardiaEnvironment -Key $key -Endpoint $Endpoint
+            if ($envr.Ok) {
+                $v = $envr.Value; $v.at = ConvertTo-EpsUplinkIso $NowUtc
+                Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'environment' -Value ($v | ConvertTo-Json -Compress)
+                $res.Environment = $v.displayName; & $say 'Info' "uplink: environment name from Invardia: $($v.displayName)"
+            } else { & $say 'Info' "uplink: environment name not read ($($envr.Reason)) - the last one kept" }
         } else { $res.Heartbeat = 'not due'; & $say 'Info' "uplink: heartbeat not due (last $(ConvertTo-EpsUplinkIso $lastHb))" }
 
         # 2. the alerts (§8.19) - OFF by default: Invardia does not take the kind yet

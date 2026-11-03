@@ -49,6 +49,26 @@ function New-EpsMailBody {
     $sb.ToString()
 }
 
+function Get-EpsEnvironmentName {
+    <#
+      In EPS-Mail (loaded by the engine and the web app - both may read eps.Setting + eps.UplinkState; the hybrid
+      worker never loads it). NAM-02 (framework alignment, Invardia 2026-11-03: Invardia is master of the environment name): the name every page
+      header, alert mail and heartbeat uses. Invardia's displayName (GET /api/enrollments/environment, kept by the uplink
+      in eps.UplinkState 'environment' - the last good answer, so it holds offline) wins; an install Invardia does not know
+      (no install key) falls back to the local setting Platform.EnvironmentName, then to -Default. Never throws.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Default = '')
+    try {
+        $j = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.UplinkState WHERE Name = 'environment'"
+        if ($null -ne $j -and $j -isnot [DBNull] -and "$j".Trim()) { $e = "$j" | ConvertFrom-Json; if ("$($e.displayName)".Trim()) { return "$($e.displayName)".Trim() } }
+    } catch { }
+    try {
+        $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = 'Platform.EnvironmentName'"
+        if ($null -ne $v -and $v -isnot [DBNull] -and "$v".Trim()) { return "$v".Trim() }
+    } catch { }
+    $Default
+}
+
 function Get-EpsMailConfig {
     param([Parameter(Mandatory)][string]$ConnectionString)
     $g = { param($n, $d) $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $n } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'; if ($null -eq $v -or "$v" -eq '') { $d } else { [string]$v } }
@@ -56,7 +76,7 @@ function Get-EpsMailConfig {
     [pscustomobject]@{
         Mode = & $g 'Mail.Mode' 'none'; Sender = & $g 'Mail.Sender' ''
         Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
-        Environment = & $g 'Platform.EnvironmentName' $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'EntraPolicySuite' })
+        Environment = (Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'EntraPolicySuite' }))
         TenantId = $env:EPS_TENANT_ID; TenantName = & $g 'Platform.TenantName' ''
     }
 }

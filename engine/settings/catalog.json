@@ -21,7 +21,7 @@
     {
       "key": "Platform.EnvironmentName", "group": "Platform", "label": "Environment name", "type": "text", "maxLength": 80, "default": "", "role": "Admin",
       "info": {
-        "what": "A short name for this install, shown in the header of every page and in the subject of every alert mail, so people can tell production from test at a glance.",
+        "what": "A short name for this install, shown in the header of every page and in the subject of every alert mail, so people can tell production from test at a glance. When this install reports to Invardia, the name Invardia keeps for it is used instead and this value is only the fallback.",
         "enabled": "The name is shown in the page header straight away and used in the next alert mail.",
         "disabled": "Empty: the header shows '-' and alert mails name the tenant id instead.",
         "risk": "Nothing changes in the directory. A misleading name can make someone act in the wrong environment. Reversible: change it back.",
