@@ -632,10 +632,12 @@ function Invoke-EpsIdentityReportJob {
     if ("$($settings['IdentityReport.MailWorkbook'])" -eq 'true') {
         $bytes = New-EpsIdentityWorkbook -Views $views -Config $cfg
         $mc = Get-EpsMailConfig -ConnectionString $ConnectionString
-        $e = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
-        $list = ($gaps | ForEach-Object { "<li>[$($_.Severity)] $(& $e $_.Title): $($w.Counts[$_.Name])</li>" }) -join ''
-        $html = "<p>The identity report of $(& $e $mc.Environment), $($NowUtc.ToString('yyyy-MM-dd HH:mm')) UTC: $(@($rep.Users).Count) users, $(@($rep.Devices).Count) devices.</p><p>Open gaps:</p><ul>$list</ul><p>Every view, filter and pivot is on the Identity page of the web app.</p>"
-        $mail = Send-EpsMail -Config $mc -Subject "[EntraPolicySuite] $($mc.Environment): identity report" -Html $html -Attachments @(@{ Name = "Users-$($NowUtc.ToString('yyyyMMdd')).xlsx"; Bytes = $bytes; ContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+        # MAIL-3 subject + the MAIL-2 body (BRAND-2 header, the button to the Identity page, the footer) - was hand-made HTML
+        $rows = @($gaps | ForEach-Object { [pscustomobject]@{ Severity = $_.Severity; 'Open gap' = $_.Title; Count = $w.Counts[$_.Name] } })
+        $html = New-EpsMailBody -Summary "The identity report of $($mc.Environment), $($NowUtc.ToString('yyyy-MM-dd HH:mm')) UTC: $(@($rep.Users).Count) users, $(@($rep.Devices).Count) devices, $($gaps.Count) open High / Medium gap view(s). The workbook is attached." `
+            -Rows $rows -Columns 'Severity', 'Open gap', 'Count' -WhatToDo 'Every view, filter and pivot is on the Identity page of the web app.' `
+            -ButtonText 'Open the identity report' -ButtonPage 'identity' -Footer @{ Environment = $mc.Environment; TenantName = $mc.TenantName; TenantId = $mc.TenantId; Version = $Version }
+        $mail = Send-EpsMail -Config $mc -Subject (New-EpsMailSubject -Environment $mc.Environment -What 'Identity report') -Html $html -Attachments @(@{ Name = "Users-$($NowUtc.ToString('yyyyMMdd')).xlsx"; Bytes = $bytes; ContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
         & $Log $(if ($mail.Sent) { 'Info' } else { 'Warn' }) "workbook mail: $($mail.Reason)"
     }
     [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes }

@@ -951,7 +951,7 @@ function Send-EpsCaAnalyzerAlert {
     $rows = @($Analyses | ForEach-Object { [pscustomobject]@{ Policy = $_.DisplayName; State = $_.State; Method = $(if ($_.Mode -eq 'WhatIf') { 'predicted (What-If)' } else { 'observed (sign-in logs)' }); 'In scope' = $_.Summary.InScope; Impacted = $_.Summary.Impacted; Errors = $_.Summary.Errors } })
     $subject = New-EpsMailSubject -Environment $cfg.Environment -What "CA Policy Analyzer$(if ($Monitor) { " ($Monitor)" }): $n impacted user(s) in $(@($Analyses).Count) policy(ies)" -Severity 'Warning'
     $html = New-EpsMailBody -Summary "The CA Policy Analyzer found $n user(s) a Conditional Access policy would block or challenge. Nothing was changed - the analyzer only reads." -Rows $rows -Columns @('Policy', 'State', 'Method', 'In scope', 'Impacted', 'Errors') `
-        -WhatToDo 'Open the CA Policy Analyzer page for the users and the reason per user before changing the policy.' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
+        -WhatToDo 'Open the CA Policy Analyzer page for the users and the reason per user before changing the policy.' -ButtonText 'Open the CA Policy Analyzer' -ButtonPage 'ca' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     Send-EpsMail -Config $cfg -Subject $subject -Html $html
 }
 

@@ -50,6 +50,9 @@
     always keeps the admin it has - a re-run never changes it.
 .PARAMETER SqlAdminGroupName
     The display name of that group (shown as the SQL admin).
+.PARAMETER Ring
+    The update ring this install belongs to (0-10; framework §3), reported on the heartbeat (TEL-01). Invardia tells you
+    the ring. Empty: a re-run keeps the ring the install has; a first install reports none.
 .PARAMETER ExcludeGraphRole
     A Graph role of the engine your approver did not approve. It is never granted; the feature that needs it reports
     its data as unavailable (Organization.Read.All: the licence lookup of the Teams Rooms rule condition).
@@ -118,6 +121,8 @@ param(
     # the customer's admin group as the SQL server's Entra admin (framework §12.23 P5); an existing server keeps its admin
     [ValidatePattern('^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')][string]$SqlAdminGroupId = '',
     [ValidatePattern('^$|^[^\x00-\x1f]{1,120}$')][string]$SqlAdminGroupName = '',
+    # the update ring (framework §3; TEL-01: the heartbeat's Ring) - empty = keep the install's, or none
+    [ValidatePattern('^$|^([0-9]|10)$')][string]$Ring = '',
     # a Graph role of the engine that the approver did not approve: never granted (the feature that needs it then
     # reports its data as unavailable). e.g. -ExcludeGraphRole Organization.Read.All
     [ValidateSet('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess')][string[]]$ExcludeGraphRole = @(),
@@ -187,7 +192,7 @@ if (-not $netPlan.Private) {
     $pe = try { Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/managedEnvironments/$privEnv" -ApiVersion '2024-03-01' -AllowNotFound } catch { $null }
     if ($pe -and "$($pe.name)" -eq $privEnv) { Finish 2 "$ResourceGroup holds a PRIVATE install ($privEnv): run the same command with -PrivateNetwork (and its network parameters)." }
 }
-$ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); SqlLocation = $SqlLocation
+$ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); Ring = $Ring; SqlLocation = $SqlLocation
     SqlAdminGroup = $(if ($SqlAdminGroupId) { @{ ObjectId = $SqlAdminGroupId.ToLowerInvariant(); Name = $(if ($SqlAdminGroupName) { $SqlAdminGroupName } else { "group $SqlAdminGroupId" }) } }) }
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it

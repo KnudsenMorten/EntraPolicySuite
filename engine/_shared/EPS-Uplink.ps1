@@ -63,7 +63,7 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
     run       = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
@@ -179,9 +179,12 @@ function Get-EpsUplinkKey {
 
 function New-EpsUplinkEnvelope {
     # PURE. Schema 2, identified: the fields every record carries
-    param([Parameter(Mandatory)][string]$Kind, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow)
+    param([Parameter(Mandatory)][string]$Kind, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [string]$Ring = $env:EPS_RING)
     $o = [ordered]@{ Schema = 2; Kind = (Select-EpsUplinkEnum $Kind 'Kind'); Product = $script:EpsUplinkProduct }
     if ("$Version" -match '^[0-9A-Za-z.+-]{1,50}$') { $o.Version = "$Version" }
+    # TEL-01 (framework §8.4 / §8.17): the update ring as an INTEGER 0-10 - left out when the install has none (never null
+    # or text: Invardia refuses the whole report). Only the heartbeat carries it (Select-EpsUplinkRecord drops it elsewhere).
+    if ("$Ring".Trim() -match '^([0-9]|10)$') { $o.Ring = [int]"$Ring".Trim() }
     $o.Edition = 'community'          # EntraPolicySuite is Community only for now (owner 2026-10-29)
     $o.Hosting = 'container'
     $o.RuntimeIdentity = 'mi-container'
@@ -214,6 +217,7 @@ function New-EpsUplinkHeartbeat {
     #>
     param([Parameter(Mandatory)]$Facts, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [switch]$WithoutNewFields)
     $o = New-EpsUplinkEnvelope -Kind 'heartbeat' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
+    if ($WithoutNewFields) { $o.Remove('Ring') }   # the liveness-only resend carries the oldest field set
     $o.Outcome = 'ok'
     $c = Limit-EpsUplinkCounts $Facts.Counts
     if ($c.Count) { $o.Counts = $c }

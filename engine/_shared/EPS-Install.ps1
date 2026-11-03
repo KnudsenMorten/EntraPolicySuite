@@ -264,6 +264,8 @@ function Get-EpsJobBodies {
         if ($job -eq 'Uplink') {
             $extra += @{ name = 'EPS_KEY_VAULT'; value = $n.KeyVault }
             if ("$($Ctx.WebUrl)" -match '^https://') { $extra += @{ name = 'EPS_WEB_URL'; value = "$($Ctx.WebUrl)" } }
+            # TEL-01: the update ring on the heartbeat (framework §3, §8.17) - only a ring 0-10, never empty or text
+            if ("$($Ctx.Ring)" -match '^([0-9]|10)$') { $extra += @{ name = 'EPS_RING'; value = "$($Ctx.Ring)" } }
         }
         [ordered]@{
             Name = $name
@@ -473,7 +475,18 @@ function Invoke-EpsInstallStep {
         }
     }
     switch ($Id) {
-        'resourcegroup' { [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $Ctx.Location; tags = $tags }) }
+        'resourcegroup' {
+            # NAM-01 (framework §5.5): every resource group carries product, ring, edition, hosting, tenant, owner, purpose.
+            # A re-run MERGES: tags the customer set stay, an owner / ring already there is never overwritten by an empty one.
+            $old = Invoke-EpsArm -Path $rg -ApiVersion $script:EpsApi.rg -AllowNotFound
+            $t = [ordered]@{}; if ($old -and $old.tags) { foreach ($p in $old.tags.PSObject.Properties) { $t[$p.Name] = "$($p.Value)" } }
+            foreach ($k in $tags.Keys) { $t[$k] = $tags[$k] }
+            $t.edition = 'community'; $t.hosting = 'ca'; $t.tenant = "$($Ctx.TenantId)"
+            $t.purpose = 'EntraPolicySuite: Conditional Access, user and device tagging, identity reporting'
+            if ("$($Ctx.Ring)" -match '^([0-9]|10)$') { $t.ring = "r$($Ctx.Ring)" }
+            if (-not $t.Contains('owner') -and "$($Ctx.Person.Upn)" -match '^[^\x00-\x1f<>%&\\?/]{1,200}$') { $t.owner = "$($Ctx.Person.Upn)" }
+            [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $(if ($old) { $old.location } else { $Ctx.Location }); tags = $t })
+        }
         'identities' {
             foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') {
                 $m = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi -Body @{ location = $Ctx.Location; tags = $tags }
@@ -594,6 +607,12 @@ function Invoke-EpsInstallStep {
             $image = "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)"
             # the web app's address (alert links, UPLINK-1): its name in the environment's default domain - known before the app exists
             if (-not $Ctx.WebUrl) { $ce = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" -ApiVersion $script:EpsApi.aca -AllowNotFound; if ("$($ce.properties.defaultDomain)" -match '^[A-Za-z0-9.-]+$') { $Ctx.WebUrl = "https://$($n.WebApp).$($ce.properties.defaultDomain)/".ToLowerInvariant() } }
+            # TEL-01: a re-run without -Ring keeps the ring the uplink job has (Invardia's word stays until it is changed)
+            if ("$($Ctx.Ring)" -notmatch '^([0-9]|10)$') {
+                $uj = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(@(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Uplink')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+                $old = @($uj.properties.template.containers | ForEach-Object { $_.env } | Where-Object { $_.name -eq 'EPS_RING' })[0]
+                if ("$($old.value)" -match '^([0-9]|10)$') { $Ctx.Ring = "$($old.value)" }
+            }
             # the jobs on 2025-01-01: the first version that takes an identity on a scale rule (2.0.9, S4)
             foreach ($j in Get-EpsJobBodies -Ctx $Ctx -Image $image) {
                 # public -> private: a job cannot move to another environment - one in the old environment is deleted and

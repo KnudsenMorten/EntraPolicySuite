@@ -2,6 +2,16 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.42 - mails with a button, the update ring, a script for the engine's permissions
+- Every mail EntraPolicySuite sends has the product's header, one blue button that opens the page the mail is about
+  (the Tamper page, Conditional Access, the CA Policy Analyzer, the identity report, the mail settings) and a link to
+  the web app. The test mail and the identity report mail now use the same subject format as every other mail.
+- New script Grant-EpsEnginePermissions.ps1: gives the engine a permission it is missing after the install, or takes
+  one away (-Remove). Only the permissions EntraPolicySuite declares for its engine can be asked for; -WhatIf shows the
+  plan; every change is read back.
+- The install's resource group gets the standard tags (product, ring, edition, hosting, tenant, owner, purpose); a
+  re-run keeps the tags you set yourself.
+- New install parameter -Ring: the update ring this install belongs to, reported to Invardia.
 ## 2.0.41 - private network install: re-installs and resumes
 - Fixed: re-installing a private install into the same resource group stopped at the Key Vault key when the vault was
   recovered from an earlier install. The install now sets the vault's network rules every time before it makes the key.

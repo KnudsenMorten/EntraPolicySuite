@@ -23,14 +23,32 @@ function New-EpsMailSubject {
 
 function ConvertTo-EpsHtml([string]$s) { [Net.WebUtility]::HtmlEncode($s) }
 
+function Get-EpsMailLink {
+    # MAIL-2 item 1: a STABLE deep link to one page of the web app (its #page route), never a session URL. '' when the
+    # install has no web address (the install sets EPS_WEB_URL on every job) or the page id is not a plain id.
+    param([string]$WebUrl = $env:EPS_WEB_URL, [string]$Page = '')
+    if ("$WebUrl" -notmatch '^https://[A-Za-z0-9.-]+(:\d+)?/?$') { return '' }
+    $u = "$WebUrl".TrimEnd('/') + '/'
+    if ($Page -and $Page -match '^[a-z]+(/[A-Za-z0-9._-]+)?$') { $u += "#$Page" }
+    $u
+}
+
 function New-EpsMailBody {
     # The calm format (framework 12.11): a summary, the facts, what to do, the details - and the footer that names the
-    # environment (MAIL-1 "every mail names its environment").
+    # environment (MAIL-1 "every mail names its environment"). MAIL-2 (framework 12.11 items 1, 4, 7): the product's
+    # wordmark on the BRAND-2 header, ONE blue button that deep-links to the page the mail is about (-ButtonText +
+    # -ButtonPage, a #page route of the web app) and a plain link to the product's home in the footer.
     param([Parameter(Mandatory)][string]$Summary, [object[]]$Rows = @(), [string[]]$Columns = @(), [string]$WhatToDo,
-          [Parameter(Mandatory)][hashtable]$Footer)
+          [Parameter(Mandatory)][hashtable]$Footer, [string]$ButtonText, [string]$ButtonPage, [string]$WebUrl = $env:EPS_WEB_URL,
+          [string]$SummaryHtml)
     $sb = [Text.StringBuilder]::new()
     [void]$sb.Append("<html><body style=""font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1b1b1b"">")
+    # BRAND-2.1: the brand-ink header, the wordmark in brand-wordmark, the 1 px brand-blue line under it (text, not an
+    # image: mail clients block images by default)
+    [void]$sb.Append("<div style=""background:#0B1633;border-bottom:1px solid #1B4FE4;padding:10px 16px""><span style=""color:#9FC3FF;font-size:18px;font-weight:600"">$script:EpsProductName</span></div>")
     [void]$sb.Append("<p>$(ConvertTo-EpsHtml $Summary)</p>")
+    # -SummaryHtml: markup the CALLER built and encoded (e.g. a list); never a value from outside unencoded
+    if ($SummaryHtml) { [void]$sb.Append($SummaryHtml) }
     if ($Rows.Count -and $Columns.Count) {
         [void]$sb.Append('<table style="border-collapse:collapse;font-size:13px"><tr>')
         foreach ($c in $Columns) { [void]$sb.Append("<th style=""text-align:left;border-bottom:1px solid #ccc;padding:4px 10px"">$(ConvertTo-EpsHtml $c)</th>") }
@@ -43,8 +61,15 @@ function New-EpsMailBody {
         [void]$sb.Append('</table>')
     }
     if ($WhatToDo) { [void]$sb.Append("<p><b>What to do:</b> $(ConvertTo-EpsHtml $WhatToDo)</p>") }
+    $link = Get-EpsMailLink -WebUrl $WebUrl -Page $ButtonPage
+    if ($link -and $ButtonText) {
+        # a table-cell button: Outlook draws a padded <a> without its background
+        [void]$sb.Append("<table role=""presentation"" style=""border-collapse:collapse;margin:16px 0""><tr><td style=""background:#1B4FE4;border-radius:6px""><a href=""$(ConvertTo-EpsHtml $link)"" style=""display:inline-block;padding:10px 18px;color:#ffffff;font-weight:600;text-decoration:none"">$(ConvertTo-EpsHtml $ButtonText)</a></td></tr></table>")
+    }
     [void]$sb.Append("<hr style=""border:0;border-top:1px solid #ddd""><p style=""font-size:12px;color:#666"">")
     [void]$sb.Append("Environment: $(ConvertTo-EpsHtml $Footer.Environment) &middot; tenant $(ConvertTo-EpsHtml $Footer.TenantName) ($(ConvertTo-EpsHtml $Footer.TenantId)) &middot; $script:EpsProductName $(ConvertTo-EpsHtml $Footer.Version)")
+    $homeLink = Get-EpsMailLink -WebUrl $WebUrl
+    if ($homeLink) { [void]$sb.Append(" &middot; <a href=""$(ConvertTo-EpsHtml $homeLink)"" style=""color:#0969da"">$(ConvertTo-EpsHtml $homeLink)</a>") }
     [void]$sb.Append('</p></body></html>')
     $sb.ToString()
 }
@@ -110,9 +135,10 @@ function Send-EpsTestMail {
     # Application Mail.Send - not as the person who set it up. @{ Sent; Reason }; never throws.
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$RequestedBy, [string]$Version = '2.0.0')
     $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
-    $e = { param($s) [System.Net.WebUtility]::HtmlEncode([string]$s) }
-    $html = "<p>This is a test mail from EntraPolicySuite $(& $e $Version) ($(& $e $cfg.Environment)), sent by the engine as $(& $e $cfg.Sender).</p><p>Requested by $(& $e $RequestedBy) at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way.</p>"
-    Send-EpsMail -Config $cfg -Subject "[EntraPolicySuite] $($cfg.Environment): test mail" -Html $html
+    # MAIL-3 subject + the MAIL-2 body like every other mail (was a hand-made '[EntraPolicySuite] <env>: test mail')
+    $html = New-EpsMailBody -Summary "This is a test mail from EntraPolicySuite $Version ($($cfg.Environment)), sent by the engine as $($cfg.Sender). Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
+        -ButtonText 'Open the mail settings' -ButtonPage 'settings' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
+    Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
 }
 
 function Send-EpsTamperAlert {
@@ -133,7 +159,7 @@ function Send-EpsTamperAlert {
     $rows = @(foreach ($e in $open) { [pscustomobject]@{ Severity = $e.Severity; Object = $e.ObjectName; Tag = "$($e.TagType) ($($e.Attribute))"; Change = "'$($e.OldValue)' -> '$($e.NewValue)'"; Who = $(if ($e.Initiator) { $e.Initiator } else { 'unknown' }); Found = ([datetime]$e.FoundAtUtc).ToString('yyyy-MM-dd HH:mm') + ' UTC' } })
     $html = New-EpsMailBody -Summary "The EntraPolicySuite tamper monitor found $what. The tags drive the dynamic groups and the Conditional Access policies that read them, so a changed tag can move a user out of a policy (a break-glass value or a cleared Authentication tag takes the user out of MFA)." `
         -Rows $rows -Columns 'Severity', 'Object', 'Tag', 'Change', 'Who', 'Found' `
-        -WhatToDo 'Check each change on the Tamper page. Restore puts the engine''s value back; a known writer (e.g. an HR provisioning app) can be added to the allow list (TamperMonitor.AllowList).' `
+        -WhatToDo 'Check each change on the Tamper page. Restore puts the engine''s value back; a known writer (e.g. an HR provisioning app) can be added to the allow list (TamperMonitor.AllowList).' -ButtonText 'Open the Tamper page' -ButtonPage 'tamper' `
         -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     $r = Send-EpsMail -Config $cfg -Subject $subject -Html $html -Importance $(if ($high) { 'high' } else { 'normal' })
     if ($r.Sent) {

@@ -27,6 +27,7 @@ param(
     [string]$SqlLocation,
     [string]$SqlAdminGroupId,
     [string]$SqlAdminGroupName,
+    [string]$Ring,
     [string[]]$ExcludeGraphRole,
     [switch]$Quiet,
     # the private network install (NET-1)

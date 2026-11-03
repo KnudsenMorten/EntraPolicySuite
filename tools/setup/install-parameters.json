@@ -34,6 +34,8 @@
       "help": "Your Entra security group to be the Azure SQL server's admin (you must be a member). Empty: you. An existing server keeps its admin." },
     { "key": "sqlAdminGroupName", "parameter": "-SqlAdminGroupName", "page": "database", "type": "string", "default": "",
       "help": "The display name of that group." },
+    { "key": "ring", "parameter": "-Ring", "page": "advanced", "type": "string", "default": "",
+      "help": "The update ring this install belongs to (0-10), reported on the heartbeat. Invardia tells you the ring. Empty: a re-run keeps the install's ring." },
     { "key": "excludeGraphRole", "parameter": "-ExcludeGraphRole", "page": "advanced", "type": "stringList", "default": [],
       "help": "A Graph permission of the engine your approver did not approve: it is never granted, and the feature that needs it reports its data as unavailable." },
     { "key": "quiet", "parameter": "-Quiet", "page": "advanced", "type": "bool", "default": false,
