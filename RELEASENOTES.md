@@ -2,6 +2,9 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.43 - wording
+- The product page text of the CA Policy Analyzer uses US spelling, like the rest of the documentation.
+
 ## 2.0.42 - mails with a button, the update ring, a script for the engine's permissions
 - Every mail EntraPolicySuite sends has the product's header, one blue button that opens the page the mail is about
   (the Tamper page, Conditional Access, the CA Policy Analyzer, the identity report, the mail settings) and a link to
