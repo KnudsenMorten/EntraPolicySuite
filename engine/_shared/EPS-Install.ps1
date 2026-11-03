@@ -454,7 +454,9 @@ function Invoke-EpsInstallStep {
     # the web facts a resumed install no longer has in memory: read back, never remembered in the journal
     $loadWeb = {
         if (-not $Ctx.Web) { $Ctx.Web = @{} }
-        if (-not $Ctx.Web.ClientId) {
+        # RESUME-WEB-OBJECTID (NET-1 run 3): the jobs step on a resume fills ONLY ClientId - restore when ANY of the three is
+        # missing, or the web-app step PATCHes applications/ with no id (Graph 405)
+        if (-not $Ctx.Web.ClientId -or -not $Ctx.Web.AppObjectId -or -not $Ctx.Web.SpId) {
             $a = Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"
             if (-not $a) { throw 'the web sign-in registration is missing - run the webregistration step (resume from it)' }
             $sp0 = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($a.appId)'&`$select=id" -All)[0]

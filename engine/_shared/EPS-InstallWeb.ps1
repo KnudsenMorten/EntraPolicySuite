@@ -255,6 +255,18 @@ function Invoke-EpsKeyVaultStep {
     }
     if ("$($vault.properties.provisioningState)" -and "$($vault.properties.provisioningState)" -ne 'Succeeded') { throw "the Key Vault $($n.KeyVault) is still '$($vault.properties.provisioningState)' after 5 minutes - run the install again" }
     if (-not $vault.properties.enableRbacAuthorization -or -not $vault.properties.enablePurgeProtection) { throw "the Key Vault $($n.KeyVault) must use Azure RBAC with purge protection (it was not made by this install)" }
+    # NET1-KV-RECOVER (NET-1 run 3, 2026-11-03): a vault RECOVERED from soft delete (or one an older release made) keeps its
+    # old network rules - bypass None refuses the key below. A private install therefore makes the vault rule 11 on EVERY
+    # path - created, recovered or already there - and reads it back before the key step.
+    if ($Ctx.Network -and $Ctx.Network.Private) {
+        $acl = $vault.properties.networkAcls
+        if ("$($vault.properties.publicNetworkAccess)" -ne 'Disabled' -or "$($acl.defaultAction)" -ne 'Deny' -or "$($acl.bypass)" -ne 'AzureServices' -or @($acl.ipRules).Count -or @($acl.virtualNetworkRules).Count) {
+            [void](Invoke-EpsArm -Method PATCH -Path $vaultPath -ApiVersion $script:EpsWeb.KvApi -Body @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } } })
+            $vault = Invoke-EpsArm -Path $vaultPath -ApiVersion $script:EpsWeb.KvApi
+            $acl = $vault.properties.networkAcls
+            if ("$($vault.properties.publicNetworkAccess)" -ne 'Disabled' -or "$($acl.bypass)" -ne 'AzureServices' -or "$($acl.defaultAction)" -ne 'Deny') { throw "the Key Vault $($n.KeyVault) could not be set private (public access off, deny, bypass AzureServices): it reads back public '$($vault.properties.publicNetworkAccess)', bypass '$($acl.bypass)'" }
+        }
+    }
     $keyPath = "$vaultPath/keys/$($script:EpsWeb.KeyName)"
     $key = Invoke-EpsArm -Path $keyPath -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
     if (-not $key) { $key = Invoke-EpsArm -Method PUT -Path $keyPath -ApiVersion $script:EpsWeb.KvApi -Body @{ properties = @{ kty = 'RSA'; keySize = 2048; keyOps = @('wrapKey', 'unwrapKey') } } }

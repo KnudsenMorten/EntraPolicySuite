@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.41 - private network install: re-installs and resumes
+- Fixed: re-installing a private install into the same resource group stopped at the Key Vault key when the vault was
+  recovered from an earlier install. The install now sets the vault's network rules every time before it makes the key.
+- Fixed: an install resumed from before the jobs step could stop at the web app ("applications/ -> 405").
 ## 2.0.40 - private network install: the Key Vault key, a stricter region check
 - Fixed: a private network install stopped at the Key Vault key. The private Key Vault still has public access off and
   no IP or network rules, and now lets trusted Azure services through, so the install can create its key.
