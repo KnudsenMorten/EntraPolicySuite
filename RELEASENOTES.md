@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.38 - private network install fixed, the region is checked first
+- Fixed: a private network install stopped at its first private endpoint ("the private endpoint ... gives no address").
+  The install now reads each endpoint's addresses from its network interface.
+- Before anything is created, the install checks that Azure accepts new resources in the chosen region for your
+  subscription. If it does not, it stops, creates nothing, and names regions that do.
 ## 2.0.37 - the security pack, Conditional Access docs corrected
 - The security pack for reviewers is now delivered with each release: architecture, identities, every permission and
   why, data, vendor access, supply chain, change control, hardening, compliance, uninstall and scripts. It is generated

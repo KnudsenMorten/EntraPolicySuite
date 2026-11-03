@@ -42,6 +42,56 @@ function Get-EpsEngineGraphRoles {
 $script:EpsExchangeAppId = '00000002-0000-0ff1-ce00-000000000000'      # Office 365 Exchange Online
 $script:EpsExchangeRecipientAdminRole = '31392ffb-586c-42d1-9346-e59415a2cc4e'   # Entra role template: Exchange Recipient Administrator
 
+# Installer rule 9 (framework §0; EPS's live private proof 2026-11-03: westeurope, the default, refused every new resource
+# in a test subscription - RequestDisallowedByAzure "The selected region is currently not accepting new customers"): the
+# preflight asks ARM to VALIDATE one small resource in the chosen region - nothing is created. The regions offered instead.
+$script:EpsRegionAlternatives = @('northeurope', 'swedencentral', 'westeurope', 'germanywestcentral', 'francecentral', 'uksouth', 'norwayeast')
+
+function Get-EpsRegionCheckTemplate {
+    # PURE. The template the region check validates (Invardia's spec, proven live by PIM 2026-11-03): one minimal resource
+    # per service EntraPolicySuite creates, each in the region (SQL in -SqlLocation when given). Names are throwaway.
+    param([Parameter(Mandatory)][string]$Location, [string]$SqlLocation, [string]$TenantId = '00000000-0000-0000-0000-000000000000')
+    $x = ([guid]::NewGuid().ToString('N')).Substring(0, 8)
+    @{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'; contentVersion = '1.0.0.0'; resources = @(
+        @{ type = 'Microsoft.ManagedIdentity/userAssignedIdentities'; apiVersion = '2023-01-31'; name = "id-eps-rc-$x"; location = $Location }
+        @{ type = 'Microsoft.Storage/storageAccounts'; apiVersion = '2023-01-01'; name = "stepsrc$x"; location = $Location; kind = 'StorageV2'; sku = @{ name = 'Standard_LRS' } }
+        @{ type = 'Microsoft.App/managedEnvironments'; apiVersion = '2024-03-01'; name = "cae-eps-rc-$x"; location = $Location; properties = @{} }
+        @{ type = 'Microsoft.ContainerRegistry/registries'; apiVersion = '2023-07-01'; name = "acrepsrc$x"; location = $Location; sku = @{ name = 'Basic' }; properties = @{} }
+        @{ type = 'Microsoft.Sql/servers'; apiVersion = '2023-08-01-preview'; name = "sql-eps-rc-$x"; location = $(if ($SqlLocation) { $SqlLocation } else { $Location })
+           properties = @{ minimalTlsVersion = '1.2'; administrators = @{ administratorType = 'ActiveDirectory'; azureADOnlyAuthentication = $true; principalType = 'Group'; login = 'eps-region-check'; sid = '00000000-0000-0000-0000-000000000001'; tenantId = $TenantId } } }) }
+}
+
+function Test-EpsRegionAccepts {
+    <#
+      Installer rule 9: does -Location accept new resources in this subscription? ARM's deployment VALIDATE - nothing is
+      made: with the resource group there, the services' minimal resources in it (Get-EpsRegionCheckTemplate); else the
+      resource group itself at subscription scope. Refused = RequestDisallowedByAzure in error.code or ANY details[].code
+      (Azure nests it - read the raw answer, not Invoke-EpsArm's one-line error).
+      Returns @{ Accepts = $true | $false | $null (not known - never a stop); Reason }. Never throws.
+    #>
+    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [Parameter(Mandatory)][string]$Location, [string]$SqlLocation, [string]$TenantId, [switch]$ResourceGroupExists)
+    $name = "eps-region-check-$(([guid]::NewGuid().ToString('N')).Substring(0, 6))"
+    if ($ResourceGroupExists) {
+        $path = "subscriptions/$SubscriptionId/resourcegroups/$ResourceGroup/providers/Microsoft.Resources/deployments/$name/validate"
+        $body = @{ properties = @{ mode = 'Incremental'; template = (Get-EpsRegionCheckTemplate -Location $Location -SqlLocation $SqlLocation -TenantId $(if ($TenantId) { $TenantId } else { '00000000-0000-0000-0000-000000000000' })) } }
+    } else {
+        $path = "subscriptions/$SubscriptionId/providers/Microsoft.Resources/deployments/$name/validate"
+        $body = @{ location = $Location; properties = @{ mode = 'Incremental'; template = @{ '$schema' = 'https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#'; contentVersion = '1.0.0.0'
+            resources = @(@{ type = 'Microsoft.Resources/resourceGroups'; apiVersion = '2021-04-01'; name = $ResourceGroup; location = $Location }) } } }
+    }
+    try {
+        $r = & $script:EpsHttp 'POST' "$script:EpsArmRoot/$path`?api-version=2021-04-01" @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } ($body | ConvertTo-Json -Depth 30 -Compress)
+    } catch { return @{ Accepts = $null; Reason = "not checked: $($_.Exception.Message)" } }
+    if ([int]$r.Status -ge 200 -and [int]$r.Status -lt 300) { return @{ Accepts = $true; Reason = 'validated' } }
+    $err = try { ("$($r.Body)" | ConvertFrom-Json).error } catch { $null }
+    $codes = [System.Collections.Generic.List[string]]::new(); $msgs = [System.Collections.Generic.List[string]]::new()
+    $walk = { param($x) if (-not $x) { return }; if ($x.code) { $codes.Add("$($x.code)") }; if ($x.message) { $msgs.Add("$($x.message)") }; foreach ($d in @($x.details)) { & $walk $d } }
+    & $walk $err
+    if ($codes -contains 'RequestDisallowedByAzure' -or (@($msgs) -join ' ') -match '(?i)not accepting new customers') {
+        return @{ Accepts = $false; Reason = "$(@($msgs | Where-Object { $_ -match '(?i)not accepting|disallowed' })[0])" }
+    }
+    @{ Accepts = $null; Reason = "not checked: HTTP $($r.Status) $(@($codes)[0]) $(@($msgs)[0])".Trim() }
+}
 function Get-EpsInstallNames {
     # One place for every name. Globally unique names (registry, SQL server) carry a short, stable suffix from the
     # subscription + resource group, so a re-run finds the same resources.

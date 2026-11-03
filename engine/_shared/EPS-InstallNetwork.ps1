@@ -144,6 +144,32 @@ function Test-EpsNetworkPrerequisites {
     @($miss)
 }
 
+function Get-EpsPrivateEndpointAddresses {
+    <#
+      NET1-PE-ADDRESS (the NET-1 live proof 2026-11-03; framework installer rule 10): a private endpoint's fqdn -> address
+      map. Azure leaves properties.customDnsConfigs EMPTY when the endpoint has a private DNS zone group (EPS always
+      attaches one), so the addresses are read, in order, from: (1) the endpoint's network interface - each
+      ipConfiguration's privateLinkConnectionProperties.fqdns + privateIPAddress; (2) the zone group's recordSets
+      (fqdn + ipAddresses); (3) customDnsConfigs. Reads only. -Pe: the endpoint as ARM returned it.
+    #>
+    param([Parameter(Mandatory)]$Pe, [string]$PePath)
+    $map = @{}
+    $add = { param($fqdn, $ip) $k = "$fqdn".Trim().TrimEnd('.').ToLowerInvariant(); if ($k -and "$ip" -and -not $map.ContainsKey($k)) { $map[$k] = "$ip" } }
+    foreach ($nic in @($Pe.properties.networkInterfaces)) {
+        if (-not "$($nic.id)") { continue }
+        $n = Invoke-EpsArm -Path "$($nic.id)" -ApiVersion $script:EpsNetApi.net -AllowNotFound
+        foreach ($ic in @($n.properties.ipConfigurations)) {
+            foreach ($q in @($ic.properties.privateLinkConnectionProperties.fqdns)) { & $add $q $ic.properties.privateIPAddress }
+        }
+    }
+    if ($PePath) {
+        $zg = Invoke-EpsArm -Path "$PePath/privateDnsZoneGroups" -ApiVersion $script:EpsNetApi.net -AllowNotFound
+        foreach ($g in @($zg.value)) { foreach ($zc in @($g.properties.privateDnsZoneConfigs)) { foreach ($rs in @($zc.properties.recordSets)) { if (@($rs.ipAddresses).Count) { & $add $rs.fqdn @($rs.ipAddresses)[0] } } } }
+    }
+    foreach ($c in @($Pe.properties.customDnsConfigs)) { if ($c.fqdn -and @($c.ipAddresses).Count) { & $add $c.fqdn @($c.ipAddresses)[0] } }
+    $map
+}
+
 function Get-EpsZoneLinkName {
     # the name of a zone's link to a network: the network's name + a hash of its full id (two networks of the same name
     # in two resource groups get two links); at most 80 characters
@@ -226,8 +252,9 @@ function Read-EpsNetworkFacts {
     if (-not $net.ZoneSource) { $net.ZoneSource = @{} }
     foreach ($s in Get-EpsPrivateEndpointSpecs -Ctx $Ctx) {
         if (@($s.Fqdns | Where-Object { $net.EndpointIps[$_] }).Count -eq $s.Fqdns.Count) { continue }
-        $pe = Invoke-EpsArm -Path "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.Network/privateEndpoints/$($s.Name)" -ApiVersion $script:EpsNetApi.net -AllowNotFound
-        foreach ($c in @($pe.properties.customDnsConfigs)) { if ($c.fqdn -and @($c.ipAddresses).Count) { $net.EndpointIps["$($c.fqdn)".ToLowerInvariant()] = "$(@($c.ipAddresses)[0])" } }
+        $pePath = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.Network/privateEndpoints/$($s.Name)"
+        $pe = Invoke-EpsArm -Path $pePath -ApiVersion $script:EpsNetApi.net -AllowNotFound
+        if ($pe) { $a = Get-EpsPrivateEndpointAddresses -Pe $pe -PePath $pePath; foreach ($k in $a.Keys) { $net.EndpointIps[$k] = $a[$k] } }
     }
     if (-not $net.EnvDomain) {
         $ce = Invoke-EpsArm -Path "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.App/managedEnvironments/$($Ctx.Names.Environment)" -ApiVersion $script:EpsApi.aca -AllowNotFound
@@ -357,7 +384,7 @@ function Invoke-EpsPrivateEndpointStep {
     $r = Invoke-EpsArm -Path $pe -ApiVersion $script:EpsNetApi.net
     $st = "$(@($r.properties.privateLinkServiceConnections)[0].properties.privateLinkServiceConnectionState.status)"
     if ($st -and $st -ne 'Approved') { throw "the private endpoint $($s.Name) is '$st', not Approved" }
-    foreach ($c in @($r.properties.customDnsConfigs)) { if ($c.fqdn -and @($c.ipAddresses).Count) { $net.EndpointIps["$($c.fqdn)".ToLowerInvariant()] = "$(@($c.ipAddresses)[0])" } }
+    $a = Get-EpsPrivateEndpointAddresses -Pe $r -PePath $pe; foreach ($k in $a.Keys) { $net.EndpointIps[$k] = $a[$k] }   # NET1-PE-ADDRESS: the NIC first, never customDnsConfigs alone
     $miss = @($s.Fqdns | Where-Object { -not $net.EndpointIps[$_.ToLowerInvariant()] })
     if ($miss) { throw "the private endpoint $($s.Name) gives no address for $($miss -join ', ')" }
 }

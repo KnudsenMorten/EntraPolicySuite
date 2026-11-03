@@ -213,6 +213,14 @@ $print = { param($e) if (-not $Quiet) {
     $c = switch ($e.State) { 'ok' { 'Green' } 'failed' { 'Red' } 'plan' { 'Gray' } 'skipped' { 'DarkGray' } default { 'Cyan' } }
     Write-Host ("  {0,-8} {1,-60} {2}" -f $e.State, $e.Step.Title, $e.Message) -ForegroundColor $c } }
 
+# Installer rule 9 (framework §0): the region accepts new resources in THIS subscription - a validate, nothing is made
+$rgExists = [bool]$(if ($rgOnly) { $true } else { Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup" -ApiVersion '2021-04-01' -AllowNotFound })
+$reg = Test-EpsRegionAccepts -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Location $Location -SqlLocation $SqlLocation -TenantId $TenantId -ResourceGroupExists:$rgExists
+if ($reg.Accepts -eq $false) {
+    # Invardia's wording, word for word (framework §0 installer rule 9); the examples are regions that validate OK here
+    $ok = @($script:EpsRegionAlternatives | Where-Object { $_ -ne $Location } | Where-Object { (Test-EpsRegionAccepts -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Location $_ -TenantId $TenantId -ResourceGroupExists:$rgExists).Accepts -eq $true } | Select-Object -First 3)
+    Finish 2 ("`nAzure does not accept new resources in $Location for this subscription (the region is not taking new customers). Choose another region, for example $(if ($ok.Count) { $ok -join ', ' } else { 'northeurope or swedencentral' })." + $(if ($rgExists) { "`nResource group $ResourceGroup is in ${Location}: use another resource group (-ResourceGroup) with the new -Location." }) + "`nNOTHING was created.")
+}if ($null -eq $reg.Accepts) { Write-Host "Region $Location`: $($reg.Reason) - the install goes on." -ForegroundColor DarkYellow }
 # Installer rule 8 (framework §0, a real install 2026-11-03): every prerequisite of the chosen network options, checked
 # BEFORE anything is created - ALL missing ones in one list, and nothing made (also with -WhatIf, so the plan shows it)
 if ($netPlan.Private) {
