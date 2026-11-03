@@ -38,7 +38,8 @@ RUN rm -rf tests internal output docs CLAUDE.md \
  && test -f engine/conditions/catalog.json \
  && test -f engine/settings/catalog.json \
  && test -f engine/ca/templates.json \
- && for f in EPS-Conditions EPS-TagEngine EPS-FastEval EPS-V1Import EPS-SqlStore EPS-Guard EPS-Graph EPS-Exchange EPS-TagJob EPS-Scheduler EPS-TamperMonitor EPS-HybridWorker EPS-Mail EPS-WebAuth EPS-Audit EPS-Settings EPS-Rules EPS-CaAnalyzer EPS-CaManage EPS-CaWrite EPS-IdentityReport EPS-WebApi EPS-ConfigEngine EPS-Uplink; do test -f engine/_shared/$f.ps1; done
+ && test -f engine/onboarding/defaults.json \
+ && for f in EPS-Conditions EPS-TagEngine EPS-FastEval EPS-V1Import EPS-SqlStore EPS-Guard EPS-Graph EPS-Exchange EPS-TagJob EPS-Scheduler EPS-TamperMonitor EPS-HybridWorker EPS-Mail EPS-WebAuth EPS-Audit EPS-Settings EPS-Rules EPS-CaAnalyzer EPS-CaManage EPS-CaWrite EPS-Onboarding EPS-IdentityReport EPS-WebApi EPS-ConfigEngine EPS-Uplink; do test -f engine/_shared/$f.ps1; done
 
 # ---- stage 3: runtime ----
 FROM mcr.microsoft.com/powershell:7.4-ubuntu-22.04@sha256:62300a213a9293916333df2b014cd3a8f22fb0b0b65f2bb446aaf436bcf8c868

@@ -1,0 +1,31 @@
+{
+  "_": "GET-STARTED (DESIGN §5.10): what v1's scripts set up before anything ran (Entra-ConditionalAccess-Management.ps1), as data the wizard checks the tenant against. The engine's Graph roles are the install's list (tests/Test-EpsOnboarding.ps1 keeps them equal to EPS-Install.ps1).",
+  "engineGraphRoles": ["User.ReadWrite.All", "Device.ReadWrite.All", "GroupMember.Read.All", "Organization.Read.All", "AuditLog.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "DeviceManagementManagedDevices.Read.All", "Application.Read.All", "Policy.ReadWrite.ConditionalAccess"],
+  "roleSince": {
+    "User.ReadWrite.All": "2.0.0", "Device.ReadWrite.All": "2.0.0", "GroupMember.Read.All": "2.0.0", "Organization.Read.All": "2.0.0", "AuditLog.Read.All": "2.0.0",
+    "RoleManagement.Read.Directory": "2.0.1", "Policy.Read.All": "2.0.1", "DeviceManagementManagedDevices.Read.All": "2.0.6", "Application.Read.All": "2.0.14", "Policy.ReadWrite.ConditionalAccess": "2.0.27"
+  },
+  "roleFor": {
+    "User.ReadWrite.All": "user tagging (write the tag attributes)", "Device.ReadWrite.All": "device tagging", "GroupMember.Read.All": "group conditions, the wizard's group checks",
+    "Organization.Read.All": "licences (Teams Rooms, the identity report)", "AuditLog.Read.All": "the tamper monitor's 'who', the CA Policy Analyzer's sign-ins",
+    "Policy.Read.All": "reading the Conditional Access policies, strengths and named locations", "RoleManagement.Read.Directory": "role names, the break-glass role check",
+    "DeviceManagementManagedDevices.Read.All": "the identity report's Intune devices", "Application.Read.All": "application names in the CA documentation, this check of the engine's own rights",
+    "Policy.ReadWrite.ConditionalAccess": "the stage buttons (CA-LIFECYCLE)"
+  },
+  "exchangeRole": { "name": "Exchange Recipient Administrator", "templateId": "31392ffb-586c-42d1-9346-e59415a2cc4e", "for": "mailbox-type conditions (Exchange.ManageAsApp)" },
+  "globalAdministratorTemplateId": "62e90394-69f5-4237-9190-012177145e10",
+  "authStrengths": {
+    "FIDO": { "setting": "CA.AuthStrengthFidoName", "allowedCombinations": ["fido2", "temporaryAccessPassOneTime"],
+              "description": "Allow Feitian & Yubi FIDO keys and TAP for onboarding and recovery",
+              "fido2AllowedAAGUIDs": ["833b721a-ff5f-4d00-bb2e-bdda3ec01e29", "ee041bce-25e5-4cdb-8f86-897fd6418464", "310b2830-bd4a-4da5-832e-9a0dfc90abf2", "77010bd7-212a-4fc9-b236-d2ca5e9d4084",
+                                      "b6ede29c-3772-412c-8a78-539c1f4c62d2", "12ded745-4bed-47d4-abaa-e713f51d6393", "3e22415d-7fdf-4ea4-8a0c-dd60c4249b9d", "2c0df832-92de-4be1-8412-88a8f074df4a",
+                                      "8c97a730-3f7b-41a6-87d6-1e9b62bda6f0", "c5ef55ff-ad9a-4b9f-b580-adebafe026d0", "ee882879-721c-4913-9775-3dfcce97072a"] },
+    "WHfB": { "setting": "CA.AuthStrengthWhfbName", "allowedCombinations": ["windowsHelloForBusiness", "temporaryAccessPassOneTime"],
+              "description": "Allow Windows Hello for Business (WHfB) + Temporary Access Password (one-time)" }
+  },
+  "authMethods": ["fido2", "temporaryAccessPass", "microsoftAuthenticator"],
+  "deniedCountries": { "setting": "CA.DeniedCountriesLocationName", "countries": ["AF", "BY", "CN", "CU", "IR", "KP", "RU", "SY", "UA", "VE"], "includeUnknownCountriesAndRegions": true, "countryLookupMethod": "clientIpAddress" },
+  "syncAccountName": "On-Premises Directory Synchronization Service Account",
+  "templatesNeedingInput": { "CA209": "the applications to block", "CA259": "the applications to block", "CA304": "the applications to block", "CA354": "the applications to block", "CA404": "the applications to block" },
+  "pilotGroupSizes": "Pilot1 1-2 users, Pilot2 5-10, Pilot3 30-50 (v1's advice)"
+}

@@ -305,3 +305,9 @@ details.more .form .wide { flex:1 1 100%; }
 .mtag.out { border-style:dashed; }   /* CA-LIMITS: left out of this monitor */
 .leftout { margin-top:4px; }
 #reasonText { white-space:pre-line; }   /* one line per policy in a bulk confirmation */
+
+/* GET-STARTED (2.0.28): the onboarding steps */
+.gs-step { border:1px solid var(--border); border-radius:6px; padding:8px 12px; margin:10px 0; }
+.gs-step > summary { cursor:pointer; }
+.fld { display:block; margin:8px 0; }
+.fld > span { display:block; font-weight:600; margin-bottom:2px; }

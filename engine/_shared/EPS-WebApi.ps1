@@ -668,6 +668,29 @@ function Get-EpsWebRoutes {
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not moved: $($s.Reason). The policy was not changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
             New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Moved $($s.Before.displayName) from $($s.Before.stage) to $to$(if ($s.After.displayName -cne $s.Before.displayName) { " (now $($s.After.displayName))" }).$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
                 -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        # GET-STARTED (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak glass, auth methods, naming
+        # conv for groups etc. see all req in v1 scripts"; DESIGN §5.10): the engine checks, the page shows what it found
+        @{ Method = 'GET'; Pattern = '^/api/onboarding$'; Summary = 'Get started: every onboarding step with what the last check found, the break-glass accounts and the targeting method.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString
+            $o = Get-EpsOnboardingOverview -ConnectionString $cs
+            New-EpsWebResponse -Body @{ steps = @($o.Steps); checkedAtUtc = @(ConvertTo-EpsWebValue ([pscustomobject]@{ At = $o.CheckedAtUtc }))[0].At; checkedBy = $o.CheckedBy
+                breakGlass = @(ConvertTo-EpsWebValue (Get-EpsBreakGlassAccounts -ConnectionString $cs))
+                method = "$(Get-EpsSetting -ConnectionString $cs -Name 'CA.GroupTargetingMethod' -Default '')"; methods = @((Get-EpsCaTemplateCatalog).groupTargetingMethods) } } }
+        @{ Method = 'POST'; Pattern = '^/api/onboarding/check$'; Summary = 'Check every onboarding step against the tenant now (reads only).'; Body = 'reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'onboarding.check'; NeedsReason = $true; Handler = { param($c, $m)
+            if (-not (Get-Command Invoke-EpsOnboardingCheck -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine checks the tenant' }
+            $r = Invoke-EpsOnboardingCheck -ConnectionString $c.Ctx.ConnectionString
+            Save-EpsOnboardingCheck -ConnectionString $c.Ctx.ConnectionString -Rows $r.Rows -Actor $c.Caller.identity
+            $n = { param($s) @($r.Rows | Where-Object { $_.state -eq $s }).Count }
+            New-EpsWebResponse -Body @{ ok = $true; text = "Checked $(@($r.Rows).Count) item(s): $(& $n 'ok') ok, $(& $n 'missing') missing, $(& $n 'check') to check. Nothing in the tenant was changed." } -Audit @{ Target = 'Onboarding'; After = @{ items = @($r.Rows).Count; missing = (& $n 'missing') } } } }
+        @{ Method = 'POST'; Pattern = '^/api/breakglass$'; Summary = 'Add or change a break-glass account in EntraPolicySuite''s list (the accounts every policy must exclude).'; Body = 'upn; displayName; method: MFA or FIDO; placement: where it is kept (no secret); enabled; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'breakglass.change'; NeedsReason = $true; Handler = { param($c, $m)
+            $b = $c.Body; $upn = "$($b.upn)".Trim()
+            $bad = if ($upn -notmatch '^[^@\s]{1,200}@[A-Za-z0-9.-]{3,100}$') { 'upn: a user principal name (name@domain)' } elseif ("$($b.method)" -notin '', 'MFA', 'FIDO') { 'method: MFA or FIDO' } elseif ("$($b.placement)".Length -gt 1000 -or "$($b.displayName)".Length -gt 200) { 'placement at most 1000, displayName at most 200 characters' } elseif ($null -ne $b.enabled -and $b.enabled -isnot [bool]) { 'enabled: true or false' }
+            if ($bad) { return New-EpsWebResponse -Status 400 -Body @{ error = $bad } -Audit @{ Target = "BreakGlassAccount|$upn"; Outcome = 'refused'; OutcomeText = $bad } }
+            $s = Save-EpsBreakGlassAccount -ConnectionString $c.Ctx.ConnectionString -UserPrincipalName $upn -DisplayName "$($b.displayName)" -Method "$($b.method)" -Placement "$($b.placement)" -Enabled $(if ($null -eq $b.enabled) { $true } else { [bool]$b.enabled }) -Actor $c.Caller.identity
+            New-EpsWebResponse -Body @{ ok = $true; text = $(if ($s.Result -eq 'unchanged') { "Nothing to change for $upn." } else { "Saved $upn in the break-glass list. Nothing in the tenant changed - read the policy list again to check every policy excludes it." }) } -Audit @{ Target = "BreakGlassAccount|$upn"; Before = $s.Before; After = $s.After } } }
         @{ Method = 'GET'; Pattern = '^/api/capolicies/templates$'; Summary = 'The Conditional Access template library of this release (CA000-CA800), each template with its stages and its notes.'; Body = 'id: one template, with its body'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             $cat = Get-EpsCaTemplateCatalog
@@ -962,7 +985,7 @@ function Get-EpsApiReference {
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
         jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
+        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {

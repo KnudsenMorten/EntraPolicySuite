@@ -2328,6 +2328,73 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     });
   }
 
+  // GET-STARTED (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak glass, auth methods, naming conv
+  // for groups etc. see all req in v1 scripts"; DESIGN §5.10): each step with what the engine found in the tenant. The
+  // check only reads; what is missing is created step by step in later releases ("Check + create on approval").
+  var GS_STATE = { ok: 'ready', missing: 'missing', check: 'check', info: 'info', unknown: 'not checked' };
+  var GS_CLS = { missing: 'c-danger', check: 'c-warning', unknown: 'smeta' };
+  function gsBreakGlassEdit(a) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Break-glass account' });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var upn = el('input', { type: 'text', value: a ? a.UserPrincipalName : '', placeholder: 'bga-1@contoso.onmicrosoft.com', style: 'width:100%' }); if (a) upn.readOnly = true;
+    var dn = el('input', { type: 'text', value: a && a.DisplayName ? a.DisplayName : '', style: 'width:100%' });
+    var mth = el('select', null, ['', 'FIDO', 'MFA'].map(function (v) { var o = el('option', { value: v, text: v || '(not set)' }); if (a && a.AuthenticationMethod === v) o.selected = true; return o; }));
+    var pl = el('input', { type: 'text', value: a && a.Placement ? a.Placement : '', placeholder: 'e.g. the safe at the head office - never a password', style: 'width:100%' });
+    var en = el('input', { type: 'checkbox' }); en.checked = a ? !!a.Enabled : true;
+    d.appendChild(el('h3', { text: a ? 'Break-glass account ' + a.UserPrincipalName : 'Add a break-glass account' }));
+    d.appendChild(el('div', { class: 'guide', text: 'EntraPolicySuite\'s list of the emergency accounts every Conditional Access policy must exclude. Saving changes the list only - nothing in the tenant. Never write a password here.' }));
+    [['User principal name', upn], ['Display name', dn], ['Sign-in method', mth], ['Where it is kept', pl]].forEach(function (x) { d.appendChild(el('label', { class: 'fld' }, el('span', { text: x[0] }), x[1])); });
+    d.appendChild(el('label', null, en, ' in use (unticked = kept in the list, not checked)'));
+    var go = el('button', { type: 'button', text: 'Save' });
+    go.addEventListener('click', function () {
+      close();
+      withReason('Save break-glass account ' + upn.value.trim(), 'Changes EntraPolicySuite\'s break-glass list only - nothing in the tenant.', function (reason) {
+        return api('POST', '/api/breakglass', { upn: upn.value.trim(), displayName: dn.value.trim(), method: mth.value, placement: pl.value.trim(), enabled: en.checked, reason: reason }); });
+    });
+    d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal(); (a ? dn : upn).focus();
+  }
+  function gsMethodPicker(j) {
+    var sel = el('select', null, [''].concat(j.methods || []).map(function (v) { var o = el('option', { value: v, text: v || '(choose)' }); if (v === j.method) o.selected = true; return o; }));
+    var go = el('button', { type: 'button', class: 'secondary', text: 'Save the method', onclick: function () {
+      if (!sel.value || sel.value === j.method) return;
+      withReason('Group targeting method: ' + sel.value, 'Which pilot and target group names the templates expect (v1\'s Group_Targeting_Method). Changes no group and no policy.', function (reason) {
+        return api('PUT', '/api/settings/CA.GroupTargetingMethod', { value: sel.value, expected: j.method || null, reason: reason }); }); } });
+    return el('div', { class: 'toolbar' }, el('span', { text: 'Method: ' }), sel, go);
+  }
+  function drawGetStarted(p) {
+    var admin = isRole('Admin'), owner = isRole('SuperAdmin');
+    p.appendChild(el('div', { class: 'guide', text: 'Everything EntraPolicySuite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
+    return api('GET', '/api/onboarding').then(function (j) {
+      var steps = j.steps || [];
+      var done = steps.filter(function (s) { return s.state === 'ok'; }).length;
+      p.appendChild(el('div', { class: 'cards' }, card(done + ' / ' + steps.length, 'steps ready'),
+        card(steps.reduce(function (n, s) { return n + (s.counts.missing || 0); }, 0), 'items missing', steps.some(function (s) { return s.counts.missing; })),
+        card(steps.reduce(function (n, s) { return n + (s.counts.check || 0); }, 0), 'items to check')));
+      p.appendChild(el('div', { class: 'toolbar' },
+        admin ? el('button', { type: 'button', text: 'Check now', onclick: function () { withReason('Check the onboarding steps', 'The engine reads the tenant and compares it with what EntraPolicySuite needs. Read only: nothing in the tenant changes.', function (reason) { return api('POST', '/api/onboarding/check', { reason: reason }); }); } }) : null,
+        el('span', { class: 'count', text: j.checkedAtUtc ? 'Last checked ' : 'Not checked yet.' }), j.checkedAtUtc ? timeEl(j.checkedAtUtc) : null, j.checkedBy ? el('span', { class: 'count', text: ' by ' + j.checkedBy }) : null));
+      steps.forEach(function (s, i) {
+        var box = el('details', { class: 'gs-step' });
+        if (s.state !== 'ok') box.open = true;
+        box.appendChild(el('summary', null, el('strong', { text: (i + 1) + '. ' + s.title }), ' ', el('span', { class: GS_CLS[s.state] || null, text: '- ' + (GS_STATE[s.state] || s.state) + (s.counts.missing ? ', ' + s.counts.missing + ' missing' : '') + (s.counts.check ? ', ' + s.counts.check + ' to check' : '') })));
+        box.appendChild(el('p', { class: 'smeta', text: s.what }));
+        if (s.key === 'breakglass') {
+          box.appendChild(table(j.breakGlass || [], [{ key: 'UserPrincipalName', label: 'Account' }, { key: 'DisplayName', label: 'Name' }, { key: 'AuthenticationMethod', label: 'Method', type: 'cat' },
+            { key: 'Placement', label: 'Kept', wrap: true }, { key: 'Enabled', label: 'In use', type: 'cat' }, owner ? { key: '_e', label: '', render: function (a) { return el('button', { type: 'button', class: 'link', text: 'Edit', onclick: function () { gsBreakGlassEdit(a); } }); } } : null].filter(Boolean),
+            { empty: 'No break-glass account in the list.' }));
+          if (owner) box.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Add a break-glass account', onclick: function () { gsBreakGlassEdit(null); } })));
+        }
+        if (s.key === 'method' && admin) box.appendChild(gsMethodPicker(j));
+        if ((s.items || []).length) box.appendChild(table(s.items, [{ key: 'title', label: 'Item', wrap: true }, { key: 'state', label: 'State', type: 'cat', cls: function (r) { return GS_CLS[r.state] || ''; }, render: function (r) { return el('span', { text: GS_STATE[r.state] || r.state }); } },
+          { key: 'detail', label: 'What was found', wrap: true }], { sort: null }));
+        else box.appendChild(el('p', { class: 'smeta', text: 'Not checked yet - press Check now.' }));
+        p.appendChild(box);
+      });
+    });
+  }
   var PAGES = [
     { id: 'overview', label: 'Overview', role: 'Reader', draw: function (p) {
       return api('GET', '/api/overview').then(function (o) {
@@ -2355,6 +2422,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         if (o.tamperOpen) sc.appendChild(el('span', { class: 'c-danger', text: fmtNum(o.tamperOpen) + ' open tamper event(s)' }));
       });
     } },
+    { id: 'start', label: 'Get started', role: 'Reader', draw: function (p) { return drawGetStarted(p); } },
     { id: 'tamper', label: 'Tamper', role: 'Reader', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'Changes to watched tags that the engine did not make. Accept one that was legitimate, or Restore: the engine writes its value back at its next run. Both need a reason and are audited.' }));
       return api('GET', '/api/tamper').then(function (j) {

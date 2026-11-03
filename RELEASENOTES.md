@@ -2,6 +2,30 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.28 - Get started
+- A new page, **Get started**, lists what EntraPolicySuite needs before the templates, tagging and reports work: what
+  v1's scripts set up first. **Check now** reads the tenant and changes nothing. Each item shows as ready, missing or
+  to check, with what was found. There are 13 steps:
+  1. The engine's Graph permissions and Exchange role, and the licences the templates need.
+  2. The break-glass accounts: cloud-only, password never expires, Global Administrator, their group, excluded from
+     every policy.
+  3. The FIDO2 and Windows Hello authentication strengths (compared with v1's: the allowed methods and the 11 key
+     models), and the authentication methods switched on.
+  4. The group targeting method, now a choice of v1's three, and the group names that follow from it.
+  5. The target groups: in the tenant, with members, the dynamic rule as stored.
+  6. The pilot and exclude groups of your adopted policies.
+  7. The administrative units.
+  8. Named locations: denied countries and a trusted location for your offices.
+  9. The tag attributes, the rules, and the AD Connect sync account left out.
+  10. The alert mail.
+  11. The hybrid worker.
+  12. The report's AD OU patterns.
+  13. The templates that need an input.
+- The break-glass accounts can now be added and changed on the page (SuperAdmin), where until now only the v1 import
+  filled the list. This changes EntraPolicySuite's list only, never the tenant. Never write a password there.
+- The heartbeat to Invardia (for installs that report) now says, from a real check each time, whether every one-time
+  setup step is in place, such as each of the engine's Graph permissions.
+- Creating what is missing, as v1 did, comes in the next releases, one step at a time, each after you see the plan.
 ## 2.0.27 - stage buttons for Conditional Access policies
 - On the Conditional Access page, a SuperAdmin moves an adopted policy one stage at a time: Initial (off), Pilot1
   (report-only for the pilot group), Pilot2 / Pilot3 (on for the pilot group), Prod (on for its targets), one stage

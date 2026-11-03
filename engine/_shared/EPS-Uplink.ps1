@@ -54,16 +54,18 @@ $script:EpsUplinkLists = @{
     Area            = @('tamper', 'ca', 'worker')
     AlertJob        = @('tampermonitor', 'caanalyzer', 'tick')
     MeasuredKey     = @('events', 'high', 'policies', 'accounts', 'minutesSilent')
+    SetupState      = @('ok', 'missing', 'n/a', 'unknown')       # FLEET-STEPS (owner 2026-11-03 via Invardia, the field shared by SI, PIM and EPS)
+    SetupHow        = @('updater', 'support-app', 'customer')
 }
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database')
+    heartbeat = $script:EpsUplinkEnvelope + @('Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps')
     run       = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     alert     = $script:EpsUplinkEnvelope + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -242,6 +244,20 @@ function New-EpsUplinkHeartbeat {
             $o.SignIn = $s
         }
         if ("$($Facts.Database.Tier)" -match '^[A-Za-z0-9._-]{1,20}$') { $o.Database = [ordered]@{ tier = "$($Facts.Database.Tier)" } }
+        # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
+        $steps = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in @($Facts.SetupSteps)) {
+            if (-not $s -or $steps.Count -ge 40 -or "$($s.key)" -notmatch '^[a-z0-9-]{1,60}$') { continue }
+            $st = Select-EpsUplinkEnum "$($s.state)" 'SetupState'; $how = Select-EpsUplinkEnum "$($s.how)" 'SetupHow'
+            if (-not $st -or -not $how) { continue }
+            $it = [ordered]@{ key = "$($s.key)"; title = (ConvertTo-EpsUplinkRedacted -Text "$($s.title)" -Max 120); state = $st }
+            if ("$($s.since)" -match '^[0-9A-Za-z.+-]{1,50}$') { $it.since = "$($s.since)" }
+            $it.how = $how
+            $ca = ConvertTo-EpsUplinkIso $s.checkedAt; if ($ca) { $it.checkedAt = $ca }
+            $dt = ConvertTo-EpsUplinkRedacted -Text "$($s.detail)" -Max 200; if ($dt) { $it.detail = $dt }
+            $steps.Add($it)
+        }
+        if ($steps.Count) { $o.SetupSteps = @($steps) }
     }
     Select-EpsUplinkRecord $o
 }
@@ -319,6 +335,8 @@ function Get-EpsUplinkHeartbeatFacts {
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
         SignIn = (Get-EpsUplinkSignInLayer)
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
+        # FLEET-STEPS: the engine's rights read back now (its own app role assignments), never a remembered value
+        SetupSteps = $(if (Get-Command Get-EpsSetupSteps -ErrorAction SilentlyContinue) { try { @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode) } catch { @() } })
     }
 }
 

@@ -858,3 +858,22 @@ CREATE INDEX IX_CaStageMove_Policy ON eps.CaStageMove (PolicyId, MovedAtUtc DESC
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 17)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (17, '2.0.27');
+
+-- ---- v18: GET-STARTED, the onboarding check (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak
+-- glass, auth methods, naming conv for groups etc. see all req in v1 scripts"; DESIGN §5.10) ----------------------------
+-- One row per item the engine checked (step, item, state ok | missing | check | info | unknown, what it found). The engine
+-- replaces the rows at each check; the web app's Get started page reads them. Nothing in the tenant is written.
+IF OBJECT_ID('eps.OnboardingCheck') IS NULL
+CREATE TABLE eps.OnboardingCheck (
+    CheckId       BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    Step          NVARCHAR(40)   NOT NULL,
+    Item          NVARCHAR(200)  NOT NULL,
+    Title         NVARCHAR(400)  NOT NULL,
+    State         NVARCHAR(20)   NOT NULL,
+    Detail        NVARCHAR(2000) NULL,
+    CheckedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_OnboardingCheck_At DEFAULT SYSUTCDATETIME(),
+    CheckedBy     NVARCHAR(320)  NULL
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 18)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (18, '2.0.28');
