@@ -2,6 +2,26 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.27 - stage buttons for Conditional Access policies
+- On the Conditional Access page, a SuperAdmin moves an adopted policy one stage at a time: Initial (off), Pilot1
+  (report-only for the pilot group), Pilot2 / Pilot3 (on for the pilot group), Prod (on for its targets), one stage
+  back, or off (Disable). The policy page shows the stages, a button for each move, and the moves made.
+- Each move first shows what changes: the name, the state and who the policy includes, now and after the move. A move
+  that enforces the policy (Pilot2, Pilot3, Prod) needs a tick that you checked who it enforces for.
+- What a move changes is what the v1 scripts' stage modes did, for the group-targeting method you set. EntraPolicySuite
+  never changes a group: with dynamic pilot groups, the move says which pilot values the group's rule must take, and
+  you change the rule yourself.
+- The engine applies the move within 5 minutes. It reads the policy again first, and refuses (changing nothing) when:
+  - the policy changed since you looked at it
+  - a group the stage needs is not in the tenant
+  - the break-glass accounts would not stay excluded
+  Turning a policy off is always allowed.
+- It then makes the one change and reads the policy back. The move is journaled, audited and kept in the policy's
+  history, and the monitor does not report your own move as a drift.
+- **Run the install again after the update:** the engine needs the Microsoft Graph permission
+  Policy.ReadWrite.ConditionalAccess for the stage buttons. To leave it out, use
+  `-ExcludeGraphRole Policy.ReadWrite.ConditionalAccess`; the buttons then say the tenant refused the move.
+- Nothing changes a Conditional Access policy by itself: no schedule, job, monitor or template update writes one.
 ## 2.0.26 - template updates you control
 - Conditional Access has a new tab, **Template updates**. When a release brings a newer template library, nothing
   changes by itself. The tab lists what is new, changed or removed since the library your install took. For each

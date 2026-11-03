@@ -18,7 +18,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 function Say($m) { Write-Host "[$([datetime]::UtcNow.ToString('u'))] [eps $version $Job] $m" }
 

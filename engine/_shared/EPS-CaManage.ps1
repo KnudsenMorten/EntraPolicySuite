@@ -5,8 +5,8 @@
 #   of my tenant !!"
 #
 # So NOTHING in this file writes a Conditional Access policy, a named location or an authentication strength - not here,
-# not anywhere (tests/Test-EpsNoCaWrite.ps1 fails the build on any write to identity/conditionalAccess/*). The engine
-# identity has Policy.Read.All only. What is here:
+# and nowhere else but the one stage move in EPS-CaWrite.ps1 (CA-LIFECYCLE, owner 2026-11-03 "Write on approval"):
+# tests/Test-EpsNoCaWrite.ps1 fails the build on any other write to identity/conditionalAccess/*. What is here:
 #   * the template library (engine/ca/templates.json - v1's CA000-CA800 as data) and the match of a tenant policy to its
 #     template by v1's naming (the CA number in the display name)
 #   * the stage a policy is REALLY in, from its state and who it targets (Initial / Pilot1 / Pilot2 / Pilot3 / Prod)
@@ -384,6 +384,110 @@ function Get-EpsCaReview {
     }
 }
 
+# ---- CA-LIFECYCLE: move ONE adopted policy ONE stage - the PLAN (pure; owner 2026-11-03 "in ca policy i need buttons to
+# easily controll and movevto another lufecycle phase like pilot1, pilot2", "Write on approval", "SuperAdmin only").
+# Nothing here writes: the plan says, in NAMES, what the move changes - the page shows it, and the engine
+# (EPS-CaWrite.ps1, Invoke-EpsCaStageMove) recomputes it from the live policy before its one write.
+# v1's modes 1:1 (CA-Scripts-Active\CAnnn.ps1): Pilot1 = the pilot group, report-only; Pilot2 / Pilot3 = the pilot group
+# (Pilot2 / Pilot3 for an assigned method; the one dynamic group, whose rule v1 widens), on; Prod = the template's Prod
+# targets, on; Disable = only the state. The name follows the stage (CAnnn-<stage>-<rest>), as v1 renames it.
+$script:EpsCaStageOrder = @('Initial', 'Pilot1', 'Pilot2', 'Pilot3', 'Prod')
+$script:EpsCaStateWord = @{ disabled = 'off'; enabledForReportingButNotEnforced = 'report-only'; enabled = 'on' }
+$script:EpsCaUserKeywords = @('All', 'None', 'GuestsOrExternalUsers')
+
+function Get-EpsCaStageMoves {
+    # the moves from a stage: one stage down (to Initial = Disable), one stage up, and Disable from any stage but Initial
+    param([string]$Stage)
+    $o = $script:EpsCaStageOrder; $i = [array]::IndexOf($o, $Stage)
+    $m = [System.Collections.Generic.List[string]]::new()
+    if ($i -gt 1) { $m.Add($o[$i - 1]) }
+    if ($i -ge 0 -and $i -lt $o.Count - 1) { $m.Add($o[$i + 1]) }
+    if ($Stage -and $Stage -ne 'Initial') { $m.Add('Disabled') }
+    $m.ToArray()   # callers wrap it in @()
+}
+
+function Get-EpsCaStagePlan {
+    <#
+      What moving ONE policy to -To changes, in names: @{ ok; reason; from; to; templateId; displayNameBefore / After;
+      stateBefore / After; changes = @{ field; before; after }; set = path -> @{ kind; values (names / keywords) };
+      notes; breakGlass (the review's) }. Refused (ok = $false, reason) when the move is not one stage, the policy has
+      no template, is a test copy, or a value cannot be named exactly (the targeting method not set, a group role or a
+      break-glass account missing). -Policy: the body (hashtable); -Review: Get-EpsCaReview's.
+    #>
+    param([Parameter(Mandatory)]$Policy, [Parameter(Mandatory)]$Review, [Parameter(Mandatory)][string]$To, $Ctx = @{}, [hashtable]$Names = @{}, $Catalog = (Get-EpsCaTemplateCatalog))
+    $from = "$($Review.stage)"; $dn = "$(Get-EpsCaV $Policy 'displayName')"; $st = "$(Get-EpsCaV $Policy 'state')"
+    $plan = [ordered]@{ ok = $false; reason = $null; from = $from; to = $To; templateId = $Review.templateId; displayNameBefore = $dn; displayNameAfter = $dn; stateBefore = $st; stateAfter = $st
+                        changes = [System.Collections.Generic.List[object]]::new(); set = [ordered]@{}; notes = [System.Collections.Generic.List[string]]::new(); breakGlass = $Review.breakGlass }
+    $no = { param($why) $plan.reason = $why; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes); $plan }
+    $moves = @(Get-EpsCaStageMoves $from)
+    if ($To -notin $moves) { return & $no $(if ($moves.Count) { "from $from it moves one stage at a time: to $($moves -join ' or ')" } else { "the policy is at $from - there is no move from there" }) }
+    $word = { param($s) if ($script:EpsCaStateWord[$s]) { $script:EpsCaStateWord[$s] } else { "$s" } }
+    if ($To -eq 'Disabled') {
+        $plan.stateAfter = 'disabled'
+        $plan.changes.Add([ordered]@{ field = 'state'; before = (& $word $st); after = 'off' })
+        $plan.notes.Add('Disable (v1''s Disable_Policy): only the state changes - the policy is off for everyone; its name and targets stay, so it can move up again.')
+        $plan.ok = $true; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes); return $plan
+    }
+    $nm = Get-EpsCaNameMatch -DisplayName $dn -Catalog $Catalog; $t = $nm.Template
+    if (-not $t) { return & $no 'the policy has no template in the library: it cannot move by the template''s stages' }
+    if ($nm.VersionCopy) { return & $no "a test copy ($($nm.TemplateId)-$($nm.VersionCopy)-...) does not move through the stages" }
+    if (-not $Ctx.Method) { return & $no 'the group-targeting method is not set (Settings > Conditional Access > CA.GroupTargetingMethod): the pilot and target groups cannot be named' }
+    $plan.displayNameAfter = "$($nm.TemplateId)-$To-$($nm.Rest)"
+    $plan.stateAfter = "$($Catalog.stageState[$To])"
+    $paths = if ($To -eq 'Prod') { @($t.prod.Keys) } else { @('conditions.users.includeUsers', 'conditions.users.includeGroups') }
+    foreach ($path in $paths) {
+        $kind = $script:EpsCaComparePaths[$path]
+        $vals = [System.Collections.Generic.List[string]]::new()
+        foreach ($x in @(@(Get-EpsCaTemplateValue $t $path $To) | Where-Object { $null -ne $_ -and "$_" -ne '' })) {
+            if ("$x" -notmatch '^\{') { $vals.Add("$x"); continue }
+            foreach ($s in (Resolve-EpsCaTemplateSlots -Item "$x" -Template $t -Stage $To -Ctx $Ctx -Catalog $Catalog)) {
+                $s = @($s)
+                if ($s.Count -ne 1 -or "$($s[0])" -match '\((not resolvable|unknown target group|no break-glass account)') { return & $no "$path cannot be named exactly: $(@($s) -join ' or ')" }
+                $vals.Add("$($s[0])")
+            }
+        }
+        $before = @(Get-EpsCaActualValues -Policy $Policy -Path $path -Kind $kind -Names $Names)
+        $a = (@($before | ForEach-Object { "$_".ToLowerInvariant() } | Sort-Object) -join '|'); $b = (@($vals | ForEach-Object { "$_".ToLowerInvariant() } | Sort-Object) -join '|')
+        if ($a -ne $b) { $plan.changes.Add([ordered]@{ field = (($path -replace '^conditions\.users\.', '') -creplace '([a-z])([A-Z])', '$1 $2').ToLowerInvariant(); before = $(if ($before.Count) { $before -join ', ' } else { '(none)' }); after = $(if ($vals.Count) { $vals -join ', ' } else { '(none)' }) }) }
+        $plan.set[$path] = [ordered]@{ kind = $kind; values = @($vals) }
+    }
+    if ($plan.stateAfter -ne $st) { $plan.changes.Insert(0, [ordered]@{ field = 'state'; before = (& $word $st); after = (& $word $plan.stateAfter) }) }
+    if ($plan.displayNameAfter -cne $dn) { $plan.changes.Insert(0, [ordered]@{ field = 'name'; before = $dn; after = $plan.displayNameAfter }) }
+    switch ($To) {
+        'Pilot1' { $plan.notes.Add('Pilot1 is report-only: the policy is evaluated and logged for the pilot group, nothing is enforced. The CA Policy Analyzer shows who it would have blocked or challenged.') }
+        { $_ -in 'Pilot2', 'Pilot3' } { $plan.notes.Add("$To ENFORCES the policy for the members of the pilot group.") }
+        'Prod' { $plan.notes.Add("Prod ENFORCES the policy for its targets: $(@(@($plan.set['conditions.users.includeUsers'].values) + @($plan.set['conditions.users.includeGroups'].values) | Where-Object { $_ }) -join ', ').") }
+    }
+    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -like 'Pilot*') {
+        $g = "$(@($plan.set['conditions.users.includeGroups'].values)[0])"; $n = [int]$To.Substring(5)
+        $want = (@(1..$n | ForEach-Object { $Catalog.pilotRule["Pilot$_"] }) -join ', ')
+        $rule = @($Names.Values | Where-Object { $_.Kind -eq 'group' -and "$($_.Name)" -ieq $g } | ForEach-Object { "$($_.Detail)" })[0]
+        $takes = 0; foreach ($i in 1..3) { if ($rule -and $rule -match [regex]::Escape($Catalog.pilotRule["Pilot$i"])) { $takes = $i } }
+        $plan.notes.Add($(if ($null -eq $rule) { "The pilot group $g is dynamic: v1 widens its rule to take $want on $($Catalog.pilotRule.attribute). EntraPolicySuite does not change groups - check its rule in Entra." }
+            elseif ($takes -eq $n) { "The pilot group $g already takes $want." }
+            else { "The pilot group $g is dynamic and its rule takes $(if ($takes) { "up to $($Catalog.pilotRule["Pilot$takes"])" } else { 'no pilot value' }) now: v1 changes it to take $want on $($Catalog.pilotRule.attribute). EntraPolicySuite does not change groups - change its rule in Entra yourself." }))
+    }
+    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -eq 'Prod') { $plan.notes.Add('v1 also pauses the dynamic pilot group''s rule at Prod. EntraPolicySuite leaves the group as it is.') }
+    if ($Ctx.Method -like 'Manual_*' -and $To -like 'Pilot*') { $plan.notes.Add("The policy applies to the members of $(@($plan.set['conditions.users.includeGroups'].values)[0]): check the group has the right members.") }
+    if (-not $plan.changes.Count) { return & $no "the policy is already as $To wants it" }
+    $plan.ok = $true; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes)
+    $plan
+}
+
+function Get-EpsCaStagePlanFromStore {
+    # the web app's preview: the plan from what the engine last read (eps.CaPolicy) - no Graph. Returns the plan, or $null
+    # when the policy is not in the last read.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$PolicyId, [Parameter(Mandatory)][string]$To)
+    $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT BodyJson, ReviewJson FROM eps.CaPolicy WHERE PolicyId = @p')[0]
+    if (-not $r -or -not $r.BodyJson -or $r.BodyJson -is [DBNull] -or -not $r.ReviewJson -or $r.ReviewJson -is [DBNull]) { return $null }
+    $names = Get-EpsCaNameMap -ConnectionString $ConnectionString
+    $ctx = Get-EpsCaContext -ConnectionString $ConnectionString -Names $names -NoGraph
+    $rv = $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20
+    $plan = Get-EpsCaStagePlan -Policy ($r.BodyJson | ConvertFrom-Json -AsHashtable -Depth 20) -Review $rv -To $To -Ctx $ctx -Names $names
+    $plan.expected = $rv.hash
+    $plan
+}
+
 # ---- the documentation (v1: Entra-CA-Policies-Documentation[-with-IDs].csv / .xlsx) --------------------------------------
 $script:EpsCaDocColumns = @('Template', 'Stage', 'DisplayName', 'State', 'IncludeUsers', 'ExcludeUsers', 'IncludeGroups', 'ExcludeGroups', 'IncludeRoles', 'ExcludeRoles',
     'IncludeApplications', 'ExcludeApplications', 'UserActions', 'AuthenticationContexts', 'ClientAppTypes', 'IncludePlatforms', 'ExcludePlatforms', 'IncludeLocations', 'ExcludeLocations',
@@ -487,7 +591,9 @@ function Get-EpsCaPolicyDetail {
             foreach ($v in (Get-EpsCaList $body $path)) { $n = $names["$kind|$("$v".ToLowerInvariant())"]; if ($n) { $used[$v] = $(if ($kind -eq 'user' -and $n.Detail) { $n.Detail } else { $n.Name }) } } }
         foreach ($v in @(Get-EpsCaList $body 'conditions.applications.includeApplications') + @(Get-EpsCaList $body 'conditions.applications.excludeApplications')) { $n = $names["application|$("$v".ToLowerInvariant())"]; if ($n) { $used[$v] = $n.Name } }
     }
-    @{ Policy = $r; Body = $body; Names = $used; Review = $(if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -Depth 20 }); Adoption = $a; Findings = $f
+    # CA-LIFECYCLE: the stage moves made from here (newest first)
+    $mv = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT TOP 50 MoveId, DisplayName, FromStage, ToStage, Result, ResultText, RequestedBy, Reason, MovedAtUtc FROM eps.CaStageMove WHERE PolicyId = @p ORDER BY MovedAtUtc DESC')
+    @{ Policy = $r; Body = $body; Names = $used; Review = $(if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -Depth 20 }); Adoption = $a; Findings = $f; Moves = $mv
        Documentation = @(Get-EpsCaDocumentationRows -Rows @($r) -Names $names)[0] }
 }
 
@@ -577,20 +683,32 @@ function Resolve-EpsCaDirectoryNames {
     $names
 }
 
-function Get-EpsCaContext {
-    # the inputs the templates name, as the customer set them: the group-targeting method, the target groups (the v1
-    # import), the break-glass group and accounts (resolved to ids by GET), the authentication strength and named location
-    # names. -Names gets the break-glass group(s) too. Returns @{ Method; TargetGroups; BreakGlass; AuthStrength; NamedLocation; Notes }.
-    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$Names = @{}, [System.Collections.Generic.List[string]]$Notes, $Catalog = (Get-EpsCaTemplateCatalog))
-    $note = { param($m) if ($null -ne $Notes) { $Notes.Add($m) } }
+function Get-EpsCaStoredContext {
+    # the SQL part of the context (the web app's stage plan reads it too): the group-targeting method, the target groups
+    # (the v1 import), the break-glass accounts as stored (their id when known), the authentication strength and named
+    # location names. Returns @{ Method; TargetGroups; AuthStrength; NamedLocation; Accounts (Upn; Method; Id) }.
+    param([Parameter(Mandatory)][string]$ConnectionString)
     $set = { param($n) "$(Get-EpsSetting -ConnectionString $ConnectionString -Name $n -Default '')".Trim() }
     $tg = @{}
     foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT DisplayName, VariableName, Assignment FROM eps.TargetGroup')) {
         if (-not $tg[$r.VariableName]) { $tg[[string]$r.VariableName] = @{ Dynamic = $null; Assigned = $null } }
         $tg[[string]$r.VariableName][$(if ($r.Assignment -eq 'Dynamic') { 'Dynamic' } else { 'Assigned' })] = [string]$r.DisplayName
     }
-    $ctx = @{ Method = (ConvertTo-EpsCaTargetingMethod (& $set 'CA.GroupTargetingMethod')); TargetGroups = $tg
-              AuthStrength = @{ FIDO = (& $set 'CA.AuthStrengthFidoName'); WHfB = (& $set 'CA.AuthStrengthWhfbName') }; NamedLocation = @{ DeniedCountries = (& $set 'CA.DeniedCountriesLocationName') } }
+    $acc = @(foreach ($a in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT UserPrincipalName, AuthenticationMethod, ObjectId FROM eps.BreakGlassAccount WHERE Enabled = 1 AND Directory = 'Entra'")) {
+        @{ Upn = ([string]$a.UserPrincipalName).ToLowerInvariant(); Method = $(if ($a.AuthenticationMethod -is [DBNull]) { '' } else { [string]$a.AuthenticationMethod }); Id = $(if ($a.ObjectId -and $a.ObjectId -isnot [DBNull]) { "$($a.ObjectId)" }) } })
+    @{ Method = (ConvertTo-EpsCaTargetingMethod (& $set 'CA.GroupTargetingMethod')); TargetGroups = $tg; Accounts = $acc
+       AuthStrength = @{ FIDO = (& $set 'CA.AuthStrengthFidoName'); WHfB = (& $set 'CA.AuthStrengthWhfbName') }; NamedLocation = @{ DeniedCountries = (& $set 'CA.DeniedCountriesLocationName') } }
+}
+
+function Get-EpsCaContext {
+    # the inputs the templates name, as the customer set them (Get-EpsCaStoredContext), with the break-glass group(s) and
+    # accounts resolved to ids by GET. -Names gets the break-glass group(s) too. Returns @{ Method; TargetGroups; BreakGlass; AuthStrength; NamedLocation }.
+    # -NoGraph (the web app's stage plan): no lookup - the accounts' stored ids only, no break-glass group id.
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$Names = @{}, [System.Collections.Generic.List[string]]$Notes, $Catalog = (Get-EpsCaTemplateCatalog), [switch]$NoGraph)
+    $note = { param($m) if ($null -ne $Notes) { $Notes.Add($m) } }
+    $s = Get-EpsCaStoredContext -ConnectionString $ConnectionString
+    $tg = $s.TargetGroups
+    $ctx = @{ Method = $s.Method; TargetGroups = $tg; AuthStrength = $s.AuthStrength; NamedLocation = $s.NamedLocation }
     # the break-glass group(s): the target group the templates exclude, both its Dynamic and its Assigned name
     $bgNames = @{}; $relNames = @{}
     foreach ($role in @($Catalog.groupRoles.Keys) + @($tg.Keys) | Select-Object -Unique) {
@@ -600,6 +718,7 @@ function Get-EpsCaContext {
     }
     $gids = [System.Collections.Generic.List[string]]::new(); $rel = [System.Collections.Generic.List[string]]::new()
     foreach ($n in @($relNames.Keys)) {
+        if ($NoGraph) { break }
         try {
             foreach ($g in @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$($n.Replace("'", "''"))'&`$select=id,displayName,membershipRule" -All)) {
                 $Names["group|$("$($g.id)".ToLowerInvariant())"] = @{ Kind = 'group'; Name = [string]$g.displayName; Detail = $(if ($g.membershipRule) { [string]$g.membershipRule }) }
@@ -608,11 +727,11 @@ function Get-EpsCaContext {
         } catch { & $note "break-glass group '$n' could not be read: $($_.Exception.Message)" }
     }
     $acc = [System.Collections.Generic.List[object]]::new()
-    foreach ($a in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT UserPrincipalName, AuthenticationMethod, ObjectId FROM eps.BreakGlassAccount WHERE Enabled = 1 AND Directory = 'Entra'")) {
-        $id = if ($a.ObjectId -and $a.ObjectId -isnot [DBNull]) { "$($a.ObjectId)" } else { $null }
-        if (-not $id) { try { $id = [string](Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString([string]$a.UserPrincipalName))?`$select=id").id } catch { & $note "break-glass account $($a.UserPrincipalName) could not be read: $($_.Exception.Message)" } }
-        if ($id) { $Names["user|$($id.ToLowerInvariant())"] = @{ Kind = 'user'; Name = [string]$a.UserPrincipalName; Detail = ([string]$a.UserPrincipalName).ToLowerInvariant() } }
-        $acc.Add(@{ Upn = ([string]$a.UserPrincipalName).ToLowerInvariant(); Method = $(if ($a.AuthenticationMethod -is [DBNull]) { '' } else { [string]$a.AuthenticationMethod }); Id = $id })
+    foreach ($a in @($s.Accounts)) {
+        $id = $a.Id
+        if (-not $id -and -not $NoGraph) { try { $id = [string](Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString([string]$a.Upn))?`$select=id").id } catch { & $note "break-glass account $($a.Upn) could not be read: $($_.Exception.Message)" } }
+        if ($id) { $Names["user|$($id.ToLowerInvariant())"] = @{ Kind = 'user'; Name = [string]$a.Upn; Detail = [string]$a.Upn } }
+        $acc.Add(@{ Upn = $a.Upn; Method = $a.Method; Id = $id })
     }
     if (-not $acc.Count) { & $note 'no break-glass account is configured (eps.BreakGlassAccount): the break-glass check uses the group only' }
     $ctx.BreakGlass = @{ GroupIds = @($gids); RelatedGroupIds = @($rel); Accounts = @($acc) }

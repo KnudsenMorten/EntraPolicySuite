@@ -833,3 +833,28 @@ CREATE TABLE eps.CaTemplateTaken (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 16)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (16, '2.0.26');
+
+-- ---- v17: the Conditional Access stage moves (CA-LIFECYCLE, owner 2026-11-03: "in ca policy i need buttons to easily
+-- controll and movevto another lufecycle phase like pilot1, pilot2"; "Write on approval", "SuperAdmin only") -----------------
+-- One row per move the engine made from a SuperAdmin's signed request: the policy before (as read live just before the
+-- write) and after (as read back), for the history and a step back. Written only by the engine; the web app reads it.
+IF OBJECT_ID('eps.CaStageMove') IS NULL
+CREATE TABLE eps.CaStageMove (
+    MoveId        BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    PolicyId      UNIQUEIDENTIFIER NOT NULL,
+    DisplayName   NVARCHAR(256)  NOT NULL,                -- the name after the move
+    FromStage     NVARCHAR(20)   NOT NULL,
+    ToStage       NVARCHAR(20)   NOT NULL,                -- Pilot1 .. Prod, or Disabled
+    BeforeJson    NVARCHAR(MAX)  NOT NULL,
+    AfterJson     NVARCHAR(MAX)  NOT NULL,
+    Result        NVARCHAR(40)   NOT NULL,                -- applied | applied, differs
+    ResultText    NVARCHAR(2000) NULL,
+    RequestedBy   NVARCHAR(320)  NOT NULL,
+    Reason        NVARCHAR(2000) NULL,
+    MovedAtUtc    DATETIME2      NOT NULL CONSTRAINT DF_CaStageMove_At DEFAULT SYSUTCDATETIME()
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CaStageMove_Policy')
+CREATE INDEX IX_CaStageMove_Policy ON eps.CaStageMove (PolicyId, MovedAtUtc DESC);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 17)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (17, '2.0.27');

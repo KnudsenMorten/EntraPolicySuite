@@ -14,7 +14,7 @@ Entra ID.
 |---|---|
 | **User and device tagging** | Rules (persona, tag type, value, conditions) write tags to extension attributes on users and devices. Every run is planned first: you preview what would change, then switch a rule set to Apply. |
 | **Tag tamper monitor** | A change to a watched tag that EntraPolicySuite did not make is found and alerted; you accept it or restore the tag. |
-| **Conditional Access** | The template library as data, a review of your policies against it (template, stage, difference, break-glass), adopt / release, and a documentation export. EntraPolicySuite never writes a Conditional Access policy. |
+| **Conditional Access** | The template library as data, a review of your policies against it (template, stage, difference, break-glass), adopt / release, a documentation export, and stage buttons: a SuperAdmin moves an adopted policy one stage (Pilot1, Pilot2, Pilot3, Prod, back, or off) after seeing exactly what changes. Nothing changes a policy by itself. |
 | **CA Policy Analyzer** | Analyse policies by persona or series (for example CA2 for the whole CA2xx series), and monitor them with alerts to the team that owns them. |
 | **Identity report** | Every user with licences, sign-in activity, MFA methods, roles and devices, plus ready-made gap views; downloadable as a workbook. |
 | **Hybrid worker** | For AD-synced users, a domain-joined Windows Server writes the tags in Active Directory. |

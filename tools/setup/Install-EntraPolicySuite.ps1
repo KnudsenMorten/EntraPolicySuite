@@ -120,7 +120,7 @@ param(
     [ValidatePattern('^$|^[^\x00-\x1f]{1,120}$')][string]$SqlAdminGroupName = '',
     # a Graph role of the engine that the approver did not approve: never granted (the feature that needs it then
     # reports its data as unavailable). e.g. -ExcludeGraphRole Organization.Read.All
-    [ValidateSet('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All')][string[]]$ExcludeGraphRole = @(),
+    [ValidateSet('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess')][string[]]$ExcludeGraphRole = @(),
     [switch]$Quiet,
     # ---- NET-1: the private network install (names as SecurityInsight's, so the products read the same) ----
     [switch]$PrivateNetwork,

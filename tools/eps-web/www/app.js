@@ -2040,9 +2040,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     });
   }
 
-  // ---- Conditional Access (DESIGN §5.1), READ ONLY: the engine's last read of the tenant's policies, each compared with
-  // its template. EntraPolicySuite never changes a policy here: Adopt and Release only RECORD what the operator decided
-  // (owner 2026-10-30: "dont touch any ca policy stuff ... otherwise i can be locked out of my tenant").
+  // ---- Conditional Access (DESIGN §5.1): the engine's last read of the tenant's policies, each compared with its
+  // template. Adopt and Release only RECORD what the operator decided (owner 2026-10-30: "dont touch any ca policy stuff
+  // ... otherwise i can be locked out of my tenant"). The one change in the tenant is a SuperAdmin's stage move
+  // (CA-LIFECYCLE, owner 2026-11-03: "Write on approval"), applied by the engine after he saw it.
   var CAP_BG_CLS = { MISSING: 'c-danger', unknown: 'smeta' };
   function capSubnav(p, on) {
     var seg = el('div', { class: 'rx-seg' });
@@ -2062,9 +2063,74 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     withReason('Release ' + r.DisplayName, 'EntraPolicySuite stops managing this policy (the record says so, its findings are cleared). Nothing in the tenant changes.', function (reason) {
       return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/release', { reason: reason }); });
   }
+  // CA-LIFECYCLE (owner 2026-11-03: "in ca policy i need buttons to easily controll and movevto another lufecycle phase
+  // like pilot1, pilot2"; "Write on approval", "SuperAdmin only"): ONE adopted policy moves ONE stage. The dialog shows
+  // what changes (from the last read); the engine reads the policy again, refuses when it changed since or when the
+  // break-glass accounts would not stay excluded, makes the one change and reads it back.
+  var CAP_STAGES = ['Initial', 'Pilot1', 'Pilot2', 'Pilot3', 'Prod'];
+  var CAP_STAGE_TEXT = { Initial: 'off', Pilot1: 'report-only, pilot group', Pilot2: 'on, pilot group', Pilot3: 'on, wider pilot', Prod: 'on, its targets' };
+  function capMoves(stage) {
+    var i = CAP_STAGES.indexOf(stage), m = [];
+    if (i > 1) m.push(CAP_STAGES[i - 1]);
+    if (i >= 0 && i < CAP_STAGES.length - 1) m.push(CAP_STAGES[i + 1]);
+    if (stage && stage !== 'Initial') m.push('Disabled');
+    return m;
+  }
+  function capMoveLabel(from, to) {
+    if (to === 'Disabled') return 'Disable';
+    return CAP_STAGES.indexOf(to) < CAP_STAGES.indexOf(from) ? 'Back to ' + to : 'Move to ' + to;
+  }
+  function capStage(r, to) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Move ' + r.DisplayName });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Working out what changes ...' }));
+    d.appendChild(el('h3', { text: capMoveLabel(r.Stage, to) + ': ' + r.DisplayName }));
+    d.appendChild(body);
+    document.body.appendChild(d); d.showModal();
+    api('GET', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/stage-plan?' + qs({ to: to })).then(function (pl) {
+      clear(body);
+      body.appendChild(el('div', { class: 'guide', text: 'This CHANGES the policy in your tenant: ' + textOf(pl.from) + ' -> ' + (to === 'Disabled' ? 'off' : to) + '. The engine applies it at its next check (within 5 minutes): it reads the policy again first and refuses if it changed since this view, or if the break-glass accounts would not stay excluded. Nothing else in the policy changes.' }));
+      if (!pl.ok) {
+        body.appendChild(el('p', { class: 'c-danger', text: 'Cannot move: ' + textOf(pl.reason) }));
+        body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })));
+        return;
+      }
+      body.appendChild(table(pl.changes || [], [{ key: 'field', label: 'Setting', type: 'cat' }, { key: 'before', label: 'Now', wrap: true }, { key: 'after', label: 'After the move', wrap: true }]));
+      var bg = pl.breakGlass || {};
+      body.appendChild(el('p', { class: bg.ok === false ? 'c-danger' : null, text: 'Break-glass: ' + textOf(bg.text) + (to === 'Disabled' ? '' : ' (checked again on the result before the change)') }));
+      if ((pl.notes || []).length) body.appendChild(el('ul', { class: 'hints' }, pl.notes.map(function (n) { return el('li', { text: n }); })));
+      var enforce = to === 'Pilot2' || to === 'Pilot3' || to === 'Prod';
+      var ack = el('input', { type: 'checkbox' });
+      var reason = el('input', { type: 'text', placeholder: 'Reason (optional) - e.g. pilot ran 2 weeks, no blocked sign-ins', style: 'width:100%' });
+      var go = el('button', { type: 'button', text: capMoveLabel(pl.from, to) });
+      go.disabled = enforce;
+      ack.addEventListener('change', function () { go.disabled = enforce && !ack.checked; });
+      go.addEventListener('click', function () {
+        go.disabled = true; close();
+        var title = capMoveLabel(pl.from, to) + ': ' + r.DisplayName;
+        notice('Sending: ' + title + ' ...');
+        api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/stage', { to: to, expected: pl.expected, reason: reason.value.trim() })
+          .then(function (x) { afterAction(x, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+      });
+      if (enforce) body.appendChild(el('label', null, ack, ' I have checked who this ENFORCES the policy for (the CA Policy Analyzer shows the sign-ins it would have blocked).'));
+      body.appendChild(el('p', null, reason));
+      body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
+  }
+  function capStageBar(r) {
+    // the stages as a strip (the current one marked) and a button per move from here
+    var strip = el('div', { class: 'rx-seg' });
+    CAP_STAGES.forEach(function (s) { strip.appendChild(el('button', { type: 'button', class: s === r.Stage ? 'on' : null, disabled: true, title: CAP_STAGE_TEXT[s], text: s })); });
+    var bar = el('div', { class: 'toolbar' }, strip);
+    capMoves(r.Stage).forEach(function (to) { bar.appendChild(el('button', { type: 'button', class: to === 'Disabled' ? 'secondary' : null, text: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); });
+    if (!capMoves(r.Stage).length) bar.appendChild(el('span', { class: 'count', text: r.Stage === 'Custom' ? 'Not one of the template\'s stages: look at it in the tenant first (Disable is the only move).' : '' }));
+    return bar;
+  }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
-    p.appendChild(el('div', { class: 'guide', text: 'Read only. The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here; nothing in the tenant is ever changed by this page.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy one stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
     capSubnav(p, '');
     return api('GET', '/api/capolicies').then(function (j) {
       var rows = j.rows || [];
@@ -2090,6 +2156,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         { key: 'State', label: 'State', type: 'cat' }, { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
         { key: 'BreakGlass', label: 'Break-glass', type: 'cat', cls: function (r) { return CAP_BG_CLS[r.BreakGlass] || ''; } }, { key: 'Adoption', label: 'Adopted', type: 'cat' },
         { key: 'Findings', label: 'Findings', type: 'cat' }, { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];
+      if (owner) cols.push({ key: '_s', label: 'Move stage', render: function (r) {
+        if (r.Adoption !== 'Adopted') return null;
+        var w = el('span');
+        capMoves(r.Stage).forEach(function (to) { w.appendChild(el('button', { type: 'button', class: 'link', text: to === 'Disabled' ? 'Disable' : (CAP_STAGES.indexOf(to) < CAP_STAGES.indexOf(r.Stage) ? '< ' + to : to + ' >'), title: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); w.appendChild(document.createTextNode(' ')); });
+        return w; } });
       if (owner) cols.push({ key: '_a', label: '', render: function (r) {
         if (r.Adoption === 'Adopted') return el('button', { type: 'button', class: 'link', text: 'Release', onclick: function () { capRelease(r); } });
         return el('button', { type: 'button', class: 'secondary', text: 'Adopt', onclick: function () { capAdopt(r); } }); } });
@@ -2110,7 +2181,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     return api('GET', '/api/capolicies/policies/' + encodeURIComponent(id)).then(function (j) {
       var pol = j.policy, rv = j.review || {}, ad = j.adoption, bg = rv.breakGlass || {};
       p.appendChild(el('h2', { text: pol.DisplayName }));
-      var row = { PolicyId: pol.PolicyId, DisplayName: pol.DisplayName, Hash: rv.hash };
+      var row = { PolicyId: pol.PolicyId, DisplayName: pol.DisplayName, Hash: rv.hash, Stage: rv.stage };
       p.appendChild(el('dl', { class: 'info' },
         el('dt', { text: 'State' }), el('dd', { text: textOf(pol.State) }),
         el('dt', { text: 'Stage (from the real state)' }), el('dd', { text: textOf(rv.stage) + (rv.stageNote ? ' - ' + rv.stageNote : '') + (rv.stageMismatch ? ' - its name says ' + rv.nameStage : '') }),
@@ -2120,6 +2191,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('dt', { text: 'Read' }), el('dd', null, timeEl(pol.SeenAtUtc), ' · changed in the tenant ', timeEl(pol.ModifiedAtUtc))));
       if (owner) p.appendChild(el('div', { class: 'toolbar' }, ad && ad.Status === 'Adopted' ? el('button', { type: 'button', class: 'secondary', text: 'Release', onclick: function () { capRelease(row); } }) : el('button', { type: 'button', text: 'Adopt as it is', onclick: function () { capAdopt(row); } }),
         el('span', { class: 'count', text: 'Recorded in EntraPolicySuite only - nothing in the tenant changes.' })));
+      // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
+      p.appendChild(el('h3', { text: 'Stage' }));
+      if (owner && ad && ad.Status === 'Adopted') {
+        p.appendChild(el('div', { class: 'guide', text: 'Move this policy ONE stage: Initial (off) -> Pilot1 (report-only for the pilot group) -> Pilot2 / Pilot3 (on for the pilot group) -> Prod (on for its targets), back down, or Disable. Each move shows what changes before you approve it, and CHANGES the policy in your tenant.' }));
+        p.appendChild(capStageBar(row));
+      } else p.appendChild(el('p', { class: 'smeta', text: 'Now ' + textOf(rv.stage) + '. ' + (ad && ad.Status === 'Adopted' ? 'A SuperAdmin moves it between stages.' : 'Adopt it first to move it between stages from here.') }));
+      if ((j.moves || []).length) p.appendChild(table(j.moves, [{ key: 'MovedAtUtc', label: 'When', type: 'date' }, { key: 'FromStage', label: 'From', type: 'cat' }, { key: 'ToStage', label: 'To', type: 'cat' },
+        { key: 'RequestedBy', label: 'By', type: 'cat' }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Result', label: 'Result', type: 'cat', cls: function (m) { return m.Result !== 'applied' ? 'c-danger' : ''; } }, { key: 'ResultText', label: 'Note', wrap: true }], { sort: 'MovedAtUtc', dir: -1 }));
       if ((rv.notes || []).length) p.appendChild(el('ul', { class: 'hints' }, rv.notes.map(function (n) { return el('li', { text: n }); })));
       p.appendChild(el('h3', { text: rv.inLibrary ? (rv.matches ? 'As the template (' + textOf(rv.stage) + ')' : 'What differs from the template at ' + textOf(rv.stage)) : 'No template to compare with' }));
       if (rv.inLibrary && (rv.diff || []).length) p.appendChild(table(rv.diff, [{ key: 'path', label: 'Setting', type: 'cat' }, { key: 'expected', label: 'Template wants', wrap: true }, { key: 'actual', label: 'Tenant has', wrap: true },
@@ -2206,7 +2285,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (!x.diff || !x.diff.length) rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: t.kind === 'removed' ? '' : 'as the template', template: '', tenant: '' });
       else x.diff.forEach(function (d) { rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: d.setting, template: d.template, tenant: d.tenant }); });
     });
-    slot.appendChild(el('div', { class: 'guide', text: 'Shown only. EntraPolicySuite never changes a Conditional Access policy: if you want what the new template does, make the change yourself in the tenant (export the template for reference), then read the policy list again.' }));
+    slot.appendChild(el('div', { class: 'guide', text: 'Shown only. A template update never changes a Conditional Access policy: if you want what the new template does, make the change yourself in the tenant (export the template for reference), then read the policy list again.' }));
     slot.appendChild(table(rows, [{ key: 'displayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.policyId, text: r.displayName }); } }, { key: 'stage', label: 'Stage', type: 'cat' },
       { key: 'setting', label: 'Setting', type: 'cat' }, { key: 'template', label: 'Template wants', wrap: true }, { key: 'tenant', label: 'Your policy has', wrap: true }], { sort: 'displayName', dir: 1 }));
     slot.scrollIntoView();

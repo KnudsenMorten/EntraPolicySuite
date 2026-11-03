@@ -643,7 +643,31 @@ function Get-EpsWebRoutes {
             if (-not $d) { return New-EpsWebError 404 'no such policy in the last read of the policy list' }
             $t = if ($d.Review -and $d.Review.templateId) { (Get-EpsCaTemplateCatalog).ById["$($d.Review.templateId)"] }
             New-EpsWebResponse -Body @{ policy = @(ConvertTo-EpsWebValue ($d.Policy | Select-Object PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc))[0]; body = $d.Body; names = $d.Names; review = $d.Review
-                adoption = @(ConvertTo-EpsWebValue $d.Adoption)[0]; findings = @(ConvertTo-EpsWebValue $d.Findings); documentation = $d.Documentation; template = $t } } }
+                adoption = @(ConvertTo-EpsWebValue $d.Adoption)[0]; findings = @(ConvertTo-EpsWebValue $d.Findings); documentation = $d.Documentation; template = $t
+                moves = @(ConvertTo-EpsWebValue $d.Moves); stageMoves = @(Get-EpsCaStageMoves "$($d.Review.stage)"); stages = @($script:EpsCaStageOrder) } } }
+        # CA-LIFECYCLE (owner 2026-11-03: "in ca policy i need buttons to easily controll and movevto another lufecycle phase
+        # like pilot1, pilot2"; "Write on approval", "SuperAdmin only"): the preview of ONE move, from the last read - the
+        # page shows it before the operator approves; the engine makes the plan again from the live policy before it writes
+        @{ Method = 'GET'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/stage-plan$'; Summary = 'What moving one Conditional Access policy to another stage would change (its name, state and who it targets), from the last read. Changes nothing.'; Body = 'to: Pilot1, Pilot2, Pilot3, Prod or Disabled'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $to = "$($c.Query.to)"
+            if ($to -notin @($script:EpsCaStageOrder) + 'Disabled') { return New-EpsWebError 400 'to: one of Pilot1, Pilot2, Pilot3, Prod or Disabled' }
+            $plan = Get-EpsCaStagePlanFromStore -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -To $to
+            if (-not $plan) { return New-EpsWebError 404 'no such policy in the last read of the policy list' }
+            $ad = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ p = [guid]$m.policy } -Query 'SELECT Status FROM eps.CaAdoption WHERE PolicyId = @p')[0]
+            $plan.adopted = [bool]($ad -and "$($ad.Status)" -eq 'Adopted')
+            if ($plan.ok -and -not $plan.adopted) { $plan.ok = $false; $plan.reason = 'only an adopted policy moves through the stages - adopt it first' }
+            New-EpsWebResponse -Body $plan } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/stage$'; Summary = 'Move one adopted Conditional Access policy one stage, or disable it, after the engine checks it again (break-glass included).'; Body = 'to; expected: the review hash as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.stage'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"; $to = "$($c.Body.to)"
+            if ($to -notin @($script:EpsCaStageOrder) + 'Disabled') { return New-EpsWebResponse -Status 400 -Body @{ error = 'to: one of Pilot1, Pilot2, Pilot3, Prod or Disabled' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "bad stage '$to'" } }
+            if (-not (Get-Command Invoke-EpsCaStageMove -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaStageMove -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -To $to -Expected "$($c.Body.expected)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'missing' { 404 } 'changed' { 409 } 'notadopted' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not moved: $($s.Reason). The policy was not changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Moved $($s.Before.displayName) from $($s.Before.stage) to $to$(if ($s.After.displayName -cne $s.Before.displayName) { " (now $($s.After.displayName))" }).$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
+                -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
         @{ Method = 'GET'; Pattern = '^/api/capolicies/templates$'; Summary = 'The Conditional Access template library of this release (CA000-CA800), each template with its stages and its notes.'; Body = 'id: one template, with its body'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             $cat = Get-EpsCaTemplateCatalog
