@@ -103,6 +103,47 @@ function Get-EpsNetworkPlan {
     $plan
 }
 
+function Test-EpsNetworkPrerequisites {
+    <#
+      Installer rule 8 (framework §0, from a real install 2026-11-03: the central DNS group lacked two zones, found only
+      AFTER resources were made): EVERY prerequisite of the chosen network options, checked BEFORE anything is created -
+      the spoke network (-VnetId) and its two subnets (each there, or a range given to make it), the hub (-HubVnetId),
+      the central zones' resource group and EVERY privatelink zone EPS needs in it (-PrivateDnsZonesResourceGroupId).
+      Reads only (ARM GETs). Returns the missing ones as plain sentences, ALL at once (empty = ready).
+    #>
+    param([Parameter(Mandatory)]$Ctx)
+    $net = $Ctx.Network; $miss = [System.Collections.Generic.List[string]]::new()
+    if (-not $net -or -not $net.Private) { return @() }
+    $read = { param($id, $api) try { @{ Ok = $true; Value = (Invoke-EpsArm -Path $id -ApiVersion $api -AllowNotFound) } } catch { @{ Ok = $false; Error = (("$($_.Exception.Message)" -split '->')[-1]).Trim() } } }
+    if ($net.VnetId) {
+        $v = & $read $net.VnetId $script:EpsNetApi.net
+        if (-not $v.Ok) { $miss.Add("the network $($net.VnetName) (-VnetId) cannot be read with your sign-in: $($v.Error)") }
+        elseif (-not $v.Value) { $miss.Add("the network -VnetId $($net.VnetId) does not exist") }
+        else {
+            foreach ($s in @(@{ Name = $net.AppsSubnetName; Prefix = $net.AppsSubnetPrefix; Param = 'AppsSubnetPrefix'; For = 'the Container Apps environment' }, @{ Name = $net.EndpointsSubnetName; Prefix = $net.EndpointsSubnetPrefix; Param = 'EndpointsSubnetPrefix'; For = 'the private endpoints' })) {
+                if ($s.Prefix) { continue }   # a range given: the install makes the subnet
+                $sr = & $read "$($net.VnetId)/subnets/$($s.Name)" $script:EpsNetApi.net
+                if ($sr.Ok -and -not $sr.Value) { $miss.Add("the subnet $($s.Name) (for $($s.For)) is not in $($net.VnetName) - create it, or give -$($s.Param) so the install makes it") }
+                elseif (-not $sr.Ok) { $miss.Add("the subnet $($s.Name) in $($net.VnetName) cannot be read with your sign-in: $($sr.Error)") }
+            }
+        }
+    }
+    if ($net.HubVnetId) {
+        $h = & $read $net.HubVnetId $script:EpsNetApi.net
+        if (-not $h.Ok) { $miss.Add("the hub network $($net.HubName) (-HubVnetId) cannot be read with your sign-in: $($h.Error)") }
+        elseif (-not $h.Value) { $miss.Add("the hub network -HubVnetId $($net.HubVnetId) does not exist") }
+    }
+    if ($net.ZonesRgId) {
+        # every zone EPS needs, each read (a missing resource group shows as every zone missing)
+        foreach ($z in $script:EpsPrivateZones.Values) {
+            $zr = & $read "$($net.ZonesRgId)/providers/Microsoft.Network/privateDnsZones/$z" $script:EpsNetApi.dns
+            if (-not $zr.Ok) { $miss.Add("the private DNS zone $z cannot be read in $(($net.ZonesRgId -split '/')[-1]): $($zr.Error)") }
+            elseif (-not $zr.Value) { $miss.Add("the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - create it there (EPS needs it for $(@($script:EpsPrivateZones.Keys | Where-Object { $script:EpsPrivateZones[$_] -eq $z })[0]))") }
+        }
+    }
+    @($miss)
+}
+
 function Get-EpsZoneLinkName {
     # the name of a zone's link to a network: the network's name + a hash of its full id (two networks of the same name
     # in two resource groups get two links); at most 80 characters
@@ -284,7 +325,7 @@ function Invoke-EpsDnsZonesStep {
             if (Invoke-EpsArm -Path $zid -ApiVersion $api -AllowNotFound) {
                 $net.ZoneIds[$z] = $zid; $net.ZoneSource[$z] = 'customer'
                 if (-not $other) { $net.MissingLinks += $z }
-            } else { $net.MissingZones += $z }
+            } else { throw "the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - the preflight checks every zone before anything is made; create it and run the install again" }
             continue
         }
         if ($other) { $net.ZoneIds[$z] = $other; $net.ZoneSource[$z] = 'reused'; continue }

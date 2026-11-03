@@ -10,7 +10,7 @@
     and is never downloaded or changed by this.
     Run it in PowerShell 7 or Azure Cloud Shell:
         Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1
-        ./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -WhatIf
+        ./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
     Exit code: the installer's (0 done, 1 a step failed, 2 a check failed), 3 = the download failed or did not match.
 .LINK
     https://invardia.com/docs/eps/scripts/Start-EpsInstall

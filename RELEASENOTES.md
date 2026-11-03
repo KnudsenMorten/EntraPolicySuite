@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.35 - a private install checks everything first, a shorter install line
+- A private network install now checks everything it needs before it creates anything: your network and its two
+  subnets, the hub network, and every private DNS zone EntraPolicySuite uses in your central DNS zones resource group.
+  Anything missing is listed at once, in plain words, and nothing is created. Fix the list and run the same command
+  again, or leave out -PrivateDnsZonesResourceGroupId and the install makes its own zones.
+- The install line names only what you must give: `-TenantId <tenant id> -SubscriptionId <subscription id>`. The region
+  is West Europe unless you add `-Location <region>`.
+- The support scripts at invardia.com/support/eps/ come with a full README: the install lines and every script with
+  its documentation page and SHA-256.
 ## 2.0.34 - what an install tells Invardia, sign-in on a second run
 - For installs that report to Invardia: the heartbeat now gives the install's addresses (the web app and its API) and,
   while a job runs, how long it has been running against its usual length.

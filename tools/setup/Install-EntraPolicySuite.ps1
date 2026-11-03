@@ -91,15 +91,15 @@
     A private install that cannot be proven from inside (the inside job did not run and this machine cannot reach the
     web app): you checked the web app from a machine in your network yourself.
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -WhatIf
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region>
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>
 .EXAMPLE
     # private, in a network the install makes (10.230.0.0/24), the hub given for an exact hand-off list
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -PrivateNetwork -HubVnetId <hub network id> -WhatIf
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -HubVnetId <hub network id> -WhatIf
 .EXAMPLE
     # private, in your own spoke network, your central DNS zones, the peering made by the install
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -PrivateNetwork -VnetId <network id> `
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -VnetId <network id> `
         -AppsSubnetName snet-eps-apps -EndpointsSubnetName snet-eps-endpoints -PrivateDnsZonesResourceGroupId <zones resource group id> `
         -HubVnetId <hub network id> -PeerToHub
 .LINK
@@ -213,6 +213,13 @@ $print = { param($e) if (-not $Quiet) {
     $c = switch ($e.State) { 'ok' { 'Green' } 'failed' { 'Red' } 'plan' { 'Gray' } 'skipped' { 'DarkGray' } default { 'Cyan' } }
     Write-Host ("  {0,-8} {1,-60} {2}" -f $e.State, $e.Step.Title, $e.Message) -ForegroundColor $c } }
 
+# Installer rule 8 (framework §0, a real install 2026-11-03): every prerequisite of the chosen network options, checked
+# BEFORE anything is created - ALL missing ones in one list, and nothing made (also with -WhatIf, so the plan shows it)
+if ($netPlan.Private) {
+    $pre = @(Test-EpsNetworkPrerequisites -Ctx $ctx)
+    if ($pre.Count) { Finish 2 ("`nNot ready for the private network install - NOTHING was created. Missing ($($pre.Count)):`n" + (($pre | ForEach-Object { "  - $_" }) -join "`n") + "`nFix these (your network team creates them) and run the same command again." + $(if ($ctx.Network.ZonesRgId) { "`nOr leave out -PrivateDnsZonesResourceGroupId and the install makes and links its own private DNS zones." })) }
+    Write-Host 'Private network: every prerequisite is there (network, subnets, hub, DNS zones).' -ForegroundColor Green
+}
 if ($what) {
     [void](Invoke-EpsInstall -Ctx $ctx -WhatIf -Completed $completed -OnStep $print)
     Finish 0 "`nWhatIf: nothing was changed. Run again without -WhatIf to install."
