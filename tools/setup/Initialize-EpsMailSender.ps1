@@ -30,7 +30,9 @@ $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-MailSender') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 foreach ($r in $Recipients) { if ($r -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw "recipient '$r' is not a mail address" } }
-if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
+# a second run in the same window never takes the earlier run's sign-in (its tokens are gone, or another tenant): sign in
+# again - unless a Support-app session provided the sign-in (EPS_InstallPerson) for THIS tenant (SI finding 2026-11-03)
+if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($global:EPS_SignInTenant)" -eq "$TenantId")) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 
 $names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $mi = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound

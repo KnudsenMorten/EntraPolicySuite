@@ -28,7 +28,7 @@ modules, no Azure CLI, no secret.
 
 ```powershell
 Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1
-./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -WhatIf
 ```
 
 `-WhatIf` downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and shows
@@ -50,7 +50,7 @@ Add `-PrivateNetwork` to the same line to install inside your own virtual networ
 registry are created with public access off and reached through private endpoints and private DNS zones.
 
 ```powershell
-./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -WhatIf
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -PrivateNetwork -WhatIf
 ```
 
 | Parameter | What it is |

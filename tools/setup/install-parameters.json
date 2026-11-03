@@ -8,7 +8,7 @@
     "latestUrl": "https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1",
     "pinnedUrlTemplate": "https://github.com/KnudsenMorten/EntraPolicySuite/releases/download/v{version}/Start-EpsInstall.ps1",
     "downloadLine": "Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1",
-    "runLine": "./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>",
+    "runLine": "./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region>",
     "runsIn": "PowerShell 7 or Azure Cloud Shell; a browser sign-in; no modules, no Azure CLI"
   },
   "pages": [

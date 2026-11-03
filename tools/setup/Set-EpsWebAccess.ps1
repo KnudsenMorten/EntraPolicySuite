@@ -29,7 +29,9 @@ $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 $upn = $UserPrincipalName.Trim().ToLowerInvariant()
 if ($upn -notmatch '^[^@\s''"]+@[^@\s''"]+\.[^@\s''"]+$') { throw "'$UserPrincipalName' is not a user principal name" }
 if ($Reason.Trim().Length -lt 3) { throw 'give a reason (it goes into the audit trail)' }
-if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
+# a second run in the same window never takes the earlier run's sign-in (its tokens are gone, or another tenant): sign in
+# again - unless a Support-app session provided the sign-in (EPS_InstallPerson) for THIS tenant (SI finding 2026-11-03)
+if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($global:EPS_SignInTenant)" -eq "$TenantId")) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 $me = (Invoke-EpsGraph -Path 'v1.0/me?$select=userPrincipalName').userPrincipalName
 $user = @(Invoke-EpsGraph -Path "v1.0/users?`$filter=userPrincipalName eq '$($upn.Replace("'", "''"))'&`$select=id,userPrincipalName,accountEnabled" -All)[0]
 if (-not $user) { throw "no user $upn in this tenant" }

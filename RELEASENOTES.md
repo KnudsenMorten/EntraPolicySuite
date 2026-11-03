@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.34 - what an install tells Invardia, sign-in on a second run
+- For installs that report to Invardia: the heartbeat now gives the install's addresses (the web app and its API) and,
+  while a job runs, how long it has been running against its usual length.
+- The setup scripts for mail, web access and alerts now always sign in again on a second run in the same PowerShell
+  window, instead of reusing an earlier sign-in that has expired or belongs to another tenant.
+- The install line names the region: `-TenantId <tenant id> -SubscriptionId <subscription id> -Location <region>`.
+- Every script a person runs is now handed over to Invardia for invardia.com/support/eps/, each as one self-contained
+  file. It downloads the release, checks it against the release's SHA-256, and runs the script from it.
 ## 2.0.33 - every policy has its persona, template library 2.0-v1.1
 - A Conditional Access policy shows its persona even when none of your managed personas takes it: its template's
   persona, or, for a policy without a template, the persona its name says. CA000-CA0xx are Global, CA095-CA099

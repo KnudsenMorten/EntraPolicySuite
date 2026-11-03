@@ -37,7 +37,9 @@ $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-AzureMonitor') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 if (-not ($Email.Count + $Sms.Count)) { throw 'give -Email and / or -Sms: the alarm must reach someone' }
-if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
+# a second run in the same window never takes the earlier run's sign-in (its tokens are gone, or another tenant): sign in
+# again - unless a Support-app session provided the sign-in (EPS_InstallPerson) for THIS tenant (SI finding 2026-11-03)
+if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($global:EPS_SignInTenant)" -eq "$TenantId")) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 
 $names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"

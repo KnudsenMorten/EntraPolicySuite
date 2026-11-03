@@ -56,18 +56,21 @@ $script:EpsUplinkLists = @{
     MeasuredKey     = @('events', 'high', 'policies', 'accounts', 'minutesSilent')
     SetupState      = @('ok', 'missing', 'n/a', 'unknown')       # FLEET-STEPS (owner 2026-11-03 via Invardia, the field shared by SI, PIM and EPS)
     SetupHow        = @('updater', 'support-app', 'customer')
+    EndpointKind    = @('webapp', 'api')                         # DELIVERY-CONTRACT A (framework §0.1 / §8.9): every address a person or Invardia opens
+    LongRunState    = @('ok', 'long', 'stuck')
+    LongRunAction   = @('none', 'cancel-update-restart')
 }
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps')
+    heartbeat = $script:EpsUplinkEnvelope + @('Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
     run       = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -260,6 +263,22 @@ function New-EpsUplinkHeartbeat {
             $steps.Add($it)
         }
         if ($steps.Count) { $o.SetupSteps = @($steps) }
+        # DELIVERY-CONTRACT A: the install's addresses - kind + url only (Invardia refuses the WHOLE list on an unknown key)
+        $eps = [System.Collections.Generic.List[object]]::new()
+        foreach ($e in @($Facts.Endpoints)) {
+            if (-not $e -or $eps.Count -ge 12) { continue }
+            $k = Select-EpsUplinkEnum "$($e.kind)" 'EndpointKind'
+            if ($k -and "$($e.url)" -match '^https://[A-Za-z0-9.-]+(:\d+)?(/[A-Za-z0-9._~/-]*)?$') { $eps.Add([ordered]@{ kind = $k; url = "$($e.url)" }) }
+        }
+        if ($eps.Count) { $o.Endpoints = @($eps) }
+        # DELIVERY-CONTRACT A: a run that goes now, against its usual length (Invardia alerts at 2x)
+        $lr = $Facts.LongRun
+        if ($lr -and ($st = Select-EpsUplinkEnum "$($lr.state)" 'LongRunState')) {
+            $l = [ordered]@{ usualMin = [double]$lr.usualMin; ageMin = [double]$lr.ageMin; ratio = [Math]::Round([double]$lr.ratio, 2); state = $st; newerWaiting = [bool]$lr.newerWaiting
+                             action = $(if ($a = Select-EpsUplinkEnum "$($lr.action)" 'LongRunAction') { $a } else { 'none' }) }
+            $at = ConvertTo-EpsUplinkIso $lr.at; if ($at) { $l.at = $at }
+            $o.Pipeline = [ordered]@{ job = (Get-EpsUplinkJobId "$($lr.job)"); longRun = $l }
+        }
     }
     Select-EpsUplinkRecord $o
 }
@@ -268,6 +287,28 @@ function ConvertTo-EpsUplinkJobResult {
     # PURE. eps.Run.Status -> the §8.17 lastResult (a Held run stopped on purpose; partly failed = failed)
     param([string]$Status)
     switch ($Status) { 'Succeeded' { 'succeeded' } 'Failed' { 'failed' } 'PartlyFailed' { 'failed' } 'Held' { 'stopped' } 'Running' { 'running' } default { '' } }
+}
+
+function Get-EpsUplinkLongRun {
+    <#
+      DELIVERY-CONTRACT A (framework §0.1, Pipeline.longRun): the run that goes NOW with the largest ratio of its age to
+      its usual length (the median of the job's last 10 finished runs; at least 1 minute). state: ok < 2x, long >= 2x,
+      stuck >= 4x. newerWaiting / action: EPS's updater is not built yet - false / none. $null when nothing runs.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $run = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Job, StartedAtUtc FROM eps.Run WHERE Status = 'Running' AND Job <> 'Tick'")
+        if (-not $run.Count) { return $null }
+        $best = $null
+        foreach ($r in $run) {
+            $d = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = [string]$r.Job } -Query "SELECT TOP 10 DATEDIFF(second, StartedAtUtc, EndedAtUtc) / 60.0 AS M FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC" | ForEach-Object { [double]$_.M } | Sort-Object)
+            $usual = if ($d.Count) { [Math]::Max(1.0, $d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { 1.0 }
+            $age = [Math]::Round(($NowUtc - [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc')).TotalMinutes, 1)
+            $ratio = $age / $usual
+            if (-not $best -or $ratio -gt $best.ratio) { $best = @{ job = [string]$r.Job; usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $ratio; state = $(if ($ratio -ge 4) { 'stuck' } elseif ($ratio -ge 2) { 'long' } else { 'ok' }); newerWaiting = $false; action = 'none'; at = $NowUtc } }
+        }
+        $best
+    } catch { $null }
 }
 
 function Get-EpsUplinkSignInLayer {
@@ -337,6 +378,8 @@ function Get-EpsUplinkHeartbeatFacts {
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
         SignIn = (Get-EpsUplinkSignInLayer)
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
+        Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
+        LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)
         # FLEET-STEPS: the engine's rights read back now (its own app role assignments), never a remembered value
         SetupSteps = $(if (Get-Command Get-EpsSetupSteps -ErrorAction SilentlyContinue) { try { @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode) } catch { @() } })
     }

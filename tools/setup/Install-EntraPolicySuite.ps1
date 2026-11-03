@@ -91,15 +91,15 @@
     A private install that cannot be proven from inside (the inside job did not run and this machine cannot reach the
     web app): you checked the web app from a machine in your network yourself.
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -WhatIf
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region>
 .EXAMPLE
     # private, in a network the install makes (10.230.0.0/24), the hub given for an exact hand-off list
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -HubVnetId <hub network id> -WhatIf
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -PrivateNetwork -HubVnetId <hub network id> -WhatIf
 .EXAMPLE
     # private, in your own spoke network, your central DNS zones, the peering made by the install
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -VnetId <network id> `
+    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Location <region> -PrivateNetwork -VnetId <network id> `
         -AppsSubnetName snet-eps-apps -EndpointsSubnetName snet-eps-endpoints -PrivateDnsZonesResourceGroupId <zones resource group id> `
         -HubVnetId <hub network id> -PeerToHub
 .LINK
@@ -156,7 +156,7 @@ $netPlan = Get-EpsNetworkPlan -P @{ PrivateNetwork = [bool]$PrivateNetwork; Vnet
 if (-not $netPlan.Ok) { Finish 2 "Refused: $($netPlan.Reason)" }
 
 # ---- sign in (a Support-app session or a test can provide the token source instead) ----
-$person = if ($global:EPS_TokenProvider -and $global:EPS_InstallPerson) { $global:EPS_InstallPerson } else { Connect-EpsSignedIn -TenantId "$TenantId" }
+$person = if ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and (-not "$($global:EPS_SignInTenant)" -or "$($global:EPS_SignInTenant)" -eq "$TenantId")) { $global:EPS_InstallPerson } else { Connect-EpsSignedIn -TenantId "$TenantId" }
 Write-Host "Signed in as $($person.Upn)" -ForegroundColor Cyan
 
 # ---- checks (exit 2) ----

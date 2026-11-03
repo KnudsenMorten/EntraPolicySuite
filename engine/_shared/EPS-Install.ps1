@@ -698,10 +698,12 @@ function Invoke-EpsInstall {
         $t = Test-EpsInstallStep -Id $s.Id -Ctx $Ctx
         if ($WhatIf) { & $OnStep @{ Step = $s; State = 'plan'; Message = "$($t.Action): $($t.Detail)" }; continue }
         & $OnStep @{ Step = $s; State = 'running'; Message = "$($t.Action): $($t.Detail)" }
+        $sw = [Diagnostics.Stopwatch]::StartNew()   # OVERHEAD (owner 2026-11-03): every step says how long it took
         try { $out = Invoke-EpsInstallStep -Id $s.Id -Ctx $Ctx }
         catch { & $OnStep @{ Step = $s; State = 'failed'; Message = "$($_.Exception.Message)" }; throw }
         $done.Add($s.Id)
-        & $OnStep @{ Step = $s; State = 'ok'; Message = $(if ($out -is [hashtable] -and $out.Tick) { "tick $($out.Tick) after $($out.Seconds) s$(if ($out.Web) { "; the web app answers at $($out.Web)" })" } else { 'done' }); Completed = @($done) }
+        $took = " ($([int]$sw.Elapsed.TotalSeconds) s)"
+        & $OnStep @{ Step = $s; State = 'ok'; Seconds = [int]$sw.Elapsed.TotalSeconds; Message = $(if ($out -is [hashtable] -and $out.Tick) { "tick $($out.Tick) after $($out.Seconds) s$(if ($out.Web) { "; the web app answers at $($out.Web)" })$took" } else { "done$took" }); Completed = @($done) }
     }
     @($done)
 }
