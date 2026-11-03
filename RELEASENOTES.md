@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.37 - the security pack, Conditional Access docs corrected
+- The security pack for reviewers is now delivered with each release: architecture, identities, every permission and
+  why, data, vendor access, supply chain, change control, hardening, compliance, uninstall and scripts. It is generated
+  from the code, so it always matches the version you run.
+- Fixed: the documentation still said EntraPolicySuite cannot change a Conditional Access policy. It can make one
+  change, on approval: a SuperAdmin moves an adopted policy to another stage after seeing what changes. The install
+  documentation now lists the permission for it.
+- The install's script description no longer mentions a custom role that installs since 2.0.10 no longer create.
 ## 2.0.36 - move a policy to any stage, the stage preview shows names
 - Conditional Access: a SuperAdmin can move an adopted policy to any stage - Pilot1, Pilot2, Pilot3 or Prod, up or
   down - or disable it. A move that skips stages says which. The Move stage column has one "Move to ..." list per policy.
