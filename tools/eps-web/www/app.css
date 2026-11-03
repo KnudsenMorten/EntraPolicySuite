@@ -312,4 +312,16 @@ details.more .form .wide { flex:1 1 100%; }
 .fld { display:block; margin:8px 0; }
 .fld > span { display:block; font-weight:600; margin-bottom:2px; }
 /* BRAND-EPS (owner 2026-11-03): EPS, with the full name in smaller letters */
-.brand-long { font-size:0.55em; font-weight:400; color:var(--text-muted); margin-left:6px; letter-spacing:0.02em; }
+.brand-long { font-size:0.62em; font-weight:500; color:var(--on-ink); opacity:.92; margin-left:8px; letter-spacing:.2px; text-transform:none; }   /* owner 2026-11-03 "had to read": light on the dark header, normal case */
+/* MENU-1 (owner 2026-11-03, "6 groups by area"): the grouped menu, as PIM Manager's */
+.nav-grp { position:relative; display:inline-block; }
+.nav-grp-btn .nav-caret { font-size:9px; opacity:.7; }
+.nav-grp.active > .nav-grp-btn { font-weight:600; }
+.nav-grp-menu { display:none; position:absolute; left:0; top:100%; z-index:50; min-width:320px; background:var(--surface-card); border:1px solid var(--border); border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.15); padding:4px 0; }
+.nav-grp.open > .nav-grp-menu { display:block; }
+.nav-item { display:block; padding:7px 14px; text-decoration:none; color:var(--text); }
+.nav-item:hover, .nav-item:focus-visible { background:var(--surface-alt); outline:none; }
+.nav-item.on { background:var(--surface-alt); font-weight:600; }
+.nav-item-l { display:block; }
+.nav-item-d { display:block; font-size:11.5px; color:var(--text-muted); font-weight:400; line-height:1.35; }
+@media (max-width:700px) { .nav-grp { display:block; } .nav-grp-menu { position:static; box-shadow:none; border:0; min-width:0; padding-left:12px; } }

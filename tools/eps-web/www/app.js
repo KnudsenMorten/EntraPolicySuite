@@ -2689,16 +2689,58 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
 
   // ---- navigation ------------------------------------------------------------------------------------------------
   function current() { var h = (location.hash || '#overview').substring(1); var i = h.indexOf('/'); return { id: i < 0 ? h : h.substring(0, i), arg: i < 0 ? '' : decodeURIComponent(h.substring(i + 1)) }; }
+  // MENU-1 (owner 2026-11-03: "we need to restructure the menus similar to fx PIM as we have too many now"; his choice
+  // "6 groups by area"): a few top menus, each a list of pages with a one-line description, as PIM Manager's.
+  var NAV_GROUPS = [
+    { label: 'Overview', items: [
+      { hash: 'overview', label: 'Overview', desc: 'What needs attention: open tag changes, runs, findings.' },
+      { hash: 'start', label: 'Get started', desc: 'What EPS needs before it works - checked against your tenant.' }] },
+    { label: 'Tagging', items: [
+      { hash: 'rules', label: 'Tagging Rules', desc: 'The rules that set the tags on users and devices.' },
+      { hash: 'troubleshoot', label: 'Troubleshoot tagging', desc: 'Pick accounts and see why each tag was or was not set.' },
+      { hash: 'tagtypes', label: 'Tag types', desc: 'The tags EPS writes, each in its own attribute, with its values.' },
+      { hash: 'conditions', label: 'Condition types', desc: 'What a rule can test.' },
+      { hash: 'queue', label: 'Commit queue', desc: 'Rule changes waiting for an admin to commit them.' },
+      { hash: 'changes', label: 'Tag changes', desc: 'Every tag EPS wrote, when and why.' },
+      { hash: 'tamper', label: 'Tamper', desc: 'Changes to watched tags that EPS did not make.' }] },
+    { label: 'Conditional Access', items: [
+      { hash: 'capolicies', label: 'Policies', desc: 'Your policies against their templates; adopt, stage moves.' },
+      { hash: 'capolicies/doc', label: 'Documentation', desc: 'Every policy with its ids resolved, as Excel or CSV.' },
+      { hash: 'capolicies/templates', label: 'Templates', desc: 'The template library of this release.' },
+      { hash: 'capolicies/updates', label: 'Template updates', desc: 'What a newer template library brings - you decide.' },
+      { hash: 'ca', label: 'CA Policy Analyzer', desc: 'Who a policy blocked or challenged in the sign-ins, and why.' }] },
+    { label: 'Identity report', items: [
+      { hash: 'identity', label: 'Identity report', desc: 'Users and devices, the gaps by severity, follow-up actions.' }] },
+    { label: 'Jobs & runs', items: [
+      { hash: 'jobs', label: 'Jobs & schedule', desc: 'Each job, its schedule, its last run; run one now.' },
+      { hash: 'runs', label: 'Runs', desc: 'Every run with its log.' }] },
+    { label: 'Administration', items: [
+      { hash: 'settings', label: 'Settings', desc: 'Every setting with what it does.' },
+      { hash: 'access', label: 'Access', desc: 'Who may sign in, and their role.' },
+      { hash: 'audit', label: 'Audit', desc: 'Every change and who made it.' },
+      { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] }
+  ];
+  function pageOf(id) { return PAGES.filter(function (x) { return x.id === id; })[0]; }
+  function closeMenus() { Array.prototype.forEach.call(document.querySelectorAll('.nav-grp.open'), function (g) { g.classList.remove('open'); g.firstChild.setAttribute('aria-expanded', 'false'); }); }
   function drawTabs() {
-    var nav = clear(document.getElementById('tabs')), cur = current().id;
-    PAGES.forEach(function (pg) {
-      if (!pg.label) return;
-      if (!isRole(pg.role)) return;
-      var b = el('button', { type: 'button', class: 'tab', role: 'tab', 'aria-selected': (pg.id === cur || (cur === 'run' && pg.id === 'runs')) ? 'true' : 'false', text: pg.label });
-      b.addEventListener('click', function () { location.hash = '#' + pg.id; });
-      nav.appendChild(b);
+    var nav = clear(document.getElementById('tabs')), c = current(), cur = c.id === 'run' ? 'runs' : c.id, full = cur + (c.arg && cur === 'capolicies' && /^(doc|templates|updates)$/.test(c.arg) ? '/' + c.arg : '');
+    NAV_GROUPS.forEach(function (g) {
+      var items = g.items.filter(function (it) { var pg = pageOf(it.hash.split('/')[0]); return pg && isRole(pg.role); });
+      if (!items.length) return;
+      var active = items.some(function (it) { return it.hash.split('/')[0] === cur; });
+      var box = el('div', { class: 'nav-grp' + (active ? ' active' : '') });
+      var btn = el('button', { type: 'button', class: 'tab nav-grp-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-selected': active ? 'true' : 'false' }, g.label + ' ', el('span', { class: 'nav-caret', text: '▾' }));
+      var menu = el('div', { class: 'nav-grp-menu', role: 'menu' });
+      items.forEach(function (it) {
+        var on = it.hash === full || (it.hash === cur && !(cur === 'capolicies' && full !== 'capolicies'));
+        menu.appendChild(el('a', { href: '#' + it.hash, role: 'menuitem', class: 'nav-item' + (on ? ' on' : ''), onclick: closeMenus }, el('span', { class: 'nav-item-l', text: it.label }), el('span', { class: 'nav-item-d', text: it.desc })));
+      });
+      btn.addEventListener('click', function (ev) { ev.stopPropagation(); var open = box.classList.contains('open'); closeMenus(); if (!open) { box.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); } });
+      box.appendChild(btn); box.appendChild(menu); nav.appendChild(box);
     });
   }
+  document.addEventListener('click', closeMenus);
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(); });
   function render() {
     drawTabs();
     var c = current(), pg = PAGES.filter(function (x) { return x.id === c.id; })[0] || PAGES[0];

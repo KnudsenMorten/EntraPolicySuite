@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.31 - six menus instead of sixteen tabs
+- The menu has six groups: **Overview**, **Tagging**, **Conditional Access**, **Identity report**, **Jobs & runs** and
+  **Administration**. Each group opens a list of its pages, every page with one line on what it is for. The group
+  you are in is highlighted.
+- The full name "Entra Policy Suite" next to EPS in the header is now light and easy to read.
 ## 2.0.30 - an action per user in the identity report
 - Every user in the identity report has four follow-up fields: **Action** (Disable, Delete, Investigate, Remove from
   cloud sync), **Status** (Not started, In progress, Closed), **Who** (who is responsible) and **Notes**.
