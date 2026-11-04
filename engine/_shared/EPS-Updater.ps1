@@ -137,12 +137,13 @@ function Invoke-EpsUpdateCheck {
       An available version is reported to Invardia ONCE per version (the previous run's summary says it was).
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Version, [scriptblock]$Log = { param($l, $m) },
-          [scriptblock]$Http, [AllowNull()][string]$InstallKey = $null, [object[]]$TrustedKeys = $script:InvardiaUpdateTrustedKeys,
+          [scriptblock]$Http, [AllowNull()][object]$InstallKey = $null, [object[]]$TrustedKeys = $script:InvardiaUpdateTrustedKeys,
           [AllowEmptyString()][AllowNull()][string]$Ring = $env:EPS_RING)
     $ringN = Get-EpsUpdateRing -Ring $Ring
     & $Log 'Info' "update check (this release only checks, it installs nothing): running $Version, ring $ringN"
     $t = Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys
     & $Log $(if ($t.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "release for ring $ringN`: $($t.State) - $($t.Reason)"
+    # [object], not [string]: a [string] parameter turns $null into '' and the vault was never read (found live 2026-11-04)
     if ($null -eq $InstallKey) { $k = Get-EpsUplinkKey; $InstallKey = "$($k.Key)"; if (-not $InstallKey) { & $Log 'Info' "no install key ($($k.Reason)): update now and the update run report are skipped" } }
     $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http
     # always said (found live 2026-11-04: a silent skip hid why no head call was made)

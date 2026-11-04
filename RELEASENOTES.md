@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.48 - the update check reads the install key
+- Fixed: the update check did not read the per-install key from the Key Vault, so it never asked Invardia whether an
+  update is wanted now and never reported a new version.
+
 ## 2.0.47 - the update check says more
 - The update check's run log always says what happened with the "update now" question to Invardia, including why
   it was not asked.
