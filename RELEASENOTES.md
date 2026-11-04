@@ -1,6 +1,12 @@
-# EntraPolicySuite 2.0 - release notes
+# Entra Policy Suite 2.0 - release notes
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
+
+## 2.0.44 - the product name
+- The product is called Entra Policy Suite everywhere you read it: the web app's title, the mails (the header and the
+  subject, e.g. `[Entra Policy Suite]`), the Azure Monitor alert names, the script help and the documentation. The
+  GitHub repository, the installer, the support path and the Azure resource names stay EntraPolicySuite, so an existing
+  install updates in place and nothing is renamed.
 
 ## 2.0.43 - wording
 - The product page text of the CA Policy Analyzer uses US spelling, like the rest of the documentation.

@@ -482,7 +482,7 @@ function Invoke-EpsInstallStep {
             $t = [ordered]@{}; if ($old -and $old.tags) { foreach ($p in $old.tags.PSObject.Properties) { $t[$p.Name] = "$($p.Value)" } }
             foreach ($k in $tags.Keys) { $t[$k] = $tags[$k] }
             $t.edition = 'community'; $t.hosting = 'ca'; $t.tenant = "$($Ctx.TenantId)"
-            $t.purpose = 'EntraPolicySuite: Conditional Access, user and device tagging, identity reporting'
+            $t.purpose = 'Entra Policy Suite: Conditional Access, user and device tagging, identity reporting'
             if ("$($Ctx.Ring)" -match '^([0-9]|10)$') { $t.ring = "r$($Ctx.Ring)" }
             if (-not $t.Contains('owner') -and "$($Ctx.Person.Upn)" -match '^[^\x00-\x1f<>%&\\?/]{1,200}$') { $t.owner = "$($Ctx.Person.Upn)" }
             [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $(if ($old) { $old.location } else { $Ctx.Location }); tags = $t })

@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Moves a v1 EntraPolicySuite install's rules and settings into EntraPolicySuite 2.0 (SQL).
+    Moves a v1 Entra Policy Suite install's rules and settings into Entra Policy Suite 2.0 (SQL).
 .DESCRIPTION
     Reads a v1 folder - DATA\Identity_Tagging*.csv, Device_Tagging*.csv, EntraNamedLocations_AzureNetworkServiceTags.csv,
     Entra_Policy_Suite_custom.config, Entra_Policy_Suite_locked.config, and the attribute per tag type from
@@ -21,7 +21,7 @@
 .PARAMETER Apply
     Write the plan to SQL. Without it the script only reads and shows.
 .PARAMETER ConnectionString
-    The EntraPolicySuite database. With its own auth (Integrated Security) it is used as is; otherwise the managed
+    The Entra Policy Suite database. With its own auth (Integrated Security) it is used as is; otherwise the managed
     identity of the machine / container signs in.
 .EXAMPLE
     .\Import-EpsV1Data.ps1 -Path C:\SCRIPTS
@@ -81,12 +81,12 @@ if (-not $Quiet) { Show-EpsImportPlan $model }
 if ($OutFile) { $model | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutFile -Encoding utf8; if (-not $Quiet) { Write-Host "`nPlan saved: $OutFile" } }
 
 if (-not $Apply) {
-    if (-not $Quiet) { Write-Host "`nNothing written. Run again with -Apply -ConnectionString <the EntraPolicySuite database> to import." -ForegroundColor Cyan }
+    if (-not $Quiet) { Write-Host "`nNothing written. Run again with -Apply -ConnectionString <the Entra Policy Suite database> to import." -ForegroundColor Cyan }
     return $model
 }
-if (-not $ConnectionString) { throw '-Apply needs -ConnectionString (the EntraPolicySuite database).' }
+if (-not $ConnectionString) { throw '-Apply needs -ConnectionString (the Entra Policy Suite database).' }
 $what = "{0} user rule(s), {1} device rule(s), {2} tag type(s), {3} setting(s)" -f @($model.UserRules).Count, @($model.DeviceRules).Count, @($model.TagTypes).Count, @($model.Settings.Keys).Count
-if ($PSCmdlet.ShouldProcess('EntraPolicySuite database', "import $what (replaces the previous v1 import's rules)")) {
+if ($PSCmdlet.ShouldProcess('Entra Policy Suite database', "import $what (replaces the previous v1 import's rules)")) {
     $result = Write-EpsV1Import -ConnectionString $ConnectionString -Model $model -Actor "v1-import:$([Environment]::UserName)"
     if (-not $Quiet) { Write-Host "`nImported: $($result | ConvertTo-Json -Compress)" -ForegroundColor Green }
     return $result

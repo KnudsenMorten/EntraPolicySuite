@@ -469,11 +469,11 @@ function Get-EpsCaStagePlan {
         $want = (@(1..$n | ForEach-Object { $Catalog.pilotRule["Pilot$_"] }) -join ', ')
         $rule = @($Names.Values | Where-Object { $_.Kind -eq 'group' -and "$($_.Name)" -ieq $g } | ForEach-Object { "$($_.Detail)" })[0]
         $takes = 0; foreach ($i in 1..3) { if ($rule -and $rule -match [regex]::Escape($Catalog.pilotRule["Pilot$i"])) { $takes = $i } }
-        $plan.notes.Add($(if ($null -eq $rule) { "The pilot group $g is dynamic: v1 widens its rule to take $want on $($Catalog.pilotRule.attribute). EntraPolicySuite does not change groups - check its rule in Entra." }
+        $plan.notes.Add($(if ($null -eq $rule) { "The pilot group $g is dynamic: v1 widens its rule to take $want on $($Catalog.pilotRule.attribute). Entra Policy Suite does not change groups - check its rule in Entra." }
             elseif ($takes -eq $n) { "The pilot group $g already takes $want." }
-            else { "The pilot group $g is dynamic and its rule takes $(if ($takes) { "up to $($Catalog.pilotRule["Pilot$takes"])" } else { 'no pilot value' }) now: v1 changes it to take $want on $($Catalog.pilotRule.attribute). EntraPolicySuite does not change groups - change its rule in Entra yourself." }))
+            else { "The pilot group $g is dynamic and its rule takes $(if ($takes) { "up to $($Catalog.pilotRule["Pilot$takes"])" } else { 'no pilot value' }) now: v1 changes it to take $want on $($Catalog.pilotRule.attribute). Entra Policy Suite does not change groups - change its rule in Entra yourself." }))
     }
-    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -eq 'Prod') { $plan.notes.Add('v1 also pauses the dynamic pilot group''s rule at Prod. EntraPolicySuite leaves the group as it is.') }
+    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -eq 'Prod') { $plan.notes.Add('v1 also pauses the dynamic pilot group''s rule at Prod. Entra Policy Suite leaves the group as it is.') }
     if ($Ctx.Method -like 'Manual_*' -and $To -like 'Pilot*') { $plan.notes.Add("The policy applies to the members of $(@($plan.set['conditions.users.includeGroups'].values)[0]): check the group has the right members.") }
     if (-not $plan.changes.Count) { return & $no "the policy is already as $To wants it" }
     $plan.ok = $true; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes)
@@ -843,7 +843,7 @@ function Send-EpsCaMonitorAlert {
     $bg = @($open | Where-Object { $_.Kind -ne 'Drift' }).Count
     $what = "Conditional Access: $($open.Count) finding(s) on adopted policies$(if ($bg) { ", $bg break-glass / missing" })"
     $rows = @(foreach ($f in $open) { [pscustomobject]@{ Finding = $(switch ($f.Kind) { 'Drift' { 'changed since adopted' } 'BreakGlass' { 'break-glass NOT excluded' } default { 'no longer in the tenant' } }); Policy = $f.DisplayName; Detail = $f.Detail; Found = ([datetime]$f.FirstSeenUtc).ToString('yyyy-MM-dd HH:mm') + ' UTC' } })
-    $html = New-EpsMailBody -Summary "The EntraPolicySuite CA monitor found $($open.Count) finding(s) on Conditional Access policies you adopted. EntraPolicySuite changed nothing and will not: what happens next is your decision." `
+    $html = New-EpsMailBody -Summary "The Entra Policy Suite CA monitor found $($open.Count) finding(s) on Conditional Access policies you adopted. Entra Policy Suite changed nothing and will not: what happens next is your decision." `
         -Rows $rows -Columns 'Finding', 'Policy', 'Detail', 'Found' `
         -WhatToDo 'Open the Conditional Access page for the details. A change you made yourself: adopt the policy again (its new body becomes the baseline). A missing break-glass exclusion is a lock-out risk: fix it in the tenant yourself.' -ButtonText 'Open Conditional Access' -ButtonPage 'capolicies' `
         -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }

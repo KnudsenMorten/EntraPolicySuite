@@ -2,8 +2,8 @@
   "script": "Install-EpsHybridWorker.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Install the EntraPolicySuite hybrid worker on a domain-joined server",
-  "purpose": "Installs the worker that writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It talks to EntraPolicySuite only through its SQL database with the machine's managed identity, and writes AD as the gMSA you name. Nothing inbound, no password, no gallery module.",
+  "title": "Install the Entra Policy Suite hybrid worker on a domain-joined server",
+  "purpose": "Installs the worker that writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It talks to Entra Policy Suite only through its SQL database with the machine's managed identity, and writes AD as the gMSA you name. Nothing inbound, no password, no gallery module.",
   "whenToRun": "Once on the worker (an Azure VM or an Azure Arc-enabled server), after Initialize-EpsHybridWorkerAd.ps1 and Grant-EpsHybridWorkerAccess.ps1. Again with -Remove to take it away.",
   "runAs": [ { "kind": "other", "name": "local Administrator on the worker", "scope": "the worker machine", "why": "copies the code, sets ACLs, user rights and a scheduled task" } ],
   "changes": [
@@ -15,7 +15,7 @@
   ],
   "parameters": [
     { "name": "GmsaName", "required": true, "default": null, "help": "DOMAIN\\name$ of the gMSA the worker writes AD as" },
-    { "name": "SqlServer", "required": true, "default": null, "help": "<name>.database.windows.net of the EntraPolicySuite database" },
+    { "name": "SqlServer", "required": true, "default": null, "help": "<name>.database.windows.net of the Entra Policy Suite database" },
     { "name": "Database", "required": false, "default": "eps", "help": "the database" },
     { "name": "WorkerName", "required": false, "default": "the computer name", "help": "the worker's name in the heartbeat" },
     { "name": "AdServer", "required": false, "default": "the domain locator", "help": "a domain controller to use" },

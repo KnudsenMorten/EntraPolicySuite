@@ -185,7 +185,7 @@ function New-EpsUplinkEnvelope {
     # TEL-01 (framework §8.4 / §8.17): the update ring as an INTEGER 0-10 - left out when the install has none (never null
     # or text: Invardia refuses the whole report). Only the heartbeat carries it (Select-EpsUplinkRecord drops it elsewhere).
     if ("$Ring".Trim() -match '^([0-9]|10)$') { $o.Ring = [int]"$Ring".Trim() }
-    $o.Edition = 'community'          # EntraPolicySuite is Community only for now (owner 2026-10-29)
+    $o.Edition = 'community'          # Entra Policy Suite is Community only for now (owner 2026-10-29)
     $o.Hosting = 'container'
     $o.RuntimeIdentity = 'mi-container'
     if ("$TenantId" -match '^[0-9a-fA-F-]{36}$') { $o.ClaimedTenantId = "$TenantId".ToLowerInvariant() }
@@ -461,7 +461,7 @@ function Get-EpsUplinkAlerts {
     $n = [int]$t.N; $h = if ($t.H -is [DBNull] -or $null -eq $t.H) { 0 } else { [int]$t.H }
     if ($n -gt 0) {
         $out.Add(@{ AlertId = 'eps.tamper.foreign-change'; Severity = 'warning'; Area = 'tamper'; Job = 'tampermonitor'; Measured = [ordered]@{ events = $n; high = $h }; FirstSeenUtc = $t.F; Page = 'tamper'
-            ActionText = "$n change(s) to watched tag attributes were not made by EntraPolicySuite and are still open. Review them on the Tamper page: accept or restore each." })
+            ActionText = "$n change(s) to watched tag attributes were not made by Entra Policy Suite and are still open. Review them on the Tamper page: accept or restore each." })
     }
     if ($h -gt 0) {
         $out.Add(@{ AlertId = 'eps.tamper.high'; Severity = 'critical'; Area = 'tamper'; Job = 'tampermonitor'; Measured = [ordered]@{ events = $n; high = $h }; FirstSeenUtc = $t.FH; Page = 'tamper'

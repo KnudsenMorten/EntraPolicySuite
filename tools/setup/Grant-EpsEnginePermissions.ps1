@@ -1,12 +1,12 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Gives the EntraPolicySuite engine identity (id-eps-engine) the Microsoft Graph permissions and the Exchange right it
+    Gives the Entra Policy Suite engine identity (id-eps-engine) the Microsoft Graph permissions and the Exchange right it
     is missing - or takes one away with -Remove. Every grant is read back.
 .DESCRIPTION
     The install grants the engine its rights once. Run this when a right is missing afterwards (an approver granted it
     later, a feature is switched on that needs it, the install ran as an account that could not grant it) or to take a
-    right away that a feature no longer needs. Only the rights EntraPolicySuite declares for its engine can be granted -
+    right away that a feature no longer needs. Only the rights Entra Policy Suite declares for its engine can be granted -
     anything else is refused.
     -GraphPermission: the Graph application permissions (none given: every one the engine needs). -Exchange: the
     Exchange right of the recipient conditions - the application permission Exchange.ManageAsApp plus the Entra role
@@ -38,7 +38,7 @@ $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-EnginePermissions') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 
-# the request: only rights EntraPolicySuite declares for its engine (least privilege - never a free-form permission)
+# the request: only rights Entra Policy Suite declares for its engine (least privilege - never a free-form permission)
 $req = Get-EpsEnginePermissionRequest -GraphPermission $GraphPermission -Exchange:$Exchange -Remove:$Remove
 if (-not $req.Ok) { Write-Host $req.Reason -ForegroundColor Red; exit 2 }
 
@@ -46,7 +46,7 @@ if (-not $req.Ok) { Write-Host $req.Reason -ForegroundColor Red; exit 2 }
 if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($global:EPS_SignInTenant)" -eq "$TenantId")) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 $names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $mi = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
-if (-not $mi -or "$($mi.properties.principalId)" -notmatch '^[0-9a-fA-F-]{36}$') { Write-Host "No engine identity $($names.EngineIdentity) in $ResourceGroup - is EntraPolicySuite installed there?" -ForegroundColor Red; exit 2 }
+if (-not $mi -or "$($mi.properties.principalId)" -notmatch '^[0-9a-fA-F-]{36}$') { Write-Host "No engine identity $($names.EngineIdentity) in $ResourceGroup - is Entra Policy Suite installed there?" -ForegroundColor Red; exit 2 }
 $engine = "$($mi.properties.principalId)"
 Write-Host "Engine identity: $($names.EngineIdentity) (object id $engine) - $(if ($Remove) { 'remove' } else { 'grant' }): $(@($req.Items | ForEach-Object What) -join ', ')" -ForegroundColor Cyan
 

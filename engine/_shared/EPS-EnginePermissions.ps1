@@ -13,7 +13,7 @@ function Get-EpsEnginePermissionRequest {
     param([string[]]$GraphPermission = @(), [switch]$Exchange, [switch]$Remove)
     $asked = @($GraphPermission | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
     $unknown = @($asked | Where-Object { $script:EpsEngineGraphRoles -cnotcontains $_ })
-    if ($unknown.Count) { return @{ Ok = $false; Reason = "not a Graph permission EntraPolicySuite declares for its engine: $($unknown -join ', ') (declared: $($script:EpsEngineGraphRoles -join ', '))" } }
+    if ($unknown.Count) { return @{ Ok = $false; Reason = "not a Graph permission Entra Policy Suite declares for its engine: $($unknown -join ', ') (declared: $($script:EpsEngineGraphRoles -join ', '))" } }
     if ($Remove -and -not $asked.Count -and -not $Exchange) { return @{ Ok = $false; Reason = '-Remove needs the rights to take away: -GraphPermission <name> and/or -Exchange (it never removes everything at once)' } }
     # none asked and no -Exchange: every Graph permission the engine needs (a catch-up after an install that could not grant)
     if (-not $asked.Count -and -not $Exchange) { $asked = @($script:EpsEngineGraphRoles) }

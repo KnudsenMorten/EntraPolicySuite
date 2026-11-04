@@ -38,7 +38,7 @@ function Get-EpsAzureMonitorRules {
     param([object[]]$Accounts = @(), [string[]]$WatchedAttributes = @(), [string]$EngineAppId, [string[]]$AllowList = @(), [string]$TickJobName = 'caj-eps-tick')
     $entra = @($Accounts | Where-Object { $_.Directory -ne 'AD' }); $ad = @($Accounts | Where-Object { $_.Directory -eq 'AD' })
     $rules = [System.Collections.Generic.List[object]]::new()
-    $add = { param($n, $dn, $desc, $sev, $freq, $win, $q, $op, $th) $rules.Add([pscustomobject]@{ Name = "eps-$n"; DisplayName = "EntraPolicySuite - $dn"; Description = $desc; Severity = $sev; Frequency = $freq; Window = $win; Query = $q; Operator = $op; Threshold = $th }) }
+    $add = { param($n, $dn, $desc, $sev, $freq, $win, $q, $op, $th) $rules.Add([pscustomobject]@{ Name = "eps-$n"; DisplayName = "Entra Policy Suite - $dn"; Description = $desc; Severity = $sev; Frequency = $freq; Window = $win; Query = $q; Operator = $op; Threshold = $th }) }
     # the alarm's own eyes: a log that stops arriving would blind every rule below
     & $add 'auditlogs-missing' 'AuditLogs data missing' 'No AuditLogs row in Log Analytics for a day: the other rules on AuditLogs are blind.' 2 'P1D' 'P1D' 'AuditLogs' 'LessThan' 1
     & $add 'signinlogs-missing' 'SigninLogs data missing' 'No SigninLogs row in Log Analytics for a day: the sign-in rules are blind.' 2 'P1D' 'P1D' 'SigninLogs' 'LessThan' 1
@@ -73,9 +73,9 @@ function Get-EpsAzureMonitorRules {
              $(if ($allowUpns) { " | where InitiatorUpn !in~ ($($allowUpns -join ', '))" } else { '' }) +
              # AD-synced users' tags arrive through Entra Connect (its Sync_ account): the product's monitor checks those with the worker
              ' | where not(InitiatorUpn startswith "Sync_")'
-        & $add 'tag-foreign-writer' 'Watched tag attribute changed by a foreign writer' 'A tag attribute that drives the dynamic groups and Conditional Access was changed by someone other than the EntraPolicySuite engine or an allowed writer.' 1 'PT5M' 'PT5M' $q 'GreaterThan' 0
+        & $add 'tag-foreign-writer' 'Watched tag attribute changed by a foreign writer' 'A tag attribute that drives the dynamic groups and Conditional Access was changed by someone other than the Entra Policy Suite engine or an allowed writer.' 1 'PT5M' 'PT5M' $q 'GreaterThan' 0
     }
-    & $add 'heartbeat-stopped' 'Product heartbeat stopped' 'The EntraPolicySuite tick wrote nothing for an hour: the product is not running, so its own monitor is not either.' 1 'PT1H' 'PT1H' `
+    & $add 'heartbeat-stopped' 'Product heartbeat stopped' 'The Entra Policy Suite tick wrote nothing for an hour: the product is not running, so its own monitor is not either.' 1 'PT1H' 'PT1H' `
         "ContainerAppConsoleLogs_CL | where column_ifexists(`"ContainerJobName_s`", `"`") == $(ConvertTo-EpsKqlString $TickJobName JobName)" 'LessThan' 1
     @($rules)
 }

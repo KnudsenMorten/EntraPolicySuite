@@ -2,7 +2,7 @@
   "script": "Initialize-EpsHybridWorkerAd.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Delegate the EntraPolicySuite hybrid worker's gMSA in Active Directory",
+  "title": "Delegate the Entra Policy Suite hybrid worker's gMSA in Active Directory",
   "purpose": "Gives the worker's gMSA the right to write exactly the tag attributes (extensionAttribute5-9 by default) on user objects below the OUs you name - one inheritable ACE per OU and attribute, nothing else. Plan first: without -Apply nothing is changed.",
   "whenToRun": "Once before the worker is installed, and again when a tag type moves to another attribute or a new OU holds synced users.",
   "runAs": [ { "kind": "other", "name": "an AD admin who may change the permissions of the OUs", "scope": "the OUs named", "why": "adds the ACEs" } ],

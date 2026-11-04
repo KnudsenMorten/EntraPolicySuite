@@ -1,11 +1,11 @@
-# EntraPolicySuite 2.0
+# Entra Policy Suite 2.0
 
 Conditional Access management, user and device tagging, and identity reporting for Microsoft Entra ID - running in
 your own Azure subscription as Container Apps with Azure SQL, with a web app your admins sign in to with Microsoft
 Entra ID.
 
 > **v1 (the scripts) is unchanged** and stays on the [`v1` branch](https://github.com/KnudsenMorten/EntraPolicySuite/tree/v1)
-> with its releases v1.0.1 and v1.0.2. EntraPolicySuite 2.0 is a new major: it reads your v1 rule files and moves them
+> with its releases v1.0.1 and v1.0.2. Entra Policy Suite 2.0 is a new major: it reads your v1 rule files and moves them
 > into its database (`tools/setup/Import-EpsV1Data.ps1`), and it never changes your v1 install.
 
 ## What it does
@@ -13,7 +13,7 @@ Entra ID.
 | Feature | What you get |
 |---|---|
 | **User and device tagging** | Rules (persona, tag type, value, conditions) write tags to extension attributes on users and devices. Every run is planned first: you preview what would change, then switch a rule set to Apply. |
-| **Tag tamper monitor** | A change to a watched tag that EntraPolicySuite did not make is found and alerted; you accept it or restore the tag. |
+| **Tag tamper monitor** | A change to a watched tag that Entra Policy Suite did not make is found and alerted; you accept it or restore the tag. |
 | **Conditional Access** | The template library as data, a review of your policies against it (template, stage, difference, break-glass), adopt / release, a documentation export, and stage buttons: a SuperAdmin moves an adopted policy one stage (Pilot1, Pilot2, Pilot3, Prod, back, or off) after seeing exactly what changes. Nothing changes a policy by itself. |
 | **CA Policy Analyzer** | Analyse policies by persona or series (for example CA2 for the whole CA2xx series), and monitor them with alerts to the team that owns them. |
 | **Identity report** | Every user with licences, sign-in activity, MFA methods, roles and devices, plus ready-made gap views; downloadable as a workbook. |
@@ -57,7 +57,7 @@ registry are created with public access off and reached through private endpoint
 |---|---|
 | `-VnetId` | Your existing virtual network (same region); without it the install creates one from `-VnetAddressPrefix` (default 10.230.0.0/24) |
 | `-AppsSubnetName` / `-EndpointsSubnetName` | The subnets for the apps and for the private endpoints (created when missing) |
-| `-PrivateDnsZonesResourceGroupId` | Use your central private DNS zones instead of zones in EntraPolicySuite's resource group |
+| `-PrivateDnsZonesResourceGroupId` | Use your central private DNS zones instead of zones in Entra Policy Suite's resource group |
 | `-HubVnetId`, `-PeerToHub`, `-LinkZonesToHub` | Peer with your hub network and link the zones to it (both off by default) |
 
 Run a private install from a machine inside your network: it checks DNS before it touches any data, prints the DNS

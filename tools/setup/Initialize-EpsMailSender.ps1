@@ -1,14 +1,14 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Sets up EntraPolicySuite's mail (framework MAIL-1): a shared mailbox the engine sends its alerts from - and the
+    Sets up Entra Policy Suite's mail (framework MAIL-1): a shared mailbox the engine sends its alerts from - and the
     right to send as THAT mailbox only.
 .DESCRIPTION
     Creates the shared mailbox (or uses the one you name), registers the engine's managed identity in Exchange, creates
     a management scope matching exactly that mailbox and gives the identity 'Application Mail.Send' on it - Exchange
     RBAC for applications, so the engine can send as this mailbox and as no other. A tenant-wide Graph Mail.Send grant
     on the identity is removed (it would win beside the scope). Every step is read back. Then it stores the mail
-    settings (Mail.Mode = sharedMailbox, the sender, the recipients) in the EntraPolicySuite database.
+    settings (Mail.Mode = sharedMailbox, the sender, the recipients) in the Entra Policy Suite database.
     You sign in in a browser (no module). Needs an Exchange Online plan in the tenant. -WhatIf: the plan, nothing changed.
 .EXAMPLE
     ./Initialize-EpsMailSender.ps1 -TenantId <tenant> -SubscriptionId <sub> -Sender eps-alerts@contoso.com -Recipients soc@contoso.com -WhatIf
@@ -36,7 +36,7 @@ if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($glob
 
 $names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $mi = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
-if (-not $mi) { throw "no engine identity $($names.EngineIdentity) in $ResourceGroup - is EntraPolicySuite installed there?" }
+if (-not $mi) { throw "no engine identity $($names.EngineIdentity) in $ResourceGroup - is Entra Policy Suite installed there?" }
 $appId = [string]$mi.properties.clientId; $oid = [string]$mi.properties.principalId
 
 $state = Get-EpsMailSenderState -TenantId "$TenantId" -Sender $Sender -AppId $appId -ObjectId $oid

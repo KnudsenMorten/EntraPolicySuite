@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    One EntraPolicySuite hybrid worker cycle - what the scheduled task 'EntraPolicySuite Hybrid Worker' runs every 5
+    One Entra Policy Suite hybrid worker cycle - what the scheduled task 'EntraPolicySuite Hybrid Worker' runs every 5
     minutes, AS THE gMSA, on the domain-joined worker (DESIGN §6).
 .DESCRIPTION
     Reads <Root>\worker.json (written by Install-EpsHybridWorker.ps1), signs in to SQL with the MACHINE's managed identity

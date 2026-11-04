@@ -2,11 +2,11 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs the EntraPolicySuite hybrid worker on a domain-joined Windows server (an Azure VM or an Azure Arc-enabled
+    Installs the Entra Policy Suite hybrid worker on a domain-joined Windows server (an Azure VM or an Azure Arc-enabled
     on-premises server) - run ON the worker, elevated (DESIGN §6; one worker per product, D5).
 .DESCRIPTION
     The worker writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It
-    talks to EntraPolicySuite only through its SQL database, with the MACHINE's managed identity; nothing inbound, no
+    talks to Entra Policy Suite only through its SQL database, with the MACHINE's managed identity; nothing inbound, no
     password, no certificate, no gallery module (the in-box Windows ScheduledTasks module and icacls / secedit are used -
     owner-approved for the hybrid worker). AD is written AS THE gMSA you give (create it and delegate it first:
     Initialize-EpsHybridWorkerAd.ps1), and the worker's identity is given access to the database with
@@ -67,14 +67,14 @@ if ($AsGuestOf -eq 'pim') {
     if ($ManagedIdentityClientId -notmatch '^[0-9a-fA-F-]{36}$') { throw 'as a guest, -ManagedIdentityClientId is required: EntraPolicySuite''s OWN user-assigned identity (id-eps-worker), attached to this VM - never the VM''s system identity' }
     if ($Root -like 'C:\PIM*') { throw "-Root $Root is inside PIM's folder - a guest has its own root beside it (C:\EPS)" }
 }
-if (-not $SqlServer) { throw '-SqlServer is required (the EntraPolicySuite SQL server: <name>.database.windows.net)' }
+if (-not $SqlServer) { throw '-SqlServer is required (the Entra Policy Suite SQL server: <name>.database.windows.net)' }
 if ($SqlServer -notmatch '^[a-z0-9-]{1,63}\.database\.windows\.net$') { throw "-SqlServer '$SqlServer': give <name>.database.windows.net" }
 $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 if (-not $pwsh) { throw 'PowerShell 7 (pwsh.exe) is required on the worker' }
 foreach ($need in 'engine\_shared\EPS-SqlStore.ps1', 'engine\_shared\EPS-AdDirectory.ps1', 'engine\_shared\EPS-HybridWorker.ps1', 'tools\eps-hybrid-worker\Start-EpsHybridWorker.ps1', 'VERSION') {
-    if (-not (Test-Path -LiteralPath (Join-Path $SourcePath $need))) { throw "-SourcePath $SourcePath has no $need (point it at the EntraPolicySuite release folder)" }
+    if (-not (Test-Path -LiteralPath (Join-Path $SourcePath $need))) { throw "-SourcePath $SourcePath has no $need (point it at the Entra Policy Suite release folder)" }
 }
-Write-Host "EntraPolicySuite hybrid worker '$WorkerName' on $env:COMPUTERNAME ($(if ($isArc) { 'Azure Arc' } else { 'Azure VM' })), AD as $GmsaName, SQL $SqlServer/$Database" -ForegroundColor Cyan
+Write-Host "Entra Policy Suite hybrid worker '$WorkerName' on $env:COMPUTERNAME ($(if ($isArc) { 'Azure Arc' } else { 'Azure VM' })), AD as $GmsaName, SQL $SqlServer/$Database" -ForegroundColor Cyan
 
 $appDir = Join-Path $Root 'app'
 Step "copy the worker code to $appDir" {
@@ -111,7 +111,7 @@ Step "register the task '$task': every 5 minutes as $GmsaName" {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
     $principal = New-ScheduledTaskPrincipal -UserId $GmsaName -LogonType Password -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4) -StartWhenAvailable
-    Register-ScheduledTask -TaskName $task -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'EntraPolicySuite hybrid worker (DESIGN §6): AD tags + AD group snapshots, through SQL' -Force | Out-Null
+    Register-ScheduledTask -TaskName $task -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker (DESIGN §6): AD tags + AD group snapshots, through SQL' -Force | Out-Null
 }
 Step "run the task once and show its result" {
     Start-ScheduledTask -TaskName $task -TaskPath $taskPath
@@ -126,4 +126,4 @@ if ($AsGuestOf) {
                     version = (Get-Content -LiteralPath (Join-Path $SourcePath 'VERSION') -Raw).Trim(); installedUtc = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $guestFile -Encoding utf8
     }
 }
-Write-Host $(if ($what) { "`nWhatIf: nothing was changed." } else { "`nInstalled. The worker heartbeats every 5 minutes; EntraPolicySuite queues AD-synced tags for it." }) -ForegroundColor Green
+Write-Host $(if ($what) { "`nWhatIf: nothing was changed." } else { "`nInstalled. The worker heartbeats every 5 minutes; Entra Policy Suite queues AD-synced tags for it." }) -ForegroundColor Green

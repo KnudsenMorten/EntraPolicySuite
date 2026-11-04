@@ -1,5 +1,5 @@
 {
-  "_comment": "EntraPolicySuite 2.0 guided install: every answer is a PARAMETER of tools/setup/Install-EntraPolicySuite.ps1 (and passed on unchanged by the launcher Start-EpsInstall.ps1). -TenantId and -SubscriptionId are required; every other answer takes its default. EntraPolicySuite installs Community, unlicensed; a licence is added in the product after sign-in. No licence, key, hash or config file is ever part of the install lines. The 'installer' block is what the Invardia portal builds the two install lines from. tests/Test-EpsNetwork.ps1 keeps this file in step with the installer's and the launcher's parameter blocks.",
+  "_comment": "Entra Policy Suite 2.0 guided install: every answer is a PARAMETER of tools/setup/Install-EntraPolicySuite.ps1 (and passed on unchanged by the launcher Start-EpsInstall.ps1). -TenantId and -SubscriptionId are required; every other answer takes its default. Entra Policy Suite installs Community, unlicensed; a licence is added in the product after sign-in. No licence, key, hash or config file is ever part of the install lines. The 'installer' block is what the Invardia portal builds the two install lines from. tests/Test-EpsNetwork.ps1 keeps this file in step with the installer's and the launcher's parameter blocks.",
   "product": "eps",
   "version": "2.0",
   "installer": {
@@ -21,7 +21,7 @@
     { "key": "tenantId", "parameter": "-TenantId", "page": "target", "type": "guid", "required": true, "default": null,
       "help": "Your Microsoft Entra tenant id." },
     { "key": "subscriptionId", "parameter": "-SubscriptionId", "page": "target", "type": "guid", "required": true, "default": null,
-      "help": "The Azure subscription EntraPolicySuite is installed in. You need Owner on it (or on an existing resource group), and Global Administrator or Privileged Role Administrator in Entra for the Graph and Exchange grants." },
+      "help": "The Azure subscription Entra Policy Suite is installed in. You need Owner on it (or on an existing resource group), and Global Administrator or Privileged Role Administrator in Entra for the Graph and Exchange grants." },
     { "key": "location", "parameter": "-Location", "page": "target", "type": "region", "default": "westeurope",
       "help": "The Azure region." },
     { "key": "resourceGroup", "parameter": "-ResourceGroup", "page": "target", "type": "resourceGroupName", "default": "rg-entrapolicysuite",

@@ -2,23 +2,23 @@
   "script": "Deploy-EpsAzureMonitorAlerts.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Deploy EntraPolicySuite's external alarm in Azure Monitor",
+  "title": "Deploy Entra Policy Suite's external alarm in Azure Monitor",
   "purpose": "Creates or updates an Azure Monitor rule set that alerts independently of the product: missing log data, Conditional Access policy changes, break-glass account sign-ins and actions in Entra and AD, a watched tag changed by a foreign writer, and the product's heartbeat stopping. Built from the product's settings each time it runs.",
   "whenToRun": "After the install, and again after a break-glass account, a tag type, the tamper allow list or the recipients change.",
   "runAs": [
-    { "kind": "azureRbac", "name": "Contributor (Monitoring Contributor is enough for the rules and the action group)", "scope": "the EntraPolicySuite resource group", "why": "creates the action group and the scheduled query rules" },
+    { "kind": "azureRbac", "name": "Contributor (Monitoring Contributor is enough for the rules and the action group)", "scope": "the Entra Policy Suite resource group", "why": "creates the action group and the scheduled query rules" },
     { "kind": "entraRole", "name": "Security Administrator or Global Administrator", "scope": "the tenant", "why": "creates the Entra diagnostic setting that sends AuditLogs and the sign-in logs to Log Analytics (only if none does yet)" },
-    { "kind": "other", "name": "the EntraPolicySuite SQL server's Entra admin", "scope": "the EntraPolicySuite database", "why": "reads the break-glass accounts, the tag types and the allow list" }
+    { "kind": "other", "name": "the Entra Policy Suite SQL server's Entra admin", "scope": "the Entra Policy Suite database", "why": "reads the break-glass accounts, the tag types and the allow list" }
   ],
   "changes": [
     { "target": "Entra", "action": "create", "object": "diagnostic setting eps-entra-logs (AuditLogs, SignInLogs, NonInteractiveUserSignInLogs -> the install's Log Analytics workspace), unless one already sends AuditLogs", "scope": "the tenant", "why": "the rules read these logs", "undo": "delete the diagnostic setting eps-entra-logs" },
-    { "target": "Azure", "action": "create", "object": "action group ag-eps-alarm (mail + SMS)", "scope": "the EntraPolicySuite resource group", "why": "where the alerts go", "undo": "delete it" },
-    { "target": "Azure", "action": "create", "object": "scheduled query rules eps-* (up to 10)", "scope": "the EntraPolicySuite resource group", "why": "the alarm itself", "undo": "delete the eps-* rules" },
-    { "target": "Azure", "action": "remove", "object": "eps-* rules no longer wanted (e.g. the AD rules when no AD break-glass account remains)", "scope": "the EntraPolicySuite resource group", "why": "the rules follow exactly the accounts in the module", "undo": "run again after adding the account back" }
+    { "target": "Azure", "action": "create", "object": "action group ag-eps-alarm (mail + SMS)", "scope": "the Entra Policy Suite resource group", "why": "where the alerts go", "undo": "delete it" },
+    { "target": "Azure", "action": "create", "object": "scheduled query rules eps-* (up to 10)", "scope": "the Entra Policy Suite resource group", "why": "the alarm itself", "undo": "delete the eps-* rules" },
+    { "target": "Azure", "action": "remove", "object": "eps-* rules no longer wanted (e.g. the AD rules when no AD break-glass account remains)", "scope": "the Entra Policy Suite resource group", "why": "the rules follow exactly the accounts in the module", "undo": "run again after adding the account back" }
   ],
   "parameters": [
     { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant" },
-    { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription EntraPolicySuite is installed in" },
+    { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription Entra Policy Suite is installed in" },
     { "name": "ResourceGroup", "required": false, "default": "rg-entrapolicysuite", "help": "the install's resource group" },
     { "name": "Email", "required": false, "default": null, "help": "mail addresses for the alarm" },
     { "name": "Sms", "required": false, "default": null, "help": "SMS numbers, '+<country code> <number>'" },

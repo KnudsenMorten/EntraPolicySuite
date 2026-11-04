@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Delegates the EntraPolicySuite hybrid worker's gMSA in Active Directory: the right to write EXACTLY the tag
+    Delegates the Entra Policy Suite hybrid worker's gMSA in Active Directory: the right to write EXACTLY the tag
     attributes on user objects below the OUs you name - nothing else (DESIGN §6). Run by an AD admin on a domain machine.
 .DESCRIPTION
     For each OU and each attribute (default: extensionAttribute5-9, the v1 tag types; give -Attributes to match yours)

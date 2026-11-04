@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Downloads EntraPolicySuite 2.0 from its GitHub release and starts the install (the launcher is an asset of every
+    Downloads Entra Policy Suite 2.0 from its GitHub release and starts the install (the launcher is an asset of every
     release: https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1).
 .DESCRIPTION
     Takes the latest v2 release of KnudsenMorten/EntraPolicySuite (or -Version), downloads its zip into a new temporary
@@ -65,7 +65,7 @@ if (-not $RunInstaller) { $RunInstaller = { param($script, $params) & $script @p
 $rel = & $GetRelease $Version
 # the latest v2 release (the repo's v1.0.x releases stay where they are and are never picked)
 $rel = @($rel | Where-Object { $_.tag_name -match '^v2\.' -and -not $_.draft -and -not $_.prerelease } | Sort-Object { [version]($_.tag_name.TrimStart('v') -replace '[^0-9.].*$', '') } -Descending)[0]
-if (-not $rel) { Write-Host "No EntraPolicySuite v2 release found in $repo$(if ($Version) { " for $Version" })." -ForegroundColor Red; exit 3 }
+if (-not $rel) { Write-Host "No Entra Policy Suite v2 release found in $repo$(if ($Version) { " for $Version" })." -ForegroundColor Red; exit 3 }
 $asset = @($rel.assets | Where-Object { $_.name -match '^EntraPolicySuite-v2[0-9A-Za-z.+-]*\.zip$' })[0]
 if (-not $asset) { Write-Host "Release $($rel.tag_name) has no EntraPolicySuite-v2*.zip asset." -ForegroundColor Red; exit 3 }
 

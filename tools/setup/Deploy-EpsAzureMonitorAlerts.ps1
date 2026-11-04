@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Deploys (or updates) EntraPolicySuite's EXTERNAL alarm in your Azure: an Azure Monitor rule set that keeps working
+    Deploys (or updates) Entra Policy Suite's EXTERNAL alarm in your Azure: an Azure Monitor rule set that keeps working
     even when the product does not (DESIGN §5.7a).
 .DESCRIPTION
     Built from the product's own settings - the break-glass accounts of the break-glass module, the attributes of the
@@ -45,7 +45,7 @@ $names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $R
 $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
 $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol }
 $law = Invoke-EpsArm -Path "$rg/providers/Microsoft.OperationalInsights/workspaces/$($names.Logs)" -ApiVersion '2022-10-01' -AllowNotFound
-if (-not $WorkspaceResourceId) { if (-not $law) { throw "no Log Analytics workspace $($names.Logs) in $ResourceGroup - is EntraPolicySuite installed there? (or give -WorkspaceResourceId)" }; $WorkspaceResourceId = $law.id }
+if (-not $WorkspaceResourceId) { if (-not $law) { throw "no Log Analytics workspace $($names.Logs) in $ResourceGroup - is Entra Policy Suite installed there? (or give -WorkspaceResourceId)" }; $WorkspaceResourceId = $law.id }
 $location = if ($law) { $law.location } else { 'westeurope' }
 $engine = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
 

@@ -42,7 +42,7 @@ function Get-EpsSigninFrontSource {
         if ($v -ne $Pin) { return @{ Ok = $false; Src = $src; Version = $v; Reason = "the sign-in front source here is $v, this release pins $Pin - not built (only the pinned version is ever built)" } }
         return @{ Ok = $true; Src = $src; Version = $v; Reason = "signin-front $v from $root" }
     }
-    @{ Ok = $false; Src = ''; Version = ''; Reason = 'this copy of EntraPolicySuite carries no sign-in front source (vendor/signin-front)' }
+    @{ Ok = $false; Src = ''; Version = ''; Reason = 'this copy of Entra Policy Suite carries no sign-in front source (vendor/signin-front)' }
 }
 
 function New-EpsFrontBuildContext {
@@ -71,8 +71,8 @@ function New-EpsWebAppRegistrationBody {
         displayName = $DisplayName; signInAudience = 'AzureADMyOrg'; tags = @($Tag); groupMembershipClaims = 'None'
         web = [ordered]@{ redirectUris = @(); implicitGrantSettings = [ordered]@{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } }
         api = [ordered]@{ oauth2PermissionScopes = @([ordered]@{ id = $ScopeId; value = $script:EpsWeb.Scope; type = 'Admin'; isEnabled = $true
-            adminConsentDisplayName = 'Sign in to EntraPolicySuite'; adminConsentDescription = 'Lets the EntraPolicySuite sign-in front call the EntraPolicySuite web app for the signed-in user.'
-            userConsentDisplayName = 'Sign in to EntraPolicySuite'; userConsentDescription = 'Lets the sign-in front call EntraPolicySuite for you.' }) }
+            adminConsentDisplayName = 'Sign in to Entra Policy Suite'; adminConsentDescription = 'Lets the Entra Policy Suite sign-in front call the Entra Policy Suite web app for the signed-in user.'
+            userConsentDisplayName = 'Sign in to Entra Policy Suite'; userConsentDescription = 'Lets the sign-in front call Entra Policy Suite for you.' }) }
         requiredResourceAccess = @([ordered]@{ resourceAppId = $script:EpsWeb.GraphAppId; resourceAccess = @(@{ id = $script:EpsWeb.GraphUserRead; type = 'Scope' }) })
         passwordCredentials = @(); keyCredentials = @()
     }
@@ -82,7 +82,7 @@ function Get-EpsFicSpec {
     # PURE. The federated credential: the web identity IS the registration's client credential (no secret)
     param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$PrincipalId)
     [ordered]@{ name = 'eps-signin-front-web-identity'; issuer = "https://login.microsoftonline.com/$TenantId/v2.0"; subject = $PrincipalId; audiences = @('api://AzureADTokenExchange')
-                description = 'EntraPolicySuite sign-in front: the web identity is the client credential - no secret.' }
+                description = 'Entra Policy Suite sign-in front: the web identity is the client credential - no secret.' }
 }
 
 function New-EpsKeyVaultBody {

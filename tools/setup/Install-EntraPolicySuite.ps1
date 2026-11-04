@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Installs EntraPolicySuite 2.0 in your own Azure subscription (Container Apps + Azure SQL), as yourself, in a browser.
+    Installs Entra Policy Suite 2.0 in your own Azure subscription (Container Apps + Azure SQL), as yourself, in a browser.
 .DESCRIPTION
     Signs you in in a browser (no PowerShell module, no az CLI, works in Cloud Shell), checks the subscription, then
     creates - in one resource group - three managed identities (the engine, the engine's scheduler, the web app), a Log
@@ -197,7 +197,7 @@ $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location =
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it
 $front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin (Get-EpsSigninFrontPin -SolutionRoot $sol)
-if (-not $front.Ok -and -not $what) { Finish 2 "The web app's sign-in front cannot be built: $($front.Reason). Use a complete EntraPolicySuite release." }
+if (-not $front.Ok -and -not $what) { Finish 2 "The web app's sign-in front cannot be built: $($front.Reason). Use a complete Entra Policy Suite release." }
 
 if (-not $StatePath) {
     $base = if ((Test-EpsCloudShell) -and (Test-Path (Join-Path $HOME 'clouddrive'))) { Join-Path $HOME 'clouddrive/invardia' } else { Join-Path $HOME 'invardia' }
@@ -212,7 +212,7 @@ if (Test-Path -LiteralPath $stateFile) {
 }
 
 Write-Host ''
-Write-Host "EntraPolicySuite $version -> subscription $($subInfo.displayName) ($SubscriptionId), $ResourceGroup, $Location" -ForegroundColor Cyan
+Write-Host "Entra Policy Suite $version -> subscription $($subInfo.displayName) ($SubscriptionId), $ResourceGroup, $Location" -ForegroundColor Cyan
 if ($unregistered) { Write-Host "Resource providers to register: $($unregistered -join ', ')" -ForegroundColor Yellow }
 $print = { param($e) if (-not $Quiet) {
     $c = switch ($e.State) { 'ok' { 'Green' } 'failed' { 'Red' } 'plan' { 'Gray' } 'skipped' { 'DarkGray' } default { 'Cyan' } }

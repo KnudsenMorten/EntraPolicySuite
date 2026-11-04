@@ -2,26 +2,26 @@
   "script": "Import-EpsV1Data.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Move a v1 install's rules and settings into EntraPolicySuite 2.0",
-  "purpose": "Reads a v1 EntraPolicySuite folder (the tagging CSV files and the two configs) and imports the rules, tag types, settings, break-glass accounts, admin units, target groups and service tags into the EntraPolicySuite 2.0 database. Shows the plan and the hints on the rules first; writes only with -Apply.",
+  "title": "Move a v1 install's rules and settings into Entra Policy Suite 2.0",
+  "purpose": "Reads a v1 Entra Policy Suite folder (the tagging CSV files and the two configs) and imports the rules, tag types, settings, break-glass accounts, admin units, target groups and service tags into the Entra Policy Suite 2.0 database. Shows the plan and the hints on the rules first; writes only with -Apply.",
   "whenToRun": "Once, when a v1 customer moves to 2.0 - and again if the v1 rules were changed before the move was finished (a re-import replaces the previous import's rules).",
   "runAs": [
     { "kind": "other", "name": "read access to the v1 folder", "scope": "the v1 DATA folder", "why": "the CSV files and configs are read" },
-    { "kind": "other", "name": "db_datawriter on the EntraPolicySuite database", "scope": "the EntraPolicySuite database", "why": "-Apply writes the imported rules and settings" }
+    { "kind": "other", "name": "db_datawriter on the Entra Policy Suite database", "scope": "the Entra Policy Suite database", "why": "-Apply writes the imported rules and settings" }
   ],
   "changes": [
-    { "target": "EntraPolicySuite database", "action": "update", "object": "eps.UserTagRule, eps.DeviceTagRule (+ their conditions)", "scope": "rules with Source = v1-import", "why": "the v1 rules as rule cards", "undo": "the import is journaled in eps.ConfigChange; delete the rules with Source = v1-import" },
-    { "target": "EntraPolicySuite database", "action": "update", "object": "eps.TagType, eps.TagValue, eps.Setting, eps.BreakGlassAccount, eps.AdminUnit, eps.TargetGroup, eps.ServiceTagLocation", "scope": "the rows the v1 files name", "why": "the v1 tag types, settings and Conditional Access inputs", "undo": "restore from the change journal (eps.ConfigChange)" }
+    { "target": "Entra Policy Suite database", "action": "update", "object": "eps.UserTagRule, eps.DeviceTagRule (+ their conditions)", "scope": "rules with Source = v1-import", "why": "the v1 rules as rule cards", "undo": "the import is journaled in eps.ConfigChange; delete the rules with Source = v1-import" },
+    { "target": "Entra Policy Suite database", "action": "update", "object": "eps.TagType, eps.TagValue, eps.Setting, eps.BreakGlassAccount, eps.AdminUnit, eps.TargetGroup, eps.ServiceTagLocation", "scope": "the rows the v1 files name", "why": "the v1 tag types, settings and Conditional Access inputs", "undo": "restore from the change journal (eps.ConfigChange)" }
   ],
   "parameters": [
     { "name": "Path", "required": true, "default": null, "help": "the v1 DATA folder, or the folder that holds DATA" },
     { "name": "UserTaggingScript", "required": false, "default": "<Path>\\Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1", "help": "for the attribute per tag type" },
     { "name": "OutFile", "required": false, "default": null, "help": "also save the plan as JSON" },
     { "name": "Apply", "required": false, "default": false, "help": "write the plan to the database" },
-    { "name": "ConnectionString", "required": false, "default": null, "help": "the EntraPolicySuite database (needed with -Apply)" }
+    { "name": "ConnectionString", "required": false, "default": null, "help": "the Entra Policy Suite database (needed with -Apply)" }
   ],
   "readsOnly": [ "the v1 folder (never changed)" ],
-  "network": [ "the EntraPolicySuite SQL server (with -Apply only)" ],
+  "network": [ "the Entra Policy Suite SQL server (with -Apply only)" ],
   "whatIf": "Without -Apply, or with -Apply -WhatIf: the plan - rule cards, tag types, settings, hints - and nothing is written.",
   "undo": "Every import is journaled in eps.ConfigChange; the imported rules carry Source = v1-import and can be removed as a set. The v1 install is never changed, so v1 keeps running until it is switched off.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Import-EpsV1Data"

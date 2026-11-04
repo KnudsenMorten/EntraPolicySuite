@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Gives the hybrid worker's MANAGED IDENTITY access to the EntraPolicySuite database (or takes it away with -Remove).
+    Gives the hybrid worker's MANAGED IDENTITY access to the Entra Policy Suite database (or takes it away with -Remove).
 .DESCRIPTION
     The worker signs in to SQL as its machine's managed identity (an Azure VM's, or an Azure Arc-enabled server's). This
     adds that identity to the database as the contained user 'eps-hybrid-worker' (WITH SID = its client id, never FROM

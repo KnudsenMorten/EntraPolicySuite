@@ -1,4 +1,4 @@
-// EntraPolicySuite web app (DESIGN §2). One same-origin script (the sign-in front's CSP: no inline script, no other origin).
+// Entra Policy Suite web app (DESIGN §2). One same-origin script (the sign-in front's CSP: no inline script, no other origin).
 // Rules kept here: every value a person reads goes through ONE number formatter (BRAND-2.6) and ONE time formatter
 // (local time, BRAND-2.10); the DOM is built with textContent ONLY - directory values (object names, tag values someone
 // else wrote) are attacker-controlled text and never become markup; a changing call sends X-EPS-Request: 1 + JSON (the
@@ -7,7 +7,7 @@
 (function () {
   var LOADED_VERSION = document.documentElement.getAttribute('data-version');
   // DOC-LINKS: the setting help links point at invardia.com/docs/eps, which is published only when the owner makes
-  // EntraPolicySuite public there - until then the "Read more" link is not shown (a customer would get a 404)
+  // Entra Policy Suite public there - until then the "Read more" link is not shown (a customer would get a 404)
   var DOCS_LIVE = false;
   var me = null;
   var store = {
@@ -345,7 +345,7 @@
     });
     dl.appendChild(el('dt', { text: 'Default' })); dl.appendChild(el('dd', { text: showValue(r, r.default) + (r.role === 'SuperAdmin' ? '. Changed by a SuperAdmin.' : '') }));
     var box = el('div', { class: 'infobox' }, dl);
-    // DOC-LINKS: shown once EntraPolicySuite is public on invardia.com (set DOCS_LIVE = true with that release)
+    // DOC-LINKS: shown once Entra Policy Suite is public on invardia.com (set DOCS_LIVE = true with that release)
     if (DOCS_LIVE && i.docUrl && i.docUrl.indexOf('https://invardia.com/') === 0) box.appendChild(el('a', { href: i.docUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Read more on invardia.com' }));
     return box;
   }
@@ -2109,11 +2109,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     return el('button', { type: 'button', class: 'secondary', text: 'Read the policy list', onclick: function () { withReason('Read the Conditional Access policies again', 'Read only: the engine reads every policy and compares it with its template. Nothing in the tenant is changed.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }); } });
   }
   function capAdopt(r) {
-    withReason('Adopt ' + r.DisplayName, 'EntraPolicySuite RECORDS that you adopt this policy as it is now: its body becomes the baseline the monitor compares with. Nothing in the tenant changes - not now, not later.', function (reason) {
+    withReason('Adopt ' + r.DisplayName, 'Entra Policy Suite RECORDS that you adopt this policy as it is now: its body becomes the baseline the monitor compares with. Nothing in the tenant changes - not now, not later.', function (reason) {
       return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/adopt', { expected: r.Hash, reason: reason }); });
   }
   function capRelease(r) {
-    withReason('Release ' + r.DisplayName, 'EntraPolicySuite stops managing this policy (the record says so, its findings are cleared). Nothing in the tenant changes.', function (reason) {
+    withReason('Release ' + r.DisplayName, 'Entra Policy Suite stops managing this policy (the record says so, its findings are cleared). Nothing in the tenant changes.', function (reason) {
       return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/release', { reason: reason }); });
   }
   // CA-LIFECYCLE (owner 2026-11-03: "in ca policy i need buttons to easily controll and movevto another lufecycle phase
@@ -2199,7 +2199,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('span', { class: 'count', text: ' · monitor ' + (j.monitoring ? 'ON (adopted policies: drift, break-glass)' : 'off (Settings > Conditional Access)') + ' · ' + fmtNum(j.templates) + ' templates (' + textOf(j.library) + ')' + (j.method ? ' · targeting ' + j.method : '') })));
       if ((j.findings || []).length) {
         p.appendChild(el('h3', { text: 'Monitor findings' }));
-        p.appendChild(el('div', { class: 'guide', text: 'Shown and alerted only: EntraPolicySuite never acts on a finding. What happens next is your decision and your own action in the tenant. A change you made yourself: adopt the policy again.' }));
+        p.appendChild(el('div', { class: 'guide', text: 'Shown and alerted only: Entra Policy Suite never acts on a finding. What happens next is your decision and your own action in the tenant. A change you made yourself: adopt the policy again.' }));
         p.appendChild(table(j.findings, [{ key: 'LastSeenUtc', label: 'Seen', type: 'date' }, { key: 'Status', label: 'Status', type: 'cat' }, { key: 'Kind', label: 'Finding', type: 'cat', cls: function (r) { return r.Kind !== 'Drift' && r.Status === 'Open' ? 'c-danger' : ''; } },
           { key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } }, { key: 'Detail', label: 'What', wrap: true }, { key: 'AlertedAtUtc', label: 'Alerted', type: 'date' }], { sort: 'LastSeenUtc', dir: -1 }));
       }
@@ -2225,9 +2225,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         return el('button', { type: 'button', class: 'secondary', text: 'Adopt', onclick: function () { capAdopt(r); } }); } });
       var capBulk = owner ? [
         { label: 'Adopt', run: function (sel) { var todo = sel.filter(function (r) { return r.Adoption !== 'Adopted'; }); if (!todo.length) { notice('All selected policies are adopted already.'); return; }
-          bulkAction('Adopt policies', 'EntraPolicySuite RECORDS that you adopt these policies as they are now: each body becomes the baseline the monitor compares with. Nothing in the tenant changes.', todo, function (r, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/adopt', { expected: r.Hash, reason: reason }); }); } },
+          bulkAction('Adopt policies', 'Entra Policy Suite RECORDS that you adopt these policies as they are now: each body becomes the baseline the monitor compares with. Nothing in the tenant changes.', todo, function (r, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/adopt', { expected: r.Hash, reason: reason }); }); } },
         { label: 'Release', run: function (sel) { var todo = sel.filter(function (r) { return r.Adoption === 'Adopted'; }); if (!todo.length) { notice('None of the selected policies is adopted.'); return; }
-          bulkAction('Release policies', 'EntraPolicySuite stops recording these policies as managed here. Nothing in the tenant changes.', todo, function (r, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/release', { reason: reason }); }); } }] : [];
+          bulkAction('Release policies', 'Entra Policy Suite stops recording these policies as managed here. Nothing in the tenant changes.', todo, function (r, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/release', { reason: reason }); }); } }] : [];
       // CA-MONADD (owner 2026-11-02: "need an easy way to add/remove ca policy to existing/new monitor"): an analyzer monitor
       // is Admin - it only reads the tenant
       if (admin) capBulk = capBulk.concat([{ label: 'Add to monitor...', run: function (sel) { caMonitorPick('add', sel); } }, { label: 'Remove from monitor...', run: function (sel) { caMonitorPick('remove', sel); } }]);
@@ -2249,7 +2249,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('dt', { text: 'Adopted' }), el('dd', { text: ad ? (ad.Status === 'Adopted' ? 'yes, by ' + ad.AdoptedBy + ' (' + fmtTime(ad.AdoptedAtUtc) + '): ' + textOf(ad.AdoptReason) : 'released by ' + ad.ReleasedBy + ' (' + fmtTime(ad.ReleasedAtUtc) + '): ' + textOf(ad.ReleaseReason)) : 'no' }),
         el('dt', { text: 'Read' }), el('dd', null, timeEl(pol.SeenAtUtc), ' · changed in the tenant ', timeEl(pol.ModifiedAtUtc))));
       if (owner) p.appendChild(el('div', { class: 'toolbar' }, ad && ad.Status === 'Adopted' ? el('button', { type: 'button', class: 'secondary', text: 'Release', onclick: function () { capRelease(row); } }) : el('button', { type: 'button', text: 'Adopt as it is', onclick: function () { capAdopt(row); } }),
-        el('span', { class: 'count', text: 'Recorded in EntraPolicySuite only - nothing in the tenant changes.' })));
+        el('span', { class: 'count', text: 'Recorded in Entra Policy Suite only - nothing in the tenant changes.' })));
       // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
       p.appendChild(el('h3', { text: 'Stage' }));
       if (owner && ad && ad.Status === 'Adopted') {
@@ -2425,7 +2425,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
-    p.appendChild(el('div', { class: 'guide', text: 'Everything EntraPolicySuite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
     // V1-IMPORT-GUIDE (owner 2026-11-03: "i am missing instructions on how to import v1 csv files for eps, where is the
     // docs for that in the gui"): the two ways in, step by step
     var v1 = el('details', { class: 'gs-step', open: true });
@@ -2438,7 +2438,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       el('li', { text: 'Look at the plan it shows (the rule cards it makes, any row it cannot read, the hints) and confirm. "Replace" swaps out an earlier v1 import; rules made here are never touched.' })));
     v1.appendChild(el('h4', { text: 'B. Everything - rules, tag types, settings, break-glass accounts, target groups, admin units, service tags' }));
     v1.appendChild(el('ol', null,
-      el('li', { text: 'On a machine that can reach v1\'s folder (e.g. C:\\SCRIPTS with DATA in it), open PowerShell 7 in the EntraPolicySuite release folder (tools\\setup).' }),
+      el('li', { text: 'On a machine that can reach v1\'s folder (e.g. C:\\SCRIPTS with DATA in it), open PowerShell 7 in the Entra Policy Suite release folder (tools\\setup).' }),
       el('li', null, 'See the plan, nothing is written: ', el('code', { text: '.\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS' })),
       el('li', null, 'Write it: ', el('code', { text: ".\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS -Apply -ConnectionString 'Server=tcp:<your SQL server>.database.windows.net;Database=eps;Encrypt=True'" }), ' - run it as a member of the SQL admin group you gave the install (the server name is in the install\'s summary and in Azure).'),
       el('li', { text: 'Then press "Check now" below: every step shows what the import filled and what is still missing.' })));
@@ -2450,7 +2450,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         card(steps.reduce(function (n, s) { return n + (s.counts.missing || 0); }, 0), 'items missing', steps.some(function (s) { return s.counts.missing; })),
         card(steps.reduce(function (n, s) { return n + (s.counts.check || 0); }, 0), 'items to check')));
       p.appendChild(el('div', { class: 'toolbar' },
-        admin ? el('button', { type: 'button', text: 'Check now', onclick: function () { withReason('Check the onboarding steps', 'The engine reads the tenant and compares it with what EntraPolicySuite needs. Read only: nothing in the tenant changes.', function (reason) { return api('POST', '/api/onboarding/check', { reason: reason }); }); } }) : null,
+        admin ? el('button', { type: 'button', text: 'Check now', onclick: function () { withReason('Check the onboarding steps', 'The engine reads the tenant and compares it with what Entra Policy Suite needs. Read only: nothing in the tenant changes.', function (reason) { return api('POST', '/api/onboarding/check', { reason: reason }); }); } }) : null,
         el('span', { class: 'count', text: j.checkedAtUtc ? 'Last checked ' : 'Not checked yet.' }), j.checkedAtUtc ? timeEl(j.checkedAtUtc) : null, j.checkedBy ? el('span', { class: 'count', text: ' by ' + j.checkedBy }) : null));
       steps.forEach(function (s, i) {
         var box = el('details', { class: 'gs-step' });
@@ -2492,7 +2492,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         p.appendChild(el('p', { class: su && su.Active ? 'c-danger' : null, text: 'Invardia support: ' + (!su ? 'none reported' :
           (su.Active ? 'OPEN until ' + fmtTime(su.MaxUntilUtc) + (su.TicketNumber ? ', ticket ' + su.TicketNumber : '') + (su.AccessLevel ? ', level ' + su.AccessLevel : '') + (su.OpenedBy ? ', opened by ' + su.OpenedBy : '') + (su.Reason ? ' (' + su.Reason + ')' : '')
             : (su.State === 'open' ? 'ended ' + fmtTime(su.MaxUntilUtc) : 'closed') + ' - as reported ' + fmtTime(su.LastSeenUtc)) +
-          '. Recorded only: EntraPolicySuite grants no access from it.') }));
+          '. Recorded only: Entra Policy Suite grants no access from it.') }));
         document.getElementById('statusCounts').textContent = '';
         var sc = document.getElementById('statusCounts');
         if (o.tamperOpen) sc.appendChild(el('span', { class: 'c-danger', text: fmtNum(o.tamperOpen) + ' open tamper event(s)' }));
@@ -2609,7 +2609,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       });
     } },
     { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p) {
-      p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of EntraPolicySuite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
+      p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
       return api('GET', '/api/settings').then(function (j) {
         j.groups.forEach(function (g) {
           var rows = j.rows.filter(function (r) { return r.group === g.id; });
@@ -2655,7 +2655,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     // the API reference (framework APIDOC-1): generated from the route table of the version that runs, filtered to the role
     { id: 'apiref', label: 'API reference', role: 'Reader', draw: function (p) {
       // owner 2026-11-01: "api mcp is pro" - the routes are this app's own backend; API access for scripts is Pro (coming)
-      p.appendChild(el('div', { class: 'guide', text: 'API access for scripts is part of EntraPolicySuite Pro (coming). In this edition the routes below are the backend of this app\'s own pages, used by a signed-in person through the app.' }));
+      p.appendChild(el('div', { class: 'guide', text: 'API access for scripts is part of Entra Policy Suite Pro (coming). In this edition the routes below are the backend of this app\'s own pages, used by a signed-in person through the app.' }));
       p.appendChild(el('div', { class: 'guide', text: 'The web API of this version, generated from its code: every route your role (' + me.role + ') may call, with its parameters, its answer, its errors and its audit action. The pages of this app use the same routes.' }));
       return api('GET', '/api/reference').then(function (j) {
         var search = el('input', { type: 'search', placeholder: 'Search method, path, text, parameters, audit action', 'aria-label': 'Search the API reference', size: 48 });
@@ -2779,7 +2779,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var dismissed = null;
   function checkVersion(v) {
     if (!v || v === LOADED_VERSION || v === dismissed) return;
-    document.getElementById('versionBarText').textContent = 'A new version of EntraPolicySuite is available (v' + v + '; this page v' + LOADED_VERSION + '). Reload when you are ready.';
+    document.getElementById('versionBarText').textContent = 'A new version of Entra Policy Suite is available (v' + v + '; this page v' + LOADED_VERSION + '). Reload when you are ready.';
     document.getElementById('versionBar').hidden = false;
   }
   function pollVersion() { api('GET', '/api/version').then(function (j) { checkVersion(j.version); }).catch(function () { }); }

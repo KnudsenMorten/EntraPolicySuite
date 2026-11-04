@@ -116,7 +116,7 @@ function Get-EpsWebRoutes {
             if ($rows.Count -gt 200000) { return New-EpsWebResponse -Status 413 -Body @{ error = 'more than 200,000 changes - narrow the filter' } -Audit @{ Target = 'TagChange'; Outcome = 'refused'; OutcomeText = 'over 200,000 rows' } }   # SEC-AUDIT-1 S9
             New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = 'attachment; filename="eps-tag-changes.csv"' } `
                 -Audit @{ Target = 'TagChange'; After = @{ filter = $f.Echo; rows = $rows.Count } } } }
-        @{ Method = 'GET'; Pattern = '^/api/tamper$'; Summary = 'The tamper events: tag values changed outside EntraPolicySuite.'; Body = 'status: one state, e.g. Open'; Public = $true
+        @{ Method = 'GET'; Pattern = '^/api/tamper$'; Summary = 'The tamper events: tag values changed outside Entra Policy Suite.'; Body = 'status: one state, e.g. Open'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $p = @{ s = "$($c.Query.status)" }
             New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT TOP (2000) EventId, FoundAtUtc, ObjectType, ObjectName, ObjectId, TagType, Attribute, OldValue, NewValue, Severity, Initiator, InitiatorKind, FoundBy, Detail, Status, ResolvedBy, ResolvedAtUtc, AlertedAtUtc FROM eps.TamperEvent WHERE (@s = '' OR Status = @s) ORDER BY FoundAtUtc DESC")) } } }
@@ -697,20 +697,20 @@ function Get-EpsWebRoutes {
             if ("$($c.Query.id)") { $t = $cat.ById["$($c.Query.id)".ToUpperInvariant()]; if (-not $t) { return New-EpsWebError 404 'no such template' }; return New-EpsWebResponse -Body @{ template = $t; refs = $cat.refs; stageState = $cat.stageState } }
             New-EpsWebResponse -Body @{ library = $cat.library; stages = @($cat.stages); refs = $cat.refs
                 rows = @($cat.templates | ForEach-Object { [ordered]@{ id = $_.id; version = $_.version; name = $_.name; persona = $_.persona; breakGlassPolicy = [bool]$_.breakGlassPolicy; incomplete = [bool]$_.incomplete; notes = (@($_.gaps) -join '; ') } }) } } }
-        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/adopt$'; Summary = 'Adopt a Conditional Access policy as it is: EntraPolicySuite records it (its body becomes the baseline). Nothing in the tenant changes.'; Body = 'expected: the review hash as you saw it; reason'; Public = $false
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/adopt$'; Summary = 'Adopt a Conditional Access policy as it is: Entra Policy Suite records it (its body becomes the baseline). Nothing in the tenant changes.'; Body = 'expected: the review hash as you saw it; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.adopt'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"
             $s = Save-EpsCaAdoption -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Expected "$($c.Body.expected)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
             if ($s.Result -eq 'missing') { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such policy in the last read of the policy list (read it again)' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'missing' } }
             if ($s.Result -eq 'changed') { return New-EpsWebResponse -Status 409 -Body @{ error = 'the policy changed since you looked at it (a newer read of the tenant) - reload and look again' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'changed since seen' } }
             if ($s.Result -eq 'already') { return New-EpsWebResponse -Status 409 -Body @{ error = "the policy is already adopted (by $($s.By))" } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'already adopted' } }
-            New-EpsWebResponse -Body @{ ok = $true; text = "Adopted $($s.After.displayName): recorded in EntraPolicySuite only - nothing in the tenant changed." } -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+            New-EpsWebResponse -Body @{ ok = $true; text = "Adopted $($s.After.displayName): recorded in Entra Policy Suite only - nothing in the tenant changed." } -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
         @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/release$'; Summary = 'Stop managing an adopted Conditional Access policy in EntraPolicySuite (the record says so). Nothing in the tenant changes.'; Body = 'reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.release'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"
             $s = Save-EpsCaRelease -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status 404 -Body @{ error = 'the policy is not adopted' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'not adopted' } }
-            New-EpsWebResponse -Body @{ ok = $true; text = "Released $($s.Before.displayName): EntraPolicySuite no longer manages it - nothing in the tenant changed." } -Audit @{ Target = "$t ($($s.Before.displayName))"; Before = $s.Before; After = @{ status = 'Released' } } } }
+            New-EpsWebResponse -Body @{ ok = $true; text = "Released $($s.Before.displayName): Entra Policy Suite no longer manages it - nothing in the tenant changed." } -Audit @{ Target = "$t ($($s.Before.displayName))"; Before = $s.Before; After = @{ status = 'Released' } } } }
         @{ Method = 'GET'; Pattern = '^/api/capolicies/documentation$'; Summary = 'The Conditional Access documentation: one row per policy, every id resolved to a name where it could be read.'; Body = 'ids: 1 keeps each id next to its name'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             $cs = $c.Ctx.ConnectionString

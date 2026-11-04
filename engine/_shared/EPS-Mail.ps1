@@ -9,7 +9,7 @@
 # (a JSON array), Platform.EnvironmentName. Dot-source EPS-SqlStore and EPS-Graph first.
 
 Set-StrictMode -Off
-$script:EpsProductName = 'EntraPolicySuite'
+$script:EpsProductName = 'Entra Policy Suite'
 
 function New-EpsMailSubject {
     # MAIL-3. -Severity: Failed | Warning | 'Action needed' | '' (none on a normal mail).
@@ -101,7 +101,7 @@ function Get-EpsMailConfig {
     [pscustomobject]@{
         Mode = & $g 'Mail.Mode' 'none'; Sender = & $g 'Mail.Sender' ''
         Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
-        Environment = (Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'EntraPolicySuite' }))
+        Environment = (Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'Entra Policy Suite' }))
         TenantId = $env:EPS_TENANT_ID; TenantName = & $g 'Platform.TenantName' ''
     }
 }
@@ -136,7 +136,7 @@ function Send-EpsTestMail {
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$RequestedBy, [string]$Version = '2.0.0')
     $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
     # MAIL-3 subject + the MAIL-2 body like every other mail (was a hand-made '[EntraPolicySuite] <env>: test mail')
-    $html = New-EpsMailBody -Summary "This is a test mail from EntraPolicySuite $Version ($($cfg.Environment)), sent by the engine as $($cfg.Sender). Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
+    $html = New-EpsMailBody -Summary "This is a test mail from Entra Policy Suite $Version ($($cfg.Environment)), sent by the engine as $($cfg.Sender). Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
         -ButtonText 'Open the mail settings' -ButtonPage 'settings' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
 }
@@ -157,7 +157,7 @@ function Send-EpsTamperAlert {
     $what = "$($open.Count) change(s) to watched tags not made by the engine$(if ($high) { ", $high HIGH" })"
     $subject = New-EpsMailSubject -Environment $cfg.Environment -What $what -Severity 'Action needed'
     $rows = @(foreach ($e in $open) { [pscustomobject]@{ Severity = $e.Severity; Object = $e.ObjectName; Tag = "$($e.TagType) ($($e.Attribute))"; Change = "'$($e.OldValue)' -> '$($e.NewValue)'"; Who = $(if ($e.Initiator) { $e.Initiator } else { 'unknown' }); Found = ([datetime]$e.FoundAtUtc).ToString('yyyy-MM-dd HH:mm') + ' UTC' } })
-    $html = New-EpsMailBody -Summary "The EntraPolicySuite tamper monitor found $what. The tags drive the dynamic groups and the Conditional Access policies that read them, so a changed tag can move a user out of a policy (a break-glass value or a cleared Authentication tag takes the user out of MFA)." `
+    $html = New-EpsMailBody -Summary "The Entra Policy Suite tamper monitor found $what. The tags drive the dynamic groups and the Conditional Access policies that read them, so a changed tag can move a user out of a policy (a break-glass value or a cleared Authentication tag takes the user out of MFA)." `
         -Rows $rows -Columns 'Severity', 'Object', 'Tag', 'Change', 'Who', 'Found' `
         -WhatToDo 'Check each change on the Tamper page. Restore puts the engine''s value back; a known writer (e.g. an HR provisioning app) can be added to the allow list (TamperMonitor.AllowList).' -ButtonText 'Open the Tamper page' -ButtonPage 'tamper' `
         -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }

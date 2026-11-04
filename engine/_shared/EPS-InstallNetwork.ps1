@@ -471,7 +471,7 @@ function Get-EpsNetworkHandoff {
     param([Parameter(Mandatory)]$Ctx)
     $net = $Ctx.Network; $spoke = Get-EpsSpokeVnetId $Ctx
     $L = [System.Collections.Generic.List[string]]::new()
-    $L.Add("EntraPolicySuite $($Ctx.Version) - network hand-off for $($Ctx.Names.ResourceGroup) ($($Ctx.Location))")
+    $L.Add("Entra Policy Suite $($Ctx.Version) - network hand-off for $($Ctx.Names.ResourceGroup) ($($Ctx.Location))")
     $L.Add("Spoke network: $spoke$(if ($net.VnetAddressPrefix) { " ($($net.VnetAddressPrefix))" })")
     $L.Add("  apps subnet $($net.AppsSubnetName) (delegated to Microsoft.App/environments), endpoints subnet $($net.EndpointsSubnetName)")
     $L.Add('')
@@ -532,7 +532,7 @@ function New-EpsHubPrepareScript {
     }
     $L = [System.Collections.Generic.List[string]]::new()
     $L.Add('<#'); $L.Add('.SYNOPSIS')
-    $L.Add("    EntraPolicySuite - PREPARE THE HUB NETWORK for the spoke $(($spoke -split '/')[-1]). Generated $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC by the EntraPolicySuite install.")
+    $L.Add("    Entra Policy Suite - PREPARE THE HUB NETWORK for the spoke $(($spoke -split '/')[-1]). Generated $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC by the Entra Policy Suite install.")
     $L.Add('.DESCRIPTION')
     $L.Add('    Run it as the owner of the hub network: PowerShell 7 on any machine, a browser sign-in, no Azure CLI, no module, no')
     $L.Add('    other file. Without -Apply it only shows what it would do. It never deletes anything; running it twice is safe.')
@@ -568,7 +568,7 @@ Write-Host "Hub:   $HubId"; Write-Host "Spoke: $SpokeId"
 Write-Host "Plan:  peering $HubPeering on the hub; $SpokePeering on the spoke if you may; $($Zones.Count) zone link(s) to the hub$(if ($Who) { "; Network Contributor on the hub for $Who" })"
 if (-not $Apply) { Write-Host 'Nothing changed. Run again with -Apply.' -ForegroundColor Yellow; return }
 [void](Arm PUT "$HubId/virtualNetworkPeerings/$HubPeering" '2023-09-01' (& $peer $SpokeId))
-try { [void](Arm PUT "$SpokeId/virtualNetworkPeerings/$SpokePeering" '2023-09-01' (& $peer $HubId)) } catch { Write-Host "The spoke side is left to the EntraPolicySuite install (-PeerToHub): $($_.Exception.Message)" -ForegroundColor Yellow }
+try { [void](Arm PUT "$SpokeId/virtualNetworkPeerings/$SpokePeering" '2023-09-01' (& $peer $HubId)) } catch { Write-Host "The spoke side is left to the Entra Policy Suite install (-PeerToHub): $($_.Exception.Message)" -ForegroundColor Yellow }
 foreach ($z in $Zones) { [void](Arm PUT "$z/virtualNetworkLinks/$LinkName" '2020-06-01' @{ location = 'global'; properties = @{ virtualNetwork = @{ id = $HubId }; registrationEnabled = $false } }) }
 if ($Who) {
     $role = "/subscriptions/$(($HubId -split '/')[2])/providers/Microsoft.Authorization/roleDefinitions/4d97b98b-1d4f-4787-a291-c67834d212e7"

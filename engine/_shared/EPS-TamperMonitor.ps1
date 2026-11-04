@@ -131,7 +131,7 @@ function Invoke-EpsTamperMonitor {
                     $allowed = ($who.AppId -and $allow -contains $who.AppId) -or ($who.Upn -and $allow -contains $who.Upn)
                     $old = if ($differs) { $was } else { [string]$engineLast.NewValue }
                     $sev = Get-EpsTamperSeverity -TagType $wa.TagType -Old $old -New $cur -HighValues $hv
-                    $detail = "$($wa.TagType) ($($wa.Attribute)) on $name changed '$old' -> '$cur' by $(if ($who.Who) { $who.Who } else { 'an unknown writer' }), not by the EntraPolicySuite engine. The dynamic groups and Conditional Access policies that read $($wa.Attribute) now see the new value." +
+                    $detail = "$($wa.TagType) ($($wa.Attribute)) on $name changed '$old' -> '$cur' by $(if ($who.Who) { $who.Who } else { 'an unknown writer' }), not by the Entra Policy Suite engine. The dynamic groups and Conditional Access policies that read $($wa.Attribute) now see the new value." +
                               $(if ($who.Kind -eq 'sync') { ' It came through directory sync: the change was made in on-premises AD.' } elseif ($who.Unavailable) { " Who is unknown: $($who.Unavailable)." } else { '' })
                     # a plain hashtable: Invoke-EpsSql -Parameters takes [hashtable] (an ordered dictionary is not one)
                     $ev = @{ RunId = $runId; ObjectType = $ot; ObjectId = $id; ObjectName = $name; TagType = $wa.TagType; Attribute = $wa.Attribute; OldValue = $old; NewValue = $cur
