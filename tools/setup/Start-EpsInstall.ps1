@@ -43,6 +43,8 @@ param(
     [string]$HubVnetId,
     [switch]$LinkZonesToHub,
     [switch]$PeerToHub,
+    [string[]]$InternalRanges,
+    [string]$FirewallIp,
     [string]$WebAppAccess,
     [switch]$ConfirmedFromInside,
     [ValidatePattern('^$|^2\.\d+\.\d+$')][string]$Version,

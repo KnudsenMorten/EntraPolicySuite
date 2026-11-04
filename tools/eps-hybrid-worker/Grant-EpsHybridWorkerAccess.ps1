@@ -20,7 +20,7 @@ param(
     [Parameter(Mandatory)][guid]$TenantId,
     [Parameter(Mandatory)][guid]$SubscriptionId,
     [Parameter(Mandatory)][guid]$WorkerClientId,
-    [string]$ResourceGroup = 'rg-entrapolicysuite',
+    [string]$ResourceGroup = '',
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
@@ -30,10 +30,12 @@ foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Schedu
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 $user = 'eps-hybrid-worker'
 $sql = if ($Remove) { "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$user') DROP USER [$user];" } else { ((Get-EpsGrantScript -GrantList (Get-EpsGrantList -SolutionRoot $sol)), (Get-EpsSqlUserScript -Name $user -ClientId "$WorkerClientId" -Role 'eps_worker')) -join "`n" }
-$names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
+if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
+# framework §5.5 (OPEN-30): rg-eps for an install made since 2.0.55, rg-entrapolicysuite for an older one; the names as the install made them
+if (-not $ResourceGroup) { $rgPick = Resolve-EpsResourceGroup -SubscriptionId "$SubscriptionId"; if (-not $rgPick.Ok) { throw $rgPick.Reason }; $ResourceGroup = $rgPick.Name }
+$names = Resolve-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 Write-Host "Database: $($names.SqlServer).database.windows.net / $($names.Database)" -ForegroundColor Cyan
 Write-Host $sql -ForegroundColor DarkGray
 if ($what) { Write-Host "`nWhatIf: nothing was run." -ForegroundColor Cyan; return }
-if (-not $global:EPS_TokenProvider) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 Invoke-EpsSetupSql -Ctx @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol } -Script $sql
 Write-Host "`n$(if ($Remove) { "Removed the database user $user." } else { "The worker's identity ($WorkerClientId) is the database user $user (role eps_worker)." })" -ForegroundColor Green

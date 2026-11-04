@@ -11,7 +11,7 @@
     { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant" },
     { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription Entra Policy Suite is installed in" },
     { "name": "WorkerClientId", "required": true, "default": null, "help": "the client (application) id of the worker machine's managed identity" },
-    { "name": "ResourceGroup", "required": false, "default": "rg-entrapolicysuite", "help": "the install's resource group" },
+    { "name": "ResourceGroup", "required": false, "default": "rg-eps", "help": "the install's resource group (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)" },
     { "name": "Remove", "required": false, "default": false, "help": "drop the user instead" }
   ],
   "readsOnly": [],

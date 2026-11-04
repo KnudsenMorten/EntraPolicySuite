@@ -110,21 +110,86 @@ function Test-EpsRegionAccepts {
     }
     @{ Accepts = $null; Reason = "not checked: HTTP $($r.Status) $(@($codes)[0]) $(@($msgs)[0])".Trim() }
 }
+$script:EpsDefaultResourceGroup = 'rg-eps'                    # framework §5.5 (owner 2026-11-04, OPEN-30): new installs
+$script:EpsLegacyResourceGroup = 'rg-entrapolicysuite'        # installs made before 2.0.55 - they keep it
+
+function Get-EpsInstallId {
+    # PURE. The install id (framework §5.5, PIM's Get-PimInstallDerivedId): 'eps-' + 12 hex characters of the SHA-256 of
+    # tenant | subscription | resource group (lower case). The same answers give the same id - a re-run and a resume find
+    # the same names; another resource group gives another id.
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
+    $h = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(("{0}|{1}|{2}" -f "$TenantId".Trim(), "$SubscriptionId".Trim(), "$ResourceGroup".Trim()).ToLowerInvariant()))
+    'eps-' + (-join ($h[0..5] | ForEach-Object { $_.ToString('x2') }))
+}
+
+function Get-EpsInstallToken {
+    # PURE. The name token of globally unique names (framework §5.5, PIM's Get-PimInstallToken): 6 hex characters of the
+    # SHA-256 of the install id.
+    param([Parameter(Mandatory)][string]$InstallId)
+    $h = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$InstallId".Trim().ToLowerInvariant()))
+    -join ($h[0..2] | ForEach-Object { $_.ToString('x2') })
+}
+
+function Get-EpsLegacySuffix {
+    # PURE. The suffix of an install made before 2.0.55: 8 hex characters of the SHA-256 of subscription | resource group
+    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
+    $h = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId|$ResourceGroup".ToLowerInvariant()))
+    -join ($h[0..3] | ForEach-Object { $_.ToString('x2') })
+}
+
+function Resolve-EpsInstallNames {
+    <#
+      The names of THIS install, read from Azure: an install made before 2.0.55 (its registry acreps<8 hex> is in the
+      resource group) keeps every name it has (Azure cannot rename; owner 2026-11-04 "it is too late now for existing
+      instal"); anything else gets the framework §5.5 names. Reads only.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private)
+    $old = "acreps$(Get-EpsLegacySuffix -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup)"
+    $legacy = [bool](Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ContainerRegistry/registries/$old" -ApiVersion '2023-07-01' -AllowNotFound)
+    Get-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Private:$Private -Legacy:$legacy
+}
+
+function Resolve-EpsResourceGroup {
+    <#
+      The resource group when -ResourceGroup was not given: rg-eps for a new install (framework §5.5); an existing install
+      in the old default rg-entrapolicysuite keeps it (a re-run never starts a second install next to it). Both there =
+      ambiguous, refused. @{ Ok; Name; Reason }. Reads only; a resource group that cannot be read counts as not there.
+    #>
+    param([Parameter(Mandatory)][string]$SubscriptionId)
+    $has = { param($n) try { [bool](Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$n" -ApiVersion '2021-04-01' -AllowNotFound) } catch { $false } }
+    $new = & $has $script:EpsDefaultResourceGroup; $old = & $has $script:EpsLegacyResourceGroup
+    if ($new -and $old) { return @{ Ok = $false; Reason = "both $($script:EpsDefaultResourceGroup) and $($script:EpsLegacyResourceGroup) exist in this subscription - say which install with -ResourceGroup" } }
+    if ($old) { return @{ Ok = $true; Name = $script:EpsLegacyResourceGroup; Reason = "the existing install in $($script:EpsLegacyResourceGroup) keeps its resource group and names" } }
+    @{ Ok = $true; Name = $script:EpsDefaultResourceGroup; Reason = '' }
+}
+
 function Get-EpsInstallNames {
-    # One place for every name. Globally unique names (registry, SQL server) carry a short, stable suffix from the
-    # subscription + resource group, so a re-run finds the same resources.
+    # One place for every name (framework §5.5, owner 2026-11-04 "love the pim method", OPEN-30): <type>-eps[-<purpose>];
+    # globally unique names (registry, SQL server, storage, Key Vault) add the install's token - 6 hex characters of the
+    # SHA-256 of the install id (Get-EpsInstallToken) - stable across re-runs and resumes. -Legacy: an install made before
+    # 2.0.55 keeps its 8-hex suffix of subscription + resource group (Resolve-EpsInstallNames decides from Azure).
     # -Private (NET-1): the environment inside the network is cae-eps-vnet - a Container Apps environment cannot move
     # into a network, so a public install converted to private gets a NEW one (the public cae-eps is removed after the
     # inside check), and a new private install uses the same name, so both read the same afterwards.
-    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private)
-    $h =[Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId|$ResourceGroup".ToLowerInvariant()))
-    $s = (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') }))
+    param([string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private, [switch]$Legacy)
+    if ($Legacy) { $s = Get-EpsLegacySuffix -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; $iid = '' }
+    else {
+        if (-not "$TenantId".Trim()) { throw 'Get-EpsInstallNames: -TenantId is needed for the names of a new install (or -Legacy for one made before 2.0.55)' }
+        $iid = Get-EpsInstallId -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; $s = Get-EpsInstallToken -InstallId $iid
+    }
     [ordered]@{
-        ResourceGroup = $ResourceGroup; Suffix = $s
-        EngineIdentity = 'id-eps-engine'; TickIdentity = 'id-eps-tick'; WebIdentity = 'id-eps-web'
+        ResourceGroup = $ResourceGroup; Suffix = $s; InstallId = $iid; Legacy = [bool]$Legacy
+        EngineIdentity = 'id-eps-engine'; WebIdentity = 'id-eps-web'
+        # framework §5.5 (owner 2026-11-04 "do it the same way as pim"): the scheduler IS the engine - caj-eps-engine signs in
+        # as id-eps-engine (PIM: one job, the engine's identity). An install made before 2.0.55 keeps id-eps-tick until the
+        # identity move. The tick's SQL role (eps_tick) and its queue Sender role then go to the engine identity.
+        TickIdentity = $(if ($Legacy) { 'id-eps-tick' } else { 'id-eps-engine' })
         Logs = 'log-eps'; Registry = "acreps$s"; Image = 'eps-engine'
         SqlServer = "sql-eps-$s"; Database = 'eps'
-        Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; TickJob = 'caj-eps-tick'; Storage = "steps$s"
+        Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; Storage = "steps$s"
+        # framework §5.5 THE AGREED LIST: the scheduler job is caj-eps-engine, the update job caj-eps-updater (an install made
+        # before 2.0.55 keeps caj-eps-tick / caj-eps-update - Azure cannot rename a job)
+        TickJob = $(if ($Legacy) { 'caj-eps-tick' } else { 'caj-eps-engine' }); UpdateJob = $(if ($Legacy) { 'caj-eps-update' } else { 'caj-eps-updater' })
         AgentPool = 'epspool'; InsideCheckJob = 'caj-eps-insidecheck'
         JobStarterRole = "EntraPolicySuite job starter ($ResourceGroup)"
         WebApp = 'ca-eps-web'; KeyVault = "kv-eps-$s"
@@ -133,6 +198,14 @@ function Get-EpsInstallNames {
         WebAppRegistration = 'Entra Policy Suite'; LegacyWebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
         SqlAdminGroup = 'grp-eps-sql-admins'; LegacySqlAdminGroup = 'EntraPolicySuite SQL admins'
     }
+}
+
+function Get-EpsAcaJobResourceName {
+    # PURE. A work job's Azure resource name from its KEY (the schedule's AcaJobName): the update job is named per install
+    # (Names.UpdateJob), every other work job is its key.
+    param([Parameter(Mandatory)]$Names, [Parameter(Mandatory)][string]$Key)
+    if ($Key -eq 'caj-eps-update' -and $Names.UpdateJob) { return $Names.UpdateJob }
+    $Key
 }
 
 function Get-EpsInstallSteps {
@@ -240,7 +313,10 @@ function Get-EpsJobBodies {
     $cs = "Server=tcp:$fqdn,1433;Database=$($n.Database);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30"
     $envId = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/managedEnvironments/$($n.Environment)"
     $mk = {
-        param($name, $job, $identity, [string]$trigger, [int]$timeout, [string]$cpu, [string]$mem, [bool]$parallelJob)
+        param($name, $job, $identity, [string]$trigger, [int]$timeout, [string]$cpu, [string]$mem, [bool]$parallelJob, [string]$key)
+        # $key = the job's KEY (the schedule's AcaJobName): its queue and EPS_ACA_JOB - stable for every install; $name = the
+        # Azure resource name, which may differ (framework §5.5: caj-eps-updater on a new install, caj-eps-update on an older one)
+        if (-not $key) { $key = $name }
         $miId = $Ctx.Identities[$identity].Id
         if (-not $miId) { $miId = "(the $($n[$identity]) identity, created by the install)" }   # a plan before the identities exist
         $config = [ordered]@{ triggerType = $trigger; replicaTimeout = $timeout; replicaRetryLimit = 0
@@ -253,7 +329,7 @@ function Get-EpsJobBodies {
             $config.eventTriggerConfig = @{ parallelism = 1; replicaCompletionCount = 1
                 scale = @{ minExecutions = 0; maxExecutions = $(if ($parallelJob) { 10 } else { 1 }); pollingInterval = 30
                     rules = @(@{ name = 'queue'; type = 'azure-queue'; identity = $miId
-                        metadata = @{ accountName = $n.Storage; queueName = (Get-EpsJobQueueName $name); queueLength = '1' } }) } }
+                        metadata = @{ accountName = $n.Storage; queueName = (Get-EpsJobQueueName $key); queueLength = '1' } }) } }
         }
         else { $config.manualTriggerConfig = @{ parallelism = 1; replicaCompletionCount = 1 } }
         # the uplink job (UPLINK-1) also needs the NAME of the install's Key Vault (it reads the secret uplink-key from it
@@ -286,14 +362,14 @@ function Get-EpsJobBodies {
                             @{ name = 'EPS_SUBSCRIPTION_ID'; value = $Ctx.SubscriptionId }
                             @{ name = 'EPS_RESOURCE_GROUP'; value = $n.ResourceGroup }
                             @{ name = 'EPS_STORAGE_ACCOUNT'; value = $n.Storage }
-                            @{ name = 'EPS_ACA_JOB'; value = $(if ($trigger -eq 'Event') { $name } else { '' }) }
+                            @{ name = 'EPS_ACA_JOB'; value = $(if ($trigger -eq 'Event') { $key } else { '' }) }
                             @{ name = 'EPS_ManagedIdentityClientId'; value = $Ctx.Identities[$identity].ClientId }) + $extra }) } } }
         }
     }
     # the tick is short; a work job may run up to the 7-day limit (framework JOB-RUN-LIMIT) and holds 200,000 users
     # in memory (2.2 GB measured 2026-10-30), so it gets 4 GiB
     @(& $mk $n.TickJob 'Tick' 'TickIdentity' 'Schedule' 1800 '0.25' '0.5Gi') +
-    @(foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) { & $mk $d.AcaJobName $d.Job 'EngineIdentity' 'Event' 604800 '2.0' '4Gi' ([bool]$d.Parallel) })
+    @(foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) { & $mk (Get-EpsAcaJobResourceName -Names $n -Key $d.AcaJobName) $d.Job 'EngineIdentity' 'Event' 604800 '2.0' '4Gi' ([bool]$d.Parallel) $d.AcaJobName })
 }
 
 function Add-EpsRoleAssignment {
@@ -421,12 +497,12 @@ function Test-EpsInstallStep {
     if ($Ctx.Network.Private) { $p = Test-EpsPrivateInstallStep -Id $Id -Ctx $Ctx; if ($p) { return $p } }
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
-        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all three' } } }
+        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all three' } } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
         'registry'      { if (& $has "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" $script:EpsApi.acr) { @{ Action = 'update'; Detail = "$($n.Registry) (AcrPull checked)" } } else { @{ Action = 'create'; Detail = "$($n.Registry) (Basic)" } } }
         'image'         { @{ Action = 'run'; Detail = "build $($n.Image):$($Ctx.Version) in $($n.Registry)" } }
         'sql'           { if (& $has "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)/databases/$($n.Database)" $script:EpsApi.sql) { @{ Action = 'exists'; Detail = "$($n.SqlServer)/$($n.Database)" } } else { @{ Action = 'create'; Detail = "$($n.SqlServer) (Entra-only, admin $($Ctx.Person.Upn)) + $($n.Database) (S0)" } } }
-        'sqlaccess'     { @{ Action = 'run'; Detail = "roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level); users $($n.EngineIdentity), $($n.TickIdentity), $($n.WebIdentity) - never db_datareader / db_datawriter" } }
+        'sqlaccess'     { @{ Action = 'run'; Detail = "roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level); users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', ') - never db_datareader / db_datawriter" } }
         'schema'        { @{ Action = 'run'; Detail = 'sql/eps-schema.sql (idempotent, additive)' } }
         'environment'   { if (& $has "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" $script:EpsApi.aca) { @{ Action = 'exists'; Detail = $n.Environment } } else { @{ Action = 'create'; Detail = "$($n.Environment) (Consumption)" } } }
         'queues'        { if (& $has "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)" $script:EpsApi.st) { @{ Action = 'update'; Detail = "$($n.Storage) (queues + who may send / read checked)" } } else { @{ Action = 'create'; Detail = "$($n.Storage) (no shared key) + one queue per work job; the tick may send, the engine read" } } }

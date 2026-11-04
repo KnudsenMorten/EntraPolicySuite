@@ -19,7 +19,7 @@
     { "name": "UserPrincipalName", "required": true, "default": null, "help": "the person" },
     { "name": "Role", "required": false, "default": "SuperAdmin", "help": "SuperAdmin, Admin or Reader" },
     { "name": "Reason", "required": true, "default": null, "help": "why (goes into the audit trail)" },
-    { "name": "ResourceGroup", "required": false, "default": "rg-entrapolicysuite", "help": "the install's resource group" }
+    { "name": "ResourceGroup", "required": false, "default": "rg-eps", "help": "the install's resource group (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)" }
   ],
   "readsOnly": [ "Graph: the signed-in user and the named user (id, UPN)" ],
   "network": [ "login.microsoftonline.com", "management.azure.com", "graph.microsoft.com", "<server>.database.windows.net" ],

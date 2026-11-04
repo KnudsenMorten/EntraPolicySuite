@@ -52,7 +52,7 @@ function Get-EpsNetworkPlan {
     #>
     param([Parameter(Mandatory)][hashtable]$P, [string[]]$Bound = @())
     $no = { param($why) @{ Ok = $false; Reason = $why } }
-    $netParams = 'VnetId', 'VnetAddressPrefix', 'VnetName', 'AppsSubnetName', 'AppsSubnetPrefix', 'EndpointsSubnetName', 'EndpointsSubnetPrefix', 'PrivateDnsZonesResourceGroupId', 'HubVnetId', 'PeerToHub', 'LinkZonesToHub', 'ConfirmedFromInside'
+    $netParams = 'VnetId', 'VnetAddressPrefix', 'VnetName', 'AppsSubnetName', 'AppsSubnetPrefix', 'EndpointsSubnetName', 'EndpointsSubnetPrefix', 'PrivateDnsZonesResourceGroupId', 'HubVnetId', 'PeerToHub', 'LinkZonesToHub', 'ConfirmedFromInside', 'InternalRanges', 'FirewallIp'
     if (-not $P.PrivateNetwork) {
         $given = @($netParams | Where-Object { $Bound -contains $_ })
         if ($given) { return (& $no "-$($given -join ', -') belong to a private install: add -PrivateNetwork (or leave them out for the public install)") }
@@ -100,6 +100,13 @@ function Get-EpsNetworkPlan {
         $plan.HubVnetId = "$($P.HubVnetId)"; $plan.HubName = $Matches[3]
         if ($plan.VnetId -and $plan.VnetId -eq $plan.HubVnetId) { return (& $no '-HubVnetId is the same network as -VnetId - the hub is the network your clients resolve through, EPS runs in a spoke') }
     } elseif ($plan.PeerToHub -or $plan.LinkZonesToHub) { return (& $no '-PeerToHub and -LinkZonesToHub need -HubVnetId') }
+    # framework rule 11d: the return route for the customer's internal ranges -> the hub firewall (both answers, or none)
+    $ranges = @(@($P.InternalRanges) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    foreach ($r in $ranges) { if (-not (ConvertFrom-EpsCidr $r)) { return (& $no "-InternalRanges '$r' is not an IPv4 network range (a.b.c.d/n, the network address itself)") } }
+    $fw = "$($P.FirewallIp)".Trim()
+    if ($fw -and ($fw -notmatch '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$' -or @($Matches[1..4] | Where-Object { [int]$_ -gt 255 }).Count)) { return (& $no "-FirewallIp '$fw' is not an IPv4 address") }
+    if ([bool]$ranges.Count -ne [bool]$fw) { return (& $no '-InternalRanges and -FirewallIp go together (the ranges, and the firewall they go back through)') }
+    $plan.InternalRanges = $ranges; $plan.FirewallIp = $fw
     $plan
 }
 
@@ -357,6 +364,44 @@ function Invoke-EpsNetworkStep {
         $net["$($role)SubnetId"] = $sid
     }
     $net.ResolvedVnetId = $vid
+    # framework rule 11d: on a spoke EPS makes, with the customer's internal ranges and firewall, the return route
+    if ($net.CreateVnet -and @($net.InternalRanges).Count -and $net.FirewallIp) { Invoke-EpsReturnRouteStep -Ctx $Ctx }
+}
+
+function Get-EpsReturnRouteBody {
+    # PURE. rt-eps: one route per internal range -> the hub firewall (VirtualAppliance), BGP propagation off (a learned
+    # route must never take the replies another way)
+    param([Parameter(Mandatory)]$Ctx)
+    $net = $Ctx.Network
+    @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }
+       properties = @{ disableBgpRoutePropagation = $true
+           routes = @(foreach ($r in @($net.InternalRanges)) { @{ name = "to-$($r -replace '[./]', '-')"; properties = @{ addressPrefix = $r; nextHopType = 'VirtualAppliance'; nextHopIpAddress = $net.FirewallIp } } }) } }
+}
+
+function Invoke-EpsReturnRouteStep {
+    <#
+      Framework rule 11d (SI at a customer: the private web app timed out from the LAN - DNS right, peering Connected, but
+      the replies to the on-prem range took Azure's default route): rt-eps in the install's resource group, attached to the
+      apps subnet, both READ BACK. Only on a spoke EPS makes; on the customer's network it is on the hand-off list.
+    #>
+    param([Parameter(Mandatory)]$Ctx)
+    $net = $Ctx.Network; $api = $script:EpsNetApi.net
+    $rtId = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.Network/routeTables/rt-eps"
+    [void](Invoke-EpsArm -Method PUT -Path $rtId -ApiVersion $api -Body (Get-EpsReturnRouteBody -Ctx $Ctx))
+    $sid = $net.AppsSubnetId
+    $sub = Invoke-EpsArm -Path $sid -ApiVersion $api
+    if ("$($sub.properties.routeTable.id)" -ne $rtId) {
+        # the subnet as it is, plus the route table - nothing else changes (read-only lists left out)
+        $p2 = @{}; foreach ($k in $sub.properties.PSObject.Properties.Name) { if ($k -notin 'provisioningState', 'etag', 'purpose', 'ipConfigurations', 'privateEndpoints', 'serviceAssociationLinks', 'resourceNavigationLinks', 'ipConfigurationProfiles') { $p2[$k] = $sub.properties.$k } }
+        $p2.routeTable = @{ id = $rtId }
+        [void](Invoke-EpsArm -Method PUT -Path $sid -ApiVersion $api -Body @{ properties = $p2 })
+    }
+    # read back: the table (every range -> the firewall, BGP off) and the subnet's link to it
+    $rt = Invoke-EpsArm -Path $rtId -ApiVersion $api
+    $miss = @(foreach ($r in @($net.InternalRanges)) { if (-not @(@($rt.properties.routes) | Where-Object { "$($_.properties.addressPrefix)" -eq $r -and "$($_.properties.nextHopType)" -eq 'VirtualAppliance' -and "$($_.properties.nextHopIpAddress)" -eq $net.FirewallIp }).Count) { $r } })
+    if ($miss.Count -or $rt.properties.disableBgpRoutePropagation -ne $true) { throw "the route table rt-eps does not read back as made (missing: $($miss -join ', '); BGP propagation off: $($rt.properties.disableBgpRoutePropagation))" }
+    if ("$((Invoke-EpsArm -Path $sid -ApiVersion $api).properties.routeTable.id)" -ne $rtId) { throw "the apps subnet $($net.AppsSubnetName) does not read back with rt-eps attached" }
+    $net.ReturnRoute = "rt-eps on $($net.AppsSubnetName): $(@($net.InternalRanges) -join ', ') -> $($net.FirewallIp) (VirtualAppliance, BGP propagation off), read back"
 }
 
 function Get-EpsLinkedZones {
@@ -548,6 +593,15 @@ function Get-EpsNetworkHandoff {
     $L.Add('')
     $L.Add('3. Outbound HTTPS from the apps subnet (default outbound, or allow them on your firewall):')
     foreach ($h in $script:EpsOutboundHosts) { $L.Add("   $h") }
+    $L.Add('')
+    # framework rule 11d: the return route - made and read back on a spoke EPS makes with the answers, else named here
+    $L.Add('3b. The return route on the apps subnet (when your clients reach the spoke through a hub firewall):')
+    if ($net.ReturnRoute) { $L.Add("   Done: $($net.ReturnRoute)") }
+    else {
+        $rr = if (@($net.InternalRanges).Count) { "$(@($net.InternalRanges) -join ', ') -> $($net.FirewallIp)" } else { '<your internal ranges> -> <your firewall''s private address>' }
+        $L.Add("   To do: a route table on $($net.AppsSubnetName) with $rr (next hop type VirtualAppliance), BGP route propagation OFF.")
+        $L.Add('   Replies time out without it: they leave by Azure''s default route instead of back through the firewall.')
+    }
     $L.Add('')
     $L.Add('4. The check, from a machine in your network: each name above answers with its private address, e.g.')
     $L.Add("   Resolve-DnsName $($Ctx.Names.SqlServer).database.windows.net   (expect $(if ($net.EndpointIps) { $net.EndpointIps["$($Ctx.Names.SqlServer).database.windows.net"] } else { 'the private address' }))")

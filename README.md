@@ -40,7 +40,7 @@ install continues where it stopped when you run the same command again.
 | `-TenantId` | (required) | Your Entra tenant id |
 | `-SubscriptionId` | (required) | The subscription to install in |
 | `-Location` | westeurope | The Azure region |
-| `-ResourceGroup` | rg-entrapolicysuite | The resource group to install into |
+| `-ResourceGroup` | rg-eps | The resource group to install into (an install made before 2.0.55 in rg-entrapolicysuite is found and kept) |
 | `-Version` | the latest 2.x release | A specific release, for example 2.0.20 |
 
 ### Private network

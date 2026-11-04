@@ -2,6 +2,18 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.55 - standard names for new installs, and the return route for a private install
+- A new install uses the standard names: resource group rg-eps; the scheduler job caj-eps-engine (was caj-eps-tick)
+  and the update job caj-eps-updater (was caj-eps-update); registry, SQL server, Key Vault and storage end in six
+  characters derived from the install. The scheduler now runs as the engine's identity, so a new install has two managed
+  identities (id-eps-engine and id-eps-web).
+- An existing install keeps every Azure name it has. Run without -ResourceGroup, the installer and the setup scripts
+  find an install in rg-entrapolicysuite and stay there.
+- Private install behind a hub firewall: new optional -InternalRanges and -FirewallIp. On a network the install makes,
+  it creates the route table rt-eps on the apps subnet (your ranges back through the firewall, BGP route propagation
+  off) and reads it back. Without it, replies to your network time out. On your own network the route is on the
+  network hand-off list.
+
 ## 2.0.54 - the install waits instead of failing, and reads back what it links
 - When the install needs something from you first, it now says it is WAITING instead of failing: missing DNS records,
   or no proof yet from inside your network. The step shows "waiting" with the reason, and the installer ends with exit

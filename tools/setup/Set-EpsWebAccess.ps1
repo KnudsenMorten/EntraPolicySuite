@@ -19,7 +19,7 @@ param(
     [Parameter(Mandatory)][string]$UserPrincipalName,
     [ValidateSet('SuperAdmin', 'Admin', 'Reader')][string]$Role = 'SuperAdmin',
     [Parameter(Mandatory)][string]$Reason,
-    [string]$ResourceGroup = 'rg-entrapolicysuite'
+    [string]$ResourceGroup = ''
 )
 $ErrorActionPreference = 'Stop'
 Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Set-EpsWebAccess when EPS is public there (DOC-LINKS)
@@ -38,7 +38,9 @@ if (-not $user) { throw "no user $upn in this tenant" }
 Write-Host "$upn ($($user.id)) becomes $Role in the Entra Policy Suite web app - by $me, reason: $Reason" -ForegroundColor Cyan
 if ($what) { Write-Host "`nWhatIf: nothing was changed." -ForegroundColor Cyan; return }
 
-$names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
+# framework §5.5 (OPEN-30): rg-eps for an install made since 2.0.55, rg-entrapolicysuite for an older one; the names as the install made them
+if (-not $ResourceGroup) { $rgPick = Resolve-EpsResourceGroup -SubscriptionId "$SubscriptionId"; if (-not $rgPick.Ok) { throw $rgPick.Reason }; $ResourceGroup = $rgPick.Name }
+$names = Resolve-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol }
 $q = { param($s) "N'$("$s".Replace("'", "''"))'" }
 $after = (@{ Principal = $upn; ObjectId = $user.id; Role = $Role } | ConvertTo-Json -Compress)

@@ -21,7 +21,7 @@ param(
     [Parameter(Mandatory)][guid]$SubscriptionId,
     [Parameter(Mandatory)][string]$Sender,
     [Parameter(Mandatory)][string[]]$Recipients,
-    [string]$ResourceGroup = 'rg-entrapolicysuite',
+    [string]$ResourceGroup = '',
     [string]$EnvironmentName
 )
 $ErrorActionPreference = 'Stop'
@@ -34,7 +34,9 @@ foreach ($r in $Recipients) { if ($r -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { t
 # again - unless a Support-app session provided the sign-in (EPS_InstallPerson) for THIS tenant (SI finding 2026-11-03)
 if (-not ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and "$($global:EPS_SignInTenant)" -eq "$TenantId")) { [void](Connect-EpsSignedIn -TenantId "$TenantId") }
 
-$names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
+# framework §5.5 (OPEN-30): rg-eps for an install made since 2.0.55, rg-entrapolicysuite for an older one; the names as the install made them
+if (-not $ResourceGroup) { $rgPick = Resolve-EpsResourceGroup -SubscriptionId "$SubscriptionId"; if (-not $rgPick.Ok) { throw $rgPick.Reason }; $ResourceGroup = $rgPick.Name }
+$names = Resolve-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup
 $mi = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
 if (-not $mi) { throw "no engine identity $($names.EngineIdentity) in $ResourceGroup - is Entra Policy Suite installed there?" }
 $appId = [string]$mi.properties.clientId; $oid = [string]$mi.properties.principalId

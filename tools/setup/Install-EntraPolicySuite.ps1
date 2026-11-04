@@ -44,7 +44,7 @@
 .PARAMETER Location
     The Azure region. Default westeurope.
 .PARAMETER ResourceGroup
-    Default rg-entrapolicysuite.
+    Default: rg-eps for a new install; an existing install in rg-entrapolicysuite (the default before 2.0.55) keeps it.
 .PARAMETER SqlLocation
     The Azure SQL server's region, when Azure SQL does not take new servers in -Location. Default: -Location.
 .PARAMETER SqlAdminGroupId
@@ -87,6 +87,13 @@
 .PARAMETER HubVnetId
     Your hub network (resource id, may be in another subscription). Nothing is written in it unless -PeerToHub or
     -LinkZonesToHub is given; it makes the hand-off list exact and the hub owner's script possible.
+.PARAMETER InternalRanges
+    Your internal address ranges (e.g. 10.0.0.0/8, 192.168.0.0/16) that reach the web app through your hub firewall.
+    With -FirewallIp, on a network the install makes, it creates the route table rt-eps on the apps subnet: each range
+    -> your firewall, so the replies go back the way the requests came (without it they time out). On your own network
+    the route is on the network hand-off list.
+.PARAMETER FirewallIp
+    Your hub firewall's private address, the next hop of the return route (see -InternalRanges).
 .PARAMETER PeerToHub
     Peer the spoke with the hub, both directions - only when your rights on both networks allow it (checked before any
     change). Never half a peering: when the second side fails, the first is removed. Off by default.
@@ -117,7 +124,7 @@ param(
     [Parameter(Mandatory)][guid]$TenantId,
     [Parameter(Mandatory)][guid]$SubscriptionId,
     [ValidatePattern('^[a-z0-9]{3,30}$')][string]$Location = 'westeurope',
-    [ValidatePattern('^[A-Za-z0-9._()-]{1,80}$')][string]$ResourceGroup = 'rg-entrapolicysuite',
+    [ValidatePattern('^[A-Za-z0-9._()-]{0,80}$')][string]$ResourceGroup = '',
     [string]$StatePath,
     # the Azure SQL server's region when it differs from -Location (Azure SQL can refuse new servers in a region that
     # takes everything else - North Europe, 2026-10-30). Default: -Location.
@@ -144,6 +151,8 @@ param(
     [string]$HubVnetId = '',
     [switch]$LinkZonesToHub,
     [switch]$PeerToHub,
+    [string[]]$InternalRanges = @(),
+    [string]$FirewallIp = '',
     [ValidateSet('external', 'internal')][string]$WebAppAccess = 'external',
     [switch]$ConfirmedFromInside
 )
@@ -161,12 +170,21 @@ function Finish([int]$code, [string]$msg) { if ($msg) { Write-Host $msg -Foregro
 $netPlan = Get-EpsNetworkPlan -P @{ PrivateNetwork = [bool]$PrivateNetwork; VnetId = $VnetId; VnetAddressPrefix = $VnetAddressPrefix; VnetName = $VnetName
     AppsSubnetName = $AppsSubnetName; AppsSubnetPrefix = $AppsSubnetPrefix; EndpointsSubnetName = $EndpointsSubnetName; EndpointsSubnetPrefix = $EndpointsSubnetPrefix
     PrivateDnsZonesResourceGroupId = $PrivateDnsZonesResourceGroupId; HubVnetId = $HubVnetId; LinkZonesToHub = [bool]$LinkZonesToHub; PeerToHub = [bool]$PeerToHub
+    InternalRanges = @($InternalRanges); FirewallIp = $FirewallIp
     WebAppAccess = $WebAppAccess; ConfirmedFromInside = [bool]$ConfirmedFromInside } -Bound @($PSBoundParameters.Keys)
 if (-not $netPlan.Ok) { Finish 2 "Refused: $($netPlan.Reason)" }
 
 # ---- sign in (a Support-app session or a test can provide the token source instead) ----
 $person = if ($global:EPS_TokenProvider -and $global:EPS_InstallPerson -and (-not "$($global:EPS_SignInTenant)" -or "$($global:EPS_SignInTenant)" -eq "$TenantId")) { $global:EPS_InstallPerson } else { Connect-EpsSignedIn -TenantId "$TenantId" }
 Write-Host "Signed in as $($person.Upn)" -ForegroundColor Cyan
+# framework §5.5 (owner 2026-11-04, OPEN-30): a new install goes in rg-eps; an install in the old default
+# rg-entrapolicysuite keeps it, so a re-run without -ResourceGroup never starts a second install next to it
+if (-not $ResourceGroup) {
+    $rgPick = Resolve-EpsResourceGroup -SubscriptionId "$SubscriptionId"
+    if (-not $rgPick.Ok) { Finish 2 "Refused: $($rgPick.Reason)." }
+    $ResourceGroup = $rgPick.Name
+    if ($rgPick.Reason) { Write-Host "Resource group $ResourceGroup`: $($rgPick.Reason)." -ForegroundColor Cyan }
+}
 
 # ---- checks (exit 2) ----
 # Rights: Owner on the subscription, OR Owner on an EXISTING resource group only (internal 2026-10-30: the owner gave
@@ -189,10 +207,11 @@ if ($netPlan.Private) { $need += 'Microsoft.Network' }
 $unregistered = if ($rgOnly) { @() } else { @(foreach ($p in $need) { $r = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/providers/$p" -ApiVersion '2021-04-01'; if ($r.registrationState -ne 'Registered') { $p } }) }
 if ($rgOnly) { Write-Host "Rights on resource group $ResourceGroup only: the resource providers ($($need -join ', ')) are taken as registered (they cannot be checked or registered without a subscription right)." -ForegroundColor Yellow }
 
-$names = Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -Private:([bool]$netPlan.Private)
+$names = Resolve-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -Private:([bool]$netPlan.Private)
+if ($names.Legacy) { Write-Host "An install made before 2.0.55: it keeps its Azure resource names (suffix $($names.Suffix))." -ForegroundColor Cyan }
 if (-not $netPlan.Private) {
     # a private install stays private: a run without -PrivateNetwork would put a public environment next to it
-    $privEnv = (Get-EpsInstallNames -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -Private).Environment
+    $privEnv = (Get-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -Private -Legacy:([bool]$names.Legacy)).Environment
     $pe = try { Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/managedEnvironments/$privEnv" -ApiVersion '2024-03-01' -AllowNotFound } catch { $null }
     if ($pe -and "$($pe.name)" -eq $privEnv) { Finish 2 "$ResourceGroup holds a PRIVATE install ($privEnv): run the same command with -PrivateNetwork (and its network parameters)." }
 }
