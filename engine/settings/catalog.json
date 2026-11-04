@@ -689,12 +689,12 @@
       }
     },
     {
-      "key": "Update.Enabled", "group": "Update", "label": "Check for new versions", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "key": "Update.Enabled", "group": "Update", "label": "Install new versions", "type": "boolean", "default": "true", "role": "SuperAdmin",
       "info": {
-        "what": "Every night the update job asks Invardia which Entra Policy Suite version is approved for this install's update ring, checks that the answer is genuine and complete, and records what it would install in its run. In this release it only checks: it downloads and installs nothing. With the per-install key it also reports the result to Invardia.",
-        "enabled": "On (the default): the update job checks every night at 03:00 (Platform.TimeZone).",
-        "disabled": "Off: the update job does not run. Nothing else changes.",
-        "risk": "Nothing changes in the directory or in Azure. Reversible.",
+        "what": "Every night the update job asks Invardia which Entra Policy Suite version is approved for this install's update ring and checks that the answer is genuine and complete. When a newer version is approved and no job is running, it installs it: it downloads the release and checks it against the signed size and SHA-256, builds the new image in your own container registry, updates the database with the database setup job, and moves the jobs and the web app to the new image. When a job is running it tries again the next night. With the per-install key it also reports each stage to Invardia.",
+        "enabled": "On (the default): the update job runs every night at 03:00 (Platform.TimeZone).",
+        "disabled": "Off: the update job does not run, so no new version is installed. Nothing else changes.",
+        "risk": "An update changes the images and the database of this install, never the directory. A stage that fails stops the update before the jobs move; the next night tries again. Reversible.",
         "requires": "SuperAdmin. Outbound HTTPS to invardia.com from the jobs.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Update.Enabled/"

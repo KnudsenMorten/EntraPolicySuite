@@ -81,8 +81,10 @@ WHERE q.Job = 'Uplink' AND q.Status = 'Dispatched'
         exit 0
     }
     if ($Job -eq 'Update') {
-        # UPDATER-1 phase 1: which release is approved for this install's ring - CHECK ONLY, it installs nothing. A "Run
-        # now" request is taken and closed like the uplink's.
+        # UPDATER-1: which release is approved for this install's ring (verified), and - phase 2 - its apply as the job's
+        # own identity id-eps-updater (EPS-UpdateApply.ps1: no SQL; the run record below stays the engine identity's). A
+        # "Run now" request is taken and closed like the uplink's.
+        foreach ($f in 'EPS-Arm', 'EPS-Install', 'EPS-UpdateApply') { . (Join-Path $sol "engine\_shared\$f.ps1") }
         $runId = [guid]::NewGuid()
         $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
 UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
@@ -94,11 +96,11 @@ WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
         $script:__seq = 0
         $log = { param($level, $msg) $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
         $u = $null; $ok = $false
-        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log; $ok = $u.State -notin 'refused', 'unreachable' }
+        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
         catch { & $log 'Error' "$($_.Exception.Message)" }
         $sum = if ($u) { $u.Summary } else { 'the check failed - see its log' }
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum } `
-            -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = 0, HeldReason = @h WHERE RunId = @id' | Out-Null
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum; a = $(if ($u.Applied.Ok) { @($u.Applied.Rolled).Count } else { 0 }) } `
+            -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h WHERE RunId = @id' | Out-Null
         if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $sum } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         exit $(if ($ok) { 0 } else { 1 })
     }

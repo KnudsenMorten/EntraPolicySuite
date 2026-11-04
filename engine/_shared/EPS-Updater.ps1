@@ -5,8 +5,8 @@
 # Every night the update job asks Invardia which release is approved for this install's ring, VERIFIES the answer with
 # the shared verifier (InvardiaUpdate.verify.ps1, byte-identical to PIM's and SI's: embedded keys, product, kind, ring,
 # version, SHA-256, sequence, size, https), asks the head call for "update now", reads the run gate, and reports what it
-# would install - as an update run to Invardia (framework §8.8) and in its own run record. It changes NOTHING: no
-# download, no image, no schema, no container. Applying comes in phase 2, with the dbinit job (SEC-03 / SEC-08).
+# would install - as an update run to Invardia (framework §8.8) and in its own run record. PHASE 2 (EPS-UpdateApply.ps1)
+# then APPLIES it as the update job's own identity id-eps-updater - see that file.
 # Dot-source EPS-SqlStore.ps1, EPS-Uplink.ps1 (the install key) and InvardiaUpdate.verify.ps1 first.
 
 Set-StrictMode -Off
@@ -56,7 +56,7 @@ function Get-EpsUpdateTarget {
     #>
     param([Parameter(Mandatory)][string]$RunningVersion, [Parameter(Mandatory)][ValidateRange(0, 3)][int]$Ring, [scriptblock]$Http,
           [string]$BaseUrl = $script:EpsUpdateBase, [int]$AppliedSequence = 0, [object[]]$TrustedKeys = $script:InvardiaUpdateTrustedKeys)
-    $res = @{ State = 'unreachable'; Version = ''; Sequence = 0; Reason = ''; Size = 0; Sha256 = '' }
+    $res = @{ State = 'unreachable'; Version = ''; Sequence = 0; Reason = ''; Size = 0; Sha256 = ''; DownloadUrl = '' }
     $base = "$BaseUrl".Trim().TrimEnd('/')
     if ($base -notmatch '^(?i)https://') { $res.State = 'refused'; $res.Reason = 'the update address is not https'; return $res }
     $url = "$base/api/updates/$($script:EpsUpdateProduct)/$($script:EpsUpdateKind)/$Ring"
@@ -66,7 +66,7 @@ function Get-EpsUpdateTarget {
     if ($st -ne 200) { $res.Reason = Get-InvardiaPullReason -Status $st -Body $r.body -ErrorText "$($r.error)"; if ($st -in 401, 403, 404, 422) { $res.State = 'refused' }; return $res }
     $v = Test-InvardiaManifest -Response $r.body -TrustedKeys $TrustedKeys -Kind $script:EpsUpdateKind -AppliedSequence $AppliedSequence -RunningVersion $RunningVersion -Product $script:EpsUpdateProduct -Ring $Ring
     if (-not $v.ok) { $res.State = 'refused'; $res.Reason = $v.reason; return $res }
-    $res.Version = "$($v.version)"; $res.Sequence = [int]$v.sequence; $res.Reason = $v.reason; $res.Size = [int64]$v.size; $res.Sha256 = "$($v.sha256)"
+    $res.Version = "$($v.version)"; $res.Sequence = [int]$v.sequence; $res.Reason = $v.reason; $res.Size = [int64]$v.size; $res.Sha256 = "$($v.sha256)"; $res.DownloadUrl = "$($v.downloadUrl)"
     if ($v.hold) { $res.State = 'held'; return $res }
     $cmp = Compare-InvardiaReleaseVersion $v.version $RunningVersion
     if ($cmp -gt 0) { $res.State = 'available'; $res.Reason = "$($v.reason) - newer than $RunningVersion" }
@@ -130,17 +130,48 @@ function Send-EpsUpdateRunTrack {
     return @{ Ok = ($bad -eq 0); RunId = "$($o.body.runId)"; Reason = $(if ($bad) { "$bad event(s) not taken" } else { 'reported' }) }
 }
 
+function Open-EpsUpdateRunTrack {
+    <#
+      Framework §8.8 for an APPLY: opens the update run (POST /api/install/runs kind 'update') and returns an emitter
+      { param($step, $state, $message) } that posts each stage as it happens (SI's step ids: check, download, verify,
+      build, migrate, apply, health, done, failed). Best effort, 10 s; the first refused event stops the tracking (SI's
+      rule) - the update itself never waits on Invardia. @{ Ok; RunId; Emit; Reason }.
+    #>
+    param([AllowEmptyString()][string]$InstallKey, [Parameter(Mandatory)][int]$Ring, [Parameter(Mandatory)][string]$FromVersion, [Parameter(Mandatory)][string]$ToVersion,
+          [scriptblock]$Http, [string]$BaseUrl = $script:EpsUpdateBase)
+    $none = { param($s, $st, $m) }
+    if ("$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') { return @{ Ok = $false; RunId = ''; Emit = $none; Reason = 'no install key: the update run is not reported' } }
+    $base = "$BaseUrl".Trim().TrimEnd('/')
+    $send = { param($m, $u, $b, $h) if ($Http) { & $Http $m $u $b $h } else { Invoke-EpsUpdateHttp -Method $m -Url $u -Body $b -Headers $h -TimeoutSec 10 } }.GetNewClosure()
+    $o = & $send 'POST' "$base/api/install/runs" ([ordered]@{ productId = $script:EpsUpdateProduct; kind = 'update'; ring = $Ring; fromVersion = $FromVersion; toVersion = $ToVersion }) @{ 'X-Invardia-Install-Key' = "$InstallKey".Trim() }
+    if ([int]$o.status -ne 201 -or -not "$($o.body.token)") { return @{ Ok = $false; RunId = ''; Emit = $none; Reason = "Invardia did not open the update run (HTTP $([int]$o.status))" } }
+    $st = @{ Seq = 0; Stopped = $false; Hdr = $(if ("$($o.body.tokenHeader)" -match '^X-Invardia-[A-Za-z-]+$') { "$($o.body.tokenHeader)" } else { 'X-Invardia-Install-Token' })
+             Url = $(if ("$($o.body.eventsUrl)" -match '^https://') { "$($o.body.eventsUrl)" } else { "$base/api/install/events" }); Token = "$($o.body.token)"; Titles = $script:EpsUpdateApplySteps }
+    $emit = {
+        param($step, $state, $message)
+        if ($st.Stopped) { return }
+        $st.Seq++
+        $r = & $send 'POST' $st.Url ([ordered]@{ seq = $st.Seq; step = @{ id = $step; title = $(if ($st.Titles -and $st.Titles.Contains($step)) { $st.Titles[$step] } else { $step }) }; state = $state; at = [datetime]::UtcNow.ToString('o'); message = "$message" }) @{ $st.Hdr = $st.Token }
+        if ([int]$r.status -notin 200, 201, 202, 204) { $st.Stopped = $true }
+    }.GetNewClosure()
+    @{ Ok = $true; RunId = "$($o.body.runId)"; Emit = $emit; Reason = 'opened' }
+}
+
 function Invoke-EpsUpdateCheck {
     <#
-      The update job's whole phase-1 cycle. -Log { param($level, $msg) }. Seams: -Http, -InstallKey (else read from the
-      Key Vault as the uplink does), -TrustedKeys. Returns @{ State; Version; Ring; Gate; Head; Track; Summary }.
-      An available version is reported to Invardia ONCE per version (the previous run's summary says it was).
+      The update job's whole cycle: check, verify, "update now", the run gate - and (phase 2) the APPLY of an available
+      release when the job has its updater identity and no work job runs (else it waits for the next night: owner "Give
+      up, retry next night"). -Log { param($level, $msg) }. Seams: -Http, -InstallKey (else read from the Key Vault as the
+      uplink does), -TrustedKeys, -UpdaterClientId (else EPS_UPDATER_CLIENT_ID), -ApplyTokenProvider, -Fetch, -CheckOnly.
+      Returns @{ State; Version; Ring; Gate; Head; Track; Applied; Summary }. A version that is only reported (no apply)
+      is reported to Invardia ONCE per version (the previous run's summary says it was).
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Version, [scriptblock]$Log = { param($l, $m) },
           [scriptblock]$Http, [AllowNull()][object]$InstallKey = $null, [object[]]$TrustedKeys = $script:InvardiaUpdateTrustedKeys,
-          [AllowEmptyString()][AllowNull()][string]$Ring = $env:EPS_RING)
+          [AllowEmptyString()][AllowNull()][string]$Ring = $env:EPS_RING, [AllowNull()][object]$UpdaterClientId = $null, [switch]$CheckOnly,
+          [scriptblock]$ApplyTokenProvider, [scriptblock]$Fetch, [int]$PollSeconds = 15)
     $ringN = Get-EpsUpdateRing -Ring $Ring
-    & $Log 'Info' "update check (this release only checks, it installs nothing): running $Version, ring $ringN"
+    & $Log 'Info' "update cycle: running $Version, ring $ringN"
     $t = Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys
     & $Log $(if ($t.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "release for ring $ringN`: $($t.State) - $($t.Reason)"
     # [object], not [string]: a [string] parameter turns $null into '' and the vault was never read (found live 2026-11-04)
@@ -150,22 +181,43 @@ function Invoke-EpsUpdateCheck {
     & $Log $(if ($InstallKey -and $h.Status -ne 200) { 'Warning' } else { 'Info' }) "update now: $($h.Reason)$(if ($h.Status) { " (HTTP $($h.Status))" })"
     $g = Get-EpsUpdateRunGate -ConnectionString $ConnectionString
     & $Log 'Info' "run gate: $($g.Reason)"
-    $track = $null
-    if ($t.State -eq 'available') {
-        $prev = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = 'Update' AND Status = 'Succeeded' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")[0]
+    $track = $null; $applied = $null
+    # PHASE 2 (UPDATER-1 apply): the update job has its own identity id-eps-updater (EPS_UPDATER_CLIENT_ID); without it
+    # (an install made before it) the job only checks and reports, as phase 1 did
+    $updater = if ($null -ne $UpdaterClientId) { "$UpdaterClientId" } else { "$env:EPS_UPDATER_CLIENT_ID" }
+    if ($t.State -eq 'available' -and $updater -and $g.Go -and -not $CheckOnly) {
+        $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
+        & $Log 'Info' "update run to Invardia: $($tr.Reason)"
+        & $tr.Emit 'check' 'ok' "$($t.Version) is approved for ring $ringN"
+        $saved = $global:EPS_TokenProvider
+        # Azure as the UPDATER identity for the apply only (the engine identity holds no Azure right)
+        if (-not $ApplyTokenProvider) { $ApplyTokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+        $global:EPS_TokenProvider = $ApplyTokenProvider
+        try {
+            $applied = Invoke-EpsUpdateApply -Target @{ Version = $t.Version; Sha256 = $t.Sha256; Size = $t.Size; DownloadUrl = $t.DownloadUrl } -RunningVersion $Version `
+                -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
+        } finally { $global:EPS_TokenProvider = $saved }
+        $track = @{ Ok = $tr.Ok; Reason = $tr.Reason }
+    } elseif ($t.State -eq 'available') {
+        $prev =@(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = 'Update' AND Status = 'Succeeded' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")[0]
         if ("$($prev.HeldReason)" -like "*reported $($t.Version) *") { & $Log 'Info' "update run for $($t.Version) already reported to Invardia" ; $track = @{ Ok = $true; Reason = 'already reported' } }
         else {
-            $track = Send-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
+            $why = if (-not $updater) { 'this install has no updater identity yet (id-eps-updater): one install run with this release adds it' } elseif (-not $g.Go) { "$($g.Reason) - the next night tries again" } else { 'check only' }
+            $track = Send-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http -WaitReason $why
             & $Log $(if ($track.Ok) { 'Info' } else { 'Warning' }) "update run to Invardia: $($track.Reason)"
         }
     }
     $sum = switch ($t.State) {
-        'available' { "$($t.Version) is available on ring $ringN (running $Version); this release only checks$(if ($track.Ok) { " - reported $($t.Version) to Invardia" })" + $(if ($h.Expedite) { "; update now asked" }) + "; $($g.Reason)" }
+        'available' {
+            if ($applied -and $applied.Ok) { "updated $Version -> $($t.Version) on ring $ringN ($(@($applied.Rolled).Count) components rolled)" }
+            elseif ($applied) { "update to $($t.Version) on ring $ringN stopped at '$($applied.Step)': $($applied.Reason)" }
+            else { "$($t.Version) is available on ring $ringN (running $Version); not installed$(if ($track.Ok) { " - reported $($t.Version) to Invardia" })" + $(if ($h.Expedite) { "; update now asked" }) + "; $($g.Reason)" }
+        }
         'held'      { "$($t.Version) on ring $ringN is held: $($t.Reason)" }
         'current'   { "up to date on ring $ringN ($Version)" }
         'ahead'     { "running $Version, newer than ring $ringN approves ($($t.Version))" }
         default     { "the check did not complete: $($t.Reason)" }
     }
-    & $Log 'Info' $sum
-    return @{ State = $t.State; Version = $t.Version; Ring = $ringN; Gate = $g; Head = $h; Track = $track; Summary = $sum }
+    & $Log $(if ($applied -and -not $applied.Ok) { 'Warning' } else { 'Info' }) $sum
+    return @{ State = $t.State; Version = $t.Version; Ring = $ringN; Gate = $g; Head = $h; Track = $track; Applied = $applied; Summary = $sum }
 }

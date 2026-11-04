@@ -2,6 +2,20 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.60 - the updater installs approved releases
+- The nightly update job now installs a release Invardia approved for your update ring: it downloads the release and
+  checks it against the signed size and SHA-256, builds the new image in your own container registry (on the build pool
+  of a private install), updates the database with the database setup job, then moves every job and the web app to the
+  new image and reads each one back. A stage that fails stops the update before anything moves; the next night tries
+  again. When a job is running, the update waits for the next night.
+- The update job does this as its own identity, id-eps-updater, with Contributor on the install's resource group only.
+  The engine identity still holds no Azure right. An install run with this release adds the identity; until then the
+  update job only checks, as before.
+- Each stage of an update is reported to Invardia as it happens.
+- Fixed: 2.0.59 read the SQL admin group's members back from the group, which leaves the setup job's identity out for
+  an installer without directory read rights - the install then ran the database steps the old way. The membership is
+  now read from the identity's side.
+
 ## 2.0.59 - nobody needs database admin rights to install
 - The database is now set up by a one-time job inside your install, with its own identity (id-eps-dbinit): the
   schema, one least-privilege role per identity, their database users, the sign-in front's state and you as the first

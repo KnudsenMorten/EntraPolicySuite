@@ -34,8 +34,9 @@ function Resolve-EpsSqlClientType {
 function Get-EpsManagedIdentityToken {
     # A token for a resource from the managed identity. Container Apps / App Service form first, then IMDS (an Azure VM,
     # the hybrid worker). $env:EPS_ManagedIdentityClientId picks a user-assigned identity.
-    param([Parameter(Mandatory)][string]$Resource)
-    $cid = $env:EPS_ManagedIdentityClientId
+    # -ClientId: another user-assigned identity of the same job (the update job's id-eps-updater, UPDATER-1 phase 2)
+    param([Parameter(Mandatory)][string]$Resource, [string]$ClientId)
+    $cid = if ($ClientId) { $ClientId } else { $env:EPS_ManagedIdentityClientId }
     if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
         $u = "$($env:IDENTITY_ENDPOINT)?api-version=2019-08-01&resource=$([uri]::EscapeDataString($Resource))"
         if ($cid) { $u += "&client_id=$cid" }

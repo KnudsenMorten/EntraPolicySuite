@@ -15,7 +15,9 @@ $script:EpsRole = @{ AcrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
     # Reader: KEDA reads the queue's properties to count its messages (found live 2026-11-01: 403 without it)
     QueueReader = '19e7f393-937e-4f77-808e-94535e297925'
     # UPLINK-1 (owner 2026-11-01 "Install's Key Vault"): the engine reads the ONE secret uplink-key, scoped to that secret
-    KvSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6' }
+    KvSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
+    # UPDATER-1 phase 2: the updater identity on its own resource group (owner 2026-11-03 "Contributor, like SI/PIM")
+    Contributor = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
 $script:EpsUplinkSecret = 'uplink-key'
 
 function Grant-EpsUplinkKeyAccess {
@@ -203,6 +205,9 @@ function Get-EpsInstallNames {
         # SEC-08 (framework §0, Invardia DESIGN ch 12): the database setup job and its own identity - the only member of
         # the SQL admin group the install puts there; dbinit is a standard purpose word (Invardia 2026-11-04)
         DbInitIdentity = 'id-eps-dbinit'; DbInitJob = 'caj-eps-dbinit'
+        # UPDATER-1 phase 2: the update job's own identity - Contributor on the resource group + AcrPull (owner 2026-11-03
+        # "Contributor, like SI/PIM"); the engine identity keeps no Azure right
+        UpdaterIdentity = 'id-eps-updater'
     }
 }
 
@@ -410,11 +415,18 @@ function Get-EpsJobBodies {
             # TEL-01: the update ring on the heartbeat (framework §3, §8.17) - only a ring 0-10, never empty or text
             if ("$($Ctx.Ring)" -match '^([0-9]|10)$') { $extra += @{ name = 'EPS_RING'; value = "$($Ctx.Ring)" } }
         }
+        $ids = @{ $miId = @{} }
+        # UPDATER-1 phase 2: the update job ALSO carries id-eps-updater (Contributor) for the apply; its SQL, its queue and
+        # the install key stay the engine identity's (EPS_ManagedIdentityClientId)
+        if ($job -eq 'Update' -and $Ctx.Identities.UpdaterIdentity.Id) {
+            $ids[$Ctx.Identities.UpdaterIdentity.Id] = @{}
+            $extra += @{ name = 'EPS_UPDATER_CLIENT_ID'; value = "$($Ctx.Identities.UpdaterIdentity.ClientId)" }
+        }
         [ordered]@{
             Name = $name
             Body = [ordered]@{
                 location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite'; job = $job }
-                identity = @{ type = 'UserAssigned'; userAssignedIdentities = @{ $miId = @{} } }
+                identity = @{ type = 'UserAssigned'; userAssignedIdentities = $ids }
                 properties = [ordered]@{ environmentId = $envId; workloadProfileName = 'Consumption'; configuration = $config
                     template = @{ containers = @(@{ name = 'eps'; image = $Image; resources = @{ cpu = [double]$cpu; memory = $mem }
                         env = @(
@@ -559,7 +571,7 @@ function Test-EpsInstallStep {
     if ($Ctx.Network.Private) { $p = Test-EpsPrivateInstallStep -Id $Id -Ctx $Ctx; if ($p) { return $p } }
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
-        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
+        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity, $n.UpdaterIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
         'sqladmins'     { @{ Action = 'run'; Detail = "an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
         'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
@@ -590,8 +602,8 @@ function Invoke-EpsInstallStep {
     $tags = @{ product = 'EntraPolicySuite'; version = $Ctx.Version }
     $priv = [bool]$Ctx.Network.Private   # NET-1: the private network install (the public install never sets it)
     $loadMi = {
-        if ($Ctx.Identities.EngineIdentity -and $Ctx.Identities.TickIdentity -and $Ctx.Identities.WebIdentity -and $Ctx.Identities.DbInitIdentity) { return }
-        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') {
+        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') {
+            if ($Ctx.Identities[$k]) { continue }   # only what this run does not know yet (a resume, an identity added by a newer release)
             $m = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi
             $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
         }
@@ -631,7 +643,7 @@ function Invoke-EpsInstallStep {
             [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $(if ($old) { $old.location } else { $Ctx.Location }); tags = $t })
         }
         'identities' {
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') {
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') {
                 $m = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi -Body @{ location = $Ctx.Location; tags = $tags }
                 $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
             }
@@ -649,7 +661,7 @@ function Invoke-EpsInstallStep {
                 $acrBody.properties.networkRuleBypassOptions = if ($old) { if ("$($old.properties.networkRuleBypassOptions)") { "$($old.properties.networkRuleBypassOptions)" } else { 'AzureServices' } } else { 'None' }
             }
             $acr = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -Body $acrBody
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
         }
         'image' {
             $ctxFile = New-EpsBuildContext -SolutionRoot $Ctx.SolutionRoot
@@ -807,6 +819,12 @@ function Invoke-EpsInstallStep {
                 if ($priv) { Remove-EpsAppInOtherEnvironment -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -EnvironmentId $j.Body.properties.environmentId }
                 [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.acajob -Body $j.Body)
             }
+            # UPDATER-1 phase 2: the updater identity (only on the update job) may roll this install - Contributor on ITS
+            # resource group, nothing wider; read back
+            $up = $Ctx.Identities.UpdaterIdentity.PrincipalId
+            Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $rg -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.Contributor)" -PrincipalId $up }
+            $has = @((Invoke-EpsArm -Path "$rg/providers/Microsoft.Authorization/roleAssignments" -ApiVersion $script:EpsApi.rbac).value | Where-Object { $_.properties.principalId -eq $up -and "$($_.properties.roleDefinitionId)" -like "*/roleDefinitions/$($script:EpsRole.Contributor)" })
+            if (-not $has.Count) { throw "$($n.UpdaterIdentity) does not hold Contributor on $($n.ResourceGroup) after the grant" }
         }
         'jobstarter' {
             # 2.0.10 (SEC-AUDIT-1 S4): the tick holds NO right to start jobs - the start API takes a container override,

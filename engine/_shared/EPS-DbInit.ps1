@@ -228,7 +228,9 @@ function Add-EpsDbInitToGroup {
     param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$GroupId)
     $sp = "$($Ctx.Identities.DbInitIdentity.PrincipalId)"
     if (-not $sp) { throw "the principal of $($Ctx.Names.DbInitIdentity) is not known - run the identities step" }
-    $isIn = { @(Invoke-EpsGraph -Path "v1.0/groups/$GroupId/members?`$select=id" -All | Where-Object { "$($_.id)" -eq $sp }).Count -gt 0 }
+    # read from the IDENTITY's side (memberOf): a group's /members silently leaves service principals out for a caller
+    # without directory read rights (found live at internal 2026-11-04: the member was there, the list showed only a user)
+    $isIn = { @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$sp/memberOf?`$select=id" -All | Where-Object { "$($_.id)" -eq $GroupId }).Count -gt 0 }
     if (& $isIn) { return 'already a member' }
     try { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "v1.0/groups/$GroupId/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$sp" }) } }
     catch { if ("$_" -notmatch '(?i)already exist') { throw } }
