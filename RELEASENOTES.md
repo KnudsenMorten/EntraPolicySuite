@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.71 - the shared update verifier, current wording
+- The update verifier that Entra Policy Suite shares with Invardia's other products is taken at its newest version
+  (wording only; it checks the same things).
+
 ## 2.0.70 - a fuller audit trail, and a stricter launcher
 - The audit trail now also records: each person's sign-in to the web app (at most once per 8 hours), who looked at
   the identity report and at a CA analysis's sign-in rows (once per person per view per hour), the download of the
