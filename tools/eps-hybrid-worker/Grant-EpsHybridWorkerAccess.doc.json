@@ -5,7 +5,7 @@
   "title": "Give the hybrid worker's managed identity access to the Entra Policy Suite database",
   "purpose": "Adds the worker machine's managed identity to the Entra Policy Suite database as the contained user eps-hybrid-worker (WITH SID = its client id) in the role eps_worker only (its work packages, its heartbeat, the AD group snapshots; never db_datareader / db_datawriter). You sign in in a browser as the SQL server's Entra admin.",
   "whenToRun": "Once per worker, after the worker machine has its managed identity. -Remove when the worker goes.",
-  "runAs": [ { "kind": "other", "name": "the SQL server's Entra admin", "scope": "the Entra Policy Suite database", "why": "creates a database user" } ],
+  "runAs": [ { "kind": "azureRbac", "name": "Contributor (or any role that may start a Container Apps job)", "scope": "the install's resource group", "why": "starts the database setup job, which creates (or removes) the database user and reads it back - no database right needed (installs made since 2.0.59)" }, { "kind": "other", "name": "the SQL server's Entra admin - only for an install made before 2.0.59", "scope": "the Entra Policy Suite database", "why": "creates the database user directly" } ],
   "changes": [ { "target": "SQL", "action": "create", "object": "database user eps-hybrid-worker", "permission": "role eps_worker (object-level grants from sql/eps-grants.json)", "scope": "the Entra Policy Suite database", "why": "the worker reads its work packages and writes their results and its heartbeat", "undo": "-Remove (drops the user)" } ],
   "parameters": [
     { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant" },

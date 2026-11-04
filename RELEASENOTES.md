@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.67 - adding a hybrid worker without a database right
+- Grant-EpsHybridWorkerAccess.ps1 gives (or with -Remove takes away) the hybrid worker's database access through the
+  install's database setup job, which reads the result back: you need the right to start a job in the install's resource
+  group, no database right. An install made before 2.0.59 is changed as before.
+
 ## 2.0.66 - mail settings without a database right
 - Initialize-EpsMailSender.ps1 stores the mail settings (mode, sender, recipients, environment name) through the
   install's database setup job: you need the right to start a job in the install's resource group, no database right.

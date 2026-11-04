@@ -183,6 +183,14 @@ function Invoke-EpsDbInit {
     $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
     $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
+    # SEC-08 row 7: per execution, the hybrid worker's identity as the database user eps-hybrid-worker in eps_worker
+    # (EPS_DBINIT_WORKER = its client id), or 'remove' - the person who adds a worker needs no SQL right
+    $wk = "$(& $e 'EPS_DBINIT_WORKER')".Trim().ToLowerInvariant()
+    if ($wk) {
+        if ($wk -eq 'remove') { $in.Drop = @(@($in.Drop) + 'eps-hybrid-worker') }
+        elseif ($wk -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -and $gl.roles.Contains('eps_worker')) { $in.Principals = @(@($in.Principals) + [pscustomobject]@{ Name = 'eps-hybrid-worker'; ClientId = $wk; Role = 'eps_worker' }) }
+        else { & $Log "refused: EPS_DBINIT_WORKER is not a client id or 'remove'"; return 2 }
+    }
     $set = Read-EpsDbInitSettings -Json (& $e 'EPS_DBINIT_SETTINGS')
     if (-not $set.Ok) { & $Log "refused: $($set.Reason)"; return 2 }
     $by = "$(& $e 'EPS_DBINIT_BY')".Trim(); if ($by -notmatch '^[^\x00-\x1f<>''"]{1,200}$') { $by = 'setup script' }
@@ -394,7 +402,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By)
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     # -UseExisting: start the job the install made, as it is (a setup script: the person may start it, nothing else)
     if ($UseExisting) { $j = @{ Name = $n.DbInitJob } } else {
@@ -405,6 +413,7 @@ function Invoke-EpsDbInitJob {
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
     if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
+    if ($Worker) { $env.EPS_DBINIT_WORKER = $Worker }
     if ($Settings -and $Settings.Count) { $env.EPS_DBINIT_SETTINGS = ($Settings | ConvertTo-Json -Compress -Depth 5); if ($By) { $env.EPS_DBINIT_BY = $By } }
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $j.Name -Env $env -Waits @(0, 15, 30, 60)
     if (-not $s.Ok) { throw "the database setup job $($j.Name) could not be started: $($s.Reason)" }
