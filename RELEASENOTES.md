@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.61 - setup steps for the database job and the updater
+- The heartbeat to Invardia reports two more setup steps: whether the database setup job has set up the database, and
+  whether the update job has its own identity to install releases. Each comes from a real record (the job's own record
+  in the database, and the last update run), never from a remembered value.
+- When the database setup job is in use, the version of the sign-in front the web app runs is recorded through that job,
+  so the person who installs needs no database right for it either.
+
 ## 2.0.60 - the updater installs approved releases
 - The nightly update job now installs a release Invardia approved for your update ring: it downloads the release and
   checks it against the signed size and SHA-256, builds the new image in your own container registry (on the build pool

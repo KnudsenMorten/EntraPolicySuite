@@ -218,6 +218,8 @@ function Invoke-EpsUpdateCheck {
         'ahead'     { "running $Version, newer than ring $ringN approves ($($t.Version))" }
         default     { "the check did not complete: $($t.Reason)" }
     }
+    # TEL-03: the heartbeat's setup step 'updater' reads this from the run's summary
+    if (-not $updater) { $sum += ' - no updater identity (id-eps-updater): one install run with 2.0.60 or later adds it' }
     & $Log $(if ($applied -and -not $applied.Ok) { 'Warning' } else { 'Info' }) $sum
     return @{ State = $t.State; Version = $t.Version; Ring = $ringN; Gate = $g; Head = $h; Track = $track; Applied = $applied; Summary = $sum }
 }

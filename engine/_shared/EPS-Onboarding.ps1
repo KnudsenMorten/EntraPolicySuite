@@ -101,7 +101,9 @@ function Get-EpsSetupSteps {
       checkedAt, detail). -Rights: Get-EpsEngineRightsState (read now). -Mail: Mail.Mode.
     #>
     # -ExchangeNeed: Get-EpsExchangeNeed (OPEN-09) - not given = the step as before (needed)
-    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null)
+    # -DbJob: eps.UplinkState setup.dbjob (the version whose database setup job last read every principal back; $null =
+    # not readable). -UpdateRun: the last update run's summary ($null = not readable, '' = none yet).
+    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null)
     $d = Get-EpsOnboardingDefaults
     $at = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $out = [System.Collections.Generic.List[object]]::new()
@@ -121,6 +123,15 @@ function Get-EpsSetupSteps {
     }
     $out.Add([ordered]@{ key = 'exchange-recipient-admin'; title = 'Engine holds the Exchange Recipient Administrator role'; state = $ex; since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = $exDetail })
     $out.Add([ordered]@{ key = 'mail-sender'; title = 'An alert mail sender is set up'; state = $(if (-not $MailMode) { 'unknown' } elseif ($MailMode -eq 'none') { 'missing' } else { 'ok' }); since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = 'set up once by an Exchange admin (the mail sender setup script), then Settings > Mail' })
+    # SEC-08: no person needs database admin rights - the setup job did the database as its own identity
+    $out.Add([ordered]@{ key = 'db-job'; title = 'The database setup job sets up the database (no person needs database admin rights)'; since = '2.0.59'; how = 'support-app'; checkedAt = $at
+        state = $(if ($null -eq $DbJob) { 'unknown' } elseif ("$DbJob".Trim()) { 'ok' } else { 'missing' })
+        detail = $(if ($null -eq $DbJob) { 'not readable' } elseif ("$DbJob".Trim()) { "last run by $("$DbJob".Trim())" } else { 'not run yet: one install run with 2.0.59 or later (as the server admin group''s owner) makes it' }) })
+    # UPDATER-1: the update job installs approved releases as its own identity id-eps-updater
+    $noUpd = "$UpdateRun" -match 'no updater identity'
+    $out.Add([ordered]@{ key = 'updater'; title = 'The updater can install approved releases (its own identity, Contributor on the resource group)'; since = '2.0.60'; how = 'support-app'; checkedAt = $at
+        state = $(if ($null -eq $UpdateRun) { 'unknown' } elseif (-not "$UpdateRun".Trim()) { 'unknown' } elseif ($noUpd) { 'missing' } else { 'ok' })
+        detail = $(if ($null -eq $UpdateRun) { 'not readable' } elseif (-not "$UpdateRun".Trim()) { 'no update run yet' } elseif ($noUpd) { 'the update job has no updater identity: one install run with 2.0.60 or later adds it' } else { 'the last update run had its updater identity' }) })
     foreach ($s in $out) { if ($s.detail.Length -gt 200) { $s.detail = $s.detail.Substring(0, 200) } }
     @($out)
 }

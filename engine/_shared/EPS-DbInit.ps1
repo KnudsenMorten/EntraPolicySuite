@@ -28,7 +28,8 @@ function Read-EpsDbInitInput {
       role outside the patterns, a role the grant list does not have, a client id that is not a GUID, a web user that is
       not one of the principals, a drop that names a principal the list keeps, a SuperAdmin that is not "<upn>|<guid>".
     #>
-    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles)
+    # -FrontVersion: per execution, the sign-in front the web app RUNS (OPEN-15) - recorded for the heartbeat
+    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion)
     $no = { param($r) @{ Ok = $false; Reason = $r } }
     if (-not "$PrincipalsJson".Trim()) { return (& $no 'EPS_DBINIT_PRINCIPALS is not set') }
     $list = try { @($PrincipalsJson | ConvertFrom-Json -Depth 5) } catch { return (& $no "EPS_DBINIT_PRINCIPALS is not JSON: $($_.Exception.Message)") }
@@ -58,14 +59,23 @@ function Read-EpsDbInitInput {
         if ($x -notmatch $script:EpsDbInitNamePattern) { return (& $no "unsafe database user name to remove '$x'") }
         if (@($p | Where-Object Name -eq $x).Count) { return (& $no "$x is to be removed AND kept - refused") }
     }
-    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d) }
+    $fv = "$FrontVersion".Trim()
+    if ($fv -and $fv -notmatch '^[0-9A-Za-z.+]{1,50}$') { return (& $no "EPS_DBINIT_FRONT '$fv' is not a version") }
+    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); FrontVersion = $fv }
+}
+
+function Get-EpsUplinkStateMergeSql {
+    # PURE. One eps.UplinkState row (name and value already checked by the caller's patterns)
+    param([Parameter(Mandatory)][ValidatePattern('^[a-z][a-z0-9.-]{1,60}$')][string]$Name, [Parameter(Mandatory)][ValidatePattern('^[0-9A-Za-z.+:| -]{1,100}$')][string]$Value)
+    "MERGE eps.UplinkState AS t USING (SELECT N'$Name' AS Name) AS s ON t.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$Value', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'$Name', N'$Value');"
 }
 
 function Get-EpsDbInitPlan {
     # PURE. The batches the job runs, in order (after the schema): the component roles + grants (they need the tables),
     # each principal as a user in its role, the sign-in front's schema (its owner must exist), the first SuperAdmin, the
     # removals. Each batch @{ Name; Sql }.
-    param([Parameter(Mandatory)]$DbInput, [Parameter(Mandatory)]$GrantList)
+    # -Version: the job's own VERSION - recorded as setup.dbjob (TEL-03: the heartbeat's setup step 'db-job')
+    param([Parameter(Mandatory)]$DbInput, [Parameter(Mandatory)]$GrantList, [string]$Version)
     $b = [System.Collections.Generic.List[object]]::new()
     $b.Add(@{ Name = 'roles and grants (sql/eps-grants.json)'; Sql = (Get-EpsGrantScript -GrantList $GrantList) })
     $b.Add(@{ Name = "database users ($(@($DbInput.Principals | ForEach-Object { "$($_.Name) in $($_.Role)" }) -join ', '))"
@@ -73,6 +83,8 @@ function Get-EpsDbInitPlan {
     $b.Add(@{ Name = "the sign-in front's state (schema signin owned by $($DbInput.WebUser))"; Sql = (Get-EpsSigninStateSql -WebUser $DbInput.WebUser) })
     if ($DbInput.SuperAdmin) { $b.Add(@{ Name = "the first SuperAdmin $($DbInput.SuperAdmin.Upn) (only when there is none)"; Sql = (Get-EpsFirstSuperAdminSql -Upn $DbInput.SuperAdmin.Upn -ObjectId $DbInput.SuperAdmin.ObjectId) }) }
     foreach ($x in $DbInput.Drop) { $b.Add(@{ Name = "remove the database user $x"; Sql = "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$x') DROP USER [$x];" }) }
+    if ($DbInput.FrontVersion) { $b.Add(@{ Name = "the sign-in front the web app runs: $($DbInput.FrontVersion)"; Sql = (Get-EpsUplinkStateMergeSql -Name 'signin.front' -Value $DbInput.FrontVersion) }) }
+    if ("$Version" -match '^[0-9A-Za-z.+]{1,50}$') { $b.Add(@{ Name = "the setup job's record (setup.dbjob = $Version)"; Sql = (Get-EpsUplinkStateMergeSql -Name 'setup.dbjob' -Value "$Version") }) }
     @($b)
 }
 
@@ -129,7 +141,8 @@ function Invoke-EpsDbInit {
           [string]$SolutionRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)), [int]$LoginTries = 16, [int]$LoginWaitSeconds = 20)
     $e = { param($k) if ($Env.ContainsKey($k)) { "$($Env[$k])" } else { [Environment]::GetEnvironmentVariable($k) } }
     $gl = Get-EpsGrantList -SolutionRoot $SolutionRoot
-    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys)
+    $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
+    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
     & $Log "principals: $(@($in.Principals | ForEach-Object { "$($_.Name)=$($_.Role)" }) -join ', '); web user $($in.WebUser)$(if ($in.SuperAdmin) { "; first SuperAdmin $($in.SuperAdmin.Upn)" })$(if ($in.Drop.Count) { "; remove $($in.Drop -join ', ')" })"
     # the login first: the job's identity is the admin only through the group
@@ -148,7 +161,7 @@ function Invoke-EpsDbInit {
     try {
         $v = Install-EpsSchema -ConnectionString $ConnectionString -SchemaPath (Join-Path $SolutionRoot 'sql\eps-schema.sql')
         & $Log "schema: version $v"
-        foreach ($b in Get-EpsDbInitPlan -DbInput $in -GrantList $gl) {
+        foreach ($b in Get-EpsDbInitPlan -DbInput $in -GrantList $gl -Version $ver) {
             [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query $b.Sql)
             & $Log "done: $($b.Name)"
         }
@@ -308,7 +321,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @())
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     $gl = Get-EpsGrantList -SolutionRoot $Ctx.SolutionRoot
     $j = Get-EpsDbInitJobBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)" -GrantList $gl
@@ -316,6 +329,7 @@ function Invoke-EpsDbInitJob {
     $env = @{}
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
+    if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $j.Name -Env $env -Waits @(0, 15, 30, 60)
     if (-not $s.Ok) { throw "the database setup job $($j.Name) could not be started: $($s.Reason)" }
     $w = Wait-EpsAcaJobExecution -Ctx $Ctx -Job $j.Name -Execution $s.Execution -PollSeconds ($Ctx.PollSeconds ?? 15)

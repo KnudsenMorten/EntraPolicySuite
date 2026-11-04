@@ -412,7 +412,11 @@ function Get-EpsUplinkHeartbeatFacts {
         # OPEN-09: whether the Exchange role is needed at all, from the features that are on
         SetupSteps = $(if (Get-Command Get-EpsSetupSteps -ErrorAction SilentlyContinue) { try {
             $xn = if (Get-Command Get-EpsExchangeNeed -ErrorAction SilentlyContinue) { try { Get-EpsExchangeNeed -Row @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsExchangeNeedSql)[0] } catch { $null } }
-            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn) } catch { @() } })
+            # TEL-03 (SEC-08 / UPDATER-1): the database setup job's last record (it writes setup.dbjob) and what the last
+            # update run said about its updater identity - both real records, never a remembered value
+            $dbj = try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'setup.dbjob'")" } catch { $null }
+            $upd = try { "$(& $q "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = N'Update' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")" } catch { $null }
+            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd) } catch { @() } })
     }
 }
 

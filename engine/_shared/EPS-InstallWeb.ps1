@@ -331,7 +331,10 @@ function Invoke-EpsWebAppStep {
     $fi = "$(@($app.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
     $fv = (($fi -split ':')[-1] -split '-')[0]
     if ($fi -and $fv -match '^[0-9A-Za-z.+]{1,50}$') {
-        Invoke-EpsSetupSql -Ctx $Ctx -Script "MERGE eps.UplinkState AS t USING (SELECT N'signin.front' AS Name) AS s ON t.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$fv', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'signin.front', N'$fv');"
+        # SEC-08: through the database setup job when it can run (the person may hold no SQL right), else as the admin
+        $mode = if ($Ctx.DbJob) { $Ctx.DbJob } elseif (Get-Command Initialize-EpsSqlAdminGroup -ErrorAction SilentlyContinue) { Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate } else { @{ Use = $false } }
+        if ($mode.Use) { [void](Invoke-EpsDbInitJob -Ctx $Ctx -FrontVersion $fv) }
+        else { Invoke-EpsSetupSql -Ctx $Ctx -Script "MERGE eps.UplinkState AS t USING (SELECT N'signin.front' AS Name) AS s ON t.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$fv', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'signin.front', N'$fv');" }
         $Ctx.Web.FrontRunning = $fv
     }
 }
