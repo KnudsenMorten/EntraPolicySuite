@@ -350,11 +350,13 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion)
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
+    # -UseExisting: start the job the install made, as it is (a setup script: the person may start it, nothing else)
+    if ($UseExisting) { $j = @{ Name = $n.DbInitJob } } else {
     $gl = Get-EpsGrantList -SolutionRoot $Ctx.SolutionRoot
     $j = Get-EpsDbInitJobBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)" -GrantList $gl
-    [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.acajob -Body $j.Body)
+    [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.acajob -Body $j.Body) }
     $env = @{}
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }

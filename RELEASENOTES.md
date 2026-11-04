@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.64 - support access audited; naming a SuperAdmin without a database right
+- Fixed: 2.0.63 changed the Support app's database access as set in the portal, but the change was not written to the
+  audit trail. Every change is audited now, and so is a support session that was refused.
+- Set-EpsWebAccess.ps1 names a SuperAdmin through the install's database setup job when there is none: you need the
+  right to start a job in the install's resource group, no database right. Admin and Reader are given in the web app's
+  Access page. An install made before 2.0.59 is changed as before.
+
 ## 2.0.63 - support access follows the level set in the Invardia portal
 - A new job, run every 5 minutes as the database setup identity, asks Invardia for the support access level your
   organization set for this install in the Invardia customer portal and applies it to the database:

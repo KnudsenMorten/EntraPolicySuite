@@ -37,6 +37,8 @@ $script:EpsAuditActions = @(
     'web.request.refused'           # a signed-in caller refused: role, anti-forgery, validation (web)
     'guard.trip'                    # a guard held a change (GUARD-1), e.g. removing the last SuperAdmin
     'support.state.change'          # Invardia's heartbeat answer changed the support state (SECAUDIT-1a) - recorded only, nothing granted (UPLINK-1)
+    'support.session.refused'       # a support session above the customer's consent (framework SUPPORT ACCESS) - recorded as closed
+    'support.access.change'         # caj-eps-support changed the Support app's database user (OPEN-01: none / read / admin during a session)
 )
 
 function Get-EpsAuditActions { $script:EpsAuditActions }

@@ -3,10 +3,11 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Name who may use the Entra Policy Suite web app (the first SuperAdmin)",
-  "purpose": "Writes one person's role (SuperAdmin, Admin or Reader) to the web app's access list and to the audit trail. Used once after the install to name the first SuperAdmin, who then manages access in the app.",
+  "purpose": "Names a SuperAdmin of the web app when there is none: it starts the install's database setup job with that person, which writes the access list and the audit trail. A SuperAdmin then manages access in the app (Admin and Reader are given there). An install made before 2.0.59 is written directly (any role).",
   "whenToRun": "Once after the install, or when no SuperAdmin is left.",
   "runAs": [
-    { "kind": "other", "name": "the Entra Policy Suite SQL server's Entra admin", "scope": "the Entra Policy Suite database", "why": "writes the access list before anyone can do it in the app" },
+    { "kind": "azureRbac", "name": "Contributor (or any role that may start a Container Apps job)", "scope": "the install's resource group", "why": "starts the database setup job, which names the SuperAdmin when there is none - no database right needed (installs made since 2.0.59)" },
+    { "kind": "other", "name": "the Entra Policy Suite SQL server's Entra admin - only for an install made before 2.0.59 (no database setup job)", "scope": "the Entra Policy Suite database", "why": "writes the access list directly" },
     { "kind": "entraRole", "name": "any user who can read users (Directory Readers is enough)", "scope": "the tenant", "why": "checks the person exists and pins their object id" }
   ],
   "changes": [
