@@ -2501,6 +2501,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     { id: 'start', label: 'Get started', role: 'Reader', draw: function (p) { return drawGetStarted(p); } },
     { id: 'tamper', label: 'Tamper', role: 'Reader', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'Changes to watched tags that the engine did not make. Accept one that was legitimate, or Restore: the engine writes its value back at its next run. Both need a reason and are audited.' }));
+      // SEC-08 row 10: the external Azure Monitor alarm's inputs as a file for Deploy-EpsAzureMonitorAlerts.ps1 -InputFile (no database right)
+      if (isRole('Admin')) p.appendChild(el('p', null, el('button', { type: 'button', class: 'secondary', text: 'Download the alarm inputs', onclick: function () {
+        api('GET', '/api/tamper/alarm-inputs').then(function (j) {
+          var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' })); a.download = 'eps-alarm-inputs.json';
+          document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        });
+      } }), ' The break-glass accounts, the watched tag attributes and the known writers, as one file for the external Azure Monitor alarm (Deploy-EpsAzureMonitorAlerts.ps1 -InputFile). Download it again after any of them change.'));
       return api('GET', '/api/tamper').then(function (j) {
         var cols = [{ key: 'FoundAtUtc', label: 'Found', type: 'date' }, { key: 'Severity', label: 'Severity', type: 'cat', cls: function (r) { return 'sev-' + r.Severity; } },
           { key: 'Status', label: 'Status', type: 'cat' }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' },

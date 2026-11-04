@@ -116,6 +116,16 @@ function Get-EpsWebRoutes {
             if ($rows.Count -gt 200000) { return New-EpsWebResponse -Status 413 -Body @{ error = 'more than 200,000 changes - narrow the filter' } -Audit @{ Target = 'TagChange'; Outcome = 'refused'; OutcomeText = 'over 200,000 rows' } }   # SEC-AUDIT-1 S9
             New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = 'attachment; filename="eps-tag-changes.csv"' } `
                 -Audit @{ Target = 'TagChange'; After = @{ filter = $f.Echo; rows = $rows.Count } } } }
+        # SEC-08 row 10 (no person needs database admin rights): what Deploy-EpsAzureMonitorAlerts.ps1 builds the external
+        # alarm from - the enabled break-glass accounts, the enabled tag types' attributes, the tamper allow list - as ONE
+        # file to download and pass to the script (-InputFile); the script reads no SQL
+        @{ Method = 'GET'; Pattern = '^/api/tamper/alarm-inputs$'; Summary = 'The inputs of the external Azure Monitor alarm (Deploy-EpsAzureMonitorAlerts.ps1 -InputFile): the enabled break-glass accounts, the watched tag attributes and the tamper allow list.'; Public = $false
+           Role = 'Admin'; Handler = { param($c, $m)
+            $acc = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT UserPrincipalName, Directory, CAST(ObjectId AS NVARCHAR(36)) AS ObjectId, Sid FROM eps.BreakGlassAccount WHERE Enabled = 1" | ForEach-Object {
+                if ("$($_.Directory)" -eq 'AD') { [ordered]@{ Directory = 'AD'; Name = ("$($_.UserPrincipalName)" -split '@')[0]; Sid = "$($_.Sid)" } } else { [ordered]@{ Directory = 'Entra'; UserPrincipalName = "$($_.UserPrincipalName)"; ObjectId = "$($_.ObjectId)" } } })
+            $att = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT DISTINCT Attribute FROM eps.TagType WHERE Enabled = 1' | ForEach-Object { "$($_.Attribute)" })
+            $al = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'TamperMonitor.AllowList' -Default '')"
+            New-EpsWebResponse -Body ([ordered]@{ kind = 'eps-alarm-inputs'; version = $c.Ctx.Version; createdUtc = [datetime]::UtcNow.ToString('o'); accounts = @($acc); watchedAttributes = @($att); allowList = @(if ($al.Trim()) { try { $al | ConvertFrom-Json } catch { } }) }) } }
         @{ Method = 'GET'; Pattern = '^/api/tamper$'; Summary = 'The tamper events: tag values changed outside Entra Policy Suite.'; Body = 'status: one state, e.g. Open'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $p = @{ s = "$($c.Query.status)" }

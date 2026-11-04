@@ -9,6 +9,34 @@
 # The builder is pure (settings in, ARM bodies out); Invoke-EpsAzureMonitorDeploy applies a plan over ARM.
 
 Set-StrictMode -Off
+
+function Read-EpsAlarmInputFile {
+    <#
+      SEC-08 row 10: the alarm's inputs from the file the web app gives (GET /api/tamper/alarm-inputs) instead of a SQL
+      read as the database admin. Every value checked: kind eps-alarm-inputs; Entra accounts = a UPN + a GUID object id;
+      AD accounts = a name + a SID; attributes = a directory attribute name; the allow list = plain names / ids.
+      Returns @{ Ok; Reason; Accounts; WatchedAttributes; AllowList; CreatedUtc }.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    $no = { param($r) @{ Ok = $false; Reason = $r } }
+    if (-not (Test-Path -LiteralPath $Path)) { return (& $no "no file $Path - download it in the web app (Tamper monitor > Download the alarm inputs)") }
+    $j = try { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 10 } catch { return (& $no "$Path is not JSON") }
+    if ("$($j.kind)" -ne 'eps-alarm-inputs') { return (& $no "$Path is not an Entra Policy Suite alarm inputs file") }
+    $acc = [System.Collections.Generic.List[object]]::new()
+    foreach ($a in @($j.accounts)) {
+        if ("$($a.Directory)" -eq 'AD') {
+            if ("$($a.Name)" -notmatch '^[A-Za-z0-9._-]{1,64}$' -or "$($a.Sid)" -notmatch '^S-1-[0-9-]{5,180}$') { return (& $no "an AD account in $Path is not a name + SID") }
+            $acc.Add(@{ Directory = 'AD'; Name = "$($a.Name)"; Sid = "$($a.Sid)" })
+        } else {
+            $g = [guid]::Empty
+            if ("$($a.UserPrincipalName)" -notmatch '^[^@\s''"]+@[^@\s''"]+\.[^@\s''"]+$' -or -not [guid]::TryParse("$($a.ObjectId)", [ref]$g)) { return (& $no "an Entra account in $Path is not a UPN + object id") }
+            $acc.Add(@{ Directory = 'Entra'; UserPrincipalName = "$($a.UserPrincipalName)"; ObjectId = $g.ToString() })
+        }
+    }
+    $att = @(foreach ($x in @($j.watchedAttributes)) { if ("$x" -notmatch '^[A-Za-z][A-Za-z0-9]{1,63}$') { return (& $no "attribute '$x' in $Path is not an attribute name") }; "$x" })
+    $al = @(foreach ($x in @($j.allowList)) { if ("$x" -notmatch '^[^\x00-\x1f''"<>]{1,320}$') { return (& $no "an allow-list entry in $Path is not plain text") }; "$x" })
+    @{ Ok = $true; Reason = ''; Accounts = @($acc); WatchedAttributes = @($att); AllowList = @($al); CreatedUtc = "$($j.createdUtc)" }
+}
 $script:EpsSqrApi = '2023-03-15-preview'; $script:EpsAgApi = '2023-01-01'; $script:EpsDiagApi = '2017-04-01'
 
 function ConvertTo-EpsKqlString {

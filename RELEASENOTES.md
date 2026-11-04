@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.68 - the external alarm without a database right
+- The Tamper page has a new button for Admins and SuperAdmins: Download the alarm inputs. It gives one file with the
+  break-glass accounts, the watched tag attributes and the known writers.
+- Deploy-EpsAzureMonitorAlerts.ps1 builds the external Azure Monitor alarm from that file (-InputFile) and no longer
+  reads the database. Run it again with a fresh file after any of those change.
+
 ## 2.0.67 - adding a hybrid worker without a database right
 - Grant-EpsHybridWorkerAccess.ps1 gives (or with -Remove takes away) the hybrid worker's database access through the
   install's database setup job, which reads the result back: you need the right to start a job in the install's resource

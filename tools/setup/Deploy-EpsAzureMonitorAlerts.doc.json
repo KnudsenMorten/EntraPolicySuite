@@ -8,7 +8,7 @@
   "runAs": [
     { "kind": "azureRbac", "name": "Contributor (Monitoring Contributor is enough for the rules and the action group)", "scope": "the Entra Policy Suite resource group", "why": "creates the action group and the scheduled query rules" },
     { "kind": "entraRole", "name": "Security Administrator or Global Administrator", "scope": "the tenant", "why": "creates the Entra diagnostic setting that sends AuditLogs and the sign-in logs to Log Analytics (only if none does yet)" },
-    { "kind": "other", "name": "the Entra Policy Suite SQL server's Entra admin", "scope": "the Entra Policy Suite database", "why": "reads the break-glass accounts, the tag types and the allow list" }
+    { "kind": "other", "name": "an Admin or SuperAdmin of the web app", "scope": "the Entra Policy Suite web app", "why": "downloads the alarm inputs file (Tamper > Download the alarm inputs) - the script reads no database" }
   ],
   "changes": [
     { "target": "Entra", "action": "create", "object": "diagnostic setting eps-entra-logs (AuditLogs, SignInLogs, NonInteractiveUserSignInLogs -> the install's Log Analytics workspace), unless one already sends AuditLogs", "scope": "the tenant", "why": "the rules read these logs", "undo": "delete the diagnostic setting eps-entra-logs" },
@@ -22,10 +22,11 @@
     { "name": "ResourceGroup", "required": false, "default": "rg-eps", "help": "the install's resource group (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)" },
     { "name": "Email", "required": false, "default": null, "help": "mail addresses for the alarm" },
     { "name": "Sms", "required": false, "default": null, "help": "SMS numbers, '+<country code> <number>'" },
-    { "name": "WorkspaceResourceId", "required": false, "default": "the install's log-eps", "help": "another Log Analytics workspace" }
+    { "name": "WorkspaceResourceId", "required": false, "default": "the install's log-eps", "help": "another Log Analytics workspace" },
+    { "name": "InputFile", "required": true, "default": null, "help": "the alarm inputs downloaded from the web app (Tamper > Download the alarm inputs)" }
   ],
-  "readsOnly": [ "the product's break-glass accounts, tag types and tamper allow list (SQL)", "the Entra diagnostic settings", "the existing eps-* rules" ],
-  "network": [ "login.microsoftonline.com", "management.azure.com", "<server>.database.windows.net" ],
+  "readsOnly": [ "the alarm inputs file from the web app (break-glass accounts, watched tag attributes, the tamper allow list)", "the Entra diagnostic settings", "the existing eps-* rules" ],
+  "network": [ "login.microsoftonline.com", "management.azure.com" ],
   "whatIf": "Every resource it would create, update or remove; nothing is changed.",
   "undo": "Delete ag-eps-alarm and the eps-* rules; delete the diagnostic setting eps-entra-logs if it was created by this script.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Deploy-EpsAzureMonitorAlerts"

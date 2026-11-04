@@ -15,10 +15,13 @@
     changes nothing.
 .PARAMETER Email
     Mail addresses the alarm goes to.
+.PARAMETER InputFile
+    The alarm inputs downloaded from the web app (Tamper monitor > Download the alarm inputs): the enabled break-glass
+    accounts, the watched tag attributes and the tamper allow list. The script reads no database.
 .PARAMETER Sms
     Phone numbers for SMS, as '+<country code> <number>' (e.g. '+45 12345678').
 .EXAMPLE
-    ./Deploy-EpsAzureMonitorAlerts.ps1 -TenantId <tenant> -SubscriptionId <sub> -Email soc@contoso.com -Sms '+45 12345678' -WhatIf
+    ./Deploy-EpsAzureMonitorAlerts.ps1 -TenantId <tenant> -SubscriptionId <sub> -Email soc@contoso.com -Sms '+45 12345678' -InputFile .\eps-alarm-inputs.json -WhatIf
 .LINK
     https://invardia.com/docs/eps/scripts/Deploy-EpsAzureMonitorAlerts
 #>
@@ -29,7 +32,8 @@ param(
     [string]$ResourceGroup = '',
     [string[]]$Email = @(),
     [string[]]$Sms = @(),
-    [string]$WorkspaceResourceId
+    [string]$WorkspaceResourceId,
+    [Parameter(Mandatory)][string]$InputFile
 )
 $ErrorActionPreference = 'Stop'
 Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Deploy-EpsAzureMonitorAlerts when EPS is public there (DOC-LINKS)
@@ -51,12 +55,13 @@ if (-not $WorkspaceResourceId) { if (-not $law) { throw "no Log Analytics worksp
 $location = if ($law) { $law.location } else { 'westeurope' }
 $engine = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
 
-# the product's settings (read only)
-$accounts = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script "SELECT UserPrincipalName, Directory, CAST(ObjectId AS NVARCHAR(36)) AS ObjectId, Sid FROM eps.BreakGlassAccount WHERE Enabled = 1" | ForEach-Object {
-    if ($_.Directory -eq 'AD') { @{ Directory = 'AD'; Name = ([string]$_.UserPrincipalName -split '@')[0]; Sid = $_.Sid } } else { @{ Directory = 'Entra'; UserPrincipalName = $_.UserPrincipalName; ObjectId = $_.ObjectId } } })
-$attrs = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script 'SELECT DISTINCT Attribute FROM eps.TagType WHERE Enabled = 1' | ForEach-Object { [string]$_.Attribute })
-$allowRaw = @(Invoke-EpsSetupSql -Ctx $ctx -Rows -Script "SELECT Value FROM eps.Setting WHERE Name = 'TamperMonitor.AllowList'")[0].Value
-$allow = @(if ($allowRaw) { $allowRaw | ConvertFrom-Json })
+# the product's inputs (SEC-08 row 10: no SQL) - the file the web app gives a SuperAdmin or Admin: Tamper monitor >
+# "Download the alarm inputs" (GET /api/tamper/alarm-inputs). Run this again after the break-glass list, the tag types
+# or the allow list change, with a fresh file.
+$in = Read-EpsAlarmInputFile -Path $InputFile
+if (-not $in.Ok) { throw $in.Reason }
+$accounts = @($in.Accounts); $attrs = @($in.WatchedAttributes); $allow = @($in.AllowList)
+Write-Host "Inputs: $InputFile (from the web app, $($in.CreatedUtc))" -ForegroundColor DarkGray
 
 $rules = Get-EpsAzureMonitorRules -Accounts $accounts -WatchedAttributes $attrs -EngineAppId $engine.properties.clientId -AllowList $allow -TickJobName $names.TickJob
 $plan = Get-EpsAzureMonitorPlan -SubscriptionId "$SubscriptionId" -ResourceGroup $ResourceGroup -WorkspaceId $WorkspaceResourceId -Location $location -Rules $rules -Email $Email -Sms $Sms
