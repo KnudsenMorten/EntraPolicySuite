@@ -2,6 +2,18 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.59 - nobody needs database admin rights to install
+- The database is now set up by a one-time job inside your install, with its own identity (id-eps-dbinit): the
+  schema, one least-privilege role per identity, their database users, the sign-in front's state and you as the first
+  SuperAdmin. Every user is read back before the install goes on.
+- The Azure SQL server's admin is a security group, grp-eps-sql-admins (found, else created; or your own group with
+  -SqlAdminGroupId), and the job's identity is its member. The person who installs needs no SQL right, and the install
+  no longer opens a temporary firewall rule for that machine. A private install needs no machine inside the network for
+  its database steps.
+- An existing install keeps its SQL admin. A group admin gets the job's identity added; a server whose admin is a person
+  goes on as before, and the installer says so.
+- The install's final check now reads the scheduler run's result from Azure instead of from the database.
+
 ## 2.0.58 - long runs reported to Invardia in the agreed shape
 - While a job runs, the heartbeat reports it the way Invardia reads it: running, which job, since when, and how its
   length compares with its usual one.

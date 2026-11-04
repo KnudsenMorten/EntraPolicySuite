@@ -7,6 +7,7 @@
 Set-StrictMode -Off
 . (Join-Path $PSScriptRoot 'EPS-InstallWeb.ps1')   # the web app's steps (the sign-in front)
 . (Join-Path $PSScriptRoot 'EPS-InstallNetwork.ps1')   # the private network install (NET-1) - used only with -PrivateNetwork
+. (Join-Path $PSScriptRoot 'EPS-DbInit.ps1')   # SEC-08: the database setup job caj-eps-dbinit (the job's run + the installer's side)
 $script:EpsApi = @{ rg = '2021-04-01'; mi = '2023-01-31'; law = '2022-10-01'; acr = '2023-07-01'; sql = '2021-11-01'; aca = '2024-03-01'; acajob = '2025-01-01'; st = '2023-05-01'; rbac = '2022-04-01'; prov = '2021-04-01'; sub = '2022-12-01' }
 $script:EpsRole = @{ AcrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
     # SEC-AUDIT-1 S4 (2.0.9): the tick may only SEND to the job queues; the engine reads + deletes them (and KEDA counts)
@@ -199,6 +200,9 @@ function Get-EpsInstallNames {
         # to standard - we can not have different names except for azure resources"): a re-run renames an older one in place
         WebAppRegistration = 'Entra Policy Suite'; LegacyWebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
         SqlAdminGroup = 'grp-eps-sql-admins'; LegacySqlAdminGroup = 'EntraPolicySuite SQL admins'
+        # SEC-08 (framework §0, Invardia DESIGN ch 12): the database setup job and its own identity - the only member of
+        # the SQL admin group the install puts there; dbinit is a standard purpose word (Invardia 2026-11-04)
+        DbInitIdentity = 'id-eps-dbinit'; DbInitJob = 'caj-eps-dbinit'
     }
 }
 
@@ -226,7 +230,10 @@ function Invoke-EpsRetireTickStep {
     foreach ($a in $ras) { [void](Invoke-EpsArm -Method DELETE -Path $a.id -ApiVersion $script:EpsApi.rbac -AllowNotFound) }
     $u = $n.LegacyTickIdentity
     if ($u -notmatch '^[A-Za-z0-9-]{1,128}$') { throw "unsafe database user name '$u'" }
-    Invoke-EpsSetupSql -Ctx $Ctx -Script "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$u') DROP USER [$u];"
+    # SEC-08: the database user goes through the setup job when the job can run (it reads the removal back), else as the admin
+    $mode = if ($Ctx.DbJob) { $Ctx.DbJob } else { Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate }
+    if ($mode.Use) { [void](Invoke-EpsDbInitJob -Ctx $Ctx -Drop @($u)) }
+    else { Invoke-EpsSetupSql -Ctx $Ctx -Script "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$u') DROP USER [$u];" }
     [void](Invoke-EpsArm -Method DELETE -Path $miPath -ApiVersion $script:EpsApi.mi -AllowNotFound)
     # read back: no role assignment of the old principal, no identity
     if (@(& $mine).Count) { throw "$u still holds $(@(& $mine).Count) role assignment(s) after the removal" }
@@ -269,14 +276,16 @@ function Get-EpsInstallSteps {
     if ($Private) { return (Get-EpsPrivateInstallSteps) }
     @(
         [pscustomobject]@{ Id = 'resourcegroup'; Title = 'Resource group' }
-        [pscustomobject]@{ Id = 'identities';    Title = 'Managed identities (engine, tick, web)' }
+        [pscustomobject]@{ Id = 'identities';    Title = 'Managed identities (engine, web, the database setup job)' }
         [pscustomobject]@{ Id = 'logs';          Title = 'Log Analytics workspace' }
         [pscustomobject]@{ Id = 'registry';      Title = 'Container registry (Basic) + AcrPull for the identities' }
         [pscustomobject]@{ Id = 'image';         Title = 'The engine image, built in the registry' }
+        # SEC-08: the SQL admin is a group holding the database setup job's identity - before the server names its admin
+        [pscustomobject]@{ Id = 'sqladmins';     Title = 'The SQL admin group (grp-eps-sql-admins) with the database setup job''s identity in it' }
         [pscustomobject]@{ Id = 'sql';           Title = 'Azure SQL (Entra-only) + database' }
-        [pscustomobject]@{ Id = 'schema';        Title = 'The database schema' }
-        [pscustomobject]@{ Id = 'sqlaccess';     Title = 'The identities as database users, one least-privilege role each' }
         [pscustomobject]@{ Id = 'environment';   Title = 'Container Apps environment' }
+        # the job needs the image, the environment and SQL; it does what 'schema', 'sqlaccess' and 'webstate' did as the person
+        [pscustomobject]@{ Id = 'database';      Title = 'The database, set up by the database setup job as its own identity: schema, one least-privilege role per identity, the sign-in front''s state, you as the first SuperAdmin' }
         [pscustomobject]@{ Id = 'queues';        Title = 'The job queues (storage, no shared key): the tick may only send, the engine read' }
         # the registration BEFORE the jobs (2.0.18): the engine checks a person's signed request against the web app's
         # client id, so the engine jobs carry it (without it every GUI change was refused, fail closed)
@@ -286,7 +295,6 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'graph';         Title = "The engine's Graph permissions" }
         [pscustomobject]@{ Id = 'exchange';      Title = "The engine's Exchange permission + role" }
         [pscustomobject]@{ Id = 'keyvault';      Title = "Key Vault for the sign-in front's wrap key" }
-        [pscustomobject]@{ Id = 'webstate';      Title = "The sign-in front's state in the database; you as the first SuperAdmin" }
         [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image (the pinned version), built in the registry' }
         [pscustomobject]@{ Id = 'webapp';        Title = 'The web app: the sign-in front + the GUI in one revision' }
         [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
@@ -321,7 +329,8 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'logs'
         & $mk 'registry'         'Container registry (Premium, public access off) + AcrPull for the identities'
         & $mk 'registryendpoint' 'Private endpoint + DNS records: the registry (login server and data endpoint)'
-        & $mk 'sql'              'Azure SQL (Entra-only, public access off) + database'
+        & $mk 'sqladmins'
+        & $mk 'sql'            'Azure SQL (Entra-only, public access off) + database'
         & $mk 'sqlendpoint'      'Private endpoint + DNS record: Azure SQL'
         & $mk 'queues'           'The job queues (storage, no shared key, public access off)'
         & $mk 'queueendpoint'    'Private endpoint + DNS record: the job queues'
@@ -335,13 +344,11 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'dnscheck'         'DNS check from this machine: every private name resolves to its endpoint'
         & $mk 'agentpool'        "The registry's build pool inside the network"
         & $mk 'image'
-        & $mk 'schema'
-        & $mk 'sqlaccess'
+        & $mk 'database'
         & $mk 'jobs'
         & $mk 'jobstarter'
         & $mk 'graph'
         & $mk 'exchange'
-        & $mk 'webstate'
         & $mk 'frontimage'
         & $mk 'webapp'
         & $mk 'verify'           'Verify: read everything back, run the tick once'
@@ -552,13 +559,13 @@ function Test-EpsInstallStep {
     if ($Ctx.Network.Private) { $p = Test-EpsPrivateInstallStep -Id $Id -Ctx $Ctx; if ($p) { return $p } }
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
-        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all three' } } }
+        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
+        'sqladmins'     { @{ Action = 'run'; Detail = "an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
+        'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
         'registry'      { if (& $has "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" $script:EpsApi.acr) { @{ Action = 'update'; Detail = "$($n.Registry) (AcrPull checked)" } } else { @{ Action = 'create'; Detail = "$($n.Registry) (Basic)" } } }
         'image'         { @{ Action = 'run'; Detail = "build $($n.Image):$($Ctx.Version) in $($n.Registry)" } }
-        'sql'           { if (& $has "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)/databases/$($n.Database)" $script:EpsApi.sql) { @{ Action = 'exists'; Detail = "$($n.SqlServer)/$($n.Database) (an S0 or Basic database is raised to S1; any other size is kept)" } } else { @{ Action = 'create'; Detail = "$($n.SqlServer) (Entra-only, admin $($Ctx.Person.Upn)) + $($n.Database) (S1, 250 GB)" } } }
-        'sqlaccess'     { @{ Action = 'run'; Detail = "roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level); users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', ') - never db_datareader / db_datawriter" } }
-        'schema'        { @{ Action = 'run'; Detail = 'sql/eps-schema.sql (idempotent, additive)' } }
+        'sql'           { if (& $has "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)/databases/$($n.Database)" $script:EpsApi.sql) { @{ Action = 'exists'; Detail = "$($n.SqlServer)/$($n.Database) (an S0 or Basic database is raised to S1; any other size is kept)" } } else { @{ Action = 'create'; Detail = "$($n.SqlServer) (Entra-only, admin $(if ($Ctx.SqlAdminGroup.Name) { $Ctx.SqlAdminGroup.Name } else { $n.SqlAdminGroup })) + $($n.Database) (S1, 250 GB)" } } }
         'environment'   { if (& $has "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" $script:EpsApi.aca) { @{ Action = 'exists'; Detail = $n.Environment } } else { @{ Action = 'create'; Detail = "$($n.Environment) (Consumption)" } } }
         'queues'        { if (& $has "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)" $script:EpsApi.st) { @{ Action = 'update'; Detail = "$($n.Storage) (queues + who may send / read checked)" } } else { @{ Action = 'create'; Detail = "$($n.Storage) (no shared key) + one queue per work job; the tick may send, the engine read" } } }
         'jobs'          { @{ Action = 'run'; Detail = ((Get-EpsJobBodies -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)") | ForEach-Object { $_.Name }) -join ', ' } }
@@ -568,7 +575,6 @@ function Test-EpsInstallStep {
         'webregistration' { $a = try { Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)" } catch { $null }; if ($a) { @{ Action = 'update'; Detail = "$($a.displayName) ($($a.appId)): api://, scope $($script:EpsWeb.Scope), consents, federated credential for $($n.WebIdentity)" } } else { @{ Action = 'create'; Detail = "app registration '$($n.WebAppRegistration)' (single tenant, code flow, no secret, assignment required, you assigned)" } } }
         'keyvault'      { $up = "; $($n.EngineIdentity) Key Vault Secrets User on the secret $($script:EpsUplinkSecret) only if Invardia has put it there (the install never creates or reads it)"
                           if (& $has "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)" $script:EpsWeb.KvApi) { @{ Action = 'exists'; Detail = "$($n.KeyVault) (key $($script:EpsWeb.KeyName) checked)$up" } } else { @{ Action = 'create'; Detail = "$($n.KeyVault) (Standard, RBAC, purge protection) + RSA key $($script:EpsWeb.KeyName); $($n.WebIdentity) Crypto Service Encryption User on that key$up" } } }
-        'webstate'      { @{ Action = 'run'; Detail = "schema signin owned by $($n.WebIdentity) + CREATE TABLE; $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" } }
         'frontimage'    { $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot; $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot; @{ Action = $(if ($s.Ok) { 'run' } else { 'blocked' }); Detail = "signin-front:$pin in $($n.Registry) - $($s.Reason)" } }
         'webapp'        { if (& $has "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca) { @{ Action = 'update'; Detail = "$($n.WebApp) (the front + the GUI)" } } else { @{ Action = 'create'; Detail = "$($n.WebApp): signin-front on the ingress (8080), the GUI on 127.0.0.1:8081, as $($n.WebIdentity), scale 0-1" } } }
         'retiretick'    { if ($n.LegacyTickIdentity) { @{ Action = 'run'; Detail = "remove $($n.LegacyTickIdentity) after verify ran the tick as $($n.EngineIdentity): its role assignments, its database user, the identity - each read back" } } else { @{ Action = 'exists'; Detail = 'nothing to remove (the scheduler runs as the engine identity)' } } }
@@ -584,8 +590,8 @@ function Invoke-EpsInstallStep {
     $tags = @{ product = 'EntraPolicySuite'; version = $Ctx.Version }
     $priv = [bool]$Ctx.Network.Private   # NET-1: the private network install (the public install never sets it)
     $loadMi = {
-        if ($Ctx.Identities.EngineIdentity -and $Ctx.Identities.TickIdentity -and $Ctx.Identities.WebIdentity) { return }
-        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') {
+        if ($Ctx.Identities.EngineIdentity -and $Ctx.Identities.TickIdentity -and $Ctx.Identities.WebIdentity -and $Ctx.Identities.DbInitIdentity) { return }
+        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') {
             $m = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi
             $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
         }
@@ -625,7 +631,7 @@ function Invoke-EpsInstallStep {
             [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $(if ($old) { $old.location } else { $Ctx.Location }); tags = $t })
         }
         'identities' {
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') {
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') {
                 $m = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi -Body @{ location = $Ctx.Location; tags = $tags }
                 $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
             }
@@ -643,7 +649,7 @@ function Invoke-EpsInstallStep {
                 $acrBody.properties.networkRuleBypassOptions = if ($old) { if ("$($old.properties.networkRuleBypassOptions)") { "$($old.properties.networkRuleBypassOptions)" } else { 'AzureServices' } } else { 'None' }
             }
             $acr = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -Body $acrBody
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
         }
         'image' {
             $ctxFile = New-EpsBuildContext -SolutionRoot $Ctx.SolutionRoot
@@ -660,9 +666,12 @@ function Invoke-EpsInstallStep {
             $sqlLoc = if ($Ctx.SqlLocation) { $Ctx.SqlLocation } else { $Ctx.Location }
             # the SQL server's Entra admin (framework §12.23 P5, owner 2026-11-01): an EXISTING server keeps the admin it has
             # (a re-run never takes the customer's admin group away); a group still named with the old product name is renamed to the standard grp-eps-sql-admins in place (same object, same sid);
-            # a NEW server gets the customer's group (-SqlAdminGroupId) or else whoever installs: a person (sid = object
-            # id) or, through the Invardia Support app, an application (sid = its client id)
+            # a NEW server gets the SQL admin GROUP the step 'sqladmins' set up (SEC-08: the customer's -SqlAdminGroupId or
+            # grp-eps-sql-admins, with the database setup job's identity in it); only when that group could not be set up,
+            # whoever installs: a person (sid = object id) or, through the Invardia Support app, an application (sid = its client id)
             $old = Invoke-EpsArm -Path $srv -ApiVersion $script:EpsApi.sql -AllowNotFound
+            # a resumed install no longer has the group in memory: find it again (never created here)
+            if (-not $old -and -not ($Ctx.SqlAdminGroup -and $Ctx.SqlAdminGroup.ObjectId)) { & $loadMi; [void](Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate) }
             $admin = if ($old -and $old.properties.administrators -and $old.properties.administrators.sid) {
                 $a = $old.properties.administrators
                 $k = @{ administratorType = 'ActiveDirectory'; azureADOnlyAuthentication = $true; login = $a.login; sid = $a.sid; tenantId = $a.tenantId }
@@ -701,17 +710,36 @@ function Invoke-EpsInstallStep {
             # other size (one the customer or support set) is kept, and the size limit is never lowered
             $dbPath = "$srv/databases/$($n.Database)"
             $oldDb = Invoke-EpsArm -Path $dbPath -ApiVersion $script:EpsApi.sql -AllowNotFound
+            $Ctx.NewDatabase = -not $oldDb   # a new database has every feature off (the exchange step needs no SQL read then)
             $size = Get-EpsSqlTargetSize -Current $oldDb
             [void](Invoke-EpsArm -Method PUT -Path $dbPath -ApiVersion $script:EpsApi.sql -Body @{ location = $(if ($oldDb) { $oldDb.location } else { $sqlLoc }); tags = $tags; sku = $size.Sku; properties = @{ maxSizeBytes = $size.MaxSizeBytes } })
         }
-        'sqlaccess' {
+        'sqladmins' {
             & $loadMi
+            $r = Initialize-EpsSqlAdminGroup -Ctx $Ctx
+            if (-not $r.Use) { Write-Host "  note     $($r.Why)" -ForegroundColor Yellow }
+            return @{ Note = $r.Why }
+        }
+        'database' {
+            # SEC-08 plan A: the job caj-eps-dbinit does it as its own identity (in the SQL admin group). Only when the
+            # server's admin cannot hold the job's identity (a person / application admin of an older install, or the
+            # group could not be set up) does it run as the signed-in admin, as before - said plainly.
+            & $loadMi
+            $mode = if ($Ctx.DbJob) { $Ctx.DbJob } else { Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate }
+            $sa = if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) { @{ Upn = $Ctx.Person.Upn; ObjectId = $Ctx.Person.ObjectId } }
+            if ($mode.Use) {
+                $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa
+                return @{ Note = "the job $($n.DbInitJob) ($($j.Execution)) read every principal back after $($j.Seconds) s - no SQL right for you" }
+            }
+            Invoke-EpsSetupSql -Ctx $Ctx -Schema
             # the roles first (a member needs its role), each user in its own role only
             $gl = Get-EpsGrantList -SolutionRoot $Ctx.SolutionRoot
-            $roleOf = @{}; foreach ($r in $gl.roles.Keys) { $roleOf[$gl.roles[$r].identity] = $r }
-            Invoke-EpsSetupSql -Ctx $Ctx -Script ((@(Get-EpsGrantScript -GrantList $gl) + @(foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') { Get-EpsSqlUserScript -Name $n[$k] -ClientId $Ctx.Identities[$k].ClientId -Role $roleOf[$k] })) -join "`n")
+            Invoke-EpsSetupSql -Ctx $Ctx -Script ((@(Get-EpsGrantScript -GrantList $gl) + @(foreach ($p in Get-EpsDbInitPrincipals -Ctx $Ctx -GrantList $gl) { Get-EpsSqlUserScript -Name $p.name -ClientId $p.clientId -Role $p.role })) -join "`n")
+            $sqlText = Get-EpsSigninStateSql -WebUser $n.WebIdentity
+            if ($sa) { $sqlText += "`n" + (Get-EpsFirstSuperAdminSql -Upn $sa.Upn -ObjectId $sa.ObjectId) }
+            Invoke-EpsSetupSql -Ctx $Ctx -Script $sqlText
+            return @{ Note = "as you, the server's admin - $($mode.Why)" }
         }
-        'schema' { Invoke-EpsSetupSql -Ctx $Ctx -Schema }
         'environment' {
             $law = Invoke-EpsArm -Path "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" -ApiVersion $script:EpsApi.law
             $key = (Invoke-EpsArm -Method POST -Path "$($law.id)/sharedKeys" -ApiVersion $script:EpsApi.law -Body @{}).primarySharedKey
@@ -803,7 +831,9 @@ function Invoke-EpsInstallStep {
             # so it grants none; an install whose features no longer need them has them REMOVED, read back. Not readable =
             # nothing changes on a guess.
             $need = $null
-            if (Get-Command Get-EpsExchangeNeed -ErrorAction SilentlyContinue) {
+            # SEC-08: a database this run CREATED has every feature off - known without a SQL read (the person may hold no SQL right)
+            if ($Ctx.NewDatabase -eq $true) { $need = @{ Known = $true; Needed = $false; Why = 'a new database: every feature is off' } }
+            elseif (Get-Command Get-EpsExchangeNeed -ErrorAction SilentlyContinue) {
                 try {
                     $r = Invoke-EpsSetupSql -Ctx $Ctx -Script $script:EpsExchangeNeedSql -Rows
                     $rows = if ($r -and $r.PSObject.Properties['Rows']) { @($r.Rows) } else { @($r) }
@@ -826,11 +856,6 @@ function Invoke-EpsInstallStep {
         }
         'webregistration' { & $loadMi; Invoke-EpsWebRegistrationStep -Ctx $Ctx }
         'keyvault' { & $loadMi; & $loadWeb; Invoke-EpsKeyVaultStep -Ctx $Ctx; $Ctx.UplinkKey = Grant-EpsUplinkKeyAccess -Ctx $Ctx }
-        'webstate' {
-            $sqlText = Get-EpsSigninStateSql -WebUser $n.WebIdentity
-            if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) { $sqlText += "`n" + (Get-EpsFirstSuperAdminSql -Upn $Ctx.Person.Upn -ObjectId $Ctx.Person.ObjectId) }
-            Invoke-EpsSetupSql -Ctx $Ctx -Script $sqlText
-        }
         'frontimage' {
             $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot
             $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot
@@ -936,22 +961,13 @@ function Confirm-EpsInstall {
         $r = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$($j.Name)" -ApiVersion $script:EpsApi.aca -AllowNotFound
         if (-not $r -or $r.properties.provisioningState -ne 'Succeeded') { throw "job $($j.Name) is not provisioned ($($r.properties.provisioningState))" }
     }
-    $since = [datetime]::UtcNow
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $n.TickJob
     if (-not $s.Ok) { throw "the tick could not be started: $($s.Reason)" }
-    $cs = "Server=tcp:$($n.SqlServer).database.windows.net,1433;Database=$($n.Database);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30"
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    while ($sw.Elapsed.TotalSeconds -lt $TickWaitSeconds) {
-        Start-Sleep -Seconds $PollSeconds
-        $q = "SELECT TOP 1 Status FROM eps.Run WHERE Job = 'Tick' AND StartedAtUtc >= @t ORDER BY StartedAtUtc DESC"
-        if ($global:EPS_SetupSqlOverride) { $st = & $global:EPS_SetupSqlOverride $Ctx $q $false }   # test seam
-        else {
-            $global:EPS_SqlAccessToken = & $global:EPS_TokenProvider 'https://database.windows.net'
-            try { $st = Invoke-EpsSql -ConnectionString $cs -Scalar -Parameters @{ t = $since.AddMinutes(-1) } -Query $q } catch { $st = $null } finally { $global:EPS_SqlAccessToken = $null }
-        }
-        if ($st -and $st -ne 'Running') { return @{ Tick = $st; Execution = $s.Execution; Seconds = [math]::Round($sw.Elapsed.TotalSeconds) } }
-    }
-    throw "the tick ($($s.Execution)) wrote no finished run record within $TickWaitSeconds s - see its log in $($n.Logs)"
+    # SEC-08 row 4: no SQL read - the tick execution's own status through ARM (the entry exits 1 when its run failed, 0
+    # only after it wrote its run record), so the person needs no SQL right and a private install no machine inside
+    $w = Wait-EpsAcaJobExecution -Ctx $Ctx -Job $n.TickJob -Execution $s.Execution -TimeoutSeconds $TickWaitSeconds -PollSeconds $PollSeconds
+    if ($w.Status -eq 'TimedOut') { throw "the tick ($($s.Execution)) did not end within $TickWaitSeconds s - see its log in $($n.Logs)" }
+    @{ Tick = $w.Status; Execution = $s.Execution; Seconds = $w.Seconds }
 }
 
 function Invoke-EpsInstall {

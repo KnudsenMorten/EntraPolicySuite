@@ -48,10 +48,10 @@
 .PARAMETER SqlLocation
     The Azure SQL server's region, when Azure SQL does not take new servers in -Location. Default: -Location.
 .PARAMETER SqlAdminGroupId
-    The object id of YOUR admin group (Entra security group) to be the Azure SQL server's Entra admin. The standard name
-    for that group is grp-eps-sql-admins. Make sure you are
-    a member of it (the install's SQL steps run as you). Without it a new server gets you as its admin. An EXISTING server
-    always keeps the admin it has - a re-run never changes it.
+    The object id of YOUR admin group (Entra security group) to be the Azure SQL server's Entra admin. Without it a new
+    server gets the group grp-eps-sql-admins (found, else created). Either way the install adds the database setup job's
+    identity id-eps-dbinit to the group and the job does the database work - you need no SQL right. An EXISTING server
+    always keeps the admin it has - a re-run never changes it (a group admin gets id-eps-dbinit added).
 .PARAMETER SqlAdminGroupName
     The display name of that group (shown as the SQL admin).
 .PARAMETER Ring

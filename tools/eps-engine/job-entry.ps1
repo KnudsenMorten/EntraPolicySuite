@@ -8,6 +8,7 @@
     EPS_JOB = UserTagging     user tagging: takes the oldest request the tick dispatched for it, or runs on schedule
     EPS_JOB = DeviceTagging   device tagging, the same way
     EPS_JOB = CAPolicyAnalyzer the CA Policy Analyzer (read only): one ad-hoc request (EPS_REQUEST_ID) or one monitor (EPS_CA_MONITOR)
+    EPS_JOB = DbInit          the database setup job (caj-eps-dbinit, SEC-08): schema, roles, users, the front's state
     EPS_JOB = Web             the GUI (tools/eps-web/Start-EpsWeb.ps1), behind the shared sign-in front
     A scheduled run uses the feature's mode setting (<Job>.Mode, default Preview: a new install previews until the
     customer has tested and switched the job to Apply - DESIGN §5.8 "never the whole tenant untested").
@@ -31,6 +32,13 @@ try {
         foreach ($d in $t.Decisions) { Say ("{0,-15} {1,-11} {2}" -f $d.Job, $d.Action, $d.Reason) }
         Say "tick $($t.RunId): $($t.Status)"
         exit $(if ($t.Status -eq 'Failed') { 1 } else { 0 })
+    }
+    if ($Job -eq 'DbInit') {
+        # SEC-08 plan A: the database setup job caj-eps-dbinit, as its own identity id-eps-dbinit (a member of the SQL
+        # admin group) - started by the installer / the updater, never by the tick and never from a queue. Its decisions
+        # are in EPS-DbInit.ps1; exit 0 only when every principal is read back.
+        . (Join-Path $sol 'engine\_shared\EPS-Install.ps1')   # with EPS-InstallWeb (the front's state SQL) and EPS-DbInit
+        exit (Invoke-EpsDbInit -ConnectionString $ConnectionString -SolutionRoot $sol -Log { param($m) Say $m })
     }
     if ($Job -eq 'Web') {
         # the GUI (DESIGN §2): behind the shared sign-in front, on 127.0.0.1 only - it never returns
