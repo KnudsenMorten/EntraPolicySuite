@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.66 - mail settings without a database right
+- Initialize-EpsMailSender.ps1 stores the mail settings (mode, sender, recipients, environment name) through the
+  install's database setup job: you need the right to start a job in the install's resource group, no database right.
+  The job takes only these settings, checks every value and writes the change to the audit trail. An install made
+  before 2.0.59 is changed as before.
+
 ## 2.0.65 - the updater keeps a private install's Key Vault private
 - On every run, the update job of a private network install checks that the install's Key Vault is still private (public
   access off, deny by default, trusted Azure services allowed, no IP or network rules). A vault that lost those settings -

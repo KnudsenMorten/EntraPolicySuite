@@ -7,7 +7,7 @@
   "whenToRun": "Once after the install, and again to change the sender or the recipients.",
   "runAs": [
     { "kind": "entraRole", "name": "Exchange Administrator (and Global Administrator for the Graph grant check)", "scope": "the tenant", "why": "creates the mailbox, the Exchange service principal, the scope and the role assignment" },
-    { "kind": "other", "name": "the Entra Policy Suite SQL server's Entra admin", "scope": "the Entra Policy Suite database", "why": "stores the mail settings" }
+    { "kind": "azureRbac", "name": "Contributor (or any role that may start a Container Apps job)", "scope": "the install's resource group", "why": "starts the database setup job, which stores the mail settings (audited) - no database right needed (installs made since 2.0.59); an older install: the SQL server's Entra admin stores them directly" }
   ],
   "changes": [
     { "target": "Exchange Online", "action": "create", "object": "the shared mailbox (if it does not exist; no licence)", "scope": "the tenant", "why": "the alerts are sent from it", "undo": "Remove-Mailbox" },

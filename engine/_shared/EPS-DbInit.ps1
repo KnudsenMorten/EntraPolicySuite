@@ -64,6 +64,45 @@ function Read-EpsDbInitInput {
     @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); FrontVersion = $fv }
 }
 
+function Read-EpsDbInitSettings {
+    <#
+      PURE. SEC-08 row 9: per execution, settings a setup script asks the job to write (EPS_DBINIT_SETTINGS, a JSON object).
+      ONLY these keys, each checked: Mail.Mode (sharedMailbox | none), Mail.Sender (one mail address), Mail.Recipients (a
+      JSON list of 1-20 mail addresses), Platform.EnvironmentName (plain text, at most 120). Anything else refuses the
+      whole input. Returns @{ Ok; Reason; Settings (ordered) }.
+    #>
+    param([AllowEmptyString()][string]$Json)
+    if (-not "$Json".Trim()) { return @{ Ok = $true; Reason = ''; Settings = [ordered]@{} } }
+    $o = try { $Json | ConvertFrom-Json -AsHashtable -Depth 5 } catch { return @{ Ok = $false; Reason = 'EPS_DBINIT_SETTINGS is not JSON' } }
+    if ($o -isnot [System.Collections.IDictionary]) { return @{ Ok = $false; Reason = 'EPS_DBINIT_SETTINGS is not an object' } }
+    $mail = '^[^@\s''"<>;,]{1,64}@[^@\s''"<>;,]{1,190}\.[A-Za-z]{2,24}$'
+    $s = [ordered]@{}
+    foreach ($k in @($o.Keys)) {
+        $v = $o[$k]
+        switch ($k) {
+            'Mail.Mode' { if ("$v" -notin 'sharedMailbox', 'none') { return @{ Ok = $false; Reason = "Mail.Mode '$v' is not sharedMailbox or none" } }; $s[$k] = "$v" }
+            'Mail.Sender' { if ("$v" -notmatch $mail) { return @{ Ok = $false; Reason = 'Mail.Sender is not a mail address' } }; $s[$k] = "$v" }
+            'Mail.Recipients' {
+                $l = @($v | ForEach-Object { "$_" }); if (-not $l.Count -or $l.Count -gt 20 -or @($l | Where-Object { $_ -notmatch $mail }).Count) { return @{ Ok = $false; Reason = 'Mail.Recipients is not a list of 1-20 mail addresses' } }
+                $s[$k] = (ConvertTo-Json -InputObject @($l) -Compress)
+            }
+            'Platform.EnvironmentName' { if ("$v" -notmatch '^[^\x00-\x1f<>''"]{1,120}$') { return @{ Ok = $false; Reason = 'Platform.EnvironmentName is not plain text of at most 120 characters' } }; $s[$k] = "$v" }
+            default { return @{ Ok = $false; Reason = "setting '$k' may not be written by the setup job" } }
+        }
+    }
+    @{ Ok = $true; Reason = ''; Settings = $s }
+}
+
+function Get-EpsDbInitSettingsSql {
+    # PURE. The checked settings as MERGEs + ONE audit row (setting.change, by the setup job for the named person)
+    param([Parameter(Mandatory)]$Settings, [string]$By = 'setup script')
+    $q = { param($x) "N'$("$x".Replace("'", "''"))'" }
+    $lines = @(foreach ($k in $Settings.Keys) { "MERGE eps.Setting AS d USING (SELECT $(& $q $k) AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = $(& $q $Settings[$k]), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = $(& $q $By) WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES ($(& $q $k), $(& $q $k.Split('.')[0]), $(& $q $Settings[$k]), $(& $q $By));" })
+    $after = (@{} + $Settings | ConvertTo-Json -Compress).Replace("'", "''")
+    $lines += "INSERT INTO eps.AuditEvent (Action, Actor, ActorSource, Target, Reason, Outcome, AfterJson) VALUES ('setting.change', $(& $q $By), 'setup', N'Setting|$(($Settings.Keys) -join ',')', N'written by the database setup job for a setup script (SEC-08)', 'ok', N'$after');"
+    $lines -join "`n"
+}
+
 function Get-EpsUplinkStateMergeSql {
     # PURE. One eps.UplinkState row (name and value already checked by the caller's patterns)
     param([Parameter(Mandatory)][ValidatePattern('^[a-z][a-z0-9.-]{1,60}$')][string]$Name, [Parameter(Mandatory)][ValidatePattern('^[0-9A-Za-z.+:| -]{1,100}$')][string]$Value)
@@ -144,6 +183,9 @@ function Invoke-EpsDbInit {
     $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
     $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
+    $set = Read-EpsDbInitSettings -Json (& $e 'EPS_DBINIT_SETTINGS')
+    if (-not $set.Ok) { & $Log "refused: $($set.Reason)"; return 2 }
+    $by = "$(& $e 'EPS_DBINIT_BY')".Trim(); if ($by -notmatch '^[^\x00-\x1f<>''"]{1,200}$') { $by = 'setup script' }
     & $Log "principals: $(@($in.Principals | ForEach-Object { "$($_.Name)=$($_.Role)" }) -join ', '); web user $($in.WebUser)$(if ($in.SuperAdmin) { "; first SuperAdmin $($in.SuperAdmin.Upn)" })$(if ($in.Drop.Count) { "; remove $($in.Drop -join ', ')" })"
     # the login first: the job's identity is the admin only through the group
     $ok = $false
@@ -161,7 +203,9 @@ function Invoke-EpsDbInit {
     try {
         $v = Install-EpsSchema -ConnectionString $ConnectionString -SchemaPath (Join-Path $SolutionRoot 'sql\eps-schema.sql')
         & $Log "schema: version $v"
-        foreach ($b in Get-EpsDbInitPlan -DbInput $in -GrantList $gl -Version $ver) {
+        $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl -Version $ver)
+        if ($set.Settings.Count) { $plan += @{ Name = "settings for a setup script: $(@($set.Settings.Keys) -join ', ') (by $by)"; Sql = (Get-EpsDbInitSettingsSql -Settings $set.Settings -By $by) } }
+        foreach ($b in $plan) {
             [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query $b.Sql)
             & $Log "done: $($b.Name)"
         }
@@ -350,7 +394,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting)
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     # -UseExisting: start the job the install made, as it is (a setup script: the person may start it, nothing else)
     if ($UseExisting) { $j = @{ Name = $n.DbInitJob } } else {
@@ -361,6 +405,7 @@ function Invoke-EpsDbInitJob {
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
     if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
+    if ($Settings -and $Settings.Count) { $env.EPS_DBINIT_SETTINGS = ($Settings | ConvertTo-Json -Compress -Depth 5); if ($By) { $env.EPS_DBINIT_BY = $By } }
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $j.Name -Env $env -Waits @(0, 15, 30, 60)
     if (-not $s.Ok) { throw "the database setup job $($j.Name) could not be started: $($s.Reason)" }
     $w = Wait-EpsAcaJobExecution -Ctx $Ctx -Job $j.Name -Execution $s.Execution -PollSeconds ($Ctx.PollSeconds ?? 15)

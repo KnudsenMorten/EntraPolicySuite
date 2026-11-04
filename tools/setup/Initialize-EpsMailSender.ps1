@@ -57,6 +57,17 @@ $after = Get-EpsMailSenderState -TenantId "$TenantId" -Sender $Sender -AppId $ap
 $left = Get-EpsMailSenderPlan -Sender $Sender -AppId $appId -ObjectId $oid -State $after
 if (@($left.Steps | Where-Object { $_.Cmdlet -ne 'Enable-OrganizationCustomization' }).Count) { throw "not in place after the apply: $(@($left.Steps | ForEach-Object What) -join '; ')" }
 $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol }
-$sql = (@(foreach ($k in $settings.Keys) { "MERGE eps.Setting AS d USING (SELECT N'$k' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$($settings[$k].Replace("'", "''"))', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Feature, Value) VALUES (N'$k', N'$($k.Split('.')[0])', N'$($settings[$k].Replace("'", "''"))');" }) -join "`n")
+# SEC-08 row 9 (no person needs database admin rights): an install with the database setup job writes the settings
+# through it (a fixed list of setting keys, audited) - you only start the job, no SQL right
+$dbJob = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/jobs/$($names.DbInitJob)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+if ($dbJob) {
+    $me = try { "$((Invoke-EpsGraph -Path 'v1.0/me?$select=userPrincipalName').userPrincipalName)" } catch { 'Initialize-EpsMailSender' }
+    $js = [ordered]@{}; foreach ($k in $settings.Keys) { $js[$k] = $settings[$k] }; $js['Mail.Recipients'] = @($Recipients)   # the job takes the list itself (it checks every address)
+    $r = Invoke-EpsDbInitJob -Ctx $ctx -Settings $js -By $me -UseExisting
+    Write-Host "  settings written by the database setup job ($($r.Execution))" -ForegroundColor DarkGray
+    Write-Host "`nMail is set up: the engine sends as $Sender only (scope $($plan.ScopeName)), to $($Recipients -join ', ')." -ForegroundColor Green
+    return
+}
+$sql =(@(foreach ($k in $settings.Keys) { "MERGE eps.Setting AS d USING (SELECT N'$k' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$($settings[$k].Replace("'", "''"))', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Feature, Value) VALUES (N'$k', N'$($k.Split('.')[0])', N'$($settings[$k].Replace("'", "''"))');" }) -join "`n")
 Invoke-EpsSetupSql -Ctx $ctx -Script $sql
 Write-Host "`nMail is set up: the engine sends as $Sender only (scope $($plan.ScopeName)), to $($Recipients -join ', ')." -ForegroundColor Green
