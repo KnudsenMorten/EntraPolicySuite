@@ -215,7 +215,7 @@ function New-EpsUplinkHeartbeat {
       Facts: @{ Counts; EnvironmentName; Jobs = @(@{ Job; LastStart; LastEnd; Status; DurationMin; PrevDurationMin; TimeoutHours });
                Update = @{ Installed }; Mail = @{ Mode; LastSentUtc }; SignIn = @{ Layer; Version }; Database = @{ Tier } }
     #>
-    param([Parameter(Mandatory)]$Facts, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [switch]$WithoutNewFields)
+    param([Parameter(Mandatory)]$Facts, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [switch]$WithoutNewFields, [string[]]$Drop = @())
     $o = New-EpsUplinkEnvelope -Kind 'heartbeat' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
     if ($WithoutNewFields) { $o.Remove('Ring') }   # the liveness-only resend carries the oldest field set
     $o.Outcome = 'ok'
@@ -278,12 +278,22 @@ function New-EpsUplinkHeartbeat {
         # DELIVERY-CONTRACT A: a run that goes now, against its usual length (Invardia alerts at 2x)
         $lr = $Facts.LongRun
         if ($lr -and ($st = Select-EpsUplinkEnum "$($lr.state)" 'LongRunState')) {
-            $l = [ordered]@{ usualMin = [double]$lr.usualMin; ageMin = [double]$lr.ageMin; ratio = [Math]::Round([double]$lr.ratio, 2); state = $st; newerWaiting = [bool]$lr.newerWaiting
+            # OPEN-13 (framework §8.8, Invardia's Pipeline contract): state 'running' (Invardia reads a Pipeline only then),
+            # the run's start, the job as its step; longRun.newerWaiting is a VERSION or left out (EPS's updater applies
+            # nothing yet, so it is left out), longRun.at = when this was judged
+            $l = [ordered]@{ usualMin = [double]$lr.usualMin; ageMin = [double]$lr.ageMin; ratio = [Math]::Round([double]$lr.ratio, 2); state = $st
                              action = $(if ($a = Select-EpsUplinkEnum "$($lr.action)" 'LongRunAction') { $a } else { 'none' }) }
-            $at = ConvertTo-EpsUplinkIso $lr.at; if ($at) { $l.at = $at }
-            $o.Pipeline = [ordered]@{ job = (Get-EpsUplinkJobId "$($lr.job)"); longRun = $l }
+            if ("$($lr.newerWaiting)" -match '^\d+\.\d+\.\d+$') { $l.newerWaiting = "$($lr.newerWaiting)" }
+            $l.at = ConvertTo-EpsUplinkIso $(if ($lr.at) { $lr.at } else { $NowUtc })
+            $p = [ordered]@{ state = 'running'; step = (Get-EpsUplinkJobId "$($lr.job)") }
+            $su = if ($lr.startedUtc) { ConvertTo-EpsUplinkIso $lr.startedUtc }
+            if ($su) { $p.startedUtc = $su; $p.stepSinceUtc = $su }
+            $p.longRun = $l
+            $o.Pipeline = $p
         }
     }
+    # a field Invardia named in its refusal (422 { fields }) is left out of the one resend - the rest still goes
+    foreach ($d in @($Drop)) { if ("$d" -and $o.Contains("$d")) { $o.Remove("$d") } }
     Select-EpsUplinkRecord $o
 }
 
@@ -309,7 +319,7 @@ function Get-EpsUplinkLongRun {
             $usual = if ($d.Count) { [Math]::Max(1.0, $d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { 1.0 }
             $age = [Math]::Round(($NowUtc - [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc')).TotalMinutes, 1)
             $ratio = $age / $usual
-            if (-not $best -or $ratio -gt $best.ratio) { $best = @{ job = [string]$r.Job; usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $ratio; state = $(if ($ratio -ge 4) { 'stuck' } elseif ($ratio -ge 2) { 'long' } else { 'ok' }); newerWaiting = $false; action = 'none'; at = $NowUtc } }
+            if (-not $best -or $ratio -gt $best.ratio) { $best = @{ job = [string]$r.Job; startedUtc = [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc'); usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $ratio; state = $(if ($ratio -ge 4) { 'stuck' } elseif ($ratio -ge 2) { 'long' } else { 'ok' }); newerWaiting = $false; action = 'none'; at = $NowUtc } }
         }
         $best
     } catch { $null }
@@ -680,9 +690,18 @@ function Invoke-EpsUplinkCycle {
             $facts = Get-EpsUplinkHeartbeatFacts -ConnectionString $ConnectionString -Version $Version
             $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc)
             if (-not $r.Ok -and $r.Status -in 400, 413, 422) {
-                & $say 'Warning' "uplink: heartbeat refused ($($r.Reason)) - sent once more without the newer fields (§8.17)"
-                $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc -WithoutNewFields)
-                if ($r.Ok) { $res.Heartbeat = 'ok (without the newer fields)' }
+                # Invardia names the refused fields (422 { error, fields }): only THOSE are left out of the one resend; a
+                # refusal that names none (or names something else) - the liveness record only, as before (§8.17)
+                $named = @(@($r.Fields) | ForEach-Object { "$_" } | Where-Object { $_ -match '^[A-Za-z]{1,40}$' })
+                if ($named.Count -and -not @($named | Where-Object { $script:EpsUplinkNewHeartbeatFields -notcontains $_ }).Count) {
+                    & $say 'Warning' "uplink: heartbeat refused ($($r.Reason)) - sent once more without $($named -join ', ') (Invardia named them)"
+                    $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc -Drop $named)
+                    if ($r.Ok) { $res.Heartbeat = "ok (without $($named -join ', '))" }
+                } else {
+                    & $say 'Warning' "uplink: heartbeat refused ($($r.Reason)) - sent once more without the newer fields (§8.17)"
+                    $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc -WithoutNewFields)
+                    if ($r.Ok) { $res.Heartbeat = 'ok (without the newer fields)' }
+                }
             } elseif ($r.Ok) { $res.Heartbeat = 'ok' }
             if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)

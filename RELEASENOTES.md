@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.58 - long runs reported to Invardia in the agreed shape
+- While a job runs, the heartbeat reports it the way Invardia reads it: running, which job, since when, and how its
+  length compares with its usual one.
+- When Invardia refuses a field of the heartbeat and names it, the heartbeat is sent again without only that field;
+  the rest of the report still arrives.
+- Fixed: 2.0.57 did not raise an existing S0 database to S1 (Azure reports an S0 database's size in another form than
+  the install compared). An install run now raises it.
+
 ## 2.0.57 - the database starts larger, and the sign-in version in the heartbeat
 - A new install's database starts at Standard S1 with 250 GB (was S0). An install run raises an existing S0 or Basic
   database to S1; a database you sized yourself is left as it is.

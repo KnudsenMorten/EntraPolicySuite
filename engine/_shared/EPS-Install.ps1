@@ -236,13 +236,18 @@ function Invoke-EpsRetireTickStep {
     @{ Note = "$u removed ($($ras.Count) role assignment(s), its database user, the identity) - read back" }
 }
 
-$script:EpsSqlStartSku = @{ name = 'S1'; tier = 'Standard' }; $script:EpsSqlStartMaxBytes = [int64]250 * 1024 * 1024 * 1024
+$script:EpsSqlStartSku = @{ name = 'Standard'; tier = 'Standard'; capacity = 20 }; $script:EpsSqlStartMaxBytes = [int64]250 * 1024 * 1024 * 1024
 function Get-EpsSqlTargetSize {
     # PURE. framework §0 SIZING, raise-only: no database / Basic / S0 -> S1 (Standard); anything else is kept as it is (a
     # size the customer or support set wins, its size limit too). A raised database gets at least 250 GB, never less than it had.
     param($Current)
     $sku = $Current.sku
-    $keep = $sku -and "$($sku.name)" -and "$($sku.name)" -notin 'Basic', 'S0'
+    # ARM reports a DTU database as sku { name 'Standard', tier, capacity } (S0 = Standard / 10), never 'S0' - found live
+    # at internal 2026-11-04 (2.0.57 read S0 as "another size" and kept it). The size is the service objective the
+    # database runs (currentServiceObjectiveName), else the sku name, else a Standard sku's capacity.
+    $objective = "$($Current.properties.currentServiceObjectiveName)"
+    if (-not $objective -and $sku) { $objective = if ("$($sku.name)" -eq 'Standard' -and "$($sku.capacity)" -and [int]$sku.capacity -le 10) { 'S0' } else { "$($sku.name)" } }
+    $keep = $sku -and $objective -and $objective -notin 'Basic', 'S0'
     $cur = [int64]0; if ($Current) { [void][int64]::TryParse("$($Current.properties.maxSizeBytes)", [ref]$cur) }
     @{ Sku = $(if ($keep) { $s = @{ name = "$($sku.name)" }; if ("$($sku.tier)") { $s.tier = "$($sku.tier)" }; if ("$($sku.capacity)") { $s.capacity = [int]$sku.capacity }; if ("$($sku.family)") { $s.family = "$($sku.family)" }; $s } else { $script:EpsSqlStartSku.Clone() })
        MaxSizeBytes = $(if ($keep -and $cur -gt 0) { $cur } else { [math]::Max($cur, $script:EpsSqlStartMaxBytes) }); Raised = -not $keep -and [bool]$Current }
