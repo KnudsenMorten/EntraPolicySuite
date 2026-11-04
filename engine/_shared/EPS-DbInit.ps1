@@ -227,13 +227,42 @@ function Invoke-EpsDbInit {
             & $Log "done: $($b.Name)"
         }
         $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsDbInitReadBackSql)
-    } catch { & $Log "failed: $($_.Exception.Message)"; return 1 }
+    } catch {
+        & $Log "failed: $($_.Exception.Message)"
+        [void](Write-EpsDbInitAudit -ConnectionString $ConnectionString -DbInput $in -By $by -Version $ver -Worker $wk -SupportSeed $seed -SettingKeys @($set.Settings.Keys) -Outcome 'error' -OutcomeText "$($_.Exception.Message)")
+        return 1
+    }
     $t = Test-EpsDbInitReadBack -DbInput $in -Rows $rows
     foreach ($l in $t.Lines) { & $Log $l }
     foreach ($p in $t.Problems) { & $Log "NOT OK: $p" }
+    # AUD-01: the job's change is in the trail, with its read-back verdict (the job's log alone is not the durable store)
+    $au = Write-EpsDbInitAudit -ConnectionString $ConnectionString -DbInput $in -By $by -Version $ver -Worker $wk -SupportSeed $seed -SettingKeys @($set.Settings.Keys) `
+        -Outcome $(if ($t.Ok) { 'ok' } else { 'error' }) -OutcomeText $(if ($t.Ok) { 'every principal read back' } else { $t.Problems -join '; ' })
+    & $Log "audit: setup.database.apply $(if ($au) { 'recorded' } else { 'NOT recorded (see the warning)' })"
     if (-not $t.Ok) { return 1 }
     & $Log 'verdict: every principal read back'
     0
+}
+
+function Write-EpsDbInitAudit {
+    # AUD-01 (framework AUDIT-1.2 items 1 + 3): ONE audit row for the setup job's run - who asked (the setup script's
+    # person, else the install), what it set up (users and roles, the hybrid worker added / removed, the first SuperAdmin,
+    # removals, the Support app's starting level, the setting keys) and the read-back verdict. Never throws.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$DbInput, [string]$By, [string]$Version, [string]$Worker, [string]$SupportSeed,
+          [string[]]$SettingKeys = @(), [ValidateSet('ok', 'error')][string]$Outcome = 'ok', [string]$OutcomeText)
+    $after = [ordered]@{
+        appliedBy = 'caj-eps-dbinit'; version = $Version
+        users = @($DbInput.Principals | ForEach-Object { "$($_.Name)=$($_.Role)" })
+        removed = @($DbInput.Drop)
+        firstSuperAdmin = $(if ($DbInput.SuperAdmin) { "$($DbInput.SuperAdmin.Upn) (only when there was none)" })
+        hybridWorker = $(if ($Worker -eq 'remove') { 'removed' } elseif ($Worker) { "added ($Worker)" })
+        supportStartingLevel = $(if ($SupportSeed) { ($SupportSeed -split '\|')[-1] })
+        settings = @($SettingKeys)
+    }
+    try {
+        Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'setup.database.apply' -Actor $(if ("$By".Trim()) { $By } else { 'setup script' }) -ActorSource 'setup' `
+            -Target 'Database' -Outcome $Outcome -OutcomeText $OutcomeText -After $after
+    } catch { Write-Warning "[audit] setup.database.apply could not be written: $($_.Exception.Message)"; $false }
 }
 
 # ======================================================================================================================

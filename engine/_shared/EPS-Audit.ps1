@@ -40,6 +40,12 @@ $script:EpsAuditActions = @(
     'support.session.refused'       # a support session above the customer's consent (framework SUPPORT ACCESS) - recorded as closed
     'v1import.plan', 'v1import.apply'   # Import v1 (SEC-08 row 8, 2.0.69): the uploaded files checked (the plan; nothing saved) / written by the engine from a SuperAdmin's signed request
     'support.access.change'         # caj-eps-support changed the Support app's database user (OPEN-01: none / read / admin during a session)
+    # AUD-01 (framework alignment AUDIT-1: "read / change / sign-in marks", 2.0.70)
+    'auth.signin'                   # SIGN-IN mark: a person's first verified request of a sign-in period (the front signs in with Entra; at most one per person per 8 h)
+    'identity.view', 'ca.analysis.view'   # READ marks: the identity report's users / devices and an analysis' per-user sign-in rows seen on screen (one per person per view per hour)
+    'tamper.alarm-inputs.export'    # READ mark: the alarm inputs downloaded (the break-glass accounts and the tamper allow list)
+    'setup.database.apply'          # caj-eps-dbinit set up the database: schema, roles, users (incl. the hybrid worker), the first SuperAdmin, removals
+    'update.apply'                  # the updater installed a release (or stopped part way): the components rolled
 )
 
 function Get-EpsAuditActions { $script:EpsAuditActions }

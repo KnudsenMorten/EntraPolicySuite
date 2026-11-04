@@ -5,7 +5,7 @@
     release: https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1).
 .DESCRIPTION
     Takes the latest v2 release of KnudsenMorten/EntraPolicySuite (or -Version), downloads its zip into a new temporary
-    folder, checks it against the SHA-256 digest GitHub publishes for the asset (a mismatch deletes it and stops), unpacks
+    folder, checks it against the SHA-256 digest GitHub publishes for the asset (a mismatch, or no digest, deletes it and stops), unpacks
     it and runs its tools/setup/Install-EntraPolicySuite.ps1 with your parameters. v1 (the scripts) is on the v1 branch
     and is never downloaded or changed by this.
     Run it in PowerShell 7 or Azure Cloud Shell:
@@ -81,12 +81,12 @@ $zip = Join-Path $dir $asset.name
 & $Download $asset.browser_download_url $zip
 $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 $published = if ("$($asset.digest)" -match '^(?i)sha256:([0-9a-f]{64})$') { $Matches[1].ToLowerInvariant() } else { '' }
-if ($published -and $got -ne $published) {
+if (-not $published -or $got -ne $published) {
     [IO.Directory]::Delete($dir, $true)
-    Write-Host "The download does not match the release's published SHA-256 ($published vs $got) - deleted, nothing run." -ForegroundColor Red
+    Write-Host "The download does not match the release's published SHA-256 ($(if ($published) { $published } else { 'none published' }) vs $got) - deleted, nothing run." -ForegroundColor Red
     exit 3
 }
-Write-Host "Release $($rel.tag_name): $($asset.name), SHA-256 $got $(if ($published) { '(matches the release)' } else { '(the release publishes no digest)' })"
+Write-Host "Release $($rel.tag_name): $($asset.name), SHA-256 $got (matches the release)"
 Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
 $installer = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'Install-EntraPolicySuite.ps1' -File | Select-Object -First 1
 if (-not $installer) { Write-Host 'The release has no tools/setup/Install-EntraPolicySuite.ps1.' -ForegroundColor Red; exit 3 }

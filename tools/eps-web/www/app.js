@@ -2695,7 +2695,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     } },
     { id: 'audit', label: 'Audit', role: 'Admin', draw: function (p) {
       p.appendChild(pagedTable('/api/audit', [{ key: 'q', label: 'Search actor, action, target, change' },
-        { key: 'category', label: 'Category', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard'] }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
+        { key: 'category', label: 'Category', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard', 'identity', 'ca', 'setup', 'update', 'support', 'v1import'] }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
         { key: 'from', label: 'From', type: 'date' }, { key: 'to', label: 'To', type: 'date' }], [
         { key: 'TsUtc', label: 'When', type: 'date' }, { key: 'Action', label: 'Action', type: 'cat' }, { key: 'Actor', label: 'Who' }, { key: 'ActorSource', label: 'From', type: 'cat' },
         { key: 'Target', label: 'Target', wrap: true }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Outcome', label: 'Outcome', type: 'cat', cls: stCell('Outcome') }, { key: 'OutcomeText', label: 'Detail', wrap: true },

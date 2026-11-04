@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.70 - a fuller audit trail, and a stricter launcher
+- The audit trail now also records: each person's sign-in to the web app (at most once per 8 hours), who looked at
+  the identity report and at a CA analysis's sign-in rows (once per person per view per hour), the download of the
+  alarm inputs, every run of the database setup job with its result, and every release the updater installed.
+- The install launcher refuses a release whose package has no published SHA-256, and runs nothing.
+- Wording in shipped files describes what the product does.
+
 ## 2.0.69 - importing v1 data without a database right
 - New page Overview > Import v1 (SuperAdmin): upload the files from v1's DATA folder (and v1's user tagging script for
   the attribute per tag type). Reading them saves nothing: the page shows, area by area, what would be added, what would

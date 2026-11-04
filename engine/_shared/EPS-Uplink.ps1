@@ -240,8 +240,8 @@ function New-EpsUplinkHeartbeat {
         if ($jobs.Count) { $o.Jobs = @($jobs) }
         if ("$($Facts.Update.Installed)" -match '^[0-9A-Za-z.+-]{1,50}$') { $o.Update = [ordered]@{ installed = "$($Facts.Update.Installed)" } }
         if ($Facts.Mail) {
-            # mailJob + restriction are required by the contract: the restriction of the mail sender is NOT checked by
-            # the engine at run time, so it says so ('not-verified') - never a guess of 'verified'
+            # mailJob + restriction are required by the contract; the heartbeat reports only what the job itself has
+            # read at run time, so restriction is the contract's 'not-verified' value - never a guess of 'verified'
             $m = [ordered]@{ mailJob = $(if ("$($Facts.Mail.Mode)" -and "$($Facts.Mail.Mode)" -ne 'none') { 'present' } else { 'missing' }); restriction = 'not-verified' }
             $ms = ConvertTo-EpsUplinkIso $Facts.Mail.LastSentUtc; if ($ms) { $m.lastSentUtc = $ms }
             $o.Mail = $m
@@ -658,7 +658,7 @@ function Save-EpsSupportState {
     <#
       Records the support state (eps.SupportEvent): a change of state = a new row + an audit row (support.state.change);
       the same state again = only LastSeenUtc / MaxUntilUtc move. A 'closed' with nothing open before records nothing.
-      NOTHING IS GRANTED here (TODO UPLINK-1: the just-in-time grant, an owner-proven step). Returns the plain line.
+      It records only - it grants no access. Returns the plain line.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$State, [datetime]$NowUtc = [datetime]::UtcNow)
     $refusedLine = ''

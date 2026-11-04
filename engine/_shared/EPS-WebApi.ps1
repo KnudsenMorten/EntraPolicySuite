@@ -19,6 +19,30 @@
 Set-StrictMode -Off
 
 $script:EpsWebAuditThrottle = @{}
+$script:EpsWebMarks = @{}
+
+function Write-EpsWebMark {
+    <#
+      AUD-01 (framework AUDIT-1, "read / change / sign-in marks"): a mark that is NOT one row per request.
+        -Action auth.signin: the sign-in is the shared front's (Entra); the app records a person's FIRST verified request
+          of a sign-in period - at most one per person per -Hours (8), also across restarts and replicas (the trail's own
+          last mark is read once per process and person, on the TsUtc index).
+        a read mark (route Mark = identity.view / ca.analysis.view): one per person per target per -Hours (1).
+      Returns $true when a row was written. Never fails the request (the writer reports its own failures).
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Action, [Parameter(Mandatory)][string]$Actor,
+          [string]$Target = 'WebApp', [double]$Hours = 1, $After, [datetime]$NowUtc = [datetime]::UtcNow)
+    $k = "$Action|$Actor|$Target".ToLowerInvariant()
+    $last = $script:EpsWebMarks[$k]
+    if ($last -and ($NowUtc - $last).TotalHours -lt $Hours) { return $false }
+    if (-not $last) {
+        $t = try { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ s = $NowUtc.AddHours(-$Hours); a = $Action; u = $Actor; t = $Target } `
+                 -Query 'SELECT TOP (1) TsUtc FROM eps.AuditEvent WHERE TsUtc > @s AND Action = @a AND Actor = @u AND Target = @t ORDER BY TsUtc DESC' } catch { $null }
+        if ($t -is [datetime]) { $script:EpsWebMarks[$k] = [datetime]::SpecifyKind($t, 'Utc'); return $false }
+    }
+    $script:EpsWebMarks[$k] = $NowUtc
+    [bool](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action $Action -Actor $Actor -Target $Target -After $After)
+}
 
 function ConvertTo-EpsWebValue {
     # SQL rows -> JSON-ready: a datetime2 comes back Kind=Unspecified and IS UTC - say so ('Z'), the page shows local time
@@ -120,12 +144,13 @@ function Get-EpsWebRoutes {
         # alarm from - the enabled break-glass accounts, the enabled tag types' attributes, the tamper allow list - as ONE
         # file to download and pass to the script (-InputFile); the script reads no SQL
         @{ Method = 'GET'; Pattern = '^/api/tamper/alarm-inputs$'; Summary = 'The inputs of the external Azure Monitor alarm (Deploy-EpsAzureMonitorAlerts.ps1 -InputFile): the enabled break-glass accounts, the watched tag attributes and the tamper allow list.'; Public = $false
-           Role = 'Admin'; Handler = { param($c, $m)
+           Role = 'Admin'; Action = 'tamper.alarm-inputs.export'; Handler = { param($c, $m)   # AUD-01: the break-glass list leaving the app is a READ mark
             $acc = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT UserPrincipalName, Directory, CAST(ObjectId AS NVARCHAR(36)) AS ObjectId, Sid FROM eps.BreakGlassAccount WHERE Enabled = 1" | ForEach-Object {
                 if ("$($_.Directory)" -eq 'AD') { [ordered]@{ Directory = 'AD'; Name = ("$($_.UserPrincipalName)" -split '@')[0]; Sid = "$($_.Sid)" } } else { [ordered]@{ Directory = 'Entra'; UserPrincipalName = "$($_.UserPrincipalName)"; ObjectId = "$($_.ObjectId)" } } })
             $att = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT DISTINCT Attribute FROM eps.TagType WHERE Enabled = 1' | ForEach-Object { "$($_.Attribute)" })
             $al = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'TamperMonitor.AllowList' -Default '')"
-            New-EpsWebResponse -Body ([ordered]@{ kind = 'eps-alarm-inputs'; version = $c.Ctx.Version; createdUtc = [datetime]::UtcNow.ToString('o'); accounts = @($acc); watchedAttributes = @($att); allowList = @(if ($al.Trim()) { try { $al | ConvertFrom-Json } catch { } }) }) } }
+            New-EpsWebResponse -Body ([ordered]@{ kind = 'eps-alarm-inputs'; version = $c.Ctx.Version; createdUtc = [datetime]::UtcNow.ToString('o'); accounts = @($acc); watchedAttributes = @($att); allowList = @(if ($al.Trim()) { try { $al | ConvertFrom-Json } catch { } }) }) `
+                -Audit @{ Target = 'AlarmInputs'; After = @{ accounts = @($acc).Count; watchedAttributes = @($att).Count; allowList = [bool]$al.Trim() } } } }
         @{ Method = 'GET'; Pattern = '^/api/tamper$'; Summary = 'The tamper events: tag values changed outside Entra Policy Suite.'; Body = 'status: one state, e.g. Open'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $p = @{ s = "$($c.Query.status)" }
@@ -506,7 +531,7 @@ function Get-EpsWebRoutes {
             New-EpsWebResponse -Body @{ total = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters $p -Query "SELECT COUNT(*) FROM eps.CaAnalysis $w"
                 rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT AnalysisId, RunId, PolicyId, DisplayName, PolicyState, Mode, WindowStartUtc, WindowEndUtc, InScope, Impacted, NotImpacted, Errors, Monitor, CreatedAtUtc FROM eps.CaAnalysis $w ORDER BY CreatedAtUtc DESC OFFSET @k ROWS FETCH NEXT @n ROWS ONLY")) } } }
         @{ Method = 'GET'; Pattern = '^/api/ca/analyses/(?<aid>[0-9a-fA-F-]{36})$'; Summary = 'One analysis with its findings.'; Body = 'q: search; all: every row, not only the findings'; Public = $true
-           Role = 'Reader'; Handler = { param($c, $m)
+           Role = 'Reader'; Mark = 'ca.analysis.view'; Handler = { param($c, $m)
             $a = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ a = [guid]$m.aid } -Query 'SELECT * FROM eps.CaAnalysis WHERE AnalysisId = @a'))[0]
             if (-not $a) { return New-EpsWebError 404 'no such analysis' }
             $pg = Get-EpsWebPaging $c.Query; $p = @{ a = [guid]$m.aid; all = [bool]("$($c.Query.all)" -eq '1'); q = "$($c.Query.q)"; k = $pg.Skip; n = $pg.Size }
@@ -758,7 +783,7 @@ function Get-EpsWebRoutes {
 
         # ---- the identity report (DESIGN §5.4): READ ONLY - the snapshot the engine wrote; saved views (LIST-1) ----
         @{ Method = 'GET'; Pattern = '^/api/identity$'; Summary = 'The identity report: the latest snapshot, its views (each gap with its severity) and the ready-made pivots.'; Body = 'run: an earlier snapshot'; Public = $true
-           Role = 'Reader'; Handler = { param($c, $m)
+           Role = 'Reader'; Mark = 'identity.view'; Handler = { param($c, $m)
             $cs = $c.Ctx.ConnectionString
             $run = Get-EpsIdentityLatestRun -ConnectionString $cs -RunId "$($c.Query.run)"
             $counts = if ($run -and $run.ViewCountsJson) { $run.ViewCountsJson | ConvertFrom-Json -AsHashtable } else { @{} }
@@ -790,7 +815,7 @@ function Get-EpsWebRoutes {
             New-EpsWebResponse -Body @{ ok = $true; count = $s.Count; unknown = @($s.Unknown).Count; text = "Set on $($s.Count) user(s)$(if (@($s.Unknown).Count) { "; $(@($s.Unknown).Count) not in the latest report" }). A record only - nothing in the tenant changed." } `
                 -Audit @{ Target = "IdentityAction|$($s.Count) user(s)"; After = @{ count = $s.Count; set = $ts.Set } } } }
         @{ Method = 'GET'; Pattern = '^/api/identity/rows$'; Summary = 'The rows of one view: filtered, sorted and one page at a time.'; Body = 'view; filters (JSON list of column / op / value); q; sort; dir; columns; page; pageSize'; Public = $true
-           Role = 'Reader'; Handler = { param($c, $m)
+           Role = 'Reader'; Mark = 'identity.view'; Handler = { param($c, $m)
             $q = Resolve-EpsIdentityQuery -ConnectionString $c.Ctx.ConnectionString -Query $c.Query
             if (-not $q.Ok) { return New-EpsWebError $q.Status $q.Error }
             $pg = Get-EpsWebPaging $c.Query; $p = $q.Parameters + @{ k = $pg.Skip; n = $pg.Size }
@@ -798,7 +823,7 @@ function Get-EpsWebRoutes {
             $rows = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT r.Data $($q.From) $($q.Where) $(Get-EpsIdentityOrderBy $q.Columns "$($c.Query.sort)" "$($c.Query.dir)") OFFSET @k ROWS FETCH NEXT @n ROWS ONLY" | ForEach-Object { $_.Data | ConvertFrom-Json })
             New-EpsWebResponse -Body @{ total = $total; rows = $rows; view = $q.View.Name; kind = $q.Kind } } }
         @{ Method = 'GET'; Pattern = '^/api/identity/pivot$'; Summary = 'The counts of one view by a column, or a column by a column.'; Body = 'view; rows; cols; filters; q'; Public = $true
-           Role = 'Reader'; Handler = { param($c, $m)
+           Role = 'Reader'; Mark = 'identity.view'; Handler = { param($c, $m)
             $q = Resolve-EpsIdentityQuery -ConnectionString $c.Ctx.ConnectionString -Query $c.Query
             if (-not $q.Ok) { return New-EpsWebError $q.Status $q.Error }
             $rk = "$($c.Query.rows)"; $ck = "$($c.Query.cols)"
@@ -1055,7 +1080,7 @@ function Get-EpsApiReference {
                   elseif ($r.Method -eq 'GET') { if ($code -match '\brows\s*=') { 'JSON list' } else { 'JSON object' } } else { 'JSON result' }
         $applied = if ($r.Apply -eq 'Engine') { 'applied by the engine within ~5 min (follow it with GET /api/requests/{requestId})' + $(if ($r.Stage) { '; while the commit queue is on it is staged first (202 with a pending id) and a commit applies it' }) }
                    elseif ($r.Method -eq 'GET') { 'read' } elseif ($answer -like 'request*') { 'queued for the engine (within ~5 min)' } else { 'at once' }
-        $audit = @(if ($r.Action) { $r.Action }; if ($Audience -eq 'Full' -and $r.Apply -eq 'Engine') { 'config.request' }; if ($Audience -eq 'Full' -and $r.Stage) { 'queue.stage' })
+        $audit = @(if ($r.Action) { $r.Action }; if ($r.Mark) { $r.Mark }; if ($Audience -eq 'Full' -and $r.Apply -eq 'Engine') { 'config.request' }; if ($Audience -eq 'Full' -and $r.Stage) { 'queue.stage' })
         $o = [ordered]@{
             area = $(if ($areas[$seg]) { $areas[$seg] } else { 'Other' }); method = $r.Method; path = $p.Path; pathParams = @($p.Params)
             role = $(if ($r.Role) { $r.Role } else { 'Reader' }); summary = "$($r.Summary)"
@@ -1347,6 +1372,9 @@ function Invoke-EpsWebRequest {
     }
     $caller.verifiedAtUtc = [datetime]::UtcNow
     $role = Get-EpsWebRole -ConnectionString $Ctx.ConnectionString -Identity $caller.identity -ObjectId $caller.objectId
+    # AUD-01: the SIGN-IN mark - the person's first verified request of a sign-in period (pages and files count too)
+    [void](Write-EpsWebMark -ConnectionString $Ctx.ConnectionString -Action 'auth.signin' -Actor $caller.identity -Hours 8 `
+        -After @{ role = $role; name = "$($caller.name)"; objectId = "$($caller.objectId)"; tokenIssuedUtc = $(if ($caller.iat) { ([datetime]$caller.iat).ToString('o') }) })
     # the first sign-in of a person named by UPN pins the row to their object id (a renamed UPN keeps its role; a new
     # account that takes the old UPN does not inherit it)
 
@@ -1365,7 +1393,8 @@ function Invoke-EpsWebRequest {
     $body = $null
     # SEC-AUDIT-1 S12: an export (a GET that writes an audit row and hands out data) only from this app's own page - another
     # site's link would be followed with the session cookie (SameSite=Lax)
-    if ($method -eq 'GET' -and $route.Pattern -match 'export' -and "$($h['Sec-Fetch-Site'])" -and "$($h['Sec-Fetch-Site'])" -notin 'same-origin', 'none') {
+    # (AUD-01: every audited GET - the alarm inputs too - is such an export)
+    if ($method -eq 'GET' -and ($route.Pattern -match 'export' -or $route.Action) -and "$($h['Sec-Fetch-Site'])" -and "$($h['Sec-Fetch-Site'])" -notin 'same-origin', 'none') {
         return (& $refuse 403 'refused: an export is started from this app''s own page')
     }
     if ($method -ne 'GET') {
@@ -1413,6 +1442,11 @@ function Invoke-EpsWebRequest {
         $outcome = if ($a.Outcome) { $a.Outcome } elseif ($res.Status -ge 400) { 'error' } else { 'ok' }
         [void](Write-EpsAuditEvent -ConnectionString $Ctx.ConnectionString -Action $(if ($a.Guard) { 'guard.trip' } elseif ($a.Action) { $a.Action } else { $route.Action }) -Actor $caller.identity -Target $(if ($a.Target) { $a.Target } else { "$method $path" }) `
             -Reason "$($body.reason)" -Outcome $outcome -OutcomeText $a.OutcomeText -Before $a.Before -After $a.After -CorrelationId $correlation -WhatIf:([bool]$a.WhatIf))
+    }
+    # AUD-01: a READ mark (route Mark) for a sensitive read shown on screen - once per person per view per hour
+    if ($route.Mark -and $res.Status -lt 400) {
+        $mt = "$path$(if ("$($c.Query.view)") { "|view=$("$($c.Query.view)" -replace '[^A-Za-z0-9_.-]', '')" })"
+        [void](Write-EpsWebMark -ConnectionString $Ctx.ConnectionString -Action $route.Mark -Actor $caller.identity -Target $mt -Hours 1 -After @{ role = $role })
     }
     & $out $res
 }

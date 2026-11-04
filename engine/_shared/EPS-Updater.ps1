@@ -206,6 +206,14 @@ function Invoke-EpsUpdateCheck {
                 -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
         } finally { $global:EPS_TokenProvider = $saved }
         $track = @{ Ok = $tr.Ok; Reason = $tr.Reason }
+        # AUD-01: the install changed (or stopped part way) - in the audit trail, not only in the run's log. A change no
+        # person asked for: the job is the actor (AUDIT-1.1). Never fails the cycle.
+        try {
+            [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'update.apply' -Actor 'caj-eps-updater (ring approval)' -ActorSource 'job' `
+                -Target "Release|$Version -> $($t.Version)" -Reason "approved for ring $ringN" -Outcome $(if ($applied.Ok) { 'ok' } else { 'error' }) `
+                -OutcomeText $(if ($applied.Ok) { "$(@($applied.Rolled).Count) component(s) rolled" } else { "stopped at '$($applied.Step)': $($applied.Reason)" }) `
+                -Before @{ version = $Version } -After @{ version = $t.Version; ring = $ringN; rolled = @($applied.Rolled); step = "$($applied.Step)" })
+        } catch { & $Log 'Warning' "audit: update.apply could not be written: $($_.Exception.Message)" }
     } elseif ($t.State -eq 'available') {
         $prev =@(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = 'Update' AND Status = 'Succeeded' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")[0]
         if ("$($prev.HeldReason)" -like "*reported $($t.Version) *") { & $Log 'Info' "update run for $($t.Version) already reported to Invardia" ; $track = @{ Ok = $true; Reason = 'already reported' } }

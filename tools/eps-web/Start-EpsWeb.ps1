@@ -35,7 +35,7 @@ try {
             $body = ''
             if ($rq.HasEntityBody) {
                 if ($rq.ContentLength64 -gt 1MB) { throw [System.IO.InvalidDataException]::new('body too large') }
-                # SEC-AUDIT-1 S9: count the bytes READ - a chunked body has no Content-Length and skipped the check above
+                # SEC-AUDIT-1 S9: the bytes READ are counted too, so a chunked body (no Content-Length) is held to the same 1 MB
                 $buf = [IO.MemoryStream]::new(); $chunk = [byte[]]::new(65536)
                 while (($got = $rq.InputStream.Read($chunk, 0, $chunk.Length)) -gt 0) { $buf.Write($chunk, 0, $got); if ($buf.Length -gt 1MB) { throw [System.IO.InvalidDataException]::new('body too large') } }
                 $body = [Text.Encoding]::UTF8.GetString($buf.ToArray()); $buf.Dispose()
