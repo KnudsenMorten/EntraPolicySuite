@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.46 - the update check
+- New job: every night at 03:00 the update job asks Invardia which Entra Policy Suite version is approved for this
+  install's update ring, checks that the answer is genuine and complete, and records what it would install in its run.
+  In this release it only checks: it downloads and installs nothing. With the per-install key it also reports a new
+  version to Invardia once. New setting Update.Enabled (on by default) switches it off.
+
 ## 2.0.45 - the product name, the rest
 - The installer's closing line, two messages and the generated security review pack and API reference also say
   Entra Policy Suite.

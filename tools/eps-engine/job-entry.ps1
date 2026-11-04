@@ -18,7 +18,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-Onboarding', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-Onboarding', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 function Say($m) { Write-Host "[$([datetime]::UtcNow.ToString('u'))] [eps $version $Job] $m" }
 
@@ -46,8 +46,8 @@ try {
         if ($null -eq $msg) {
             # the uplink job is also started directly (framework SECAUDIT-1a: the Support session starts the heartbeat once
             # so support begins without waiting an interval) - it takes no parameters, so it runs its normal cycle
-            if ($Job -ne 'Uplink') { Say 'no message on the queue (another execution took it) - nothing to do'; exit 0 }
-            Say 'no message on the queue (a direct start) - the normal uplink cycle'
+            if ($Job -notin 'Uplink', 'Update') { Say 'no message on the queue (another execution took it) - nothing to do'; exit 0 }
+            Say "no message on the queue (a direct start) - the normal $($Job.ToLowerInvariant()) cycle"
         }
         elseif ($msg.Refused) { Say $msg.Refused; exit 0 }
         else { foreach ($k in $msg.Keys) { Set-Item "env:$k" $msg[$k] } }
@@ -71,6 +71,28 @@ WHERE q.Job = 'Uplink' AND q.Status = 'Dispatched'
             -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h WHERE RunId = @id' | Out-Null
         if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = 'Done'; t = "$($u.Mode): $($u.Lines | Select-Object -Last 1)" } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         exit 0
+    }
+    if ($Job -eq 'Update') {
+        # UPDATER-1 phase 1: which release is approved for this install's ring - CHECK ONLY, it installs nothing. A "Run
+        # now" request is taken and closed like the uplink's.
+        $runId = [guid]::NewGuid()
+        $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
+UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
+OUTPUT INSERTED.RequestId, INSERTED.RequestedBy
+FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
+'@)[0]
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'Update', 'Preview', NULL)" | Out-Null
+        $script:__seq = 0
+        $log = { param($level, $msg) $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
+        $u = $null; $ok = $false
+        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log; $ok = $u.State -notin 'refused', 'unreachable' }
+        catch { & $log 'Error' "$($_.Exception.Message)" }
+        $sum = if ($u) { $u.Summary } else { 'the check failed - see its log' }
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum } `
+            -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = 0, HeldReason = @h WHERE RunId = @id' | Out-Null
+        if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $sum } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
+        exit $(if ($ok) { 0 } else { 1 })
     }
     if ($Job -eq 'CAPolicyAnalyzer') {
         # the CA Policy Analyzer (DESIGN §5.7) - READ ONLY towards the tenant. One execution = one ad-hoc request

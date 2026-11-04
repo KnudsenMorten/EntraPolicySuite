@@ -30,6 +30,9 @@ function Get-EpsDefaultJobSchedule {
         # alert records, from its OWN job and queue - not the tick, not a work job. Uplink.Enabled is ON by default but
         # INERT without the per-install key in the install's Key Vault (the job then sends nothing and says why)
         [pscustomobject]@{ Job = 'Uplink';         Schedule = 'every 4h';    AcaJobName = 'caj-eps-uplink';    Implemented = $true; EnabledDefault = $true }
+        # UPDATER-1 phase 1 (owner 2026-11-04 "Yes, build it now"): every night, which release is approved for this install's
+        # ring - CHECK ONLY: it reports, it installs nothing (EPS-Updater.ps1)
+        [pscustomobject]@{ Job = 'Update';         Schedule = 'daily 03:00'; AcaJobName = 'caj-eps-update';    Implemented = $true; EnabledDefault = $true }
     )
 }
 

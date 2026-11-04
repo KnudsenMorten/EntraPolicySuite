@@ -15,7 +15,8 @@
     { "id": "CA", "label": "Conditional Access" },
     { "id": "NamedLocations", "label": "Named locations" },
     { "id": "IdentityReport", "label": "Identity report" },
-    { "id": "Uplink", "label": "Invardia telemetry" }
+    { "id": "Uplink", "label": "Invardia telemetry" },
+    { "id": "Update", "label": "Updates" }
   ],
   "settings": [
     {
@@ -685,6 +686,18 @@
         "requires": "SuperAdmin. Telemetry on (Uplink.Enabled) with the per-install key; Invardia taking the alert kind.",
         "recommended": "Off until Invardia confirms it takes the alert kind, then on.",
         "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Alerts.Enabled/"
+      }
+    },
+    {
+      "key": "Update.Enabled", "group": "Update", "label": "Check for new versions", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "info": {
+        "what": "Every night the update job asks Invardia which Entra Policy Suite version is approved for this install's update ring, checks that the answer is genuine and complete, and records what it would install in its run. In this release it only checks: it downloads and installs nothing. With the per-install key it also reports the result to Invardia.",
+        "enabled": "On (the default): the update job checks every night at 03:00 (Platform.TimeZone).",
+        "disabled": "Off: the update job does not run. Nothing else changes.",
+        "risk": "Nothing changes in the directory or in Azure. Reversible.",
+        "requires": "SuperAdmin. Outbound HTTPS to invardia.com from the jobs.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Update.Enabled/"
       }
     }
   ]

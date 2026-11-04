@@ -261,7 +261,8 @@ function Get-EpsJobBodies {
             if (-not $wc) { $wc = '(the web sign-in registration''s client id, created by the install)' }   # a plan before it exists
             $extra += @{ name = 'EPS_WEB_CLIENT_ID'; value = $wc }
         }
-        if ($job -eq 'Uplink') {
+        # UPDATER-1: the update job reads the same install key (for "update now" and the update run) and needs the ring
+        if ($job -in 'Uplink', 'Update') {
             $extra += @{ name = 'EPS_KEY_VAULT'; value = $n.KeyVault }
             if ("$($Ctx.WebUrl)" -match '^https://') { $extra += @{ name = 'EPS_WEB_URL'; value = "$($Ctx.WebUrl)" } }
             # TEL-01: the update ring on the heartbeat (framework §3, §8.17) - only a ring 0-10, never empty or text
