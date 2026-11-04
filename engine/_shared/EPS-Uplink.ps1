@@ -385,7 +385,10 @@ function Get-EpsUplinkHeartbeatFacts {
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
         LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)
         # FLEET-STEPS: the engine's rights read back now (its own app role assignments), never a remembered value
-        SetupSteps = $(if (Get-Command Get-EpsSetupSteps -ErrorAction SilentlyContinue) { try { @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode) } catch { @() } })
+        # OPEN-09: whether the Exchange role is needed at all, from the features that are on
+        SetupSteps = $(if (Get-Command Get-EpsSetupSteps -ErrorAction SilentlyContinue) { try {
+            $xn = if (Get-Command Get-EpsExchangeNeed -ErrorAction SilentlyContinue) { try { Get-EpsExchangeNeed -Row @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsExchangeNeedSql)[0] } catch { $null } }
+            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn) } catch { @() } })
     }
 }
 

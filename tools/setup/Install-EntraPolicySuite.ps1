@@ -148,7 +148,7 @@ $ErrorActionPreference = 'Stop'
 $docUrl = 'https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Install-EntraPolicySuite when EPS is public there (DOC-LINKS)
 Write-Host "Documentation: $docUrl"
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-Onboarding', 'EPS-EnginePermissions') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 $what = [bool]$WhatIfPreference
 $WhatIfPreference = $false   # the install decides what -WhatIf means: read, plan, change nothing (its own calls stay real reads)
@@ -264,5 +264,5 @@ if ($ctx.Network.Private) {
 Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
 $url = if ($ctx.Web -and $ctx.Web.Url) { "`nThe web app: $($ctx.Web.Url) - sign in as $($person.Upn) (its first SuperAdmin); others need an assignment to the '$($names.WebAppRegistration)' enterprise application and a role on the Access page." } else { '' }
 # the standard identity names (framework §12.11c): what this run renamed in place, read back
-if ($ctx.Renamed -and $ctx.Renamed.Count) { Write-Host "`nRenamed to the standard names (read back):" -ForegroundColor Cyan; foreach ($r in $ctx.Renamed) { Write-Host "  $r" } }
+if ($ctx.Renamed -and $ctx.Renamed.Count) { Write-Host "`nChanged to the standard (each read back):" -ForegroundColor Cyan; foreach ($r in $ctx.Renamed) { Write-Host "  $r" } }
 Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"

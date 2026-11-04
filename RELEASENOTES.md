@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.52 - Exchange rights only where they are used
+- The engine holds the Exchange Online permission and the Exchange Recipient Administrator role only while user tagging,
+  the identity report or a rule with a mailbox condition is on. A new install grants neither. An install run removes them
+  when none of these is on any more, and grants them again when one is switched on. Alert mail does not need them.
+- The setup step for the Exchange role now says whether it is needed, and the command that grants or removes it.
+
 ## 2.0.51 - security findings to Invardia by default
 - Send security findings to Invardia (Uplink.Alerts.Enabled) is on by default: Invardia now takes all six kinds (tag
   changes made outside Entra Policy Suite, high-severity tag changes, Conditional Access drift, a deleted policy, a

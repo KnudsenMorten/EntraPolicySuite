@@ -433,7 +433,7 @@ function Test-EpsInstallStep {
         'jobs'          { @{ Action = 'run'; Detail = ((Get-EpsJobBodies -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)") | ForEach-Object { $_.Name }) -join ', ' } }
         'jobstarter'    { @{ Action = 'run'; Detail = "remove role '$($n.JobStarterRole)' if an older install made it; read back: $($n.TickIdentity) holds no role on $($n.ResourceGroup)" } }
         'graph'         { @{ Action = 'run'; Detail = "$($n.EngineIdentity): $((Get-EpsEngineGraphRoles -Ctx $Ctx) -join ', ')$(if (@($Ctx.ExcludeGraphRoles).Count) { ' (left out, not approved: ' + (@($Ctx.ExcludeGraphRoles) -join ', ') + ')' })" } }
-        'exchange'      { @{ Action = 'run'; Detail = "$($n.EngineIdentity): Exchange.ManageAsApp + Entra role Exchange Recipient Administrator" } }
+        'exchange'      { @{ Action = 'run'; Detail = "$($n.EngineIdentity): Exchange.ManageAsApp + Entra role Exchange Recipient Administrator - only while user tagging, the identity report or a mailbox condition is on (else removed)" } }
         'webregistration' { $a = try { Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)" } catch { $null }; if ($a) { @{ Action = 'update'; Detail = "$($a.displayName) ($($a.appId)): api://, scope $($script:EpsWeb.Scope), consents, federated credential for $($n.WebIdentity)" } } else { @{ Action = 'create'; Detail = "app registration '$($n.WebAppRegistration)' (single tenant, code flow, no secret, assignment required, you assigned)" } } }
         'keyvault'      { $up = "; $($n.EngineIdentity) Key Vault Secrets User on the secret $($script:EpsUplinkSecret) only if Invardia has put it there (the install never creates or reads it)"
                           if (& $has "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)" $script:EpsWeb.KvApi) { @{ Action = 'exists'; Detail = "$($n.KeyVault) (key $($script:EpsWeb.KeyName) checked)$up" } } else { @{ Action = 'create'; Detail = "$($n.KeyVault) (Standard, RBAC, purge protection) + RSA key $($script:EpsWeb.KeyName); $($n.WebIdentity) Crypto Service Encryption User on that key$up" } } }
@@ -659,10 +659,32 @@ function Invoke-EpsInstallStep {
         'graph'    { & $loadMi; [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles (Get-EpsEngineGraphRoles -Ctx $Ctx)) }
         'exchange' {
             & $loadMi
-            [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId $script:EpsExchangeAppId -Roles @('Exchange.ManageAsApp'))
             $p = $Ctx.Identities.EngineIdentity.PrincipalId
-            $have = @(Invoke-EpsGraph -Path "v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$p' and roleDefinitionId eq '$($script:EpsExchangeRecipientAdminRole)'" -All)
-            if (-not $have.Count) { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/roleManagement/directory/roleAssignments' -Body @{ principalId = $p; roleDefinitionId = $script:EpsExchangeRecipientAdminRole; directoryScopeId = '/' }) }
+            # OPEN-09 / SEC-02 (Invardia 2026-11-04): the Exchange rights only while a feature that uses Exchange is on (user
+            # tagging, the identity report, a mailbox condition - Get-EpsExchangeNeed). A new install has every feature off,
+            # so it grants none; an install whose features no longer need them has them REMOVED, read back. Not readable =
+            # nothing changes on a guess.
+            $need = $null
+            if (Get-Command Get-EpsExchangeNeed -ErrorAction SilentlyContinue) {
+                try {
+                    $r = Invoke-EpsSetupSql -Ctx $Ctx -Script $script:EpsExchangeNeedSql -Rows
+                    $rows = if ($r -and $r.PSObject.Properties['Rows']) { @($r.Rows) } else { @($r) }
+                    $need = Get-EpsExchangeNeed -Row @($rows | Where-Object { $_ -and $_ -isnot [string] })[0]
+                } catch { $need = @{ Known = $false; Needed = $false; Why = "the settings could not be read: $($_.Exception.Message)" } }
+            } else { $need = @{ Known = $true; Needed = $true; Why = 'the need check is not loaded' } }
+            $Ctx.ExchangeNeed = $need
+            if ($need.Known -and $need.Needed) {
+                [void](Grant-EpsAppRoles -PrincipalId $p -ResourceAppId $script:EpsExchangeAppId -Roles @('Exchange.ManageAsApp'))
+                $have = @(Invoke-EpsGraph -Path "v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$p' and roleDefinitionId eq '$($script:EpsExchangeRecipientAdminRole)'" -All)
+                if (-not $have.Count) { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/roleManagement/directory/roleAssignments' -Body @{ principalId = $p; roleDefinitionId = $script:EpsExchangeRecipientAdminRole; directoryScopeId = '/' }) }
+            } elseif ($need.Known -and (Get-Command Invoke-EpsEnginePermissionPlan -ErrorAction SilentlyContinue)) {
+                $rows = @(Invoke-EpsEnginePermissionPlan -EngineObjectId $p -Request (Get-EpsEnginePermissionRequest -Exchange -Remove))
+                $gone = @($rows | Where-Object { $_.Status -eq 'removed' })
+                $bad = @($rows | Where-Object { $_.Status -eq 'refused' })
+                if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+                foreach ($x in $gone) { $Ctx.Renamed.Add("removed (not needed: $($need.Why)): $($x.What)") }
+                foreach ($x in $bad) { Write-Host "  note     $($x.What) is not needed ($($need.Why)) but was not removed: $($x.Reason) - the next run tries again" -ForegroundColor Yellow }
+            } else { Write-Host "  note     the Exchange rights were left as they are: $($need.Why)" -ForegroundColor Yellow }
         }
         'webregistration' { & $loadMi; Invoke-EpsWebRegistrationStep -Ctx $Ctx }
         'keyvault' { & $loadMi; & $loadWeb; Invoke-EpsKeyVaultStep -Ctx $Ctx; $Ctx.UplinkKey = Grant-EpsUplinkKeyAccess -Ctx $Ctx }

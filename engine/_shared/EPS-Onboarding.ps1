@@ -70,13 +70,38 @@ function Get-EpsEngineRightsState {
     @{ Ok = $true; Granted = $granted; Exchange = $ex; ObjectId = $oid }
 }
 
+# OPEN-09 / SEC-02 (framework §4.3-4.4, Invardia 2026-11-04): the engine's Exchange rights (Exchange.ManageAsApp + the
+# Exchange Recipient Administrator role) only where a feature that uses Exchange is on: user tagging (a tag on a mailbox
+# object is written through Exchange when Graph cannot), the identity report (mailbox types), or a rule with a mailbox
+# condition (Mailbox_*). Mail does NOT use them (alerts go through Graph Mail.Send). One row, read as is.
+$script:EpsExchangeNeedSql = @'
+SELECT (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'UserTagging.Enabled') AS UserTagging,
+       (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'IdentityReport.Enabled') AS IdentityReport,
+       (SELECT COUNT(*) FROM eps.UserTagRuleCondition WHERE ConditionType LIKE 'Mailbox[_]%') AS MailboxConditions
+'@
+
+function Get-EpsExchangeNeed {
+    <# PURE. The row of $script:EpsExchangeNeedSql -> @{ Known; Needed; Why }. No row (not readable) = not Known: nothing is
+       granted or removed on a guess. A job's switch is off unless 'true' is stored (the tick's default for these jobs). #>
+    param($Row)
+    if ($null -eq $Row) { return @{ Known = $false; Needed = $false; Why = 'the settings could not be read' } }
+    $g = { param($n) if ($Row -is [System.Collections.IDictionary]) { $Row[$n] } else { $p = $Row.PSObject.Properties[$n]; if ($p) { $p.Value } } }
+    $why = @()
+    if ("$(& $g 'UserTagging')".Trim() -eq 'true') { $why += 'user tagging is on' }
+    if ("$(& $g 'IdentityReport')".Trim() -eq 'true') { $why += 'the identity report is on' }
+    $mc = 0; [void][int]::TryParse("$(& $g 'MailboxConditions')", [ref]$mc)
+    if ($mc -gt 0) { $why += "$mc rule condition(s) read mailbox types" }
+    @{ Known = $true; Needed = [bool]$why.Count; Why = $(if ($why.Count) { $why -join ', ' } else { 'no feature that uses Exchange is on' }) }
+}
+
 function Get-EpsSetupSteps {
     <#
       FLEET-STEPS (owner 2026-11-03, via Invardia: "it must be consistent across all"): the one-time steps of this install,
       each from a real check, in the heartbeat's shared shape (key, title, state ok | missing | n/a | unknown, since, how,
       checkedAt, detail). -Rights: Get-EpsEngineRightsState (read now). -Mail: Mail.Mode.
     #>
-    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow)
+    # -ExchangeNeed: Get-EpsExchangeNeed (OPEN-09) - not given = the step as before (needed)
+    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null)
     $d = Get-EpsOnboardingDefaults
     $at = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $out = [System.Collections.Generic.List[object]]::new()
@@ -86,7 +111,15 @@ function Get-EpsSetupSteps {
                              detail = $(if ($st -eq 'unknown') { "$($Rights.Reason)" } else { "for $($d.roleFor[$r])" }) })
     }
     $ex = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights.Exchange) { 'unknown' } elseif ($Rights.Exchange) { 'ok' } else { 'missing' }
-    $out.Add([ordered]@{ key = 'exchange-recipient-admin'; title = 'Engine holds the Exchange Recipient Administrator role'; state = $ex; since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = "for $($d.exchangeRole.for)" })
+    $exDetail = "for $($d.exchangeRole.for)"
+    # OPEN-09: needed only while a feature that uses Exchange is on - otherwise n/a, and a role still held is said to be extra
+    if ($ExchangeNeed -and $ExchangeNeed.Known -and -not $ExchangeNeed.Needed) {
+        $exDetail = if ($ex -eq 'ok') { "not needed ($($ExchangeNeed.Why)) but still granted: the next install or update run removes it (or Grant-EpsEnginePermissions -Exchange -Remove)" } else { "not needed: $($ExchangeNeed.Why)" }
+        $ex = 'n/a'
+    } elseif ($ExchangeNeed -and $ExchangeNeed.Known -and $ExchangeNeed.Needed -and $ex -eq 'missing') {
+        $exDetail = "needed ($($ExchangeNeed.Why)): grant it with Grant-EpsEnginePermissions -Exchange"
+    }
+    $out.Add([ordered]@{ key = 'exchange-recipient-admin'; title = 'Engine holds the Exchange Recipient Administrator role'; state = $ex; since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = $exDetail })
     $out.Add([ordered]@{ key = 'mail-sender'; title = 'An alert mail sender is set up'; state = $(if (-not $MailMode) { 'unknown' } elseif ($MailMode -eq 'none') { 'missing' } else { 'ok' }); since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = 'set up once by an Exchange admin (the mail sender setup script), then Settings > Mail' })
     foreach ($s in $out) { if ($s.detail.Length -gt 200) { $s.detail = $s.detail.Substring(0, 200) } }
     @($out)
