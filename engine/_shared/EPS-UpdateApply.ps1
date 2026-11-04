@@ -144,3 +144,36 @@ function Invoke-EpsUpdateApply {
         return (& $fail $step "$((("$($_.Exception.Message)") -split "`n")[0])")
     } finally { if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
 }
+
+function Test-EpsVaultPrivateShape {
+    # PURE. framework installer rule 11: a PRIVATE install's vault = public access off, Deny, bypass AzureServices, no IP /
+    # network rule. Returns @{ Ok; Drift (plain words) }.
+    param([Parameter(Mandatory)]$Vault)
+    $p = $Vault.properties; $a = $p.networkAcls; $d = [System.Collections.Generic.List[string]]::new()
+    if ("$($p.publicNetworkAccess)" -ne 'Disabled') { $d.Add("public access $($p.publicNetworkAccess)") }
+    if ("$($a.defaultAction)" -ne 'Deny') { $d.Add("default action $(if ($a.defaultAction) { $a.defaultAction } else { 'none' })") }
+    if ("$($a.bypass)" -ne 'AzureServices') { $d.Add("bypass $(if ($a.bypass) { $a.bypass } else { 'none' })") }
+    if (@($a.ipRules).Where({ $_ }).Count -or @($a.virtualNetworkRules).Where({ $_ }).Count) { $d.Add('IP / network rules present') }
+    @{ Ok = -not $d.Count; Drift = @($d) }
+}
+
+function Invoke-EpsVaultShapeCheck {
+    <#
+      framework installer rule 11 (Invardia 2026-11-04, 2f1d6534): on EVERY update run the updater enforces and READS BACK the
+      private Key Vault shape - a recovered vault loses its networkAcls. Only a private install (its environment is
+      cae-eps-vnet); a public install: n/a. Never throws: @{ State (n/a | ok | fixed | failed); Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [string]$SelfKey = 'caj-eps-update')
+    try {
+        $f = Get-EpsUpdateFacts -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -SelfKey $SelfKey
+        if ($f.Names.Environment -ne 'cae-eps-vnet') { return @{ State = 'n/a'; Reason = 'a public install (rule 11 applies to private installs)' } }
+        $path = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.KeyVault/vaults/$($f.Names.KeyVault)"
+        $v = Invoke-EpsArm -Path $path -ApiVersion $script:EpsWeb.KvApi
+        $t = Test-EpsVaultPrivateShape -Vault $v
+        if ($t.Ok) { return @{ State = 'ok'; Reason = "$($f.Names.KeyVault): private shape read back" } }
+        [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $script:EpsWeb.KvApi -Body @{ properties = @{ publicNetworkAccess = 'Disabled'; networkAcls = @{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } } })
+        $t2 = Test-EpsVaultPrivateShape -Vault (Invoke-EpsArm -Path $path -ApiVersion $script:EpsWeb.KvApi)
+        if ($t2.Ok) { return @{ State = 'fixed'; Reason = "$($f.Names.KeyVault) had drifted ($($t.Drift -join ', ')): the private shape set again and read back" } }
+        @{ State = 'failed'; Reason = "$($f.Names.KeyVault) still not private after the fix: $($t2.Drift -join ', ')" }
+    } catch { @{ State = 'failed'; Reason = "not checked: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}

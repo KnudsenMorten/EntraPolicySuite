@@ -185,6 +185,14 @@ function Invoke-EpsUpdateCheck {
     # PHASE 2 (UPDATER-1 apply): the update job has its own identity id-eps-updater (EPS_UPDATER_CLIENT_ID); without it
     # (an install made before it) the job only checks and reports, as phase 1 did
     $updater = if ($null -ne $UpdaterClientId) { "$UpdaterClientId" } else { "$env:EPS_UPDATER_CLIENT_ID" }
+    if (-not $ApplyTokenProvider -and $updater) { $ApplyTokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+    # framework installer rule 11: EVERY run with the updater identity re-enforces + reads back a private install's vault shape
+    $vault = $null
+    if ($updater -and -not $CheckOnly -and (Get-Command Invoke-EpsVaultShapeCheck -ErrorAction SilentlyContinue)) {
+        $saved0 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = $ApplyTokenProvider
+        try { $vault = Invoke-EpsVaultShapeCheck -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved0 }
+        & $Log $(if ($vault.State -eq 'failed') { 'Warning' } else { 'Info' }) "key vault shape (rule 11): $($vault.State) - $($vault.Reason)"
+    }
     if ($t.State -eq 'available' -and $updater -and $g.Go -and -not $CheckOnly) {
         $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
         & $Log 'Info' "update run to Invardia: $($tr.Reason)"

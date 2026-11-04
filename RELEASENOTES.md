@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.65 - the updater keeps a private install's Key Vault private
+- On every run, the update job of a private network install checks that the install's Key Vault is still private (public
+  access off, deny by default, trusted Azure services allowed, no IP or network rules). A vault that lost those settings -
+  for example after it was recovered - is set private again and read back. A public install is not changed.
+
 ## 2.0.64 - support access audited; naming a SuperAdmin without a database right
 - Fixed: 2.0.63 changed the Support app's database access as set in the portal, but the change was not written to the
   audit trail. Every change is audited now, and so is a support session that was refused.
