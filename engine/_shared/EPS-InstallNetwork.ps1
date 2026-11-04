@@ -133,16 +133,23 @@ function Test-EpsNetworkPrerequisites {
             }
         }
     }
+    # framework rule 16: a 401 / 403 on a scope OUTSIDE the install's resource group that the install only reads (the hub,
+    # the central zones) is a customer task with a warning, never a stop. The spoke network is where the install builds,
+    # so without rights there it cannot go on (that one stays on the list).
+    $denied = { param($r) -not $r.Ok -and "$($r.Error)" -match '^(401|403)\b' }
+    $task = { param($t) $net.Notes += $t; if ($null -eq $net.Warnings) { $net.Warnings = @() }; $net.Warnings += $t }
     if ($net.HubVnetId) {
         $h = & $read $net.HubVnetId $script:EpsNetApi.net
-        if (-not $h.Ok) { $miss.Add("the hub network $($net.HubName) (-HubVnetId) cannot be read with your sign-in: $($h.Error)") }
+        if (& $denied $h) { & $task "the hub network $($net.HubName) cannot be read with your sign-in ($(("$($h.Error)" -split ':')[0])): the overlap check with the hub was skipped, and the peering and the hub links are for your network team (on the hand-off list)" }
+        elseif (-not $h.Ok) { $miss.Add("the hub network $($net.HubName) (-HubVnetId) cannot be read with your sign-in: $($h.Error)") }
         elseif (-not $h.Value) { $miss.Add("the hub network -HubVnetId $($net.HubVnetId) does not exist") }
     }
     if ($net.ZonesRgId) {
         # every zone EPS needs, each read (a missing resource group shows as every zone missing)
         foreach ($z in $script:EpsPrivateZones.Values) {
             $zr = & $read "$($net.ZonesRgId)/providers/Microsoft.Network/privateDnsZones/$z" $script:EpsNetApi.dns
-            if (-not $zr.Ok) { $miss.Add("the private DNS zone $z cannot be read in $(($net.ZonesRgId -split '/')[-1]): $($zr.Error)") }
+            if (& $denied $zr) { & $task "the private DNS zone $z in $(($net.ZonesRgId -split '/')[-1]) cannot be read with your sign-in ($(("$($zr.Error)" -split ':')[0])): your network team adds the records for it (the hand-off list has them) and links it to the spoke"; $net.ZonesDenied = $true }
+            elseif (-not $zr.Ok) { $miss.Add("the private DNS zone $z cannot be read in $(($net.ZonesRgId -split '/')[-1]): $($zr.Error)") }
             elseif (-not $zr.Value) { $miss.Add("the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - create it there (EPS needs it for $(@($script:EpsPrivateZones.Keys | Where-Object { $script:EpsPrivateZones[$_] -eq $z })[0]))") }
         }
     }
@@ -182,6 +189,24 @@ function Get-EpsZoneLinkName {
     $h = -join ([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($VnetId.ToLowerInvariant()))[0..3] | ForEach-Object { $_.ToString('x2') })
     $n = ($VnetId -split '/')[-1]
     "link-$($n.Substring(0, [math]::Min(60, $n.Length)))-$h"
+}
+
+function Confirm-EpsZoneLink {
+    # framework rule 13: a zone's link to a network counts only when READ BACK - it is there, it points at that network,
+    # and Azure says it is done (provisioningState Succeeded, virtualNetworkLinkState Completed). Waits up to ~5 minutes.
+    param([Parameter(Mandatory)][string]$ZoneId, [Parameter(Mandatory)][string]$VnetId, $Ctx)
+    $zone = ($ZoneId -split '/')[-1]; $net = ($VnetId -split '/')[-1]
+    $p = "$ZoneId/virtualNetworkLinks/$(Get-EpsZoneLinkName -VnetId $VnetId)"
+    for ($i = 0; $i -lt 30; $i++) {
+        $l = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.dns -AllowNotFound
+        if (-not $l) { throw "the private DNS zone $zone has no link to $net after it was made" }
+        if ("$($l.properties.virtualNetwork.id)" -ne $VnetId) { throw "the link of the private DNS zone $zone points at $($l.properties.virtualNetwork.id), not $net" }
+        $st = "$($l.properties.provisioningState)"; $ls = "$($l.properties.virtualNetworkLinkState)"
+        if ($st -in 'Failed', 'Canceled') { throw "the link of the private DNS zone $zone to $net is '$st'" }
+        if ($st -in '', 'Succeeded' -and $ls -in '', 'Completed') { return }
+        Start-Sleep -Seconds ($Ctx.PollSeconds ?? 10)
+    }
+    throw "the link of the private DNS zone $zone to $net is still '$st' / '$ls' after 5 minutes"
 }
 
 function Get-EpsPeeringNames {
@@ -360,9 +385,12 @@ function Invoke-EpsDnsZonesStep {
     foreach ($z in $script:EpsPrivateZones.Values) {
         $other = $linked[$z]
         if ($net.ZonesRgId) {
-            if ($other -and -not $other.StartsWith("$($net.ZonesRgId)/", [StringComparison]::OrdinalIgnoreCase)) { throw "ambiguous DNS: the network already links '$z' from $other, and -PrivateDnsZonesResourceGroupId names other zones - remove one of them (refused)" }
+            if ($other -and -not $other.StartsWith("$($net.ZonesRgId)/", [StringComparison]::OrdinalIgnoreCase)) { throw "ambiguous DNS: the network already links '$z' from $other, and -PrivateDnsZonesResourceGroupId names other zones - refused, nothing changed. Run again without -PrivateDnsZonesResourceGroupId to use the zone the network already links" }
             $zid = "$($net.ZonesRgId)/providers/Microsoft.Network/privateDnsZones/$z"
-            if (Invoke-EpsArm -Path $zid -ApiVersion $api -AllowNotFound) {
+            # framework rule 16: the customer's zones cannot be read (401 / 403) - a customer task (the preflight warned), not a stop
+            $zr = try { Invoke-EpsArm -Path $zid -ApiVersion $api -AllowNotFound } catch { if ("$_" -match '-> (401|403):') { 'denied' } else { throw } }
+            if ($zr -eq 'denied') { $net.ZoneIds[$z] = $zid; $net.ZoneSource[$z] = 'customer'; $net.MissingLinks += $z; continue }
+            if ($zr) {
                 $net.ZoneIds[$z] = $zid; $net.ZoneSource[$z] = 'customer'
                 if (-not $other) { $net.MissingLinks += $z }
             } else { throw "the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - the preflight checks every zone before anything is made; create it and run the install again" }
@@ -372,6 +400,7 @@ function Invoke-EpsDnsZonesStep {
         $zid = "$rg/providers/Microsoft.Network/privateDnsZones/$z"
         [void](Invoke-EpsArm -Method PUT -Path $zid -ApiVersion $api -Body @{ location = 'global'; tags = @{ product = 'EntraPolicySuite' } })
         [void](Invoke-EpsArm -Method PUT -Path "$zid/virtualNetworkLinks/$(Get-EpsZoneLinkName -VnetId $vid)" -ApiVersion $api -Body @{ location = 'global'; properties = @{ virtualNetwork = @{ id = $vid }; registrationEnabled = $false } })
+        Confirm-EpsZoneLink -ZoneId $zid -VnetId $vid -Ctx $Ctx
         $net.ZoneIds[$z] = $zid; $net.ZoneSource[$z] = 'eps'
     }
 }
@@ -392,7 +421,13 @@ function Invoke-EpsPrivateEndpointStep {
         if (Invoke-EpsArm -Path $cand -ApiVersion $script:EpsNetApi.dns -AllowNotFound) { $net.ZoneIds[$s.Zone] = $cand }
     }
     if ($net.ZoneIds[$s.Zone]) {
-        [void](Invoke-EpsArm -Method PUT -Path "$pe/privateDnsZoneGroups/default" -ApiVersion $script:EpsNetApi.net -Body @{ properties = @{ privateDnsZoneConfigs = @(@{ name = $s.Zone.Replace('.', '-'); properties = @{ privateDnsZoneId = $net.ZoneIds[$s.Zone] } }) } })
+        try { [void](Invoke-EpsArm -Method PUT -Path "$pe/privateDnsZoneGroups/default" -ApiVersion $script:EpsNetApi.net -Body @{ properties = @{ privateDnsZoneConfigs = @(@{ name = $s.Zone.Replace('.', '-'); properties = @{ privateDnsZoneId = $net.ZoneIds[$s.Zone] } }) } }) }
+        catch {
+            # framework rule 16: no right to write records in the customer's zone (401 / 403) - a customer task, not a stop;
+            # the DNS check then waits for the records (the hand-off list has them)
+            if ("$_" -notmatch '-> (401|403):' -or $net.ZoneSource[$s.Zone] -ne 'customer') { throw }
+            $net.Notes += "the records of $($s.Name) could not be written in your zone $($s.Zone) with your sign-in: your network team adds them (the hand-off list has them)"
+        }
     }
     $r = Invoke-EpsArm -Path $pe -ApiVersion $script:EpsNetApi.net
     $st = "$(@($r.properties.privateLinkServiceConnections)[0].properties.privateLinkServiceConnectionState.status)"
@@ -423,6 +458,7 @@ function Invoke-EpsEnvironmentDnsStep {
     foreach ($r in '@', '*', '*.internal') { [void](Invoke-EpsArm -Method PUT -Path "$zid/A/$r" -ApiVersion $api -Body @{ properties = @{ ttl = 300; aRecords = @(@{ ipv4Address = $net.EnvStaticIp }) } }) }
     $vid = Get-EpsSpokeVnetId $Ctx
     [void](Invoke-EpsArm -Method PUT -Path "$zid/virtualNetworkLinks/$(Get-EpsZoneLinkName -VnetId $vid)" -ApiVersion $api -Body @{ location = 'global'; properties = @{ virtualNetwork = @{ id = $vid }; registrationEnabled = $false } })
+    Confirm-EpsZoneLink -ZoneId $zid -VnetId $vid -Ctx $Ctx
     $net.EnvZoneId = $zid
 }
 
@@ -469,8 +505,8 @@ function Invoke-EpsHubStep {
         if (-not $r.Ok) { $out.Links = "not made - $($r.Reason) (on the hand-off list)" }
         else {
             $own = @(@($net.ZoneIds.Keys | Where-Object { $net.ZoneSource[$_] -eq 'eps' } | ForEach-Object { $net.ZoneIds[$_] }) + @($net.EnvZoneId) | Where-Object { $_ })
-            foreach ($zid in $own) { [void](Invoke-EpsArm -Method PUT -Path "$zid/virtualNetworkLinks/$(Get-EpsZoneLinkName -VnetId $hub)" -ApiVersion $script:EpsNetApi.dns -Body @{ location = 'global'; properties = @{ virtualNetwork = @{ id = $hub }; registrationEnabled = $false } }) }
-            $out.Links = "$($own.Count) zone(s) linked to the hub"
+            foreach ($zid in $own) { [void](Invoke-EpsArm -Method PUT -Path "$zid/virtualNetworkLinks/$(Get-EpsZoneLinkName -VnetId $hub)" -ApiVersion $script:EpsNetApi.dns -Body @{ location = 'global'; properties = @{ virtualNetwork = @{ id = $hub }; registrationEnabled = $false } }); Confirm-EpsZoneLink -ZoneId $zid -VnetId $hub -Ctx $Ctx }
+            $out.Links = "$($own.Count) zone(s) linked to the hub (each read back)"
         }
     }
     $net.Hub = $out; $out
@@ -634,7 +670,7 @@ function Invoke-EpsDnsCheckStep {
         }
     }
     if ($bad.Count) {
-        throw ("DNS check from this machine: $($bad.Count) private name(s) do not resolve to their private endpoint. Add these A records (or link the zones to your hub), then run the same command again from a machine in your network - it resumes:`n" +
+        throw ("EPS-WAITING: DNS check from this machine: $($bad.Count) private name(s) do not resolve to their private endpoint. Add these A records (or link the zones to your hub), then run the same command again from a machine in your network - it resumes:`n" +
                ($bad -join "`n") + $(if ($net.HandoffPath) { "`nThe full network hand-off: $($net.HandoffPath)" }))
     }
     @{ Resolved = @(Get-EpsPrivateEndpointSpecs -Ctx $Ctx | ForEach-Object { $_.Fqdns }).Count }
@@ -683,7 +719,8 @@ function Invoke-EpsAgentPoolStep {
     $Ctx.Network.PoolOutbound = $out.Path
     $p ="/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.ContainerRegistry/registries/$($Ctx.Names.Registry)/agentPools/$($Ctx.Names.AgentPool)"
     $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool -AllowNotFound
-    if (-not $have -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId) {
+    # framework rule 15: a pool left Failed / Canceled (an earlier run) is made again, never waited on
+    if (-not $have -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId -or "$($have.properties.provisioningState)" -in 'Failed', 'Canceled') {
         $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = 1; tier = 'S1'; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
     }
     for ($i = 0; "$($have.properties.provisioningState)" -notin 'Succeeded', 'Failed', 'Canceled' -and $i -lt 60; $i++) { Start-Sleep -Seconds ($Ctx.PollSeconds ?? 10); $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool }
@@ -761,7 +798,7 @@ function Invoke-EpsInsideCheckStep {
     $r = if ($job.Ran) { @{ Ok = $true; How = "inside the environment ($($n.InsideCheckJob)): private DNS, the web app and every job queue through its endpoint" } }
          elseif ((Test-EpsWebAppAnswers -Fqdn $fqdn -WaitSeconds ($Ctx.InsideMachineWaitSeconds ?? 60) -PollSeconds ($Ctx.PollSeconds ?? 10)).Ok) { @{ Ok = $true; How = "from this machine: the web app answers at https://$fqdn/ (the inside job did not run: $($job.Reason))" } }
          elseif ($Ctx.Network.ConfirmedFromInside) { @{ Ok = $true; How = "-ConfirmedFromInside (the inside job did not run: $($job.Reason); this machine cannot reach the web app)" } }
-         else { throw "the private install is not proven from inside the network: the inside job did not run ($($job.Reason)) and this machine cannot reach https://$fqdn/. Run the install again from a machine in your network, or check the web app from one and run again with -ConfirmedFromInside" }
+         else { throw "EPS-WAITING: the private install is not proven from inside the network: the inside job did not run ($($job.Reason)) and this machine cannot reach https://$fqdn/. Run the install again from a machine in your network, or check the web app from one and run again with -ConfirmedFromInside" }
     $Ctx.Network.InsideCheck = $r; $r
 }
 

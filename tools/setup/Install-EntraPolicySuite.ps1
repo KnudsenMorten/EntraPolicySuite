@@ -12,7 +12,7 @@
     rights; Exchange.ManageAsApp + the Entra role Exchange Recipient Administrator) and the scheduler identity only the
     right to put a run request on the job queues. Then it runs the engine's schedule check once.
     Every feature is OFF after the install, and a scheduled run only previews until you switch it to Apply.
-    -WhatIf shows every step and what it would create, and changes nothing. A failed install resumes where it stopped.
+    -WhatIf shows every step and what it would create, and changes nothing. A failed install resumes where it stopped. Exit code: 0 done, 1 a step failed, 2 a check failed (nothing was created), 4 waiting for a step of yours (DNS records, a check from inside your network) - run the same command again when it is done.
 
     PUBLIC (the default): the web app has a public HTTPS address behind the Entra sign-in; Azure SQL, Key Vault, the job
     queues and the registry use their public endpoints, protected by Entra sign-in and managed identities.
@@ -22,7 +22,7 @@
     through private endpoints with private DNS zones. Run a private install from a machine INSIDE your network (or one
     that resolves its private names): the image upload and the database steps run from the machine that runs the
     install. Before them the install checks DNS from this machine and, when a name does not resolve to its private
-    endpoint, stops and prints the exact A records your hub needs - run the same command again afterwards; it resumes.
+    endpoint, WAITS (exit 4) and prints the exact A records your hub needs - run the same command again afterwards; it resumes.
     At the end a one-time check INSIDE the network (a job in the environment) proves private DNS, the web app and every
     job queue; only then is the install reported as done. The network hand-off list (peering, DNS zones and records, the
     outbound hosts, the check to run) is printed and written to network-hand-off.txt in the state folder, and with
@@ -155,7 +155,7 @@ foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Schedu
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 $what = [bool]$WhatIfPreference
 $WhatIfPreference = $false   # the install decides what -WhatIf means: read, plan, change nothing (its own calls stay real reads)
-function Finish([int]$code, [string]$msg) { if ($msg) { Write-Host $msg -ForegroundColor $(if ($code) { 'Red' } else { 'Green' }) }; exit $code }
+function Finish([int]$code, [string]$msg) { if ($msg) { Write-Host $msg -ForegroundColor $(if ($code -eq 4) { 'Yellow' } elseif ($code) { 'Red' } else { 'Green' }) }; exit $code }
 
 # ---- the network parameters (NET-1): checked before the sign-in, a wrong range or id is refused (exit 2) ----
 $netPlan = Get-EpsNetworkPlan -P @{ PrivateNetwork = [bool]$PrivateNetwork; VnetId = $VnetId; VnetAddressPrefix = $VnetAddressPrefix; VnetName = $VnetName
@@ -219,7 +219,7 @@ Write-Host ''
 Write-Host "Entra Policy Suite $version -> subscription $($subInfo.displayName) ($SubscriptionId), $ResourceGroup, $Location" -ForegroundColor Cyan
 if ($unregistered) { Write-Host "Resource providers to register: $($unregistered -join ', ')" -ForegroundColor Yellow }
 $print = { param($e) if (-not $Quiet) {
-    $c = switch ($e.State) { 'ok' { 'Green' } 'failed' { 'Red' } 'plan' { 'Gray' } 'skipped' { 'DarkGray' } default { 'Cyan' } }
+    $c = switch ($e.State) { 'ok' { 'Green' } 'failed' { 'Red' } 'waiting' { 'Yellow' } 'plan' { 'Gray' } 'skipped' { 'DarkGray' } default { 'Cyan' } }
     Write-Host ("  {0,-8} {1,-60} {2}" -f $e.State, $e.Step.Title, $e.Message) -ForegroundColor $c } }
 
 # Installer rule 9 (framework §0): the region accepts new resources in THIS subscription - a validate, nothing is made
@@ -235,7 +235,8 @@ if ($reg.Accepts -eq $false) {
 if ($netPlan.Private) {
     $pre = @(Test-EpsNetworkPrerequisites -Ctx $ctx)
     if ($pre.Count) { Finish 2 ("`nNot ready for the private network install - NOTHING was created. Missing ($($pre.Count)):`n" + (($pre | ForEach-Object { "  - $_" }) -join "`n") + "`nFix these (your network team creates them) and run the same command again." + $(if ($ctx.Network.ZonesRgId) { "`nOr leave out -PrivateDnsZonesResourceGroupId and the install makes and links its own private DNS zones." })) }
-    Write-Host 'Private network: every prerequisite is there (network, subnets, hub, DNS zones).' -ForegroundColor Green
+    foreach ($w in @($ctx.Network.Warnings)) { if ($w) { Write-Host "WARNING - a task for your network team: $w" -ForegroundColor Yellow } }
+    Write-Host "Private network: every prerequisite is there (network, subnets, hub, DNS zones)$(if (@($ctx.Network.Warnings).Count) { ' - except the tasks above, which the install does not need to go on' })." -ForegroundColor Green
 }
 if ($what) {
     [void](Invoke-EpsInstall -Ctx $ctx -WhatIf -Completed $completed -OnStep $print)
@@ -253,7 +254,9 @@ catch {
     $hint = if ($m -match '(?i)Microsoft.Sql/servers.*not accepting creation') { "`nAzure SQL does not take new servers in '$(if ($SqlLocation) { $SqlLocation } else { $Location })' now: run again with -SqlLocation <another region> (e.g. swedencentral) - the steps already done are kept." } elseif ($m -match '(?i)locationineligible|not accepting new customers|SkuNotAvailable|LocationNotAvailableForResourceType') { "`nAzure does not take new resources in '$Location' for this subscription: run again with another -Location (e.g. northeurope, swedencentral) - the steps already done are kept." } else { '' }
     if ($ctx.Network.Private -and -not $ctx.Network.HandoffPath -and (Test-Path -LiteralPath (Join-Path $StatePath 'network-hand-off.txt'))) { $ctx.Network.HandoffPath = Join-Path $StatePath 'network-hand-off.txt' }
     if ($ctx.Network.HandoffPath) { $hint += "`nThe network hand-off for your network team: $($ctx.Network.HandoffPath)$(if ($ctx.Network.HubScriptPath) { " (and the hub owner's script $($ctx.Network.HubScriptPath))" })" }
-    Finish 1 "`nThe install stopped: $m$hint`nFix the cause and run the same command again - it resumes ($stateFile)."
+    # framework rule 14: waiting is not a failure - its own exit code (4), its own words
+    if ($m.StartsWith('EPS-WAITING: ')) { Finish 4 "`nThe install is WAITING (nothing failed): $($m.Substring(13))$hint`nWhen that is done, run the same command again - it resumes here ($stateFile)." }
+    Finish 1"`nThe install stopped: $m$hint`nFix the cause and run the same command again - it resumes ($stateFile)."
 }
 if ($ctx.Network.Private) {
     # written again at the end: it then shows the final state (a resumed run may have skipped the step)

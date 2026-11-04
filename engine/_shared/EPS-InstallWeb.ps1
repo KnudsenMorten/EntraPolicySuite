@@ -218,7 +218,7 @@ function Invoke-EpsWebRegistrationStep {
     if ($others.Count -and $n.WebAppRegistration -notmatch '\)$') { $n.WebAppRegistration = "$($n.WebAppRegistration) ($($n.ResourceGroup))" }
     $app = Find-EpsWebAppRegistration -Tag $tag
     if (-not $app) { $app = Invoke-EpsGraph -Method POST -Path 'v1.0/applications' -Body (New-EpsWebAppRegistrationBody -DisplayName $n.WebAppRegistration -Tag $tag) }
-    if (@($app.passwordCredentials).Count -or @($app.keyCredentials).Count) { throw "the registration '$($app.displayName)' carries a secret or a certificate - the sign-in front needs none; remove it (it was not made by this install)" }
+    if (@($app.passwordCredentials).Count -or @($app.keyCredentials).Count) { throw "the registration '$($app.displayName)' carries a secret or a certificate - the sign-in front never uses one, and this install never adds one, so the install stops here and changes nothing (whoever added it decides what happens to it)" }
     # the standard name (framework §12.11c, owner 2026-11-04): an older install's "EntraPolicySuite (<rg>)" is renamed in
     # place - same object, same app id, found by its tag - and read back
     if ("$($app.displayName)" -cne $n.WebAppRegistration) {
@@ -269,6 +269,8 @@ function Invoke-EpsKeyVaultStep {
     $n = $Ctx.Names; $sub = "/subscriptions/$($Ctx.SubscriptionId)"
     $vaultPath = "$sub/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)"
     $vault = Invoke-EpsArm -Path $vaultPath -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
+    # framework rule 15: a vault left Failed / Canceled by an earlier run is made again (same body), never waited on
+    if ($vault -and "$($vault.properties.provisioningState)" -in 'Failed', 'Canceled') { $vault = Invoke-EpsArm -Method PUT -Path $vaultPath -ApiVersion $script:EpsWeb.KvApi -Body (New-EpsKeyVaultBody -Location $vault.location -TenantId $Ctx.TenantId -Private:([bool]$Ctx.Network.Private)) }
     if (-not $vault) {
         # a subscription-level check: with Owner on the resource group only it is refused (403) - then the PUT itself
         # says whether the name is free (a taken name fails there with Azure's own message)

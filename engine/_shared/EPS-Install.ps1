@@ -832,7 +832,13 @@ function Invoke-EpsInstall {
         & $OnStep @{ Step = $s; State = 'running'; Message = "$($t.Action): $($t.Detail)" }
         $sw = [Diagnostics.Stopwatch]::StartNew()   # OVERHEAD (owner 2026-11-03): every step says how long it took
         try { $out = Invoke-EpsInstallStep -Id $s.Id -Ctx $Ctx }
-        catch { & $OnStep @{ Step = $s; State = 'failed'; Message = "$($_.Exception.Message)" }; throw }
+        catch {
+            # framework rule 14: a step that waits for something done later (DNS records, a check from inside the network)
+            # reports 'waiting' with the reason - nothing failed; the same command resumes here
+            $em = "$($_.Exception.Message)"
+            if ($em.StartsWith('EPS-WAITING: ')) { & $OnStep @{ Step = $s; State = 'waiting'; Message = $em.Substring(13) }; throw }
+            & $OnStep @{ Step = $s; State = 'failed'; Message = $em }; throw
+        }
         $done.Add($s.Id)
         $took = " ($([int]$sw.Elapsed.TotalSeconds) s)"
         & $OnStep @{ Step = $s; State = 'ok'; Seconds = [int]$sw.Elapsed.TotalSeconds; Message = $(if ($out -is [hashtable] -and $out.Tick) { "tick $($out.Tick) after $($out.Seconds) s$(if ($out.Web) { "; the web app answers at $($out.Web)" })$took" } elseif ($out -is [hashtable] -and $out.Note) { "done - $($out.Note)$took" } else { "done$took" }); Completed = @($done) }

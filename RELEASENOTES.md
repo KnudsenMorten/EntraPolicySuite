@@ -2,6 +2,17 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.54 - the install waits instead of failing, and reads back what it links
+- When the install needs something from you first, it now says it is WAITING instead of failing: missing DNS records,
+  or no proof yet from inside your network. The step shows "waiting" with the reason, and the installer ends with exit
+  code 4. Run the same command again when it is done; it resumes at that step.
+- Private install: every private DNS zone link the install makes is read back before the install goes on.
+- Private install: when your sign-in may not read your hub network or your central DNS zones, or write records in
+  them, the install warns you and puts it on the network hand-off list as a task for your network team. It no longer
+  stops.
+- A build pool or Key Vault left in a failed state by an earlier run is created again when the install resumes.
+- Two stop messages no longer suggest removing something that may be in use elsewhere.
+
 ## 2.0.53 - private install: the build pool's way out
 - Azure now creates new subnets without internet access. In a private install, the registry's build pool runs in the
   endpoints subnet and needs a way out: the subnet the install makes now has default outbound access on, and one it made
