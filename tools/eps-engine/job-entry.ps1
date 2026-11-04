@@ -40,6 +40,12 @@ try {
         . (Join-Path $sol 'engine\_shared\EPS-Install.ps1')   # with EPS-InstallWeb (the front's state SQL) and EPS-DbInit
         exit (Invoke-EpsDbInit -ConnectionString $ConnectionString -SolutionRoot $sol -Log { param($m) Say $m })
     }
+    if ($Job -eq 'SupportAccess') {
+        # OPEN-01 (framework SUPPORT ACCESS): caj-eps-support, every 5 minutes, as id-eps-dbinit - reads the customer's
+        # consent from Invardia ITSELF and converges the Support app's database user (EPS-SupportAccess.ps1)
+        foreach ($f in 'EPS-Install', 'EPS-SupportAccess') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+        exit (Invoke-EpsSupportAccess -ConnectionString $ConnectionString -Log { param($m) Say $m })
+    }
     if ($Job -eq 'Web') {
         # the GUI (DESIGN §2): behind the shared sign-in front, on 127.0.0.1 only - it never returns
         & (Join-Path $sol 'tools\eps-web\Start-EpsWeb.ps1') -ConnectionString $ConnectionString

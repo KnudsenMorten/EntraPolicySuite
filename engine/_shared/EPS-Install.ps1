@@ -33,7 +33,10 @@ function Grant-EpsUplinkKeyAccess {
     $s = Invoke-EpsArm -Path $secret -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
     if (-not $s) { return @{ Granted = $false; Reason = "no secret $($script:EpsUplinkSecret) in $($n.KeyVault) yet: the uplink stays disabled until Invardia writes it (then run the install again)" } }
     Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $secret -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.KvSecretsUser)" -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId }
-    @{ Granted = $true; Reason = "$($n.EngineIdentity) may read the secret $($script:EpsUplinkSecret) (and nothing else in the vault)" }
+    # OPEN-01 (framework SUPPORT ACCESS): the support-access job (as id-eps-dbinit) asks Invardia for the consent itself with
+    # the same key - the same secret only
+    if ($Ctx.Identities.DbInitIdentity.PrincipalId) { Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $secret -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.KvSecretsUser)" -PrincipalId $Ctx.Identities.DbInitIdentity.PrincipalId } }
+    @{ Granted = $true; Reason = "$($n.EngineIdentity)$(if ($Ctx.Identities.DbInitIdentity.PrincipalId) { " and $($n.DbInitIdentity)" }) may read the secret $($script:EpsUplinkSecret) (and nothing else in the vault)" }
 }
 # the engine's rights (the security pack lists the same): Graph app roles by VALUE (ids resolved from the tenant)
 $script:EpsEngineGraphRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
@@ -204,7 +207,7 @@ function Get-EpsInstallNames {
         SqlAdminGroup = 'grp-eps-sql-admins'; LegacySqlAdminGroup = 'EntraPolicySuite SQL admins'
         # SEC-08 (framework §0, Invardia DESIGN ch 12): the database setup job and its own identity - the only member of
         # the SQL admin group the install puts there; dbinit is a standard purpose word (Invardia 2026-11-04)
-        DbInitIdentity = 'id-eps-dbinit'; DbInitJob = 'caj-eps-dbinit'
+        DbInitIdentity = 'id-eps-dbinit'; DbInitJob = 'caj-eps-dbinit'; SupportJob = 'caj-eps-support'   # OPEN-01: the support-access job runs as id-eps-dbinit
         # UPDATER-1 phase 2: the update job's own identity - Contributor on the resource group + AcrPull (owner 2026-11-03
         # "Contributor, like SI/PIM"); the engine identity keeps no Azure right
         UpdaterIdentity = 'id-eps-updater'
@@ -741,7 +744,10 @@ function Invoke-EpsInstallStep {
             $sa = if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) { @{ Upn = $Ctx.Person.Upn; ObjectId = $Ctx.Person.ObjectId } }
             if ($mode.Use) {
                 $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa
-                return @{ Note = "the job $($n.DbInitJob) ($($j.Execution)) read every principal back after $($j.Seconds) s - no SQL right for you" }
+                # OPEN-01: the support-access job (every 5 min, as the same identity) - only where the setup job can run
+                $sj = Get-EpsSupportJobBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)"
+                [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($sj.Name)" -ApiVersion $script:EpsApi.acajob -Body $sj.Body)
+                return @{ Note = "the job $($n.DbInitJob) ($($j.Execution)) read every principal back after $($j.Seconds) s - no SQL right for you; $($sj.Name) applies the support consent every 5 min" }
             }
             Invoke-EpsSetupSql -Ctx $Ctx -Schema
             # the roles first (a member needs its role), each user in its own role only

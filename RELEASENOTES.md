@@ -2,8 +2,20 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.63 - support access follows the level set in the Invardia portal
+- A new job, run every 5 minutes as the database setup identity, asks Invardia for the support access level your
+  organization set for this install in the Invardia customer portal and applies it to the database:
+  - none: the Invardia Support app has no database user;
+  - read: the Support app can read the product's tables, nothing more;
+  - troubleshoot / setup: read, plus database admin only while Invardia has an open support session for this install,
+    at most 8 hours, removed again when the session closes or its time has passed.
+- If Invardia cannot be reached, the last level keeps applying, and an admin window still ends at its time. Every
+  change is read back and written to the audit trail. No part of the product (engine, web app, worker) can raise or
+  lower it.
+- An install run adds the job.
+
 ## 2.0.62 - support consent from the Invardia portal
-- The install keeps the support access level your organisation sets for it in the Invardia customer portal (none, read,
+- The install keeps the support access level your organization sets for it in the Invardia customer portal (none, read,
   or troubleshoot / setup), as Invardia sends it with the answer to the install's own heartbeat. The web app can only
   read it.
 - A support session that goes beyond that level, or that arrives before any level was received, is not taken: it is

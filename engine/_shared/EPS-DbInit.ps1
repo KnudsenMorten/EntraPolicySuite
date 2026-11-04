@@ -225,6 +225,35 @@ function Get-EpsDbInitJobBody {
     }
 }
 
+function Get-EpsSupportJobBody {
+    # PURE. caj-eps-support (OPEN-01): every 5 minutes, as id-eps-dbinit (the SQL admin group's member), the engine image,
+    # EPS_JOB SupportAccess; the vault NAME for the install key (Key Vault Secrets User on uplink-key only). No secret.
+    param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$Image)
+    $n = $Ctx.Names; $mi = $Ctx.Identities.DbInitIdentity
+    $cs = "Server=tcp:$($n.SqlServer).database.windows.net,1433;Database=$($n.Database);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30"
+    [ordered]@{
+        Name = $n.SupportJob
+        Body = [ordered]@{
+            location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite'; job = 'SupportAccess' }
+            identity = @{ type = 'UserAssigned'; userAssignedIdentities = @{ "$($mi.Id)" = @{} } }
+            properties = [ordered]@{
+                environmentId = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/managedEnvironments/$($n.Environment)"
+                workloadProfileName = 'Consumption'
+                configuration = [ordered]@{ triggerType = 'Schedule'; replicaTimeout = 300; replicaRetryLimit = 0
+                    scheduleTriggerConfig = @{ cronExpression = '*/5 * * * *'; parallelism = 1; replicaCompletionCount = 1 }
+                    registries = @(@{ server = "$($n.Registry).azurecr.io"; identity = "$($mi.Id)" }) }
+                template = @{ containers = @(@{ name = 'eps'; image = $Image; resources = @{ cpu = [double]0.25; memory = '0.5Gi' }
+                    env = @(
+                        @{ name = 'EPS_JOB'; value = 'SupportAccess' }
+                        @{ name = 'EPS_SQL_CONNECTION'; value = $cs }
+                        @{ name = 'EPS_TENANT_ID'; value = $Ctx.TenantId }
+                        @{ name = 'EPS_KEY_VAULT'; value = $n.KeyVault }
+                        @{ name = 'EPS_ManagedIdentityClientId'; value = "$($mi.ClientId)" }) }) }
+            }
+        }
+    }
+}
+
 function Find-EpsSqlAdminGroup {
     # The group by its standard name (grp-eps-sql-admins); several with that name = refused (never a guess).
     param([Parameter(Mandatory)]$Ctx)

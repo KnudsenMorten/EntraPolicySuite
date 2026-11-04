@@ -899,3 +899,20 @@ CREATE TABLE eps.IdentityAction (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 19)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (19, '2.0.30');
+
+-- v20 (2.0.63, OPEN-01 / framework SUPPORT ACCESS): the support access level the support job (caj-eps-support, as the
+-- database setup identity - the database owner) last read from Invardia ITSELF, and what it applied. NO product role has
+-- any grant on it: the engine, the web app and the worker can neither raise nor lower support access through it.
+IF OBJECT_ID('eps.SupportAccess') IS NULL
+CREATE TABLE eps.SupportAccess (
+    Id            INT            NOT NULL CONSTRAINT PK_SupportAccess PRIMARY KEY CONSTRAINT CK_SupportAccess_One CHECK (Id = 1),
+    Level         NVARCHAR(20)   NOT NULL,                -- none | read | troubleshoot
+    AppId         NVARCHAR(36)   NULL,                    -- the Support app's client id (lower case)
+    SessionUntil  DATETIME2      NULL,                    -- admin until (an open session from Invardia), else NULL
+    Applied       NVARCHAR(400)  NULL,                    -- what the last run did, in plain words
+    CheckedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_SupportAccess_At DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT CK_SupportAccess_Level CHECK (Level IN ('none', 'read', 'troubleshoot'))
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 20)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (20, '2.0.63');
