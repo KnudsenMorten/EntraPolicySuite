@@ -127,7 +127,11 @@ function Get-EpsInstallNames {
         Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; TickJob = 'caj-eps-tick'; Storage = "steps$s"
         AgentPool = 'epspool'; InsideCheckJob = 'caj-eps-insidecheck'
         JobStarterRole = "EntraPolicySuite job starter ($ResourceGroup)"
-        WebApp = 'ca-eps-web'; KeyVault = "kv-eps-$s"; WebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
+        WebApp = 'ca-eps-web'; KeyVault = "kv-eps-$s"
+        # IDENTITY names follow the standard (framework §12.11c, owner 2026-11-04 "all identity names must be renamed to align
+        # to standard - we can not have different names except for azure resources"): a re-run renames an older one in place
+        WebAppRegistration = 'Entra Policy Suite'; LegacyWebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
+        SqlAdminGroup = 'grp-eps-sql-admins'; LegacySqlAdminGroup = 'EntraPolicySuite SQL admins'
     }
 }
 
@@ -523,7 +527,7 @@ function Invoke-EpsInstallStep {
             # -SqlLocation: Azure SQL may refuse new servers in a region (North Europe, 2026-10-30) while the rest is fine there
             $sqlLoc = if ($Ctx.SqlLocation) { $Ctx.SqlLocation } else { $Ctx.Location }
             # the SQL server's Entra admin (framework §12.23 P5, owner 2026-11-01): an EXISTING server keeps the admin it has
-            # (a re-run never takes the customer's admin group away - internal: the group 'EntraPolicySuite SQL admins');
+            # (a re-run never takes the customer's admin group away); a group still named with the old product name is renamed to the standard grp-eps-sql-admins in place (same object, same sid);
             # a NEW server gets the customer's group (-SqlAdminGroupId) or else whoever installs: a person (sid = object
             # id) or, through the Invardia Support app, an application (sid = its client id)
             $old = Invoke-EpsArm -Path $srv -ApiVersion $script:EpsApi.sql -AllowNotFound
@@ -537,6 +541,22 @@ function Invoke-EpsInstallStep {
             } else {
                 @{ administratorType = 'ActiveDirectory'; azureADOnlyAuthentication = $true; principalType = $(if ($Ctx.Person.PrincipalType) { $Ctx.Person.PrincipalType } else { 'User' })
                    login = $Ctx.Person.Upn; sid = $(if ($Ctx.Person.Sid) { $Ctx.Person.Sid } else { $Ctx.Person.ObjectId }); tenantId = $Ctx.TenantId }
+            }
+            # the standard group name (framework §12.11c, owner 2026-11-04): the admin group still named with the old product name
+            # is renamed in place (same object id = same sid, so nobody loses access) and the server's admin entry follows it.
+            # Only that exact old name: a customer's own group keeps the name the customer gave it. A refused rename (no right
+            # to rename groups) never stops the install - it is said, and the next run tries again.
+            if ("$($admin.principalType)" -in 'Group', '' -and "$($admin.login)" -eq $n.LegacySqlAdminGroup -and "$($admin.sid)" -match '^[0-9a-fA-F-]{36}$') {
+                try {
+                    $grp = Invoke-EpsGraph -Path "v1.0/groups/$($admin.sid)?`$select=id,displayName"
+                    if ("$($grp.displayName)" -ceq $n.LegacySqlAdminGroup) {
+                        Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/groups/$($admin.sid)" -Body @{ displayName = $n.SqlAdminGroup }) }
+                        [void](Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/groups/$($admin.sid)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.SqlAdminGroup) { throw "the group still reads '$($x.displayName)'" }; $x })
+                        if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+                        $Ctx.Renamed.Add("group '$($n.LegacySqlAdminGroup)' -> '$($n.SqlAdminGroup)' (the SQL server's Entra admin, same object)")
+                    }
+                    if ("$($grp.displayName)" -ceq $n.LegacySqlAdminGroup -or "$($grp.displayName)" -ceq $n.SqlAdminGroup) { $admin.login = $n.SqlAdminGroup }
+                } catch { Write-Host "  note     the SQL admin group '$($admin.login)' was not renamed to $($n.SqlAdminGroup): $($_.Exception.Message) - the next run tries again" -ForegroundColor Yellow }
             }
             # private (NET-1): a NEW server is created with public access off and no firewall rule at all; an existing one
             # (public -> private) keeps its setting until the lockdown step, after the inside check

@@ -538,7 +538,7 @@ function New-EpsHubPrepareScript {
     $L.Add('    other file. Without -Apply it only shows what it would do. It never deletes anything; running it twice is safe.')
     $L.Add("      1. the peering '$($pn.Hub)' on the hub -> the spoke (and '$($pn.Spoke)' on the spoke -> the hub when you may write the spoke)")
     foreach ($z in $zones) { $L.Add("      -  links the private DNS zone $(($z -split '/')[-1]) to the hub") }
-    if ($oid) { $L.Add("      2. Network Contributor on the hub for the person who installs EntraPolicySuite ($oid), so the install can finish its side") }
+    if ($oid) { $L.Add("      2. Network Contributor on the hub for the person who installs Entra Policy Suite ($oid), so the install can finish its side") }
     $L.Add('      3. shows the state of both sides of the peering.')
     $L.Add('.PARAMETER Apply'); $L.Add('    Make the changes. Without it the script prints its plan and changes nothing.')
     $L.Add('.NOTES')

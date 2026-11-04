@@ -197,16 +197,39 @@ function Invoke-EpsWebRegistrationStep {
     #>
     param([Parameter(Mandatory)]$Ctx)
     $n = $Ctx.Names; $tag = "eps-install-$($n.Suffix)"
+    # the display name (framework decision, Invardia 2026-11-04): the product name only - plus " (<handle>)" only when
+    # several installs share one tenant (another EPS install's registration carries another eps-install-<suffix> tag);
+    # the handle is the resource group. Checked every run, so a second install renames neither itself nor the first.
+    $others = @(try { Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:startswith(t,'eps-install-'))&`$select=id,tags" -All } catch { @() }) |
+        Where-Object { @($_.tags) -notcontains $tag -and @($_.tags | Where-Object { "$_" -like 'eps-install-*' }).Count }
+    if ($others.Count -and $n.WebAppRegistration -notmatch '\)$') { $n.WebAppRegistration = "$($n.WebAppRegistration) ($($n.ResourceGroup))" }
     $app = Find-EpsWebAppRegistration -Tag $tag
     if (-not $app) { $app = Invoke-EpsGraph -Method POST -Path 'v1.0/applications' -Body (New-EpsWebAppRegistrationBody -DisplayName $n.WebAppRegistration -Tag $tag) }
     if (@($app.passwordCredentials).Count -or @($app.keyCredentials).Count) { throw "the registration '$($app.displayName)' carries a secret or a certificate - the sign-in front needs none; remove it (it was not made by this install)" }
+    # the standard name (framework §12.11c, owner 2026-11-04): an older install's "EntraPolicySuite (<rg>)" is renamed in
+    # place - same object, same app id, found by its tag - and read back
+    if ("$($app.displayName)" -cne $n.WebAppRegistration) {
+        $was = "$($app.displayName)"
+        Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ displayName = $n.WebAppRegistration }) }
+        $rb = Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/applications/$($app.id)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.WebAppRegistration) { throw "the app registration still reads '$($x.displayName)'" }; $x }
+        $app.displayName = $rb.displayName
+        if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+        $Ctx.Renamed.Add("app registration '$was' -> '$($n.WebAppRegistration)'")
+    }
     $uri = "api://$($app.appId)"
     if (@($app.identifierUris) -notcontains $uri) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ identifierUris = @($uri) }) } }
     # a service principal just made may not be readable yet, and an answer without its id is no service principal
     # (live, internal 2026-10-30: the consent query then went out with an empty id) - "not visible yet", retried
-    $sp = Invoke-EpsWithRetry { $x = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,appRoleAssignmentRequired" -All)[0]; if (-not $x) { $x = Invoke-EpsGraph -Method POST -Path 'v1.0/servicePrincipals' -Body @{ appId = $app.appId; appRoleAssignmentRequired = $true; tags = @('WindowsAzureActiveDirectoryIntegratedApp') } }
+    $sp = Invoke-EpsWithRetry { $x = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,appRoleAssignmentRequired,displayName" -All)[0]; if (-not $x) { $x = Invoke-EpsGraph -Method POST -Path 'v1.0/servicePrincipals' -Body @{ appId = $app.appId; appRoleAssignmentRequired = $true; tags = @('WindowsAzureActiveDirectoryIntegratedApp') } }
         if (-not "$($x.id)") { throw "the service principal of $($app.appId) does not exist yet (not found)" }; $x }
     if (-not $sp.appRoleAssignmentRequired) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/servicePrincipals/$($sp.id)" -Body @{ appRoleAssignmentRequired = $true }) }
+    # the enterprise application keeps the name it was made with: renamed with the registration, read back
+    if ($sp.PSObject.Properties['displayName'] -and "$($sp.displayName)" -cne $n.WebAppRegistration) {
+        Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/servicePrincipals/$($sp.id)" -Body @{ displayName = $n.WebAppRegistration }) }
+        [void](Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/servicePrincipals/$($sp.id)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.WebAppRegistration) { throw "the enterprise application still reads '$($x.displayName)'" }; $x })
+        if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+        $Ctx.Renamed.Add("enterprise application '$($sp.displayName)' -> '$($n.WebAppRegistration)'")
+    }
     $graphSp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($script:EpsWeb.GraphAppId)'&`$select=id" -All)[0]
     foreach ($g in @(@{ Resource = $graphSp.id; Scope = 'openid profile offline_access User.Read' }, @{ Resource = $sp.id; Scope = $script:EpsWeb.Scope })) {
         # GRAPH-CONSENT-RETRY (the NET-1 re-run 2026-11-03): right after the service principal is made, this query can 404 ("Resource '' does

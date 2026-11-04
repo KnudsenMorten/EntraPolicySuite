@@ -45,7 +45,8 @@
 .PARAMETER SqlLocation
     The Azure SQL server's region, when Azure SQL does not take new servers in -Location. Default: -Location.
 .PARAMETER SqlAdminGroupId
-    The object id of YOUR admin group (Entra security group) to be the Azure SQL server's Entra admin. Make sure you are
+    The object id of YOUR admin group (Entra security group) to be the Azure SQL server's Entra admin. The standard name
+    for that group is grp-eps-sql-admins. Make sure you are
     a member of it (the install's SQL steps run as you). Without it a new server gets you as its admin. An EXISTING server
     always keeps the admin it has - a re-run never changes it.
 .PARAMETER SqlAdminGroupName
@@ -262,4 +263,6 @@ if ($ctx.Network.Private) {
 # step (2.0.7 live 2026-11-01: a re-run to re-apply the grants did nothing)
 Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
 $url = if ($ctx.Web -and $ctx.Web.Url) { "`nThe web app: $($ctx.Web.Url) - sign in as $($person.Upn) (its first SuperAdmin); others need an assignment to the '$($names.WebAppRegistration)' enterprise application and a role on the Access page." } else { '' }
+# the standard identity names (framework §12.11c): what this run renamed in place, read back
+if ($ctx.Renamed -and $ctx.Renamed.Count) { Write-Host "`nRenamed to the standard names (read back):" -ForegroundColor Cyan; foreach ($r in $ctx.Renamed) { Write-Host "  $r" } }
 Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"

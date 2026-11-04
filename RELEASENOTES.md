@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.49 - standard identity names
+- The web app's app registration and enterprise application are named Entra Policy Suite (with the resource group in
+  brackets only when several installs share one tenant). An install made before is renamed in place by its next install
+  run: same object, same app id, nobody loses access.
+- A SQL admin group still named after the old product name is renamed to grp-eps-sql-admins in place, and the SQL
+  server's admin entry follows it. A group you named yourself keeps its name.
+- The install lists what it renamed at the end.
+
 ## 2.0.48 - the update check reads the install key
 - Fixed: the update check did not read the per-install key from the Key Vault, so it never asked Invardia whether an
   update is wanted now and never reported a new version.
