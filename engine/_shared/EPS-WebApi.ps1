@@ -684,7 +684,7 @@ function Get-EpsWebRoutes {
             Save-EpsOnboardingCheck -ConnectionString $c.Ctx.ConnectionString -Rows $r.Rows -Actor $c.Caller.identity
             $n = { param($s) @($r.Rows | Where-Object { $_.state -eq $s }).Count }
             New-EpsWebResponse -Body @{ ok = $true; text = "Checked $(@($r.Rows).Count) item(s): $(& $n 'ok') ok, $(& $n 'missing') missing, $(& $n 'check') to check. Nothing in the tenant was changed." } -Audit @{ Target = 'Onboarding'; After = @{ items = @($r.Rows).Count; missing = (& $n 'missing') } } } }
-        @{ Method = 'POST'; Pattern = '^/api/breakglass$'; Summary = 'Add or change a break-glass account in EntraPolicySuite''s list (the accounts every policy must exclude).'; Body = 'upn; displayName; method: MFA or FIDO; placement: where it is kept (no secret); enabled; reason'; Public = $false
+        @{ Method = 'POST'; Pattern = '^/api/breakglass$'; Summary = 'Add or change a break-glass account in Entra Policy Suite''s list (the accounts every policy must exclude).'; Body = 'upn; displayName; method: MFA or FIDO; placement: where it is kept (no secret); enabled; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'breakglass.change'; NeedsReason = $true; Handler = { param($c, $m)
             $b = $c.Body; $upn = "$($b.upn)".Trim()
             $bad = if ($upn -notmatch '^[^@\s]{1,200}@[A-Za-z0-9.-]{3,100}$') { 'upn: a user principal name (name@domain)' } elseif ("$($b.method)" -notin '', 'MFA', 'FIDO') { 'method: MFA or FIDO' } elseif ("$($b.placement)".Length -gt 1000 -or "$($b.displayName)".Length -gt 200) { 'placement at most 1000, displayName at most 200 characters' } elseif ($null -ne $b.enabled -and $b.enabled -isnot [bool]) { 'enabled: true or false' }

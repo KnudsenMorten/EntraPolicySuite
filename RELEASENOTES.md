@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.45 - the product name, the rest
+- The installer's closing line, two messages and the generated security review pack and API reference also say
+  Entra Policy Suite.
+
 ## 2.0.44 - the product name
 - The product is called Entra Policy Suite everywhere you read it: the web app's title, the mails (the header and the
   subject, e.g. `[Entra Policy Suite]`), the Azure Monitor alert names, the script help and the documentation. The

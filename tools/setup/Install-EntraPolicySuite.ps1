@@ -262,4 +262,4 @@ if ($ctx.Network.Private) {
 # step (2.0.7 live 2026-11-01: a re-run to re-apply the grants did nothing)
 Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
 $url = if ($ctx.Web -and $ctx.Web.Url) { "`nThe web app: $($ctx.Web.Url) - sign in as $($person.Upn) (its first SuperAdmin); others need an assignment to the '$($names.WebAppRegistration)' enterprise application and a role on the Access page." } else { '' }
-Finish 0 "`nEntraPolicySuite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"
+Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"

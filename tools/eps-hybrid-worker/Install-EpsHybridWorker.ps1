@@ -63,8 +63,8 @@ if ($Remove) {
 }
 if ($AsGuestOf -eq 'pim') {
     if ($isArc) { throw 'a guest on an Azure Arc host is not supported yet: an Arc host has only the system identity, which belongs to the host''s product (framework §12.26)' }
-    if (-not (Test-Path -LiteralPath 'C:\PIM\bin\worker.json')) { throw 'PIM''s hybrid worker is not installed on this machine (no C:\PIM\bin\worker.json) - install it first, or install EntraPolicySuite''s own worker' }
-    if ($ManagedIdentityClientId -notmatch '^[0-9a-fA-F-]{36}$') { throw 'as a guest, -ManagedIdentityClientId is required: EntraPolicySuite''s OWN user-assigned identity (id-eps-worker), attached to this VM - never the VM''s system identity' }
+    if (-not (Test-Path -LiteralPath 'C:\PIM\bin\worker.json')) { throw 'PIM''s hybrid worker is not installed on this machine (no C:\PIM\bin\worker.json) - install it first, or install Entra Policy Suite''s own worker' }
+    if ($ManagedIdentityClientId -notmatch '^[0-9a-fA-F-]{36}$') { throw 'as a guest, -ManagedIdentityClientId is required: Entra Policy Suite''s OWN user-assigned identity (id-eps-worker), attached to this VM - never the VM''s system identity' }
     if ($Root -like 'C:\PIM*') { throw "-Root $Root is inside PIM's folder - a guest has its own root beside it (C:\EPS)" }
 }
 if (-not $SqlServer) { throw '-SqlServer is required (the Entra Policy Suite SQL server: <name>.database.windows.net)' }
