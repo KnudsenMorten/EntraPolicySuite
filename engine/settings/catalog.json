@@ -59,7 +59,7 @@
       "key": "Platform.JobsEnabled", "group": "Platform", "label": "Jobs run (master switch)", "type": "boolean", "default": "true", "role": "SuperAdmin",
       "confirm": [ { "when": "off", "title": "Stop every job?", "body": "No job starts any more: no tagging, and no tamper monitoring, so a foreign change to a tag is neither found nor alerted. Run now requests are refused while it is off." } ],
       "info": {
-        "what": "The one switch that stops every job of EntraPolicySuite at once, for example during an incident or a migration. Each feature also has its own switch.",
+        "what": "The one switch that stops every job of Entra Policy Suite at once, for example during an incident or a migration. Each feature also has its own switch.",
         "enabled": "On (the default): each job starts at its schedule when its own feature switch is on.",
         "disabled": "From the next scheduler tick (within 5 minutes) no job starts: no user or device tagging, no tamper monitoring and alerting, and every Run now / restore request is refused with 'all jobs are switched off'. A run that is already running finishes.",
         "risk": "While it is off, nothing watches the tags: a foreign change is not found or alerted. The external Azure Monitor alarm (when deployed) still alerts on changes to break-glass accounts. Reversible: switch it on and the next tick starts what is due.",
@@ -117,7 +117,7 @@
         "disabled": "off (the default): any admin may commit, also their own changes.",
         "risk": "With it off, one admin alone can change the rules and apply them. With it on and only one admin, nothing can be committed. Reversible.",
         "requires": "SuperAdmin. Two or more admins (Access page) before switching it on.",
-        "recommended": "all when two or more people administer EntraPolicySuite.",
+        "recommended": "all when two or more people administer Entra Policy Suite.",
         "docUrl": "https://invardia.com/docs/eps/settings/CommitQueue.SecondApprover/"
       }
     },
@@ -404,7 +404,7 @@
         "disabled": "Empty: no mail can be sent.",
         "risk": "It is not editable here: a new sender without the Exchange right would stop every alert mail. Run Initialize-EpsMailSender.ps1 with the new mailbox instead; it moves the right too.",
         "requires": "An Exchange administrator to run Initialize-EpsMailSender.ps1.",
-        "recommended": "A shared mailbox used only for EntraPolicySuite.",
+        "recommended": "A shared mailbox used only for Entra Policy Suite.",
         "docUrl": "https://invardia.com/docs/eps/settings/Mail.Sender/"
       }
     },

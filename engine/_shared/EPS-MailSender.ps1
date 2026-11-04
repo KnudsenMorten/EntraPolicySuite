@@ -24,7 +24,7 @@ function Get-EpsMailSenderPlan {
     $steps = [System.Collections.Generic.List[object]]::new()
     if (-not $State.Mailbox) {
         $alias = ($Sender -split '@')[0]
-        $steps.Add([pscustomobject]@{ Cmdlet = 'New-Mailbox'; What = "create the shared mailbox $Sender (no licence)"; Parameters = @{ Shared = $true; Name = $alias; DisplayName = 'EntraPolicySuite'; Alias = $alias; PrimarySmtpAddress = $Sender } })
+        $steps.Add([pscustomobject]@{ Cmdlet = 'New-Mailbox'; What = "create the shared mailbox $Sender (no licence)"; Parameters = @{ Shared = $true; Name = $alias; DisplayName = 'Entra Policy Suite'; Alias = $alias; PrimarySmtpAddress = $Sender } })
     }
     if ($State.Dehydrated) { $steps.Add([pscustomobject]@{ Cmdlet = 'Enable-OrganizationCustomization'; What = 'enable organization customization (a fresh Exchange organization refuses custom RBAC until then)'; Parameters = @{} }) }
     if (-not @($State.ServicePrincipals | Where-Object { "$($_.AppId)" -eq $AppId }).Count) {

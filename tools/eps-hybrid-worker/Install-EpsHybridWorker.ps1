@@ -19,7 +19,7 @@
     -WhatIf: every step it would take, nothing changed. -Remove: the task, the group membership and <Root>\app go
     (the logs stay; the gMSA, the machine and its domain membership are not touched).
     -AsGuestOf pim (owner 2026-10-30: "we must support both, in internal we reuse the pim hybrid worker"; framework
-    §12.26 SHARED-WORKER): on PIM's worker HOST, never under PIM's identity - EPS's own gMSA, its own task (task folder
+    §12.26 SHARED-WORKER): on PIM's worker HOST, never under PIM's identity - Entra Policy Suite's own gMSA, its own task (task folder
     \EPS\), its own root C:\EPS beside C:\PIM, its own USER-ASSIGNED managed identity (-ManagedIdentityClientId, required:
     the VM's system identity belongs to the host's product), and the guest registration file
     C:\ProgramData\HybridWorkerHost\guests\eps.json (PIM's remove refuses to delete the machine while it exists). Refused on

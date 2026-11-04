@@ -105,17 +105,16 @@
     A private install that cannot be proven from inside (the inside job did not run and this machine cannot reach the
     web app): you checked the web app from a machine in your network yourself.
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
+    # the install: two lines. The launcher downloads the release, checks it and runs this script with the same parameters
+    # (add -WhatIf at the end of line 2 to see the plan first; nothing is created in Azure)
+    Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1
+    ./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>
 .EXAMPLE
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>
+    # private, in a network the install makes (10.230.0.0/24), the hub given for an exact hand-off list (line 1 as above)
+    ./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -HubVnetId <hub network id>
 .EXAMPLE
-    # private, in a network the install makes (10.230.0.0/24), the hub given for an exact hand-off list
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -HubVnetId <hub network id> -WhatIf
-.EXAMPLE
-    # private, in your own spoke network, your central DNS zones, the peering made by the install
-    ./Install-EntraPolicySuite.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -VnetId <network id> `
-        -AppsSubnetName snet-eps-apps -EndpointsSubnetName snet-eps-endpoints -PrivateDnsZonesResourceGroupId <zones resource group id> `
-        -HubVnetId <hub network id> -PeerToHub
+    # private, in your own spoke network, your central DNS zones, the peering made by the install (line 1 as above)
+    ./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -VnetId <network id> -AppsSubnetName snet-eps-apps -EndpointsSubnetName snet-eps-endpoints -PrivateDnsZonesResourceGroupId <zones resource group id> -HubVnetId <hub network id> -PeerToHub
 .LINK
     https://invardia.com/docs/eps/scripts/Install-EntraPolicySuite
 #>
@@ -138,6 +137,13 @@ param(
     # reports its data as unavailable). e.g. -ExcludeGraphRole Organization.Read.All
     [ValidateSet('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess')][string[]]$ExcludeGraphRole = @(),
     [switch]$Quiet,
+    # the Invardia Support app, named by its client id - never found by name (as SI / PIM). It then starts with
+    # -SupportAccess (default troubleshoot: read, plus admin only during an open support session); without it nothing is
+    # granted at the install. From then on the level your organization sets in the Invardia portal applies.
+    [ValidatePattern('^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')][string]$SupportAppId = '',
+    [ValidateSet('troubleshoot', 'setup', 'read', 'none')][string]$SupportAccess = 'troubleshoot',
+    # continue an interrupted install with the same values (finished steps are skipped); refused when there is none
+    [switch]$Resume,
     # ---- NET-1: the private network install (names as SecurityInsight's, so the products read the same) ----
     [switch]$PrivateNetwork,
     [string]$VnetId = '',
@@ -233,6 +239,10 @@ if (Test-Path -LiteralPath $stateFile) {
     $st = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
     if ($st.resourceGroup -eq $ResourceGroup -and $st.version -eq $version) { $completed = @($st.completed) ; if ($completed) { Write-Host "Resuming: $($completed.Count) step(s) already done ($stateFile)" -ForegroundColor Cyan } }
 }
+# -Resume (as SI / PIM): only when an interrupted install of THIS version and resource group is there to continue
+if ($Resume -and -not $completed.Count) { Write-Host "Nothing to resume: no interrupted install of $version in $ResourceGroup ($stateFile). Run the same command without -Resume to install." -ForegroundColor Red; exit 2 }
+# the Invardia Support app's starting level (the database setup job writes it once, only when no level is there yet)
+if ($SupportAppId) { $ctx.SupportSeed = @{ AppId = $SupportAppId.ToLowerInvariant(); Level = $(if ($SupportAccess -eq 'setup') { 'troubleshoot' } else { $SupportAccess }) } }
 
 Write-Host ''
 Write-Host "Entra Policy Suite $version -> subscription $($subInfo.displayName) ($SubscriptionId), $ResourceGroup, $Location" -ForegroundColor Cyan
@@ -275,7 +285,7 @@ catch {
     if ($ctx.Network.HandoffPath) { $hint += "`nThe network hand-off for your network team: $($ctx.Network.HandoffPath)$(if ($ctx.Network.HubScriptPath) { " (and the hub owner's script $($ctx.Network.HubScriptPath))" })" }
     # framework rule 14: waiting is not a failure - its own exit code (4), its own words
     if ($m.StartsWith('EPS-WAITING: ')) { Finish 4 "`nThe install is WAITING (nothing failed): $($m.Substring(13))$hint`nWhen that is done, run the same command again - it resumes here ($stateFile)." }
-    Finish 1"`nThe install stopped: $m$hint`nFix the cause and run the same command again - it resumes ($stateFile)."
+    Finish 1 "`nThe install stopped: $m$hint`nFix the cause and run the same command again - it resumes ($stateFile)."
 }
 if ($ctx.Network.Private) {
     # written again at the end: it then shows the final state (a resumed run may have skipped the step)

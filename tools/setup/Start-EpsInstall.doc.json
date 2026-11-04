@@ -5,18 +5,102 @@
   "title": "Download Entra Policy Suite 2.0 and start the install",
   "purpose": "Downloads the latest Entra Policy Suite v2 release from GitHub, checks it against the SHA-256 digest GitHub publishes for it, unpacks it in a new temporary folder and runs its Install-EntraPolicySuite.ps1 with your parameters.",
   "whenToRun": "To install Entra Policy Suite 2.0, or to resume an install that stopped.",
-  "runAs": [ { "kind": "other", "name": "the rights Install-EntraPolicySuite.ps1 needs", "scope": "see its page", "why": "this script only downloads and starts it" } ],
-  "changes": [ { "target": "this computer", "action": "create", "object": "a temporary folder with the release zip and its contents", "scope": "the temp directory", "why": "the installer runs from the release", "undo": "delete the eps-release-* folder in the temp directory" } ],
-  "parameters": [
-    { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant id" },
-    { "name": "SubscriptionId", "required": true, "default": null, "help": "the subscription to install in" },
-    { "name": "Location", "required": false, "default": "westeurope", "help": "passed to the installer" },
-    { "name": "ResourceGroup", "required": false, "default": "rg-eps", "help": "passed to the installer (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)" },
-    { "name": "(every other parameter of Install-EntraPolicySuite.ps1)", "required": false, "default": "the installer's", "help": "passed on as given - e.g. -PrivateNetwork -VnetId -HubVnetId for a private install (tools/setup/install-parameters.json lists them)" },
-    { "name": "Version", "required": false, "default": "the latest v2", "help": "a v2 release, e.g. 2.0.0" }
+  "installLines": {
+    "pro": [
+      "Invoke-WebRequest https://invardia.com/support/eps/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1",
+      "./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>"
+    ],
+    "community": [
+      "Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1",
+      "./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>"
+    ],
+    "resume": [
+      "Invoke-WebRequest https://invardia.com/support/eps/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1",
+      "./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -Resume"
+    ]
+  },
+  "runAs": [
+    {
+      "kind": "other",
+      "name": "the rights Install-EntraPolicySuite.ps1 needs",
+      "scope": "see its page",
+      "why": "this script only downloads and starts it"
+    }
   ],
-  "readsOnly": [ "the GitHub releases of KnudsenMorten/EntraPolicySuite" ],
-  "network": [ "api.github.com", "github.com", "objects.githubusercontent.com" ],
+  "changes": [
+    {
+      "target": "this computer",
+      "action": "create",
+      "object": "a temporary folder with the release zip and its contents",
+      "scope": "the temp directory",
+      "why": "the installer runs from the release",
+      "undo": "delete the eps-release-* folder in the temp directory"
+    }
+  ],
+  "parameters": [
+    {
+      "name": "TenantId",
+      "required": true,
+      "default": null,
+      "help": "your Entra tenant id"
+    },
+    {
+      "name": "SubscriptionId",
+      "required": true,
+      "default": null,
+      "help": "the subscription to install in"
+    },
+    {
+      "name": "Location",
+      "required": false,
+      "default": "westeurope",
+      "help": "passed to the installer"
+    },
+    {
+      "name": "ResourceGroup",
+      "required": false,
+      "default": "rg-eps",
+      "help": "passed to the installer (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)"
+    },
+    {
+      "name": "(every other parameter of Install-EntraPolicySuite.ps1)",
+      "required": false,
+      "default": "the installer's",
+      "help": "passed on as given - e.g. -PrivateNetwork -VnetId -HubVnetId for a private install (tools/setup/install-parameters.json lists them)"
+    },
+    {
+      "name": "Version",
+      "required": false,
+      "default": "the latest v2",
+      "help": "a v2 release, e.g. 2.0.0"
+    },
+    {
+      "name": "SupportAppId",
+      "required": false,
+      "default": "",
+      "help": "your Invardia Support app, by its client id (never found by name): it starts with -SupportAccess until your level from the Invardia portal arrives; without it nothing is granted"
+    },
+    {
+      "name": "SupportAccess",
+      "required": false,
+      "default": "troubleshoot",
+      "help": "the Support app's starting level: troubleshoot or setup (read, plus admin only during an open support session), read, or none"
+    },
+    {
+      "name": "Resume",
+      "required": false,
+      "default": false,
+      "help": "continue an interrupted install with the same values (finished steps are skipped); refused when there is none"
+    }
+  ],
+  "readsOnly": [
+    "the GitHub releases of KnudsenMorten/EntraPolicySuite"
+  ],
+  "network": [
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com"
+  ],
   "whatIf": "Downloads and checks the release, then runs the installer with -WhatIf (its plan; nothing is changed in Azure).",
   "undo": "Nothing to undo here; see Install-EntraPolicySuite.ps1.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Start-EpsInstall"

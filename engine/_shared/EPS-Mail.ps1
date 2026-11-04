@@ -2,7 +2,7 @@
 #   MAIL-1: a shared mailbox (no licence); the product's OWN managed identity sends with Graph app-only
 #           POST /users/<mailbox>/sendMail; the right is Exchange RBAC 'Application Mail.Send' scoped to that ONE
 #           mailbox (Initialize-EpsMailSender.ps1) - never a tenant-wide Mail.Send consent.
-#   MAIL-3: subject  [<Environment>] <severity word if relevant> <what happened> [EntraPolicySuite], max 120 characters,
+#   MAIL-3: subject  [<Environment>] <severity word if relevant> <what happened> [Entra Policy Suite], max 120 characters,
 #           only <what happened> is shortened; every mail names its environment in the footer (name, tenant, product,
 #           version).
 # Settings: Mail.Mode (none | sharedMailbox; default none), Mail.Sender (the mailbox's UPN or id), Mail.Recipients

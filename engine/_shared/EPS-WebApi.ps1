@@ -371,6 +371,24 @@ function Get-EpsWebRoutes {
             $view = if ($chk) { ConvertTo-EpsRuleBatchView $chk } else { [ordered]@{ ok = $false; errors = @('nothing changes: every row is as the rule already is'); summary = 'nothing changes'; items = @() } }
             New-EpsWebResponse -Body ([ordered]@{ format = $fmt; ops = @($ops); check = $view; rowErrors = @($rowErrors); v1 = $info }) -Audit @{ Target = $t; After = @{ format = $fmt; ops = $ops.Count; ok = [bool]$view.ok; rowErrors = $rowErrors.Count }; WhatIf = $true } } }
 
+        # ---- Import v1 (SEC-08 row 8, 2.0.69: no person needs database rights to import v1): the page uploads the v1 files,
+        # the check shows what would be added / changed (nothing is saved), a SuperAdmin approves and the ENGINE writes it
+        # from the signed request (Apply = 'Engine') - the web role has no write right on any table the import fills
+        @{ Method = 'POST'; Pattern = '^/api/v1import/check$'; Summary = 'Read the uploaded v1 files and show what an import would add or change. Nothing is saved.'; Body = 'files: [ { name, text } ] - v1''s DATA files (and Entra-ID-User-Tagging.ps1 for the attribute per tag type)'; Public = $false
+           Role = 'SuperAdmin'; Action = 'v1import.plan'; Handler = { param($c, $m)
+            $u = Read-EpsV1Upload -Files @($c.Body.files)
+            if ($u.Error) { return New-EpsWebResponse -Status 400 -Body @{ error = $u.Error } -Audit @{ Target = 'V1Import'; Outcome = 'refused'; OutcomeText = $u.Error } }
+            $p = Get-EpsV1ImportPlan -ConnectionString $c.Ctx.ConnectionString -Model $u.Model
+            New-EpsWebResponse -Body ([ordered]@{ files = @($u.Files); plan = $p }) -Audit @{ Target = 'V1Import'; After = @{ files = @($u.Files); summary = $p.summary }; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/v1import$'; Summary = 'Import the v1 files as checked: the engine writes their rules, tag types and values, settings and Conditional Access inputs.'; Body = 'files: the files as checked; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'v1import.apply'; NeedsReason = $true; Handler = { param($c, $m)
+            $u = Read-EpsV1Upload -Files @($c.Body.files)
+            if ($u.Error) { return New-EpsWebResponse -Status 400 -Body @{ error = $u.Error } -Audit @{ Target = 'V1Import'; Outcome = 'refused'; OutcomeText = $u.Error } }
+            $p = Get-EpsV1ImportPlan -ConnectionString $c.Ctx.ConnectionString -Model $u.Model
+            $n = Write-EpsV1Import -ConnectionString $c.Ctx.ConnectionString -Model $u.Model -Actor $c.Caller.identity
+            New-EpsWebResponse -Body @{ ok = $true; imported = $n; text = "Imported from v1: $($n.UserRules) user rule(s), $($n.DeviceRules) device rule(s), $($n.TagTypes) tag type(s), $($n.Settings) setting(s), $($n.BreakGlassAccounts) break-glass account(s), $($n.AdminUnits) administrative unit(s), $($n.TargetGroups) target group(s), $($n.ServiceTags) service tag(s). Nothing in the tenant changed." } `
+                -Audit @{ Target = "V1Import ($(@($u.Files) -join ', '))"; Before = @{ plan = $p.summary }; After = $n } } }
+
         # ---- tag types and their values (DESIGN §5.6a) ----
         @{ Method = 'GET'; Pattern = '^/api/tagtypes$'; Summary = 'The tag types with their allowed values and how many rules use each.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
@@ -715,7 +733,7 @@ function Get-EpsWebRoutes {
             if ($s.Result -eq 'changed') { return New-EpsWebResponse -Status 409 -Body @{ error = 'the policy changed since you looked at it (a newer read of the tenant) - reload and look again' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'changed since seen' } }
             if ($s.Result -eq 'already') { return New-EpsWebResponse -Status 409 -Body @{ error = "the policy is already adopted (by $($s.By))" } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'already adopted' } }
             New-EpsWebResponse -Body @{ ok = $true; text = "Adopted $($s.After.displayName): recorded in Entra Policy Suite only - nothing in the tenant changed." } -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
-        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/release$'; Summary = 'Stop managing an adopted Conditional Access policy in EntraPolicySuite (the record says so). Nothing in the tenant changes.'; Body = 'reason'; Public = $false
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/release$'; Summary = 'Stop managing an adopted Conditional Access policy in Entra Policy Suite (the record says so). Nothing in the tenant changes.'; Body = 'reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.release'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"
             $s = Save-EpsCaRelease -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
@@ -1015,7 +1033,7 @@ function Get-EpsApiReference {
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
         jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
+        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {

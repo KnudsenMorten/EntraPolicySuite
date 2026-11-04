@@ -2,6 +2,22 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.69 - importing v1 data without a database right
+- New page Overview > Import v1 (SuperAdmin): upload the files from v1's DATA folder (and v1's user tagging script for
+  the attribute per tag type). Reading them saves nothing: the page shows, area by area, what would be added, what would
+  change (old and new value) and what is already so, with the hints on the rules. Import, and Entra Policy Suite writes
+  it within 5 minutes - the rules, tag types and values, settings, break-glass accounts, administrative units, target
+  groups and service tags. The change history and the audit trail record who imported what. A new import replaces the
+  rules an earlier v1 import made; rules made in the app are never touched.
+- Nobody needs a database right to import v1 any more. Import-EpsV1Data.ps1 still shows the plan from the v1 folder, but
+  it writes nothing: with -Apply it lists the files to upload on the Import v1 page. -ConnectionString is no longer used.
+- The install takes -SupportAppId (with -SupportAccess) and -Resume, with the same names and meaning as Invardia's other
+  products: -SupportAppId names your Invardia Support app by its id and gives it a starting support level (default:
+  troubleshoot - read, plus admin only during an open support session) until your organization's level from the
+  Invardia portal arrives; -Resume continues an interrupted install with the same values and is refused when there is
+  none.
+- The install lines are the same everywhere: two lines, Community from GitHub, Pro from invardia.com.
+
 ## 2.0.68 - the external alarm without a database right
 - The Tamper page has a new button for Admins and SuperAdmins: Download the alarm inputs. It gives one file with the
   break-glass accounts, the watched tag attributes and the known writers.

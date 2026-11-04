@@ -38,6 +38,7 @@ $script:EpsAuditActions = @(
     'guard.trip'                    # a guard held a change (GUARD-1), e.g. removing the last SuperAdmin
     'support.state.change'          # Invardia's heartbeat answer changed the support state (SECAUDIT-1a) - recorded only, nothing granted (UPLINK-1)
     'support.session.refused'       # a support session above the customer's consent (framework SUPPORT ACCESS) - recorded as closed
+    'v1import.plan', 'v1import.apply'   # Import v1 (SEC-08 row 8, 2.0.69): the uploaded files checked (the plan; nothing saved) / written by the engine from a SuperAdmin's signed request
     'support.access.change'         # caj-eps-support changed the Support app's database user (OPEN-01: none / read / admin during a session)
 )
 

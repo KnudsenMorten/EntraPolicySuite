@@ -743,7 +743,7 @@ function Invoke-EpsInstallStep {
             $mode = if ($Ctx.DbJob) { $Ctx.DbJob } else { Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate }
             $sa = if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) { @{ Upn = $Ctx.Person.Upn; ObjectId = $Ctx.Person.ObjectId } }
             if ($mode.Use) {
-                $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa
+                $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa -SupportSeed $Ctx.SupportSeed
                 # OPEN-01: the support-access job (every 5 min, as the same identity) - only where the setup job can run
                 $sj = Get-EpsSupportJobBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)"
                 [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($sj.Name)" -ApiVersion $script:EpsApi.acajob -Body $sj.Body)

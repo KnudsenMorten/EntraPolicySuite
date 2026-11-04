@@ -6,7 +6,7 @@ Entra ID.
 
 > **v1 (the scripts) is unchanged** and stays on the [`v1` branch](https://github.com/KnudsenMorten/EntraPolicySuite/tree/v1)
 > with its releases v1.0.1 and v1.0.2. Entra Policy Suite 2.0 is a new major: it reads your v1 rule files and moves them
-> into its database (`tools/setup/Import-EpsV1Data.ps1`), and it never changes your v1 install.
+> into its database (the web app's Import v1 page), and it never changes your v1 install.
 
 ## What it does
 
@@ -28,12 +28,14 @@ modules, no Azure CLI, no secret.
 
 ```powershell
 Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1
-./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -WhatIf
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id>
 ```
 
-`-WhatIf` downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and shows
-every step the installer would take - nothing is created. Run the same line without `-WhatIf` to install. A stopped
-install continues where it stopped when you run the same command again.
+This is the Community install. Pro customers install from invardia.com: <https://invardia.com/support/eps/>.
+
+Line 2 downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and installs.
+To see the plan first, add `-WhatIf` at the end of line 2: it shows every step the installer would take - nothing is
+created. A stopped install continues where it stopped when you run the same command again.
 
 | Parameter | Default | What it is |
 |---|---|---|
@@ -50,7 +52,7 @@ Add `-PrivateNetwork` to the same line to install inside your own virtual networ
 registry are created with public access off and reached through private endpoints and private DNS zones.
 
 ```powershell
-./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork -WhatIf
+./Start-EpsInstall.ps1 -TenantId <tenant id> -SubscriptionId <subscription id> -PrivateNetwork
 ```
 
 | Parameter | What it is |
@@ -79,7 +81,7 @@ Log Analytics workspace and a Key Vault. The installer's help (`Get-Help ./tools
 
 1. Open the web app address the installer prints and sign in - you are its first SuperAdmin.
 2. Optional: `tools/setup/Initialize-EpsMailSender.ps1` sets up the shared mailbox the alerts are sent from.
-3. Optional: `tools/setup/Import-EpsV1Data.ps1` brings your v1 rules over (plan first, `-Apply` to write).
+3. Optional: Overview > Import v1 in the web app brings your v1 rules and settings over (upload the files, see the plan, approve).
 4. Switch a feature on in Settings, preview, then go live.
 
 ## Folders

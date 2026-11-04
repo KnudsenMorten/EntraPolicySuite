@@ -1,6 +1,9 @@
 # EntraPolicySuite -- reads a v1 install (DATA folder + the two configs) into the v2 model (DESIGN §3 "Import").
 # Read-only on the v1 side: it never writes to the v1 folder. The plan is built here; tools/setup/Import-EpsV1Data.ps1
-# shows it and, with -Apply, writes it to SQL (EPS-SqlStore.ps1). Dot-source EPS-Conditions.ps1 first.
+# shows it (since 2.0.69 it never writes SQL). The write is the product's (SEC-08 row 8: no person needs database rights):
+# the web app's Import v1 page uploads the files, POST /api/v1import/check shows the plan (Read-EpsV1Upload +
+# Get-EpsV1ImportPlan), a SuperAdmin approves, and the ENGINE writes it from the signed Config request (Write-EpsV1Import
+# in EPS-SqlStore.ps1). Dot-source EPS-Conditions.ps1 first.
 #
 # Demo material is never migrated (owner 2026-10-29): Identity_Tagging_Demo_Reset.csv and the demo scripts are not read.
 
@@ -56,7 +59,8 @@ function Read-EpsV1Csv {
 # ConvertTo-EpsRuleCards (v1 rows -> cards) and Resolve-EpsV1ValueModes live in EPS-Rules.ps1 since 2.0.8 (RULES-GRID):
 # the GUI's v1 upload uses them too - one grouping, one set of value-mode hints.
 # the rule hints (Get-EpsRuleHints) live with the rule editing - the import and the GUI show the same ones
-. (Join-Path $PSScriptRoot 'EPS-Rules.ps1')
+# loaded once: the web app and the engine have it already (a second dot-source would reset its script state)
+if (-not (Get-Command ConvertTo-EpsRuleCards -ErrorAction SilentlyContinue)) { . (Join-Path $PSScriptRoot 'EPS-Rules.ps1') }
 
 function Read-EpsV1Data {
     <#
@@ -145,4 +149,98 @@ function Read-EpsV1Data {
         Settings = $settings; BreakGlassAccounts = $breakGlass; AdminUnits = $adminUnits; TargetGroups = $targetGroups; ServiceTags = $serviceTags
         NotMigrated = $notMigrated; Hints = @($hints)
     }
+}
+
+# ---- the Import v1 page (SEC-08 row 8, 2.0.69): the files come as an upload, not a folder -----------------------------
+# the closed list of files the page takes: v1's DATA files + the user tagging script (for the attribute per tag type).
+# Demo material is never read (owner 2026-10-29).
+$script:EpsV1UploadNames = @('Identity_Tagging.csv', 'Identity_Tagging_AccountInfo.csv', 'Device_Tagging.csv', 'Device_Tagging_AccountInfo.csv',
+    'EntraNamedLocations_AzureNetworkServiceTags.csv', 'Entra_Policy_Suite_custom.config', 'Entra_Policy_Suite_locked.config', 'Entra-ID-User-Tagging.ps1')
+
+function Get-EpsV1UploadNames { $script:EpsV1UploadNames }
+
+function Read-EpsV1Upload {
+    <#
+    .SYNOPSIS
+        The uploaded v1 files ([ { name; text } ]) -> the same model Read-EpsV1Data makes from a folder: they are written to
+        a private temporary folder in v1's layout (DATA + Entra-Policy-Suite), read there, and the folder is removed. The
+        user tagging script is only searched for its attribute lines - never run. Returns @{ Model; Files } or @{ Error }.
+    #>
+    param([object[]]$Files)
+    $files = @(@($Files) | Where-Object { $null -ne $_ })
+    if (-not $files.Count) { return @{ Error = 'choose the v1 files to read (from v1''s DATA folder)' } }
+    if ($files.Count -gt $script:EpsV1UploadNames.Count) { return @{ Error = "at most $($script:EpsV1UploadNames.Count) files" } }
+    $seen = [ordered]@{}; $total = 0
+    foreach ($f in $files) {
+        $nm = [IO.Path]::GetFileName("$($f.name)")
+        if ($nm -match '(?i)demo') { return @{ Error = "$nm is demo material - it is never read" } }
+        $known = @($script:EpsV1UploadNames | Where-Object { $_ -ieq $nm })[0]
+        if (-not $known) { return @{ Error = "'$nm' is not a v1 file this import reads ($($script:EpsV1UploadNames -join ', '))" } }
+        if ($seen.Contains($known)) { return @{ Error = "$known is there twice" } }
+        $seen[$known] = "$($f.text)"; $total += "$($f.text)".Length
+    }
+    if ($total -gt 900000) { return @{ Error = 'the files are larger than 900 KB together' } }
+    if (-not @($seen.Keys | Where-Object { $_ -ne 'Entra-ID-User-Tagging.ps1' }).Count) { return @{ Error = 'choose at least one file from v1''s DATA folder' } }
+    $root = Join-Path ([IO.Path]::GetTempPath()) "eps-v1-$([guid]::NewGuid().ToString('N'))"
+    $out = $null
+    try {
+        $data = Join-Path $root 'DATA'; $scr = Join-Path $root 'Entra-Policy-Suite'
+        [void](New-Item -ItemType Directory -Path $data -Force); [void](New-Item -ItemType Directory -Path $scr -Force)
+        foreach ($k in $seen.Keys) { [IO.File]::WriteAllText((Join-Path $(if ($k -like '*.ps1') { $scr } else { $data }) $k), $seen[$k], [Text.UTF8Encoding]::new($false)) }
+        try {
+            $m = Read-EpsV1Data -Path $root -UserTaggingScript (Join-Path $scr 'Entra-ID-User-Tagging.ps1')
+            $m.Source = 'upload: ' + (@($seen.Keys) -join ', ')
+            $out = @{ Model = $m; Files = @($seen.Keys) }
+        } catch { $out = @{ Error = "the files could not be read: $($_.Exception.Message.Replace($root, 'upload'))" } }
+    } finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+    $out
+}
+
+function Get-EpsV1ImportPlan {
+    <#
+    .SYNOPSIS
+        What writing a Read-EpsV1Data model would do to THIS database (reads only): per area what is added, what changes
+        (old -> new) and what is already so. Rules: an import replaces the rules the previous v1 import made; rules made
+        in the app are never touched.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Model)
+    $q = { param($sql) @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $sql) }
+    $areas = [System.Collections.Generic.List[object]]::new()
+    $area = { param($name, $items, $extra = @{})
+        $it = @($items)
+        $a = [ordered]@{ area = $name; add = @($it | Where-Object { $_.state -eq 'add' }).Count; change = @($it | Where-Object { $_.state -eq 'change' }).Count
+            same = @($it | Where-Object { $_.state -eq 'same' }).Count; items = @($it | Where-Object { $_.state -ne 'same' } | Select-Object -First 200) }
+        foreach ($k in $extra.Keys) { $a[$k] = $extra[$k] }
+        $areas.Add($a) }
+    $cmp = { param($key, $cur, $new, [string[]]$fields)
+        if (-not $cur) { return [ordered]@{ key = $key; state = 'add'; text = '' } }
+        $d = @(foreach ($f in $fields) {
+            $a = if ($cur.$f -is [bool]) { "$([bool]$cur.$f)" } else { "$($cur.$f)" }
+            $b = if ($cur.$f -is [bool]) { "$([bool]$new.$f)" } else { "$($new.$f)" }
+            if ($a -cne $b) { "$f`: '$a' -> '$b'" } })
+        [ordered]@{ key = $key; state = $(if ($d.Count) { 'change' } else { 'same' }); text = ($d -join '; ') } }
+
+    $tt = @{}; foreach ($r in (& $q 'SELECT * FROM eps.TagType')) { $tt["$($r.ObjectType):$($r.Name)"] = $r }
+    & $area 'Tag types' @(foreach ($t in $Model.TagTypes) { & $cmp "$($t.ObjectType) $($t.Name)" $tt["$($t.ObjectType):$($t.Name)"] ([pscustomobject]$t) @('Attribute', 'ValueMode', 'AllowMultiple', 'FallbackAD', 'FallbackCloud', 'FallbackFromProperty', 'Description') })
+    $tv = @{}; foreach ($r in (& $q 'SELECT ObjectType, TagType, Value FROM eps.TagValue')) { $tv["$($r.ObjectType):$($r.TagType):$($r.Value)".ToLowerInvariant()] = $true }
+    & $area 'Tag values' @(foreach ($v in $Model.TagValues) { [ordered]@{ key = "$($v.ObjectType) $($v.TagType) = $($v.Value)"; state = $(if ($tv["$($v.ObjectType):$($v.TagType):$($v.Value)".ToLowerInvariant()]) { 'same' } else { 'add' }); text = '' } })
+    $rc = @(& $q "SELECT 'User' AS ObjectType, Source, COUNT(*) AS N FROM eps.UserTagRule GROUP BY Source UNION ALL SELECT 'Device', Source, COUNT(*) FROM eps.DeviceTagRule GROUP BY Source")
+    foreach ($ot in 'User', 'Device') {
+        $old = 0; $mine = 0
+        foreach ($r in @($rc | Where-Object { $_.ObjectType -eq $ot })) { if ($r.Source -eq 'v1-import') { $old += [int]$r.N } else { $mine += [int]$r.N } }
+        & $area "$ot rules" @(foreach ($r in @($Model."$($ot)Rules")) {
+            [ordered]@{ key = "$($r.TagType) = $(if ($r.TagValueCloud) { $r.TagValueCloud } else { $r.TagValueAD })$(if ($r.Persona) { " ($($r.Persona))" })"; state = 'add'; text = (@($r.V1Rows) -join ', ') } }) @{ replaces = $old; keeps = $mine }
+    }
+    $st = @{}; foreach ($r in (& $q 'SELECT Name, Value FROM eps.Setting')) { $st[[string]$r.Name] = $r }
+    & $area 'Settings' @(foreach ($k in $Model.Settings.Keys) { & $cmp $k $st[$k] ([pscustomobject]@{ Value = [string]$Model.Settings[$k] }) @('Value') })
+    $bg = @{}; foreach ($r in (& $q 'SELECT * FROM eps.BreakGlassAccount')) { $bg[([string]$r.UserPrincipalName).ToLowerInvariant()] = $r }
+    & $area 'Break-glass accounts' @(foreach ($b in $Model.BreakGlassAccounts) { & $cmp $b.UserPrincipalName $bg[([string]$b.UserPrincipalName).ToLowerInvariant()] ([pscustomobject]$b) @('DisplayName', 'AuthenticationMethod', 'ClassificationTagValue', 'AuthenticationTagValue') })
+    $au = @{}; foreach ($r in (& $q 'SELECT * FROM eps.AdminUnit')) { $au[([string]$r.DisplayName).ToLowerInvariant()] = $r }
+    & $area 'Administrative units' @(foreach ($a in $Model.AdminUnits) { & $cmp $a.DisplayName $au[([string]$a.DisplayName).ToLowerInvariant()] ([pscustomobject]$a) @('Purpose', 'Description') })
+    $tg = @{}; foreach ($r in (& $q 'SELECT * FROM eps.TargetGroup')) { $tg[([string]$r.DisplayName).ToLowerInvariant()] = $r }
+    & $area 'Target groups' @(foreach ($g in $Model.TargetGroups) { & $cmp $g.DisplayName $tg[([string]$g.DisplayName).ToLowerInvariant()] ([pscustomobject]$g) @('VariableName', 'Assignment', 'Description', 'GroupQuery') })
+    $sv = @{}; foreach ($r in (& $q 'SELECT Tag FROM eps.ServiceTagLocation')) { $sv[([string]$r.Tag).ToLowerInvariant()] = $true }
+    & $area 'Service tags' @(foreach ($t in $Model.ServiceTags) { [ordered]@{ key = $t.Tag; state = $(if ($sv[([string]$t.Tag).ToLowerInvariant()]) { 'same' } else { 'add' }); text = '' } })
+    $sum = @(foreach ($a in $areas) { "$($a.area): $($a.add) new, $($a.change) changed$(if ($a.Contains('replaces')) { ", replaces $($a.replaces) from an earlier v1 import, keeps $($a.keeps) made in the app" })" }) -join '; '
+    [ordered]@{ source = "$($Model.Source)"; areas = @($areas); hints = @(foreach ($h in @($Model.Hints)) { "$($h.Message)" }); notMoved = @($Model.NotMigrated); summary = $sum }
 }

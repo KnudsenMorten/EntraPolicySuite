@@ -67,8 +67,8 @@ function Get-EpsNetworkPlan {
     if ("$($P.VnetId)") {
         if ("$($P.VnetId)" -notmatch $script:EpsVnetIdRx) { return (& $no "-VnetId '$($P.VnetId)' is not a virtual network resource id (/subscriptions/<id>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<name>)") }
         $plan.VnetId = "$($P.VnetId)"; $plan.VnetSubscription = $Matches[1].ToLowerInvariant(); $plan.VnetResourceGroup = $Matches[2]; $plan.VnetName = $Matches[3]; $plan.CreateVnet = $false
-        if ($Bound -contains 'VnetAddressPrefix') { return (& $no '-VnetAddressPrefix is only for a network EPS makes - not with -VnetId (your network keeps its own range)') }
-        if ($Bound -contains 'VnetName') { return (& $no '-VnetName is only for a network EPS makes - with -VnetId the name is in the id') }
+        if ($Bound -contains 'VnetAddressPrefix') { return (& $no '-VnetAddressPrefix is only for a network Entra Policy Suite makes - not with -VnetId (your network keeps its own range)') }
+        if ($Bound -contains 'VnetName') { return (& $no '-VnetName is only for a network Entra Policy Suite makes - with -VnetId the name is in the id') }
     } else {
         $v = ConvertFrom-EpsCidr "$($P.VnetAddressPrefix)"
         if (-not $v) { return (& $no "-VnetAddressPrefix '$($P.VnetAddressPrefix)' is not an IPv4 network range (a.b.c.d/n, the network address itself)") }
@@ -98,7 +98,7 @@ function Get-EpsNetworkPlan {
     if ("$($P.HubVnetId)") {
         if ("$($P.HubVnetId)" -notmatch $script:EpsVnetIdRx) { return (& $no "-HubVnetId '$($P.HubVnetId)' is not a virtual network resource id") }
         $plan.HubVnetId = "$($P.HubVnetId)"; $plan.HubName = $Matches[3]
-        if ($plan.VnetId -and $plan.VnetId -eq $plan.HubVnetId) { return (& $no '-HubVnetId is the same network as -VnetId - the hub is the network your clients resolve through, EPS runs in a spoke') }
+        if ($plan.VnetId -and $plan.VnetId -eq $plan.HubVnetId) { return (& $no '-HubVnetId is the same network as -VnetId - the hub is the network your clients resolve through, Entra Policy Suite runs in a spoke') }
     } elseif ($plan.PeerToHub -or $plan.LinkZonesToHub) { return (& $no '-PeerToHub and -LinkZonesToHub need -HubVnetId') }
     # framework rule 11d: the return route for the customer's internal ranges -> the hub firewall (both answers, or none)
     $ranges = @(@($P.InternalRanges) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -157,7 +157,7 @@ function Test-EpsNetworkPrerequisites {
             $zr = & $read "$($net.ZonesRgId)/providers/Microsoft.Network/privateDnsZones/$z" $script:EpsNetApi.dns
             if (& $denied $zr) { & $task "the private DNS zone $z in $(($net.ZonesRgId -split '/')[-1]) cannot be read with your sign-in ($(("$($zr.Error)" -split ':')[0])): your network team adds the records for it (the hand-off list has them) and links it to the spoke"; $net.ZonesDenied = $true }
             elseif (-not $zr.Ok) { $miss.Add("the private DNS zone $z cannot be read in $(($net.ZonesRgId -split '/')[-1]): $($zr.Error)") }
-            elseif (-not $zr.Value) { $miss.Add("the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - create it there (EPS needs it for $(@($script:EpsPrivateZones.Keys | Where-Object { $script:EpsPrivateZones[$_] -eq $z })[0]))") }
+            elseif (-not $zr.Value) { $miss.Add("the private DNS zone $z is not in $(($net.ZonesRgId -split '/')[-1]) - create it there (Entra Policy Suite needs it for $(@($script:EpsPrivateZones.Keys | Where-Object { $script:EpsPrivateZones[$_] -eq $z })[0]))") }
         }
     }
     @($miss)
@@ -587,7 +587,7 @@ function Get-EpsNetworkHandoff {
         }
     }
     if ($net.EnvDomain) { foreach ($r in '@', '*', '*.internal') { $L.Add(("   {0,-58} A {1,-15}  zone {2}, record '{3}' (the web app)" -f $(if ($r -eq '@') { $net.EnvDomain } else { "$r.$($net.EnvDomain)" }), $net.EnvStaticIp, $net.EnvDomain, $r)) } }
-    foreach ($z in @($net.MissingZones | Where-Object { $_ })) { $L.Add("   MISSING in your zones resource group $($net.ZonesRgId): the zone $z - create it there and link it to the spoke (EPS writes nothing there)") }
+    foreach ($z in @($net.MissingZones | Where-Object { $_ })) { $L.Add("   MISSING in your zones resource group $($net.ZonesRgId): the zone $z - create it there and link it to the spoke (Entra Policy Suite writes nothing there)") }
     foreach ($z in @($net.MissingLinks | Where-Object { $_ })) { $L.Add("   Your zone $z is not linked to the spoke: link it ($($net.ZonesRgId))") }
     if ($net.HubVnetId) { $L.Add("   Zone links to the hub: $($net.Hub.Links)") }
     $L.Add('')

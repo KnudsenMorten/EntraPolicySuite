@@ -1582,7 +1582,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('label', { class: 'wide' }, disabled, ' Include disabled accounts'),
         // CA-ANALYZER-PARTS (owner 2026-11-03: "this is too complex for people to dcide on"): EPS decides how it reads a
         // large log - the field is gone; a window longer than a day is read a day at a time
-        el('p', { class: 'smeta', text: 'A window longer than a day is read a day at a time - EPS decides this, there is nothing to set.' })));
+        el('p', { class: 'smeta', text: 'A window longer than a day is read a day at a time - Entra Policy Suite decides this, there is nothing to set.' })));
 
     // 3. Analyse now / Save as monitor; name, schedule, on and Alert to only for saving
     var name = el('input', { type: 'text', 'aria-label': 'Monitor name', maxlength: 100, placeholder: 'e.g. users-internal' });
@@ -2403,13 +2403,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var pl = el('input', { type: 'text', value: a && a.Placement ? a.Placement : '', placeholder: 'e.g. the safe at the head office - never a password', style: 'width:100%' });
     var en = el('input', { type: 'checkbox' }); en.checked = a ? !!a.Enabled : true;
     d.appendChild(el('h3', { text: a ? 'Break-glass account ' + a.UserPrincipalName : 'Add a break-glass account' }));
-    d.appendChild(el('div', { class: 'guide', text: 'EntraPolicySuite\'s list of the emergency accounts every Conditional Access policy must exclude. Saving changes the list only - nothing in the tenant. Never write a password here.' }));
+    d.appendChild(el('div', { class: 'guide', text: 'Entra Policy Suite\'s list of the emergency accounts every Conditional Access policy must exclude. Saving changes the list only - nothing in the tenant. Never write a password here.' }));
     [['User principal name', upn], ['Display name', dn], ['Sign-in method', mth], ['Where it is kept', pl]].forEach(function (x) { d.appendChild(el('label', { class: 'fld' }, el('span', { text: x[0] }), x[1])); });
     d.appendChild(el('label', null, en, ' in use (unticked = kept in the list, not checked)'));
     var go = el('button', { type: 'button', text: 'Save' });
     go.addEventListener('click', function () {
       close();
-      withReason('Save break-glass account ' + upn.value.trim(), 'Changes EntraPolicySuite\'s break-glass list only - nothing in the tenant.', function (reason) {
+      withReason('Save break-glass account ' + upn.value.trim(), 'Changes Entra Policy Suite\'s break-glass list only - nothing in the tenant.', function (reason) {
         return api('POST', '/api/breakglass', { upn: upn.value.trim(), displayName: dn.value.trim(), method: mth.value, placement: pl.value.trim(), enabled: en.checked, reason: reason }); });
     });
     d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
@@ -2422,6 +2422,48 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       withReason('Group targeting method: ' + sel.value, 'Which pilot and target group names the templates expect (v1\'s Group_Targeting_Method). Changes no group and no policy.', function (reason) {
         return api('PUT', '/api/settings/CA.GroupTargetingMethod', { value: sel.value, expected: j.method || null, reason: reason }); }); } });
     return el('div', { class: 'toolbar' }, el('span', { text: 'Method: ' }), sel, go);
+  }
+  // IMPORT v1 (SEC-08 row 8, 2.0.69: no person needs database rights to import v1): upload the v1 files, the server
+  // reads them and shows the plan (POST /api/v1import/check - nothing saved), a SuperAdmin approves (POST /api/v1import)
+  // and the engine writes it from the signed request
+  function drawV1Import(p) {
+    p.appendChild(el('div', { class: 'guide', text: 'Brings a v1 install over in one go: the tagging rules, the tag types and their values, the settings, the break-glass accounts, the administrative units, the target groups and the service tags. Choose the files from v1\'s DATA folder (and Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1 for the attribute per tag type). Reading them saves nothing; you see what is added and what changes first. A new import replaces the rules an earlier v1 import made; rules made in this app are never touched. v1\'s files are only read. A demo file is never read.' }));
+    var file = el('input', { type: 'file', multiple: true, accept: '.csv,.config,.ps1', 'aria-label': 'v1 files' });
+    var errs = el('div', { class: 'errors', hidden: true });
+    var out = el('div');
+    var read = el('button', { type: 'button', text: 'Read the files', onclick: function () {
+      errs.hidden = true; clear(out);
+      var fs = Array.prototype.slice.call(file.files || []);
+      if (!fs.length) { errs.hidden = false; errs.textContent = 'Choose the v1 files.'; return; }
+      var demo = fs.filter(function (f) { return /demo/i.test(f.name); })[0];
+      if (demo) { errs.hidden = false; errs.textContent = demo.name + ' is demo material - it is never read.'; return; }
+      status('Reading the files ...');
+      Promise.all(fs.map(function (f) { return f.text().then(function (t) { return { name: f.name, text: t }; }); })).then(function (arr) {
+        return api('POST', '/api/v1import/check', { files: arr }).then(function (r) { status(''); v1ImportPlan(out, r, arr); });
+      }).catch(function (e) { status(''); errs.hidden = false; errs.textContent = e.message; });
+    } });
+    p.appendChild(el('div', { class: 'toolbar' }, file, read));
+    p.appendChild(errs); p.appendChild(out);
+    return Promise.resolve();
+  }
+  function v1ImportPlan(out, r, files) {
+    var pl = r.plan || {};
+    out.appendChild(el('h3', { text: 'The plan' }));
+    out.appendChild(el('div', { class: 'smeta', text: 'Read: ' + (r.files || []).join(', ') }));
+    out.appendChild(table((pl.areas || []).map(function (a) { return { area: a.area, add: a.add, change: a.change, same: a.same, note: a.replaces !== undefined ? 'replaces ' + fmtNum(a.replaces) + ' rule(s) from an earlier v1 import; keeps ' + fmtNum(a.keeps) + ' made in this app' : '' }; }),
+      [{ key: 'area', label: 'Area' }, { key: 'add', label: 'New', type: 'num' }, { key: 'change', label: 'Changed', type: 'num' }, { key: 'same', label: 'Already so', type: 'num' }, { key: 'note', label: '', wrap: true }]));
+    (pl.areas || []).forEach(function (a) {
+      if (!a.items || !a.items.length) return;
+      var d = el('details'); d.appendChild(el('summary', { text: a.area + ': ' + fmtNum(a.add) + ' new, ' + fmtNum(a.change) + ' changed' }));
+      a.items.forEach(function (x) { d.appendChild(el('div', { class: 'smeta', text: (x.state === 'add' ? 'new: ' : 'changed: ') + x.key + (x.text ? ' - ' + x.text : '') })); });
+      out.appendChild(d);
+    });
+    if (pl.hints && pl.hints.length) { var h = el('details'); h.appendChild(el('summary', { text: 'Hints on the rules (' + fmtNum(pl.hints.length) + ') - never blocking' })); pl.hints.forEach(function (x) { h.appendChild(el('div', { class: 'smeta', text: x })); }); out.appendChild(h); }
+    (pl.notMoved || []).forEach(function (x) { out.appendChild(el('div', { class: 'smeta', text: 'Not moved: ' + x })); });
+    out.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Import', onclick: function () {
+      withReason('Import from v1', 'Entra Policy Suite writes this plan: ' + (pl.summary || '') + '. Nothing in the tenant changes.', function (reason) {
+        return api('POST', '/api/v1import', { files: files, reason: reason }); });
+    } })));
   }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
@@ -2436,11 +2478,12 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       el('li', { text: 'Open Tagging > Tagging Rules, pick Users (or Devices), and press "Import CSV ...".' }),
       el('li', { text: 'Choose "v1 files" and pick the files from v1\'s DATA folder: for users Identity_Tagging.csv and Identity_Tagging_AccountInfo.csv; for devices Device_Tagging.csv and Device_Tagging_AccountInfo.csv. Leave out Identity_Tagging_Demo_Reset.csv.' }),
       el('li', { text: 'Look at the plan it shows (the rule cards it makes, any row it cannot read, the hints) and confirm. "Replace" swaps out an earlier v1 import; rules made here are never touched.' })));
-    v1.appendChild(el('h4', { text: 'B. Everything - rules, tag types, settings, break-glass accounts, target groups, admin units, service tags' }));
+    // SEC-08 row 8 (2.0.69): B is the Import v1 page - no database right, no script; the engine writes it
+    v1.appendChild(el('h4', { text: 'B. Everything - rules, tag types, settings, break-glass accounts, target groups, admin units, service tags (SuperAdmin)' }));
     v1.appendChild(el('ol', null,
-      el('li', { text: 'On a machine that can reach v1\'s folder (e.g. C:\\SCRIPTS with DATA in it), open PowerShell 7 in the Entra Policy Suite release folder (tools\\setup).' }),
-      el('li', null, 'See the plan, nothing is written: ', el('code', { text: '.\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS' })),
-      el('li', null, 'Write it: ', el('code', { text: ".\\Import-EpsV1Data.ps1 -Path C:\\SCRIPTS -Apply -ConnectionString 'Server=tcp:<your SQL server>.database.windows.net;Database=eps;Encrypt=True'" }), ' - run it as a member of the SQL admin group you gave the install (the server name is in the install\'s summary and in Azure).'),
+      el('li', null, 'Open ', el('a', { href: '#v1import', text: 'Overview > Import v1' }), ' and choose the files from v1\'s DATA folder (Identity_Tagging*.csv, Device_Tagging*.csv, EntraNamedLocations_AzureNetworkServiceTags.csv, Entra_Policy_Suite_custom.config, Entra_Policy_Suite_locked.config) and, for the attribute per tag type, Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1.'),
+      el('li', { text: 'Read the files: the plan shows what is added and what changes, area by area, with the hints. Nothing is saved yet.' }),
+      el('li', { text: 'Import: Entra Policy Suite writes it within 5 minutes. A new import replaces the rules an earlier v1 import made; rules made here are never touched.' }),
       el('li', { text: 'Then press "Check now" below: every step shows what the import filled and what is still missing.' })));
     p.appendChild(v1);
     return api('GET', '/api/onboarding').then(function (j) {
@@ -2499,6 +2542,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       });
     } },
     { id: 'start', label: 'Get started', role: 'Reader', draw: function (p) { return drawGetStarted(p); } },
+    { id: 'v1import', label: 'Import v1', role: 'SuperAdmin', draw: function (p) { return drawV1Import(p); } },
     { id: 'tamper', label: 'Tamper', role: 'Reader', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'Changes to watched tags that the engine did not make. Accept one that was legitimate, or Restore: the engine writes its value back at its next run. Both need a reason and are audited.' }));
       // SEC-08 row 10: the external Azure Monitor alarm's inputs as a file for Deploy-EpsAzureMonitorAlerts.ps1 -InputFile (no database right)
@@ -2726,15 +2770,16 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var NAV_GROUPS = [
     { label: 'Overview', items: [
       { hash: 'overview', label: 'Overview', desc: 'What needs attention: open tag changes, runs, findings.' },
-      { hash: 'start', label: 'Get started', desc: 'What EPS needs before it works - checked against your tenant.' }] },
+      { hash: 'start', label: 'Get started', desc: 'What Entra Policy Suite needs before it works - checked against your tenant.' },
+      { hash: 'v1import', label: 'Import v1', desc: 'Bring a v1 install over: upload its files, see the plan, approve.' }] },
     { label: 'Tagging', items: [
       { hash: 'rules', label: 'Tagging Rules', desc: 'The rules that set the tags on users and devices.' },
       { hash: 'troubleshoot', label: 'Troubleshoot tagging', desc: 'Pick accounts and see why each tag was or was not set.' },
-      { hash: 'tagtypes', label: 'Tag types', desc: 'The tags EPS writes, each in its own attribute, with its values.' },
+      { hash: 'tagtypes', label: 'Tag types', desc: 'The tags Entra Policy Suite writes, each in its own attribute, with its values.' },
       { hash: 'conditions', label: 'Condition types', desc: 'What a rule can test.' },
       { hash: 'queue', label: 'Commit queue', desc: 'Rule changes waiting for an admin to commit them.' },
-      { hash: 'changes', label: 'Tag changes', desc: 'Every tag EPS wrote, when and why.' },
-      { hash: 'tamper', label: 'Tamper', desc: 'Changes to watched tags that EPS did not make.' }] },
+      { hash: 'changes', label: 'Tag changes', desc: 'Every tag Entra Policy Suite wrote, when and why.' },
+      { hash: 'tamper', label: 'Tamper', desc: 'Changes to watched tags that Entra Policy Suite did not make.' }] },
     { label: 'Conditional Access', items: [
       { hash: 'capolicies', label: 'Policies', desc: 'Your policies against their templates; adopt, stage moves.' },
       { hash: 'capolicies/doc', label: 'Documentation', desc: 'Every policy with its ids resolved, as Excel or CSV.' },

@@ -65,7 +65,7 @@ function Get-EpsInteractiveToken {
             $q = if ($line -match '^GET\s+/\?(\S*)\s') { $Matches[1] } else { '' }
             $kv = @{}; foreach ($pair in $q.Split('&')) { $p = $pair.Split('=', 2); if ($p.Count -eq 2) { $kv[$p[0]] = [uri]::UnescapeDataString($p[1]) } }
             $msg = if ($kv.code) { 'Signed in. You can close this window.' } else { "Sign-in failed: $($kv.error_description)" }
-            $html = "<html><body style='font-family:sans-serif'><h3>EntraPolicySuite</h3><p>$([Net.WebUtility]::HtmlEncode($msg))</p></body></html>"
+            $html = "<html><body style='font-family:sans-serif'><h3>Entra Policy Suite</h3><p>$([Net.WebUtility]::HtmlEncode($msg))</p></body></html>"
             $bytes = [Text.Encoding]::UTF8.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $([Text.Encoding]::UTF8.GetByteCount($html))`r`nConnection: close`r`n`r`n$html")
             $stream.Write($bytes, 0, $bytes.Length); $stream.Flush()
         } finally { $client.Dispose() }

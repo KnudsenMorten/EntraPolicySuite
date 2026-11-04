@@ -191,6 +191,14 @@ function Invoke-EpsDbInit {
         elseif ($wk -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -and $gl.roles.Contains('eps_worker')) { $in.Principals = @(@($in.Principals) + [pscustomobject]@{ Name = 'eps-hybrid-worker'; ClientId = $wk; Role = 'eps_worker' }) }
         else { & $Log "refused: EPS_DBINIT_WORKER is not a client id or 'remove'"; return 2 }
     }
+    # the install's -SupportAppId (as SI / PIM): the Support app's STARTING level, written only when no level is there yet;
+    # the support job then applies it until the customer's level from the Invardia portal arrives
+    $seed = "$(& $e 'EPS_DBINIT_SUPPORT')".Trim().ToLowerInvariant()
+    $seedSql = ''
+    if ($seed) {
+        if ($seed -notmatch '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|(troubleshoot|read|none)$') { & $Log "refused: EPS_DBINIT_SUPPORT is not '<client id>|troubleshoot|read|none'"; return 2 }
+        $seedSql = "IF NOT EXISTS (SELECT 1 FROM eps.SupportAccess) INSERT INTO eps.SupportAccess (Id, Level, AppId, Applied) VALUES (1, N'$($Matches[2])', N'$($Matches[1])', N'the starting level from the install (-SupportAppId)');"
+    }
     $set = Read-EpsDbInitSettings -Json (& $e 'EPS_DBINIT_SETTINGS')
     if (-not $set.Ok) { & $Log "refused: $($set.Reason)"; return 2 }
     $by = "$(& $e 'EPS_DBINIT_BY')".Trim(); if ($by -notmatch '^[^\x00-\x1f<>''"]{1,200}$') { $by = 'setup script' }
@@ -212,6 +220,7 @@ function Invoke-EpsDbInit {
         $v = Install-EpsSchema -ConnectionString $ConnectionString -SchemaPath (Join-Path $SolutionRoot 'sql\eps-schema.sql')
         & $Log "schema: version $v"
         $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl -Version $ver)
+        if ($seedSql) { $plan += @{ Name = "the Support app's starting level (only when none is set)"; Sql = $seedSql } }
         if ($set.Settings.Count) { $plan += @{ Name = "settings for a setup script: $(@($set.Settings.Keys) -join ', ') (by $by)"; Sql = (Get-EpsDbInitSettingsSql -Settings $set.Settings -By $by) } }
         foreach ($b in $plan) {
             [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query $b.Sql)
@@ -402,7 +411,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker)
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed)
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     # -UseExisting: start the job the install made, as it is (a setup script: the person may start it, nothing else)
     if ($UseExisting) { $j = @{ Name = $n.DbInitJob } } else {
@@ -414,6 +423,7 @@ function Invoke-EpsDbInitJob {
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
     if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
     if ($Worker) { $env.EPS_DBINIT_WORKER = $Worker }
+    if ($SupportSeed -and $SupportSeed.AppId) { $env.EPS_DBINIT_SUPPORT = "$($SupportSeed.AppId)|$($SupportSeed.Level)" }
     if ($Settings -and $Settings.Count) { $env.EPS_DBINIT_SETTINGS = ($Settings | ConvertTo-Json -Compress -Depth 5); if ($By) { $env.EPS_DBINIT_BY = $By } }
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $j.Name -Env $env -Waits @(0, 15, 30, 60)
     if (-not $s.Ok) { throw "the database setup job $($j.Name) could not be started: $($s.Reason)" }
