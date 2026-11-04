@@ -82,7 +82,8 @@ function Get-EpsUpdateHead {
       $null); Reason }. Never throws; never returns the key.
     #>
     param([AllowEmptyString()][string]$InstallKey, [Parameter(Mandatory)][ValidateRange(0, 3)][int]$Ring, [scriptblock]$Http, [string]$BaseUrl = $script:EpsUpdateBase)
-    if ("$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'no install key: "update now" is not asked' } }
+    if (-not "$InstallKey".Trim()) { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'no install key: "update now" is not asked' } }
+    if ("$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'the install key is not in the expected format: "update now" is not asked' } }
     $url = "$("$BaseUrl".Trim().TrimEnd('/'))/api/updates/$($script:EpsUpdateProduct)/head"
     $h = @{ 'X-Invardia-Install-Key' = "$InstallKey".Trim() }
     $b = [ordered]@{ ring = $Ring; kind = $script:EpsUpdateKind }
@@ -144,7 +145,8 @@ function Invoke-EpsUpdateCheck {
     & $Log $(if ($t.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "release for ring $ringN`: $($t.State) - $($t.Reason)"
     if ($null -eq $InstallKey) { $k = Get-EpsUplinkKey; $InstallKey = "$($k.Key)"; if (-not $InstallKey) { & $Log 'Info' "no install key ($($k.Reason)): update now and the update run report are skipped" } }
     $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http
-    if ($h.Status) { & $Log 'Info' "update now: $($h.Reason)" }
+    # always said (found live 2026-11-04: a silent skip hid why no head call was made)
+    & $Log $(if ($InstallKey -and $h.Status -ne 200) { 'Warning' } else { 'Info' }) "update now: $($h.Reason)$(if ($h.Status) { " (HTTP $($h.Status))" })"
     $g = Get-EpsUpdateRunGate -ConnectionString $ConnectionString
     & $Log 'Info' "run gate: $($g.Reason)"
     $track = $null

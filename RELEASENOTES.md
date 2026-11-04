@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.47 - the update check says more
+- The update check's run log always says what happened with the "update now" question to Invardia, including why
+  it was not asked.
+
 ## 2.0.46 - the update check
 - New job: every night at 03:00 the update job asks Invardia which Entra Policy Suite version is approved for this
   install's update ring, checks that the answer is genuine and complete, and records what it would install in its run.
