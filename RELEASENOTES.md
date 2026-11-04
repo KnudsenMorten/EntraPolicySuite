@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.62 - support consent from the Invardia portal
+- The install keeps the support access level your organisation sets for it in the Invardia customer portal (none, read,
+  or troubleshoot / setup), as Invardia sends it with the answer to the install's own heartbeat. The web app can only
+  read it.
+- A support session that goes beyond that level, or that arrives before any level was received, is not taken: it is
+  recorded as closed and the refusal is written to the audit trail.
+- Fixed: the install read its environment name from Invardia with the wrong header and was refused; it now sends the
+  header that call expects.
+
 ## 2.0.61 - setup steps for the database job and the updater
 - The heartbeat to Invardia reports two more setup steps: whether the database setup job has set up the database, and
   whether the update job has its own identity to install releases. Each comes from a real record (the job's own record

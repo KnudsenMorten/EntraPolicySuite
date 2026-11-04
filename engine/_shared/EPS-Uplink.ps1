@@ -566,14 +566,15 @@ function Send-EpsUplinkRecord {
 function Get-EpsInvardiaEnvironment {
     <#
       NAM-02: Invardia is master of the environment name. GET https://<uplink host>/api/enrollments/environment with the
-      same install-key header the uplink sends -> { environmentId, environmentName, kind, handle, tenantId, customer,
+      install key in the header x-invardia-install-key (Invardia 2026-11-04: this route does NOT read the uplink's
+      x-ait-uplink-code - the same key under that header answered 401 live) -> { environmentId, environmentName, kind, handle, tenantId, customer,
       managedBy, displayName }. Returns @{ Ok; Value (the fields EPS keeps, or $null); Reason }. Never throws; the key is
       never in Reason.
     #>
     param([Parameter(Mandatory)][string]$Key, [string]$Endpoint = $script:EpsUplinkEndpoint)
     if ("$Endpoint" -notmatch '^https://') { return @{ Ok = $false; Value = $null; Reason = 'refused: the uplink endpoint must be https' } }
     $url = "https://$(([uri]$Endpoint).Authority)/api/enrollments/environment"
-    try { $r = & $script:EpsHttp 'GET' $url @{ 'X-Ait-Uplink-Code' = "$Key".Trim(); Accept = 'application/json' } $null }
+    try { $r = & $script:EpsHttp 'GET' $url @{ 'X-Invardia-Install-Key' = "$Key".Trim(); Accept = 'application/json' } $null }
     catch { return @{ Ok = $false; Value = $null; Reason = "failed: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $Key -Max 200)" } }
     $status = [int]$r.Status
     if ($status -lt 200 -or $status -ge 300) { return @{ Ok = $false; Value = $null; Reason = "HTTP $status" } }
@@ -620,6 +621,39 @@ function ConvertFrom-EpsUplinkSupportAnswer {
     @{ State = 'open'; EnvironmentId = $env; Level = $lvl; Reason = (& $plain $src.reason 300); TicketNumber = $tn; OpenedBy = (& $plain $src.openedBy 200); MaxUntilUtc = [datetime]::SpecifyKind($mu, 'Utc') }
 }
 
+function ConvertFrom-EpsUplinkConsent {
+    <#
+      PURE. framework SUPPORT ACCESS point 2 (owner 2026-11-04 "none, read, troubleshoot/setup"): `supportConsent: { level,
+      appId? }` in the heartbeat answer. level 'troubleshoot' | 'setup' -> 'troubleshoot' (one level: read + admin only
+      during an open session); 'read' -> 'read'; anything else (incl. 'none' and unknown values) -> 'none'. appId only as a
+      lower-case GUID. $null = the answer carries no consent (keep the last one).
+    #>
+    param($Body)
+    if ($null -eq $Body) { return $null }
+    try { if ($Body -is [string]) { if (-not $Body.Trim().StartsWith('{')) { return $null }; $Body = $Body | ConvertFrom-Json -Depth 10 } } catch { return $null }
+    $c = $Body.supportConsent
+    if ($null -eq $c) { return $null }
+    $l = "$($c.level)".Trim().ToLowerInvariant()
+    $level = if ($l -in 'troubleshoot', 'setup') { 'troubleshoot' } elseif ($l -eq 'read') { 'read' } else { 'none' }
+    $app = "$($c.appId)".Trim().ToLowerInvariant(); if ($app -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { $app = '' }
+    @{ Level = $level; AppId = $app }
+}
+
+function Test-EpsSupportWithinConsent {
+    <#
+      PURE. A session can never exceed the consent (SUPPORT ACCESS point 2): an OPEN session is kept only while the kept
+      consent ('<level>|<appId>') is troubleshoot; else it is recorded as a refused open (state 'refused', the reason said).
+    #>
+    param([Parameter(Mandatory)]$State, [AllowEmptyString()][string]$Consent)
+    if ($State.State -ne 'open') { return $State }
+    $lvl = ("$Consent".Split('|'))[0]
+    if ($lvl -eq 'troubleshoot') { return $State }
+    # treated as CLOSED (an earlier open one closes too), with the refusal audited by Save-EpsSupportState
+    $why = "the customer's support consent is '$(if ($lvl) { $lvl } else { 'not received yet' })', not troubleshoot/setup"
+    @{ State = 'closed'; EnvironmentId = $State.EnvironmentId; Level = ''; Reason = ''; TicketNumber = ''; OpenedBy = ''; MaxUntilUtc = $null
+       Refused = @{ Why = $why; TicketNumber = $State.TicketNumber; OpenedBy = $State.OpenedBy; Level = $State.Level } }
+}
+
 function Save-EpsSupportState {
     <#
       Records the support state (eps.SupportEvent): a change of state = a new row + an audit row (support.state.change);
@@ -627,13 +661,19 @@ function Save-EpsSupportState {
       NOTHING IS GRANTED here (TODO UPLINK-1: the just-in-time grant, an owner-proven step). Returns the plain line.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$State, [datetime]$NowUtc = [datetime]::UtcNow)
-    $last = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT TOP (1) SupportEventId, State, AccessLevel, Reason, TicketNumber, OpenedBy, MaxUntilUtc FROM eps.SupportEvent ORDER BY SupportEventId DESC')[0]
+    $refusedLine = ''
+    if ($State.Refused) {
+        [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'support.session.refused' -Actor 'Invardia (heartbeat answer)' -ActorSource 'job' -Target 'SupportEvent' `
+            -Reason "framework SUPPORT ACCESS: $($State.Refused.Why)" -Outcome 'refused' -After @{ ticket = $State.Refused.TicketNumber; openedBy = $State.Refused.OpenedBy; level = $State.Refused.Level })
+        $refusedLine = "support: an open session was REFUSED ($($State.Refused.Why)); "
+    }
+    $last =@(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT TOP (1) SupportEventId, State, AccessLevel, Reason, TicketNumber, OpenedBy, MaxUntilUtc FROM eps.SupportEvent ORDER BY SupportEventId DESC')[0]
     $same = $last -and "$($last.State)" -eq $State.State -and ($State.State -eq 'closed' -or ("$($last.TicketNumber)" -eq "$($State.TicketNumber)" -and "$($last.OpenedBy)" -eq "$($State.OpenedBy)" -and "$($last.AccessLevel)" -eq "$($State.Level)"))
     $nul = { param($s) if ("$s") { "$s" } else { $null } }
     if ($same) {
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $last.SupportEventId; t = $NowUtc; m = $State.MaxUntilUtc } -Query 'UPDATE eps.SupportEvent SET LastSeenUtc = @t, MaxUntilUtc = @m WHERE SupportEventId = @id' | Out-Null
     } elseif ($State.State -eq 'closed' -and (-not $last -or "$($last.State)" -eq 'closed')) {
-        return 'support: closed (nothing was open)'
+        return "$($refusedLine)support: closed (nothing was open)"
     } else {
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ t = $NowUtc; s = $State.State; l = (& $nul $State.Level); r = (& $nul $State.Reason); n = (& $nul $State.TicketNumber); o = (& $nul $State.OpenedBy); m = $State.MaxUntilUtc; e = $(if ($State.EnvironmentId) { [guid]$State.EnvironmentId }) } `
             -Query 'INSERT INTO eps.SupportEvent (ReceivedAtUtc, LastSeenUtc, State, AccessLevel, Reason, TicketNumber, OpenedBy, MaxUntilUtc, EnvironmentId) VALUES (@t, @t, @s, @l, @r, @n, @o, @m, @e)' | Out-Null
@@ -642,7 +682,7 @@ function Save-EpsSupportState {
             -Before $(if ($last) { @{ state = "$($last.State)"; ticket = "$($last.TicketNumber)" } }) -After @{ state = $State.State; level = $State.Level; ticket = $State.TicketNumber; openedBy = $State.OpenedBy; maxUntilUtc = (ConvertTo-EpsUplinkIso $State.MaxUntilUtc) })
     }
     if ($State.State -eq 'open') { "support: OPEN until $(ConvertTo-EpsUplinkIso $State.MaxUntilUtc)$(if ($State.TicketNumber) { " (ticket $($State.TicketNumber))" })$(if ($State.Level) { ", level $($State.Level)" }) - recorded only, nothing granted" }
-    else { 'support: closed - recorded' }
+    else { "$($refusedLine)support: closed - recorded" }
 }
 
 # ---------------------------------------------------------------------------------------------------- state
@@ -710,7 +750,13 @@ function Invoke-EpsUplinkCycle {
             if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)
             & $say 'Info' "uplink: heartbeat sent ($($res.Heartbeat))"
+            # framework SUPPORT ACCESS point 2: the customer's consent level from THIS identified heartbeat's answer only
+            # (TLS + the install key) - kept in eps.UplinkState (the web app may only read it); absent = the last one kept
+            $con = ConvertFrom-EpsUplinkConsent -Body $r.Body
+            if ($con) { try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'support.consent' -Value "$($con.Level)|$($con.AppId)"; & $say 'Info' "uplink: support consent $($con.Level)$(if ($con.AppId) { " (Support app $($con.AppId))" }) - kept" } catch { & $say 'Warning' "uplink: the support consent could not be kept: $($_.Exception.Message)" } }
             $sup = ConvertFrom-EpsUplinkSupportAnswer -Body $r.Body -NowUtc $NowUtc
+            # a session can never exceed the consent: with 'none' (or no consent ever received) an open session is recorded as refused
+            if ($sup -and $sup.State -eq 'open') { $kept = try { "$((Get-EpsUplinkState -ConnectionString $ConnectionString)['support.consent'])" } catch { '' }; $sup = Test-EpsSupportWithinConsent -State $sup -Consent $kept }
             if ($sup) { try { $res.Support = Save-EpsSupportState -ConnectionString $ConnectionString -State $sup -NowUtc $NowUtc; & $say 'Info' $res.Support } catch { & $say 'Warning' "uplink: the support state could not be recorded: $($_.Exception.Message)" } }
             # NAM-02: Invardia's environment name, read with each heartbeat; only a good answer replaces the kept one
             # (offline / refused = the last good name stays). Not a POST: outside the POST budget.
