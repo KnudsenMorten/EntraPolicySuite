@@ -326,6 +326,14 @@ function Invoke-EpsWebAppStep {
     [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $uris; logoutUrl = "https://$fqdn/signout-callback-oidc"; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } })
     $Ctx.Web.Fqdn = $fqdn
     $Ctx.Web.Url = "https://$fqdn/"
+    # OPEN-15 (framework §12.11g): the sign-in front the web app RUNS - its image as ARM returned it after the deploy - goes
+    # into the database at every install, so the heartbeat reports it although the engine holds no Azure right
+    $fi = "$(@($app.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
+    $fv = (($fi -split ':')[-1] -split '-')[0]
+    if ($fi -and $fv -match '^[0-9A-Za-z.+]{1,50}$') {
+        Invoke-EpsSetupSql -Ctx $Ctx -Script "MERGE eps.UplinkState AS t USING (SELECT N'signin.front' AS Name) AS s ON t.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = N'$fv', UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'signin.front', N'$fv');"
+        $Ctx.Web.FrontRunning = $fv
+    }
 }
 
 function Test-EpsWebAppAnswers {

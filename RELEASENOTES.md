@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.57 - the database starts larger, and the sign-in version in the heartbeat
+- A new install's database starts at Standard S1 with 250 GB (was S0). An install run raises an existing S0 or Basic
+  database to S1; a database you sized yourself is left as it is.
+- The heartbeat to Invardia now reports the version of the sign-in front the web app runs. The install records it at
+  every deploy, so no extra Azure right is needed.
+
 ## 2.0.56 - the scheduler runs as the engine identity in every install
 - An install made before 2.0.55 moves its scheduler job to the engine's identity (id-eps-engine), as new installs do.
   Its job names and other Azure names stay as they are.

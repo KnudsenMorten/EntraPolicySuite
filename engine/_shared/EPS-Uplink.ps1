@@ -339,6 +339,18 @@ function Get-EpsUplinkSignInLayer {
     } catch { $null }
 }
 
+function Get-EpsUplinkSignIn {
+    # OPEN-15 (§12.11g): the running web app through ARM (Get-EpsUplinkSignInLayer) when the engine may read it; else the
+    # front version the install read back from the running app at its last deploy (eps.UplinkState 'signin.front').
+    # -Query: { param($sql) <scalar> }. $null when neither is known (the field is left out, never guessed).
+    param([scriptblock]$Query)
+    $si = Get-EpsUplinkSignInLayer
+    if ($si -or -not $Query) { return $si }
+    $fv = try { & $Query "SELECT Value FROM eps.UplinkState WHERE Name = N'signin.front'" } catch { $null }
+    if ("$fv" -match '^[0-9A-Za-z.+]{1,50}$') { return @{ Layer = 'signin-front'; Version = "$fv" } }
+    $null
+}
+
 function Get-EpsUplinkHeartbeatFacts {
     # What the heartbeat says, read from the product's own database (and the running web app). Each part on its own:
     # a part that cannot be read is left out, never guessed.
@@ -380,7 +392,9 @@ function Get-EpsUplinkHeartbeatFacts {
         Jobs = @($jobs)
         Update = @{ Installed = $Version }
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
-        SignIn = (Get-EpsUplinkSignInLayer)
+        # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
+        # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
+        SignIn = (Get-EpsUplinkSignIn -Query $q)
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
         LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)

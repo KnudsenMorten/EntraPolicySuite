@@ -236,6 +236,18 @@ function Invoke-EpsRetireTickStep {
     @{ Note = "$u removed ($($ras.Count) role assignment(s), its database user, the identity) - read back" }
 }
 
+$script:EpsSqlStartSku = @{ name = 'S1'; tier = 'Standard' }; $script:EpsSqlStartMaxBytes = [int64]250 * 1024 * 1024 * 1024
+function Get-EpsSqlTargetSize {
+    # PURE. framework §0 SIZING, raise-only: no database / Basic / S0 -> S1 (Standard); anything else is kept as it is (a
+    # size the customer or support set wins, its size limit too). A raised database gets at least 250 GB, never less than it had.
+    param($Current)
+    $sku = $Current.sku
+    $keep = $sku -and "$($sku.name)" -and "$($sku.name)" -notin 'Basic', 'S0'
+    $cur = [int64]0; if ($Current) { [void][int64]::TryParse("$($Current.properties.maxSizeBytes)", [ref]$cur) }
+    @{ Sku = $(if ($keep) { $s = @{ name = "$($sku.name)" }; if ("$($sku.tier)") { $s.tier = "$($sku.tier)" }; if ("$($sku.capacity)") { $s.capacity = [int]$sku.capacity }; if ("$($sku.family)") { $s.family = "$($sku.family)" }; $s } else { $script:EpsSqlStartSku.Clone() })
+       MaxSizeBytes = $(if ($keep -and $cur -gt 0) { $cur } else { [math]::Max($cur, $script:EpsSqlStartMaxBytes) }); Raised = -not $keep -and [bool]$Current }
+}
+
 function Get-EpsAcaJobResourceName {
     # PURE. A work job's Azure resource name from its KEY (the schedule's AcaJobName): the update job is named per install
     # (Names.UpdateJob), every other work job is its key.
@@ -539,7 +551,7 @@ function Test-EpsInstallStep {
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
         'registry'      { if (& $has "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" $script:EpsApi.acr) { @{ Action = 'update'; Detail = "$($n.Registry) (AcrPull checked)" } } else { @{ Action = 'create'; Detail = "$($n.Registry) (Basic)" } } }
         'image'         { @{ Action = 'run'; Detail = "build $($n.Image):$($Ctx.Version) in $($n.Registry)" } }
-        'sql'           { if (& $has "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)/databases/$($n.Database)" $script:EpsApi.sql) { @{ Action = 'exists'; Detail = "$($n.SqlServer)/$($n.Database)" } } else { @{ Action = 'create'; Detail = "$($n.SqlServer) (Entra-only, admin $($Ctx.Person.Upn)) + $($n.Database) (S0)" } } }
+        'sql'           { if (& $has "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)/databases/$($n.Database)" $script:EpsApi.sql) { @{ Action = 'exists'; Detail = "$($n.SqlServer)/$($n.Database) (an S0 or Basic database is raised to S1; any other size is kept)" } } else { @{ Action = 'create'; Detail = "$($n.SqlServer) (Entra-only, admin $($Ctx.Person.Upn)) + $($n.Database) (S1, 250 GB)" } } }
         'sqlaccess'     { @{ Action = 'run'; Detail = "roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level); users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', ') - never db_datareader / db_datawriter" } }
         'schema'        { @{ Action = 'run'; Detail = 'sql/eps-schema.sql (idempotent, additive)' } }
         'environment'   { if (& $has "$rg/providers/Microsoft.App/managedEnvironments/$($n.Environment)" $script:EpsApi.aca) { @{ Action = 'exists'; Detail = $n.Environment } } else { @{ Action = 'create'; Detail = "$($n.Environment) (Consumption)" } } }
@@ -679,7 +691,13 @@ function Invoke-EpsInstallStep {
             [void](Invoke-EpsArm -Method PUT -Path $srv -ApiVersion $script:EpsApi.sql -Body @{ location = $(if ($old) { $old.location } else { $sqlLoc }); tags = $tags; properties = @{ minimalTlsVersion = '1.2'; publicNetworkAccess = $pna; administrators = $admin } })
             # the jobs reach SQL from Azure (external exposure, DESIGN §2); a private install reaches it through its endpoint
             if (-not $priv) { [void](Invoke-EpsArm -Method PUT -Path "$srv/firewallRules/AllowAllWindowsAzureIps" -ApiVersion $script:EpsApi.sql -Body @{ properties = @{ startIpAddress = '0.0.0.0'; endIpAddress = '0.0.0.0' } }) }
-            [void](Invoke-EpsArm -Method PUT -Path "$srv/databases/$($n.Database)" -ApiVersion $script:EpsApi.sql -Body @{ location = $sqlLoc; tags = $tags; sku = @{ name = 'S0'; tier = 'Standard' } })
+            # framework §0 SIZING (owner 2026-11-04 "so we initially deliver from the learnings" / "same with sql", OPEN-27):
+            # a new database starts at S1 / 250 GB; an existing one is only RAISED - a Basic / S0 database goes to S1, any
+            # other size (one the customer or support set) is kept, and the size limit is never lowered
+            $dbPath = "$srv/databases/$($n.Database)"
+            $oldDb = Invoke-EpsArm -Path $dbPath -ApiVersion $script:EpsApi.sql -AllowNotFound
+            $size = Get-EpsSqlTargetSize -Current $oldDb
+            [void](Invoke-EpsArm -Method PUT -Path $dbPath -ApiVersion $script:EpsApi.sql -Body @{ location = $(if ($oldDb) { $oldDb.location } else { $sqlLoc }); tags = $tags; sku = $size.Sku; properties = @{ maxSizeBytes = $size.MaxSizeBytes } })
         }
         'sqlaccess' {
             & $loadMi
