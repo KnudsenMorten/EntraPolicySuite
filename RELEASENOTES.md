@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.56 - the scheduler runs as the engine identity in every install
+- An install made before 2.0.55 moves its scheduler job to the engine's identity (id-eps-engine), as new installs do.
+  Its job names and other Azure names stay as they are.
+- After the install has run the scheduler that way, it removes the old scheduler identity (id-eps-tick): its role
+  assignments, its database user and the identity itself, each read back. Nothing is removed before that.
+
 ## 2.0.55 - standard names for new installs, and the return route for a private install
 - A new install uses the standard names: resource group rg-eps; the scheduler job caj-eps-engine (was caj-eps-tick)
   and the update job caj-eps-updater (was caj-eps-update); registry, SQL server, Key Vault and storage end in six

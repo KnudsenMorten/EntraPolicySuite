@@ -181,9 +181,11 @@ function Get-EpsInstallNames {
         ResourceGroup = $ResourceGroup; Suffix = $s; InstallId = $iid; Legacy = [bool]$Legacy
         EngineIdentity = 'id-eps-engine'; WebIdentity = 'id-eps-web'
         # framework §5.5 (owner 2026-11-04 "do it the same way as pim"): the scheduler IS the engine - caj-eps-engine signs in
-        # as id-eps-engine (PIM: one job, the engine's identity). An install made before 2.0.55 keeps id-eps-tick until the
-        # identity move. The tick's SQL role (eps_tick) and its queue Sender role then go to the engine identity.
-        TickIdentity = $(if ($Legacy) { 'id-eps-tick' } else { 'id-eps-engine' })
+        # as id-eps-engine (PIM: one job, the engine's identity). The tick's SQL role (eps_tick) and its queue Sender role
+        # go to the engine identity.
+        # 2.0.56 (THE IDENTITY MOVE, Invardia 2026-11-04): an older install's tick moves to the engine identity too; its old
+        # id-eps-tick is removed by the step 'retiretick' only after verify proved the tick runs as the engine
+        TickIdentity = 'id-eps-engine'; LegacyTickIdentity = $(if ($Legacy) { 'id-eps-tick' } else { '' })
         Logs = 'log-eps'; Registry = "acreps$s"; Image = 'eps-engine'
         SqlServer = "sql-eps-$s"; Database = 'eps'
         Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; Storage = "steps$s"
@@ -198,6 +200,40 @@ function Get-EpsInstallNames {
         WebAppRegistration = 'Entra Policy Suite'; LegacyWebAppRegistration = "EntraPolicySuite ($ResourceGroup)"
         SqlAdminGroup = 'grp-eps-sql-admins'; LegacySqlAdminGroup = 'EntraPolicySuite SQL admins'
     }
+}
+
+function Invoke-EpsRetireTickStep {
+    <#
+      THE IDENTITY MOVE (framework §5.5 / NAM-03, Invardia 2026-11-04; owner "do it the same way as pim"): an install made
+      before 2.0.55 had its own scheduler identity id-eps-tick. Since 2.0.56 its tick job runs as id-eps-engine (the jobs
+      step), the engine holds the tick's queue Sender role and SQL role (queues, sqlaccess) - and verify has run the tick
+      that way. Only THEN is the old identity removed: its role assignments, its database user, the identity itself, each
+      read back. Refused before verify, and while the scheduler job still uses it. A new install has nothing to remove.
+    #>
+    param([Parameter(Mandatory)]$Ctx)
+    $n = $Ctx.Names
+    if (-not $n.LegacyTickIdentity) { return @{ Note = 'nothing to remove - the scheduler runs as the engine identity' } }
+    if ($null -ne $Ctx.Completed -and -not @($Ctx.Completed).Contains('verify')) { throw "the old scheduler identity $($n.LegacyTickIdentity) is removed only after verify has run the tick as the engine" }
+    $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
+    $miPath = "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.LegacyTickIdentity)"
+    $mi = Invoke-EpsArm -Path $miPath -ApiVersion $script:EpsApi.mi -AllowNotFound
+    if (-not $mi) { return @{ Note = "$($n.LegacyTickIdentity) is already gone" } }
+    $job = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$($n.TickJob)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+    if (@(@($job.identity.userAssignedIdentities.PSObject.Properties.Name) | Where-Object { "$_" -eq $miPath }).Count) { throw "the scheduler job $($n.TickJob) still signs in as $($n.LegacyTickIdentity) - not removed (run the install again: the jobs step moves it to $($n.EngineIdentity))" }
+    $principal = "$($mi.properties.principalId)"
+    $mine = { @(@((Invoke-EpsArm -Path "$rg/providers/Microsoft.Authorization/roleAssignments?`$filter=principalId eq '$principal'" -ApiVersion $script:EpsApi.rbac).value) | Where-Object { "$($_.properties.principalId)" -eq $principal }) }
+    $ras = & $mine
+    foreach ($a in $ras) { [void](Invoke-EpsArm -Method DELETE -Path $a.id -ApiVersion $script:EpsApi.rbac -AllowNotFound) }
+    $u = $n.LegacyTickIdentity
+    if ($u -notmatch '^[A-Za-z0-9-]{1,128}$') { throw "unsafe database user name '$u'" }
+    Invoke-EpsSetupSql -Ctx $Ctx -Script "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$u') DROP USER [$u];"
+    [void](Invoke-EpsArm -Method DELETE -Path $miPath -ApiVersion $script:EpsApi.mi -AllowNotFound)
+    # read back: no role assignment of the old principal, no identity
+    if (@(& $mine).Count) { throw "$u still holds $(@(& $mine).Count) role assignment(s) after the removal" }
+    if (Invoke-EpsArm -Path $miPath -ApiVersion $script:EpsApi.mi -AllowNotFound) { throw "the identity $u still exists after the removal" }
+    if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+    $Ctx.Renamed.Add("identity move: $u removed - the scheduler runs as $($n.EngineIdentity) ($($ras.Count) role assignment(s), its database user, the identity; read back)")
+    @{ Note = "$u removed ($($ras.Count) role assignment(s), its database user, the identity) - read back" }
 }
 
 function Get-EpsAcaJobResourceName {
@@ -237,6 +273,7 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image (the pinned version), built in the registry' }
         [pscustomobject]@{ Id = 'webapp';        Title = 'The web app: the sign-in front + the GUI in one revision' }
         [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
+        [pscustomobject]@{ Id = 'retiretick';    Title = "An older install's separate scheduler identity removed - the scheduler runs as the engine" }
     )
 }
 
@@ -293,6 +330,7 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'verify'           'Verify: read everything back, run the tick once'
         & $mk 'insidecheck'      'Inside check: from inside the network - private DNS, the web app, every job queue'
         & $mk 'retireoldenv'     'Public -> private: the old public environment removed (after the inside check)'
+        & $mk 'retiretick'
         & $mk 'lockdown'         'Lockdown: public access read back as Disabled on SQL, Key Vault, storage and the registry'
     )
 }
@@ -516,6 +554,7 @@ function Test-EpsInstallStep {
         'webstate'      { @{ Action = 'run'; Detail = "schema signin owned by $($n.WebIdentity) + CREATE TABLE; $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" } }
         'frontimage'    { $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot; $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot; @{ Action = $(if ($s.Ok) { 'run' } else { 'blocked' }); Detail = "signin-front:$pin in $($n.Registry) - $($s.Reason)" } }
         'webapp'        { if (& $has "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca) { @{ Action = 'update'; Detail = "$($n.WebApp) (the front + the GUI)" } } else { @{ Action = 'create'; Detail = "$($n.WebApp): signin-front on the ingress (8080), the GUI on 127.0.0.1:8081, as $($n.WebIdentity), scale 0-1" } } }
+        'retiretick'    { if ($n.LegacyTickIdentity) { @{ Action = 'run'; Detail = "remove $($n.LegacyTickIdentity) after verify ran the tick as $($n.EngineIdentity): its role assignments, its database user, the identity - each read back" } } else { @{ Action = 'exists'; Detail = 'nothing to remove (the scheduler runs as the engine identity)' } } }
         'verify'        { @{ Action = 'run'; Detail = 'read back every resource and grant; start the tick once and wait for its run record; the web app answers and sends a page without a session to the Entra sign-in' } }
         default         { throw "unknown install step '$Id'" }
     }
@@ -801,6 +840,7 @@ function Invoke-EpsInstallStep {
         'agentpool'        { Invoke-EpsAgentPoolStep -Ctx $Ctx }
         'insidecheck'      { & $loadMi; & $loadWeb; [void](Invoke-EpsInsideCheckStep -Ctx $Ctx) }
         'retireoldenv'     { & $loadWeb; [void](Invoke-EpsRetireOldEnvStep -Ctx $Ctx) }
+        'retiretick'       { Invoke-EpsRetireTickStep -Ctx $Ctx }
         'lockdown'         { [void](Invoke-EpsLockdownStep -Ctx $Ctx) }
         'verify' {
             $r = Confirm-EpsInstall -Ctx $Ctx -PollSeconds ($Ctx.PollSeconds ?? 15)
