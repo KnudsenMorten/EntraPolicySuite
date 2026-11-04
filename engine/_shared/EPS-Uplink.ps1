@@ -63,14 +63,14 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess')
     run       = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -253,6 +253,17 @@ function New-EpsUplinkHeartbeat {
             $o.SignIn = $s
         }
         if ("$($Facts.Database.Tier)" -match '^[A-Za-z0-9._-]{1,20}$') { $o.Database = [ordered]@{ tier = "$($Facts.Database.Tier)" } }
+        # OPEN-01 auto-check #4 (Invardia 2026-11-05): what the support-access job APPLIED and read back - level none |
+        # read | troubleshoot; adminUntil = the end of the open session it gave admin for (null = no admin now; the job
+        # never gives more than 8 h); readUser = the read user exists (read back); checkedUtc = its last run. Left out when
+        # the job never ran (no row) - never a guessed value.
+        $sa = $Facts.SupportAccess
+        if ($sa -and "$($sa.Level)" -in 'none', 'read', 'troubleshoot') {
+            $au = if ($sa.AdminNow -eq $true) { ConvertTo-EpsUplinkIso $sa.SessionUntil } else { $null }
+            $x = [ordered]@{ level = "$($sa.Level)"; adminUntil = $au; readUser = ($sa.ReadUser -eq $true) }
+            $ck = ConvertTo-EpsUplinkIso $sa.CheckedAtUtc; if ($ck) { $x.checkedUtc = $ck }
+            $o.SupportAccess = $x
+        }
         # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
         $steps = [System.Collections.Generic.List[object]]::new()
         foreach ($s in @($Facts.SetupSteps)) {
@@ -405,6 +416,7 @@ function Get-EpsUplinkHeartbeatFacts {
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
         SignIn = (Get-EpsUplinkSignIn -Query $q)
+        SupportAccess = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Level, SessionUntil, ReadUser, AdminNow, CheckedAtUtc FROM eps.SupportAccess WHERE Id = 1')[0] } catch { $null })   # OPEN-01 #4: what caj-eps-support applied (read only)
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
         LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)

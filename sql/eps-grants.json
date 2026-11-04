@@ -47,6 +47,7 @@
         "TamperEvent": ["SELECT", "INSERT", "UPDATE"],
         "TargetGroup": ["SELECT", "INSERT", "UPDATE"],
         "UplinkState": ["SELECT", "INSERT", "UPDATE"],
+        "SupportAccess": ["SELECT"],
         "UserTagRule": ["SELECT", "INSERT", "UPDATE", "DELETE"],
         "UserTagRuleCondition": ["SELECT", "INSERT", "DELETE"],
         "WatchedValue": ["SELECT", "INSERT", "UPDATE"],

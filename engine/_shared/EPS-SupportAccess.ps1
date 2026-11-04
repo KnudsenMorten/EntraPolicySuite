@@ -106,10 +106,10 @@ function Invoke-EpsSupportAccess {
         $ok = switch ($p.Want) { 'none' { -not $after.Exists } 'read' { $after.Exists -and $after.InRead -and -not $after.InOwner } 'admin' { $after.Exists -and $after.InRead -and $after.InOwner } }
         $applied = "$($p.Want)$(if ($p.AdminUntil) { " until $($p.AdminUntil.ToString('u'))" }): $(if ($p.Lines.Count) { $p.Lines -join '; ' } else { 'no change' })"
         if ($applied.Length -gt 400) { $applied = $applied.Substring(0, 400) }
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ l = $level; a = $(if ($app) { $app } else { $null }); u = $(if ($until -and $p.Want -eq 'admin') { $until } else { $null }); p = $applied } -Query @'
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ l = $level; a = $(if ($app) { $app } else { $null }); u = $(if ($until -and $p.Want -eq 'admin') { $until } else { $null }); p = $applied; r = [bool]($after.Exists -and $after.InRead); o = [bool]($after.Exists -and $after.InOwner) } -Query @'
 MERGE eps.SupportAccess AS t USING (SELECT 1 AS Id) AS s ON t.Id = s.Id
-WHEN MATCHED THEN UPDATE SET Level = @l, AppId = @a, SessionUntil = @u, Applied = @p, CheckedAtUtc = SYSUTCDATETIME()
-WHEN NOT MATCHED THEN INSERT (Id, Level, AppId, SessionUntil, Applied) VALUES (1, @l, @a, @u, @p);
+WHEN MATCHED THEN UPDATE SET Level = @l, AppId = @a, SessionUntil = @u, Applied = @p, ReadUser = @r, AdminNow = @o, CheckedAtUtc = SYSUTCDATETIME()
+WHEN NOT MATCHED THEN INSERT (Id, Level, AppId, SessionUntil, Applied, ReadUser, AdminNow) VALUES (1, @l, @a, @u, @p, @r, @o);
 '@ | Out-Null
         if ($p.Sql.Count -and @($p.Sql | Where-Object { $_ -notlike 'IF DATABASE_PRINCIPAL_ID*' -and $_ -notlike 'GRANT SELECT ON SCHEMA*' }).Count) {
             [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'support.access.change' -Actor 'caj-eps-support (consent from Invardia)' -ActorSource 'job' -Target "DatabaseUser|$($script:EpsSupportUser)" `

@@ -916,3 +916,11 @@ CREATE TABLE eps.SupportAccess (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 20)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (20, '2.0.63');
+
+-- v21 (2.0.73, OPEN-01 auto-check #4): what the support-access job READ BACK after it applied the level - the heartbeat
+-- reports it (the engine may only read this table; only the job, as the database owner, writes it)
+IF COL_LENGTH('eps.SupportAccess', 'ReadUser') IS NULL ALTER TABLE eps.SupportAccess ADD ReadUser BIT NULL;
+IF COL_LENGTH('eps.SupportAccess', 'AdminNow') IS NULL ALTER TABLE eps.SupportAccess ADD AdminNow BIT NULL;
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 21)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (21, '2.0.73');

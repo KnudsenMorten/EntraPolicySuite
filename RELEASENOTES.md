@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.73 - support access in the heartbeat
+- The heartbeat to Invardia reports the support access the install applied: the level, until when the Support app has
+  database admin (only during an open support session), and that its read access is in place - as the support-access
+  job read it back, never a guessed value.
+
 ## 2.0.72 - sign-in front 1.4.5
 - The web app's sign-in front is version 1.4.5 (wording only; it behaves as 1.4.4). An install run builds it in your
   registry; the updater keeps the front an install run deployed.
