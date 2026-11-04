@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.72 - sign-in front 1.4.5
+- The web app's sign-in front is version 1.4.5 (wording only; it behaves as 1.4.4). An install run builds it in your
+  registry; the updater keeps the front an install run deployed.
+
 ## 2.0.71 - the shared update verifier, current wording
 - The update verifier that Entra Policy Suite shares with Invardia's other products is taken at its newest version
   (wording only; it checks the same things).
