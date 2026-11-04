@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.53 - private install: the build pool's way out
+- Azure now creates new subnets without internet access. In a private install, the registry's build pool runs in the
+  endpoints subnet and needs a way out: the subnet the install makes now has default outbound access on, and one it made
+  in an earlier run is set the same way.
+- Before the build pool is created, the install checks the subnet's way out (a NAT gateway, a 0.0.0.0/0 route, or
+  default outbound access). When you bring your own subnet and it has none, the install says so before it creates
+  anything, and tells you what to add. Your subnet is never changed.
+
 ## 2.0.52 - Exchange rights only where they are used
 - The engine holds the Exchange Online permission and the Exchange Recipient Administrator role only while user tagging,
   the identity report or a rule with a mailbox condition is on. A new install grants neither. An install run removes them

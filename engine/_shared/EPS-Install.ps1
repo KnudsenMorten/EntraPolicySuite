@@ -835,7 +835,7 @@ function Invoke-EpsInstall {
         catch { & $OnStep @{ Step = $s; State = 'failed'; Message = "$($_.Exception.Message)" }; throw }
         $done.Add($s.Id)
         $took = " ($([int]$sw.Elapsed.TotalSeconds) s)"
-        & $OnStep @{ Step = $s; State = 'ok'; Seconds = [int]$sw.Elapsed.TotalSeconds; Message = $(if ($out -is [hashtable] -and $out.Tick) { "tick $($out.Tick) after $($out.Seconds) s$(if ($out.Web) { "; the web app answers at $($out.Web)" })$took" } else { "done$took" }); Completed = @($done) }
+        & $OnStep @{ Step = $s; State = 'ok'; Seconds = [int]$sw.Elapsed.TotalSeconds; Message = $(if ($out -is [hashtable] -and $out.Tick) { "tick $($out.Tick) after $($out.Seconds) s$(if ($out.Web) { "; the web app answers at $($out.Web)" })$took" } elseif ($out -is [hashtable] -and $out.Note) { "done - $($out.Note)$took" } else { "done$took" }); Completed = @($done) }
     }
     @($done)
 }

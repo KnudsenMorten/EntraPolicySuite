@@ -28,7 +28,10 @@
     outbound hosts, the check to run) is printed and written to network-hand-off.txt in the state folder, and with
     -HubVnetId a script for the hub owner (prepare-hub-entrapolicysuite.ps1) next to it.
     Outbound from the network the jobs reach graph.microsoft.com, login.microsoftonline.com, outlook.office365.com,
-    management.azure.com and invardia.com (default outbound, or allow them on your firewall).
+    management.azure.com and invardia.com (default outbound, or allow them on your firewall). The registry's build pool
+    runs in the endpoints subnet and needs a way out too (mcr.microsoft.com for the base images): a subnet the install
+    makes has default outbound access on; your own subnet needs a NAT gateway, a 0.0.0.0/0 route to your firewall, or
+    default outbound access - the install checks it before it creates anything.
     PUBLIC -> PRIVATE: run the same command with -PrivateNetwork on a public install. A Container Apps environment cannot
     move into a network, so a new one (cae-eps-vnet) is created, the jobs and the web app are re-created in it (same
     identities, database and queues; the web app gets a new address), the data resources get their private endpoints,

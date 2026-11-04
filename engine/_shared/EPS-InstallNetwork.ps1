@@ -125,6 +125,11 @@ function Test-EpsNetworkPrerequisites {
                 $sr = & $read "$($net.VnetId)/subnets/$($s.Name)" $script:EpsNetApi.net
                 if ($sr.Ok -and -not $sr.Value) { $miss.Add("the subnet $($s.Name) (for $($s.For)) is not in $($net.VnetName) - create it, or give -$($s.Param) so the install makes it") }
                 elseif (-not $sr.Ok) { $miss.Add("the subnet $($s.Name) in $($net.VnetName) cannot be read with your sign-in: $($sr.Error)") }
+                elseif ($s.Param -eq 'EndpointsSubnetPrefix') {
+                    # framework rule 11b: your subnet hosts the registry's build pool - its way out, read before anything is made
+                    $o = Get-EpsSubnetOutbound -Subnet $sr.Value
+                    if (-not $o.Ok) { $miss.Add((Get-EpsOutboundCustomerStep -Subnet $s.Name -Reason $o.Reason)) }
+                }
             }
         }
     }
@@ -300,7 +305,15 @@ function Invoke-EpsNetworkStep {
             }
             $props = @{ addressPrefix = $pfx; privateEndpointNetworkPolicies = 'Enabled' }
             if ($role -eq 'Apps') { $props.delegations = @(@{ name = 'aca'; properties = @{ serviceName = 'Microsoft.App/environments' } }) }
+            # framework rule 11b: Azure makes new subnets PRIVATE; the registry's build pool runs here and needs a way out
+            else { $props.defaultOutboundAccess = $true }
             $sub = Invoke-EpsArm -Method PUT -Path $sid -ApiVersion $api -Body @{ properties = $props }
+        } elseif ($role -eq 'Endpoints' -and $net.CreateVnet -and -not (Get-EpsSubnetOutbound -Subnet $sub).Ok) {
+            # EPS's own subnet (an earlier run, made private by Azure): default outbound access on - nothing else changes
+            if (@($sub.properties.delegations | Where-Object { $_ }).Count) { throw "the subnet $name is delegated to $(@($sub.properties.delegations | ForEach-Object { $_.properties.serviceName }) -join ', ') - private endpoints need a subnet without a delegation" }
+            $p2 = @{}; foreach ($k in $sub.properties.PSObject.Properties.Name) { if ($k -notin 'provisioningState', 'etag', 'purpose', 'ipConfigurations', 'privateEndpoints') { $p2[$k] = $sub.properties.$k } }
+            $p2.defaultOutboundAccess = $true
+            $sub = Invoke-EpsArm -Method PUT -Path $sid -ApiVersion $api -Body @{ properties = $p2 }
         } else {
             $dl = @(@($sub.properties.delegations) | ForEach-Object { "$($_.properties.serviceName)" } | Where-Object { $_ })
             $len = (ConvertFrom-EpsCidr "$(@($sub.properties.addressPrefix) + @($sub.properties.addressPrefixes) | Where-Object { $_ } | Select-Object -First 1)").Length
@@ -627,18 +640,55 @@ function Invoke-EpsDnsCheckStep {
     @{ Resolved = @(Get-EpsPrivateEndpointSpecs -Ctx $Ctx | ForEach-Object { $_.Fqdns }).Count }
 }
 
+function Get-EpsSubnetOutbound {
+    <#
+      Framework rule 11b (SI at a customer, twice: a build pool in a private subnet with no way out fails): the subnet's
+      outbound path, read only. In order: a NAT gateway; the subnet's route table (0.0.0.0/0 to a firewall / the
+      internet / a gateway = a path, 0.0.0.0/0 to None = blocked); Azure's default outbound access (false = a PRIVATE
+      subnet with no way out; not set = an older subnet, where Azure's default outbound still applies).
+      @{ Ok; Path; Reason }
+    #>
+    param([Parameter(Mandatory)]$Subnet)
+    $p = $Subnet.properties; $name = "$($Subnet.name)"
+    if ("$($p.natGateway.id)") { return @{ Ok = $true; Path = "the NAT gateway $(("$($p.natGateway.id)" -split '/')[-1])" } }
+    if ("$($p.routeTable.id)") {
+        $rt = try { Invoke-EpsArm -Path "$($p.routeTable.id)" -ApiVersion $script:EpsNetApi.net -AllowNotFound } catch { $null }
+        if (-not $rt) { return @{ Ok = $false; Reason = "the route table of the subnet $name ($(("$($p.routeTable.id)" -split '/')[-1])) cannot be read with your sign-in, so its way out cannot be checked" } }
+        $def = @(@($rt.properties.routes) | Where-Object { $_ -and "$($_.properties.addressPrefix)" -eq '0.0.0.0/0' })[0]
+        if ($def) {
+            $hop = "$($def.properties.nextHopType)"
+            if ($hop -eq 'None') { return @{ Ok = $false; Reason = "the route table $($rt.name) on the subnet $name sends 0.0.0.0/0 to None (no way out)" } }
+            return @{ Ok = $true; Path = "the route 0.0.0.0/0 -> $hop$(if ("$($def.properties.nextHopIpAddress)") { " $($def.properties.nextHopIpAddress)" }) in $($rt.name)" }
+        }
+    }
+    if ($p.defaultOutboundAccess -eq $false) { return @{ Ok = $false; Reason = "the subnet $name is private (default outbound access off) and has no NAT gateway and no 0.0.0.0/0 route" } }
+    @{ Ok = $true; Path = $(if ($p.defaultOutboundAccess -eq $true) { 'default outbound access (on)' } else { "Azure's default outbound access (not set on this older subnet)" }) }
+}
+
+function Get-EpsOutboundCustomerStep([string]$Subnet, [string]$Reason) {
+    "the registry's build pool runs in the subnet $Subnet and must reach the internet (the base images, Azure): $Reason. " +
+    "Give it a way out - attach a NAT gateway, or a route 0.0.0.0/0 to your firewall (allow: $($script:EpsOutboundHosts -join ', ')), or turn default outbound access on - then run the install again"
+}
+
 function Invoke-EpsAgentPoolStep {
     # the registry's build pool INSIDE the spoke (endpoints subnet): with public access off, ACR Tasks can reach the
-    # registry only from there (PIM: New-PimHostingPrerequisites -AcrAgentPoolName). Premium only.
+    # registry only from there (PIM: New-PimHostingPrerequisites -AcrAgentPoolName). Premium only. Framework rule 11b:
+    # the subnet's way out is read BEFORE the pool is made - a pool in a subnet with none fails.
     param([Parameter(Mandatory)]$Ctx)
     Read-EpsNetworkFacts -Ctx $Ctx
-    $p = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.ContainerRegistry/registries/$($Ctx.Names.Registry)/agentPools/$($Ctx.Names.AgentPool)"
+    $sub = Invoke-EpsArm -Path $Ctx.Network.EndpointsSubnetId -ApiVersion $script:EpsNetApi.net -AllowNotFound
+    if (-not $sub) { throw "the subnet $($Ctx.Network.EndpointsSubnetName) for the registry's build pool does not exist" }
+    $out = Get-EpsSubnetOutbound -Subnet $sub
+    if (-not $out.Ok) { throw (Get-EpsOutboundCustomerStep -Subnet $Ctx.Network.EndpointsSubnetName -Reason $out.Reason) }
+    $Ctx.Network.PoolOutbound = $out.Path
+    $p ="/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.ContainerRegistry/registries/$($Ctx.Names.Registry)/agentPools/$($Ctx.Names.AgentPool)"
     $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool -AllowNotFound
     if (-not $have -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId) {
         $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = 1; tier = 'S1'; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
     }
     for ($i = 0; "$($have.properties.provisioningState)" -notin 'Succeeded', 'Failed', 'Canceled' -and $i -lt 60; $i++) { Start-Sleep -Seconds ($Ctx.PollSeconds ?? 10); $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool }
     if ("$($have.properties.provisioningState)" -ne 'Succeeded') { throw "the registry's build pool $($Ctx.Names.AgentPool) is '$($have.properties.provisioningState)' - without it the image cannot be built in a private registry" }
+    @{ Note = "the build pool $($Ctx.Names.AgentPool) in $($Ctx.Network.EndpointsSubnetName); its way out: $($out.Path)" }
 }
 
 function Get-EpsInsideCheckScript {
@@ -785,7 +835,7 @@ function Test-EpsPrivateInstallStep {
         'hub' { return @{ Action = 'run'; Detail = $(if (-not $net.HubVnetId) { 'no -HubVnetId: nothing (the peering is on the hand-off list)' } else { "peering: $(if ($net.PeerToHub) { 'both sides, after a check of your rights (never half a peering)' } else { 'not asked (hand-off list)' }); zone links to the hub: $(if ($net.LinkZonesToHub) { 'EPS''s zones, after a check of your rights' } else { 'not asked (hand-off list)' })" }) } }
         'handoff' { return @{ Action = 'run'; Detail = "network-hand-off.txt in the state folder$(if ($net.HubVnetId) { ' + prepare-hub-entrapolicysuite.ps1 for the hub owner' })" } }
         'dnscheck' { return @{ Action = 'run'; Detail = "from this machine: $(@(Get-EpsPrivateEndpointSpecs -Ctx $Ctx | ForEach-Object { $_.Fqdns }) -join ', ') must resolve to their endpoints - stops with the A records when not" } }
-        'agentpool' { return @{ Action = 'run'; Detail = "$($n.AgentPool) (S1 x 1) in $($net.EndpointsSubnetName): the image builds run inside the network" } }
+        'agentpool' { return @{ Action = 'run'; Detail = "$($n.AgentPool) (S1 x 1) in $($net.EndpointsSubnetName): the image builds run inside the network (the subnet's way out - NAT gateway, route or default outbound access - is read first)" } }
         'insidecheck' { return @{ Action = 'run'; Detail = "one-time job $($n.InsideCheckJob) inside the environment (private DNS, the web app, every job queue through its endpoint), else this machine, else -ConfirmedFromInside" } }
         'retireoldenv' { if (& $has "$rg/providers/Microsoft.App/managedEnvironments/$($n.PublicEnvironment)" $script:EpsApi.aca) { return @{ Action = 'run'; Detail = "remove the old public $($n.PublicEnvironment) (its redirect URIs first) - after the inside check" } }; return @{ Action = 'exists'; Detail = 'no public environment to remove' } }
         'lockdown' { return @{ Action = 'run'; Detail = "public network access Disabled, read back: $($n.SqlServer) (public firewall rules removed), $($n.KeyVault), $($n.Storage), $($n.Registry) - only after the inside check" } }
