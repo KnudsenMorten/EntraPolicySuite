@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.51 - security findings to Invardia by default
+- Send security findings to Invardia (Uplink.Alerts.Enabled) is on by default: Invardia now takes all six kinds (tag
+  changes made outside Entra Policy Suite, high-severity tag changes, Conditional Access drift, a deleted policy, a
+  missing break-glass exclusion, a silent hybrid worker). A SuperAdmin can switch it off. An install that switched it off
+  keeps it off.
+
 ## 2.0.50 - standard identity names, the read-back
 - Fixed: right after a rename, Microsoft Graph can return the old name for a while; the install stopped instead of
   waiting. It now waits up to two minutes for the new name.

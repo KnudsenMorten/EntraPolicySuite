@@ -10,8 +10,8 @@
 #     1. the heartbeat (liveness + the §8.17 fields EPS fills honestly; a field it cannot fill is omitted), due every 4 h;
 #        an interval counts as sent only after a 2xx; a 4xx refusal is resent ONCE without the newer fields (§8.17);
 #        the answer's support state (SECAUDIT-1a) is RECORDED and SHOWN - nothing is granted from it yet;
-#     2. the alert records (Kind 'alert', §8.19) behind Uplink.Alerts.Enabled (default OFF: Invardia does not take the
-#        kind yet) - one per AlertId per 24 h while open, at most 10 per cycle;
+#     2. the alert records (Kind 'alert', §8.19) behind Uplink.Alerts.Enabled (default ON since 2.0.51: Invardia takes all six EPS alert ids,
+#        2026-11-04 - OPEN-17) - one per AlertId per 24 h while open, at most 10 per cycle;
 #     3. the run records of finished runs, one watermark per job, oldest first.
 #   At most 20 POSTs per cycle, ~2.5 s apart; the cycle STOPS at the first non-ok answer; what was not sent is sent next
 #   cycle (a watermark / an episode moves only after a 2xx). Never throws: a failure is ONE plain line.
@@ -683,7 +683,7 @@ function Invoke-EpsUplinkCycle {
         } else { $res.Heartbeat = 'not due'; & $say 'Info' "uplink: heartbeat not due (last $(ConvertTo-EpsUplinkIso $lastHb))" }
 
         # 2. the alerts (§8.19) - OFF by default: Invardia does not take the kind yet
-        if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'false')" -eq 'true') {
+        if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'true')" -eq 'true') {
             $open = @(Get-EpsUplinkAlerts -ConnectionString $ConnectionString -NowUtc $NowUtc)
             $openIds = @($open | ForEach-Object { $_.AlertId })
             foreach ($name in @($st.Keys | Where-Object { $_ -like 'alert:*' })) { if ($openIds -notcontains $name.Substring(6)) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name $name -Value $null } }   # closed: a new episode alerts at once

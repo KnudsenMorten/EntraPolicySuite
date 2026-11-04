@@ -677,14 +677,14 @@
       }
     },
     {
-      "key": "Uplink.Alerts.Enabled", "group": "Uplink", "label": "Send security findings to Invardia", "type": "boolean", "default": "false", "role": "SuperAdmin", "dependsOn": ["Uplink.Enabled"],
+      "key": "Uplink.Alerts.Enabled", "group": "Uplink", "label": "Send security findings to Invardia", "type": "boolean", "default": "true", "role": "SuperAdmin", "dependsOn": ["Uplink.Enabled"],
       "info": {
         "what": "Also sends Invardia a short alert record for a finding that is still open: foreign changes to watched tags (and the high-severity ones), drift or deletion of an adopted Conditional Access policy, a policy without the break-glass exclusion, a hybrid worker that stopped reporting. One record per finding type per 24 hours while it is open, numbers only.",
-        "enabled": "From the next uplink run, open findings are reported to Invardia as well.",
-        "disabled": "Off (the default): no alert record is sent. Your own alarms (alert mail, the Azure Monitor rules) are not affected by this switch.",
+        "enabled": "On (the default): from the next uplink run, open findings are reported to Invardia as well.",
+        "disabled": "Off: no alert record is sent. Your own alarms (alert mail, the Azure Monitor rules) are not affected by this switch.",
         "risk": "Nothing changes in the directory. The uplink is Invardia's view, never your only alarm. Reversible.",
         "requires": "SuperAdmin. Telemetry on (Uplink.Enabled) with the per-install key; Invardia taking the alert kind.",
-        "recommended": "Off until Invardia confirms it takes the alert kind, then on.",
+        "recommended": "On (the default).",
         "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Alerts.Enabled/"
       }
     },
