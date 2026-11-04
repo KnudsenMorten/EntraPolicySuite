@@ -551,7 +551,7 @@ function Invoke-EpsInstallStep {
                     $grp = Invoke-EpsGraph -Path "v1.0/groups/$($admin.sid)?`$select=id,displayName"
                     if ("$($grp.displayName)" -ceq $n.LegacySqlAdminGroup) {
                         Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/groups/$($admin.sid)" -Body @{ displayName = $n.SqlAdminGroup }) }
-                        [void](Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/groups/$($admin.sid)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.SqlAdminGroup) { throw "the group still reads '$($x.displayName)'" }; $x })
+                        [void](Wait-EpsGraphDisplayName -Path "v1.0/groups/$($admin.sid)" -Want $n.SqlAdminGroup)
                         if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
                         $Ctx.Renamed.Add("group '$($n.LegacySqlAdminGroup)' -> '$($n.SqlAdminGroup)' (the SQL server's Entra admin, same object)")
                     }

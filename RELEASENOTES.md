@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.50 - standard identity names, the read-back
+- Fixed: right after a rename, Microsoft Graph can return the old name for a while; the install stopped instead of
+  waiting. It now waits up to two minutes for the new name.
+
 ## 2.0.49 - standard identity names
 - The web app's app registration and enterprise application are named Entra Policy Suite (with the resource group in
   brackets only when several installs share one tenant). An install made before is renamed in place by its next install

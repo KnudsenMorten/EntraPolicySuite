@@ -175,6 +175,19 @@ function Find-EpsWebAppRegistration {
     @(Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:t eq '$Tag')&`$select=id,appId,displayName,identifierUris,api,web,requiredResourceAccess,passwordCredentials,keyCredentials" -All)[0]
 }
 
+function Wait-EpsGraphDisplayName {
+    # a rename reads back through Graph's replicas: the old name can come back for a while after the PATCH (live,
+    # internal 2026-11-04: the registration read the old name, then the new one a minute later). Waits up to ~2 min.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Want, [int[]]$Waits = @(5, 10, 15, 30, 60))
+    $seen = ''
+    foreach ($w in @(0) + $Waits) {
+        if ($w) { Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { $w }) }
+        $x = Invoke-EpsGraph -Path "$Path`?`$select=id,displayName"; $seen = "$($x.displayName)"
+        if ($seen -ceq $Want) { return $x }
+    }
+    throw "$Path still reads '$seen' after the rename to '$Want'"
+}
+
 function Invoke-EpsWithRetry {
     # a fresh object not visible yet (Graph 404 / Request_ResourceNotFound, ARM PrincipalNotFound): bounded waits
     param([Parameter(Mandatory)][scriptblock]$Action, [int[]]$Waits = @(10, 20, 30, 60, 60, 60))
@@ -211,7 +224,7 @@ function Invoke-EpsWebRegistrationStep {
     if ("$($app.displayName)" -cne $n.WebAppRegistration) {
         $was = "$($app.displayName)"
         Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ displayName = $n.WebAppRegistration }) }
-        $rb = Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/applications/$($app.id)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.WebAppRegistration) { throw "the app registration still reads '$($x.displayName)'" }; $x }
+        $rb = Wait-EpsGraphDisplayName -Path "v1.0/applications/$($app.id)" -Want $n.WebAppRegistration
         $app.displayName = $rb.displayName
         if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
         $Ctx.Renamed.Add("app registration '$was' -> '$($n.WebAppRegistration)'")
@@ -226,7 +239,7 @@ function Invoke-EpsWebRegistrationStep {
     # the enterprise application keeps the name it was made with: renamed with the registration, read back
     if ($sp.PSObject.Properties['displayName'] -and "$($sp.displayName)" -cne $n.WebAppRegistration) {
         Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/servicePrincipals/$($sp.id)" -Body @{ displayName = $n.WebAppRegistration }) }
-        [void](Invoke-EpsWithRetry { $x = Invoke-EpsGraph -Path "v1.0/servicePrincipals/$($sp.id)?`$select=id,displayName"; if ("$($x.displayName)" -cne $n.WebAppRegistration) { throw "the enterprise application still reads '$($x.displayName)'" }; $x })
+        [void](Wait-EpsGraphDisplayName -Path "v1.0/servicePrincipals/$($sp.id)" -Want $n.WebAppRegistration)
         if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
         $Ctx.Renamed.Add("enterprise application '$($sp.displayName)' -> '$($n.WebAppRegistration)'")
     }
