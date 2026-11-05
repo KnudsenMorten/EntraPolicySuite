@@ -151,7 +151,7 @@ function Get-EpsUpdateRunningWork {
             try {
                 $ex = & $Arm $j
                 if (@(@($ex.value) | Where-Object { "$($_.properties.status)" -eq 'Running' }).Count) { $out.Add($j) }
-            } catch { $out.Add("$j (its executions could not be read)") }
+            } catch { $out.Add("$j (its executions could not be read: $((("$($_.Exception.Message)") -split "`n")[0].Substring(0, [Math]::Min(120, (("$($_.Exception.Message)") -split "`n")[0].Length))))") }
         }
     }
     return @($out | Select-Object -Unique)
@@ -279,11 +279,17 @@ function Invoke-EpsUpdateCheck {
             if ($RunId) { $held = Set-EpsUpdateHold -ConnectionString $ConnectionString -RunId ([guid]"$RunId") -On; & $Log 'Info' "update hold: $(if ($held) { 'on - no new job starts until the update is done' } else { 'could not be set - the apply waits for running jobs only' })" }
             if (-not $QuietProbe) {
                 $cs = $ConnectionString; $rgp = "/subscriptions/$env:EPS_SUBSCRIPTION_ID/resourceGroups/$env:EPS_RESOURCE_GROUP/providers/Microsoft.App/jobs"
+                # the API version as a LOCAL value: a GetNewClosure() scriptblock does not see $script: variables (found live
+                # 2026-11-05 at internal: "ApiVersion ... is an empty string" - the update stopped, nothing changed)
+                $acaApi = if ($script:EpsApi -and "$($script:EpsApi.acajob)") { "$($script:EpsApi.acajob)" } else { '2024-03-01' }
                 $QuietProbe = {
                     $names = @(); $arm = $null
                     if (Get-Command Invoke-EpsArm -ErrorAction SilentlyContinue) {
-                        $names = @(@((Invoke-EpsArm -Path $rgp -ApiVersion $script:EpsApi.acajob).value) | ForEach-Object { "$($_.name)" })
-                        $arm = { param($j) Invoke-EpsArm -Path "$rgp/$j/executions" -ApiVersion $script:EpsApi.acajob }
+                        # EPS's own jobs only (another product's job in the same resource group never holds an EPS update)
+                        $names = @(@((Invoke-EpsArm -Path $rgp -ApiVersion $acaApi).value) | ForEach-Object { "$($_.name)" } | Where-Object { $_ -like 'caj-eps-*' })
+                        # copied to LOCALS first: a closure made inside this closure captures only local variables
+                        $p0 = "$rgp"; $v0 = "$acaApi"
+                        $arm = { param($j) Invoke-EpsArm -Path "$p0/$j/executions" -ApiVersion $v0 }.GetNewClosure()
                     }
                     Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names
                 }.GetNewClosure()
