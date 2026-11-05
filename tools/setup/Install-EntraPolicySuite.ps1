@@ -52,6 +52,13 @@
     server gets the group grp-eps-sql-admins (found, else created). Either way the install adds the database setup job's
     identity id-eps-dbinit to the group and the job does the database work - you need no SQL right. An EXISTING server
     always keeps the admin it has - a re-run never changes it (a group admin gets id-eps-dbinit added).
+.PARAMETER ReplaceSqlAdminGroup
+    Replace an existing SQL admin group that is NOT role-assignable (framework §4.5 G1 / G3a) - only when you give this
+    switch; a run never does it by itself. The old group is renamed '<name>-old' and kept; a new role-assignable
+    grp-eps-sql-admins is made and the old group's members are copied into it. The server's admin moves to the new
+    group only when its members have been in it for 24 hours (a managed identity's token keeps its old groups that long)
+    - run the install with this switch again after the time it names. Right after the move the database setup job runs;
+    if it cannot sign in, the admin is moved back and read back. Plan it first with -WhatIf.
 .PARAMETER SqlAdminGroupName
     The display name of that group (shown as the SQL admin).
 .PARAMETER Ring
@@ -131,6 +138,10 @@ param(
     # the customer's admin group as the SQL server's Entra admin (framework §12.23 P5); an existing server keeps its admin
     [ValidatePattern('^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')][string]$SqlAdminGroupId = '',
     [ValidatePattern('^$|^[^\x00-\x1f]{1,120}$')][string]$SqlAdminGroupName = '',
+    # framework §4.5 G1 / G3a: replace an existing NON-role-assignable SQL admin group - a step the operator starts, never
+    # a run by itself (old renamed '<name>-old' and kept, members copied, the admin moved only after 24 h, moved back if
+    # the setup job cannot sign in)
+    [switch]$ReplaceSqlAdminGroup,
     # the update ring (framework §3; TEL-01: the heartbeat's Ring) - empty = keep the install's, or none
     [ValidatePattern('^$|^([0-9]|10)$')][string]$Ring = '',
     # a Graph role of the engine that the approver did not approve: never granted (the feature that needs it then
@@ -222,7 +233,8 @@ if (-not $netPlan.Private) {
     if ($pe -and "$($pe.name)" -eq $privEnv) { Finish 2 "$ResourceGroup holds a PRIVATE install ($privEnv): run the same command with -PrivateNetwork (and its network parameters)." }
 }
 $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); Ring = $Ring; SqlLocation = $SqlLocation
-    SqlAdminGroup = $(if ($SqlAdminGroupId) { @{ ObjectId = $SqlAdminGroupId.ToLowerInvariant(); Name = $(if ($SqlAdminGroupName) { $SqlAdminGroupName } else { "group $SqlAdminGroupId" }) } }) }
+    SqlAdminGroup = $(if ($SqlAdminGroupId) { @{ ObjectId = $SqlAdminGroupId.ToLowerInvariant(); Name = $(if ($SqlAdminGroupName) { $SqlAdminGroupName } else { "group $SqlAdminGroupId" }) } })
+    ReplaceSqlAdminGroup = [bool]$ReplaceSqlAdminGroup }
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it
 $front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin (Get-EpsSigninFrontPin -SolutionRoot $sol)

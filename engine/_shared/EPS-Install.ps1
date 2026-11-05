@@ -40,6 +40,13 @@ function Grant-EpsUplinkKeyAccess {
 }
 # the engine's rights (the security pack lists the same): Graph app roles by VALUE (ids resolved from the tenant)
 $script:EpsEngineGraphRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')   # Policy.ReadWrite.AuthenticationMethod: GET-STARTED phase 2 (2.0.82, V1-PARITY P7), the two authentication strengths v1 creates - on a SuperAdmin's request only (owner 2026-11-05 'No, always grant', framework §4.3 owner exception). Group.ReadWrite.All + AdministrativeUnit.ReadWrite.All: CA-GROUPS (2.0.81), the groups the policies use and their administrative units - created and changed only from a SuperAdmin's request, applied by the engine (owner 2026-11-05: 'Yes, Group.ReadWrite.All')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
+# framework §4.5 SQL-ADMIN-GROUP G5 (Invardia, DECIDED 2026-11-05; the owner: "both setup and upd"): the UPDATER identity's
+# Graph application roles - exactly these three, granted by THIS setup code, kept by the update job (it converges and
+# renews the database setup identity's membership of the role-assignable SQL admin group through PIM for Groups, G2-G4).
+# NEVER RoleManagement.ReadWrite.Directory (G5: the PIM-for-Groups rights alone add and read back a member - SI at JBH).
+# GroupMember.Read.All (read only, G5 as changed 2026-11-05): reading the membership back is refused without it.
+# Not left out by -ExcludeGraphRole: G5 is binding for every product.
+$script:EpsUpdaterGraphRoles = @('PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup', 'PrivilegedAssignmentSchedule.Read.AzureADGroup', 'RoleManagementPolicy.Read.AzureADGroup', 'GroupMember.Read.All', 'Application.Read.All')
 function Get-EpsEngineGraphRoles {
     # the engine's Graph roles minus any the approver left out (-ExcludeGraphRole): a role not approved is never granted;
     # the feature that needs it reports its data as unavailable (e.g. Teams_Room_Like without Organization.Read.All)
@@ -578,7 +585,7 @@ function Test-EpsInstallStep {
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
         'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity, $n.UpdaterIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
-        'sqladmins'     { @{ Action = 'run'; Detail = "an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
+        'sqladmins'     { @{ Action = 'run'; Detail = "$(if ($Ctx.ReplaceSqlAdminGroup) { (Get-EpsSqlAdminReplacePlan -Ctx $Ctx) + '; then: ' })an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
         'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
         'registry'      { if (& $has "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" $script:EpsApi.acr) { @{ Action = 'update'; Detail = "$($n.Registry) (AcrPull checked)" } } else { @{ Action = 'create'; Detail = "$($n.Registry) (Basic)" } } }
@@ -588,7 +595,7 @@ function Test-EpsInstallStep {
         'queues'        { if (& $has "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)" $script:EpsApi.st) { @{ Action = 'update'; Detail = "$($n.Storage) (queues + who may send / read checked)" } } else { @{ Action = 'create'; Detail = "$($n.Storage) (no shared key) + one queue per work job; the tick may send, the engine read" } } }
         'jobs'          { @{ Action = 'run'; Detail = ((Get-EpsJobBodies -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)") | ForEach-Object { $_.Name }) -join ', ' } }
         'jobstarter'    { @{ Action = 'run'; Detail = "remove role '$($n.JobStarterRole)' if an older install made it; read back: $($n.TickIdentity) holds no role on $($n.ResourceGroup)" } }
-        'graph'         { @{ Action = 'run'; Detail = "$($n.EngineIdentity): $((Get-EpsEngineGraphRoles -Ctx $Ctx) -join ', ')$(if (@($Ctx.ExcludeGraphRoles).Count) { ' (left out, not approved: ' + (@($Ctx.ExcludeGraphRoles) -join ', ') + ')' })" } }
+        'graph'         { @{ Action = 'run'; Detail = "$($n.EngineIdentity): $((Get-EpsEngineGraphRoles -Ctx $Ctx) -join ', ')$(if (@($Ctx.ExcludeGraphRoles).Count) { ' (left out, not approved: ' + (@($Ctx.ExcludeGraphRoles) -join ', ') + ')' }); $($n.UpdaterIdentity): $($script:EpsUpdaterGraphRoles -join ', ') (framework §4.5 G5: the SQL admin group's membership through PIM for Groups)" } }
         'exchange'      { @{ Action = 'run'; Detail = "$($n.EngineIdentity): Exchange.ManageAsApp + Entra role Exchange Recipient Administrator - only while user tagging, the identity report or a mailbox condition is on (else removed)" } }
         'webregistration' { $a = try { Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)" } catch { $null }; if ($a) { @{ Action = 'update'; Detail = "$($a.displayName) ($($a.appId)): api://, scope $($script:EpsWeb.Scope), consents, federated credential for $($n.WebIdentity)" } } else { @{ Action = 'create'; Detail = "app registration '$($n.WebAppRegistration)' (single tenant, code flow, no secret, assignment required, you assigned)" } } }
         'keyvault'      { $up = "; $($n.EngineIdentity) Key Vault Secrets User on the secret $($script:EpsUplinkSecret) only if Invardia has put it there (the install never creates or reads it)"
@@ -734,7 +741,14 @@ function Invoke-EpsInstallStep {
         }
         'sqladmins' {
             & $loadMi
+            # framework §4.5 G1 / G3a: replacing a NON-role-assignable admin group is the operator's step (-ReplaceSqlAdminGroup);
+            # without the switch the group is only reported (a finding), never moved
+            if ($Ctx.ReplaceSqlAdminGroup) {
+                $rp = Invoke-EpsSqlAdminGroupReplace -Ctx $Ctx   # throws on a refusal (the admin is never left without a working path)
+                Write-Host "  replace  $($rp.Text)" -ForegroundColor $(if ($rp.State -eq 'waiting') { 'Yellow' } else { 'Gray' })
+            }
             $r = Initialize-EpsSqlAdminGroup -Ctx $Ctx
+            if ($Ctx.ReplaceSqlAdminGroup -and $rp) { $r.Why = "$($rp.Text); $($r.Why)" }
             if (-not $r.Use) { Write-Host "  note     $($r.Why)" -ForegroundColor Yellow }
             return @{ Note = $r.Why }
         }
@@ -849,7 +863,11 @@ function Invoke-EpsInstallStep {
             $left = @((Invoke-EpsArm -Path "$rg/providers/Microsoft.Authorization/roleAssignments" -ApiVersion $script:EpsApi.rbac).value | Where-Object { $_.properties.principalId -eq $tick -and "$($_.properties.scope)" -eq $rg })
             if ($left.Count) { throw "the tick still holds $($left.Count) role assignment(s) on $($n.ResourceGroup) - it must hold none (S4)" }
         }
-        'graph'    { & $loadMi; [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles (Get-EpsEngineGraphRoles -Ctx $Ctx)) }
+        'graph'    {
+            & $loadMi; [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles (Get-EpsEngineGraphRoles -Ctx $Ctx))
+            # framework §4.5 G5: the updater's three PIM-for-Groups roles, granted here (setup) and read back
+            if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles $script:EpsUpdaterGraphRoles) }
+        }
         'exchange' {
             & $loadMi
             $p = $Ctx.Identities.EngineIdentity.PrincipalId

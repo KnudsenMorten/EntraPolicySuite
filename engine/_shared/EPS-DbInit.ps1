@@ -377,22 +377,33 @@ function Get-EpsPimGroupMaxAssignment {
 }
 
 function Add-EpsDbInitToGroup {
-    <#
-      The job's identity in the group, READ BACK before anything depends on it (spec point 7: membership first, then the
-      first start - a managed identity's token is cached). Framework §4.5 point 5 (owner 2026-11-05 via SI: "it must be
-      in setup"): this setup code makes the membership, never a hand: members/$ref first; refused -> an ACTIVE
-      PIM-for-Groups member assignment, permanent first, time-limited only when the group's PIM policy refuses permanent
-      (and then said, with the end date); both refused -> one error naming both, so the dependent job never starts.
-      Idempotent. Returns how it was made; throws 'EPS-GROUP-ADD: ...' on a refusal or a read-back that never shows it.
-    #>
+    # the install's caller of the shared G3 order (framework §4.5 SQL-ADMIN-GROUP G2/G3): the database setup identity
     param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$GroupId)
     $sp = "$($Ctx.Identities.DbInitIdentity.PrincipalId)"
-    $who = $Ctx.Names.DbInitIdentity
-    if (-not $sp) { throw "the principal of $who is not known - run the identities step" }
+    if (-not $sp) { throw "the principal of $($Ctx.Names.DbInitIdentity) is not known - run the identities step" }
+    Add-EpsSqlAdminMember -PrincipalId $sp -Who $Ctx.Names.DbInitIdentity -GroupId $GroupId -By 'setup'
+}
+
+function Add-EpsSqlAdminMember {
+    <#
+      A principal in the SQL admin group, READ BACK before anything depends on it (spec point 7: membership first, then the
+      first start - a managed identity's token is cached). Framework §4.5 SQL-ADMIN-GROUP G2 / G3 (owner 2026-11-05 via SI:
+      "it must be in setup"; "both setup and upd"): the product's code makes the membership - the install (-By setup) AND
+      the update job (-By update) - never a hand: members/$ref first; refused -> an ACTIVE PIM-for-Groups member
+      assignment, permanent first, time-limited only when the group's PIM policy refuses permanent (and then said, with the
+      end date); both refused -> one error naming both, so the dependent job never starts. Idempotent. Returns how it was
+      made; throws 'EPS-GROUP-ADD: ...' on a refusal or a read-back that never shows it.
+    #>
+    param([Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string]$Who, [Parameter(Mandatory)][string]$GroupId, [ValidateSet('setup', 'update')][string]$By = 'setup',
+          # where the member's own memberOf is read: a managed identity is a service principal; the replace step (G3a) also
+          # copies people and groups
+          [ValidateSet('servicePrincipals', 'users', 'groups')][string]$Collection = 'servicePrincipals')
+    $sp = $PrincipalId
+    $redo = if ($By -eq 'update') { 'the update job renews it on its next run, or run the install again' } else { 'run the install again before that date to renew it' }
     # read from the IDENTITY's side (memberOf): a group's /members silently leaves service principals out for a caller
     # without directory read rights (found live at internal 2026-11-04: the member was there, the list showed only a user);
     # an ACTIVE PIM-for-Groups member shows there too
-    $isIn = { @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$sp/memberOf?`$select=id" -All | Where-Object { "$($_.id)" -eq $GroupId }).Count -gt 0 }
+    $isIn = { @(Invoke-EpsGraph -Path "v1.0/$Collection/$sp/memberOf?`$select=id" -All | Where-Object { "$($_.id)" -eq $GroupId }).Count -gt 0 }
     if (& $isIn) { return 'already a member' }
     $how = $null; $refRefused = $null
     try { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "v1.0/groups/$GroupId/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$sp" }) }; $how = 'added (members/$ref)' }
@@ -401,7 +412,7 @@ function Add-EpsDbInitToGroup {
         # an ACTIVE PIM-for-Groups member assignment (the caller needs PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup)
         $pim = { param($exp) Invoke-EpsGraph -Method POST -Path 'v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleRequests' -Body @{
             accessId = 'member'; principalId = $sp; groupId = $GroupId; action = 'adminAssign'
-            justification = "Entra Policy Suite setup: the database setup job's identity ($who) in the SQL admin group (framework 4.5)"
+            justification = "Entra Policy Suite $(if ($By -eq 'update') { 'update job' } else { 'setup' }): $Who in the SQL admin group (framework 4.5)"
             scheduleInfo = @{ startDateTime = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiration = $exp } } }
         try { [void](& $pim @{ type = 'noExpiration' }); $how = 'added by a permanent PIM-for-Groups member assignment (members/$ref was refused)' }
         catch {
@@ -410,11 +421,12 @@ function Add-EpsDbInitToGroup {
                 # the group's PIM policy refuses permanent: the longest it allows - a renewal date someone must own
                 $dur = Get-EpsPimGroupMaxAssignment -GroupId $GroupId
                 $end = [datetime]::UtcNow.Add([System.Xml.XmlConvert]::ToTimeSpan($dur))
-                try { [void](& $pim @{ type = 'afterDuration'; duration = $dur }); $how = "added by a TIME-LIMITED PIM-for-Groups member assignment until $($end.ToString('yyyy-MM-dd HH:mm'))Z (the group's PIM policy refuses permanent; members/`$ref was refused) - run the install again before that date to renew it" }
+                try { [void](& $pim @{ type = 'afterDuration'; duration = $dur }); $how = "added by a TIME-LIMITED PIM-for-Groups member assignment until $($end.ToString('yyyy-MM-dd HH:mm'))Z (the group's PIM policy refuses permanent; members/`$ref was refused) - $redo" }
                 catch { $pimErr = "$pimErr; then time-limited ($dur): $((("$($_.Exception.Message)") -split "`n")[0])" }
             }
             if (-not $how) {
-                throw "EPS-GROUP-ADD: $who could not be put into the group $GroupId - members/`$ref: $refRefused; PIM-for-Groups member assignment: $pimErr. The database setup job is NOT started. Run the install as someone who may add members to that group (an owner of it, or Group.ReadWrite.All / GroupMember.ReadWrite.All), or who may assign PIM-for-Groups members (PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup), then run it again"
+                $fix = if ($By -eq 'update') { "The update job ($Who's membership) needs PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup on its own identity (framework §4.5 G5 - the install grants it): run the install again" } else { "Run the install as someone who may add members to that group (an owner of it, or Group.ReadWrite.All / GroupMember.ReadWrite.All), or who may assign PIM-for-Groups members (PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup), then run it again" }
+                throw "EPS-GROUP-ADD: $Who could not be put into the group $GroupId - members/`$ref: $refRefused; PIM-for-Groups member assignment: $pimErr. The database setup job is NOT started. $fix"
             }
         }
     }
@@ -422,7 +434,242 @@ function Add-EpsDbInitToGroup {
         if (& $isIn) { return "$how, read back" }
         Start-Sleep -Seconds $(if ($null -ne $script:EpsGraphReadBackSeconds) { $script:EpsGraphReadBackSeconds } else { 15 })
     }
-    throw "EPS-GROUP-ADD: $who is still not a member of the group $GroupId after it was $($how -replace '^added ', 'added ') - the database setup job is NOT started; run the install again"
+    throw "EPS-GROUP-ADD: $Who is still not a member of the group $GroupId after it was $($how -replace '^added ', 'added ') - the database setup job is NOT started; run the install again"
+}
+
+function Get-EpsPimMemberSchedule {
+    # The principal's ACTIVE PIM-for-Groups member assignment in the group (framework §4.5 G3 read-back / G4): $null when
+    # there is none (a direct member, or not a member); else @{ Permanent; End }.
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$PrincipalId)
+    $i = @(Invoke-EpsGraph -Path "v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleInstances?`$filter=groupId eq '$GroupId' and principalId eq '$PrincipalId'" -All | Where-Object { "$($_.accessId)" -eq 'member' })
+    if (-not $i.Count) { return $null }
+    $ends = @($i | ForEach-Object {
+        $e = $_.endDateTime
+        if ($e -is [datetime]) { $e.ToUniversalTime() }
+        elseif ("$e") { [datetime]::Parse("$e", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) }
+        else { [datetime]::MaxValue } })
+    $end = ($ends | Measure-Object -Maximum).Maximum
+    @{ Permanent = ($end -eq [datetime]::MaxValue); End = $(if ($end -eq [datetime]::MaxValue) { $null } else { $end }) }
+}
+
+function Update-EpsSqlAdminMemberRenewal {
+    <#
+      framework §4.5 G4: a TIME-LIMITED PIM-for-Groups member assignment that ends within -Days (30) is renewed by the
+      update job - permanent first (adminUpdate, noExpiration), else extended for the group policy's maximum (adminExtend) -
+      and read back. NEVER throws: a failed renewal is a WARNING with the end date, never a failed update.
+      Returns @{ State = none|permanent|ok|renewed|failed; Text; End }.
+    #>
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string]$Who, [int]$Days = 30, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $s = Get-EpsPimMemberSchedule -GroupId $GroupId -PrincipalId $PrincipalId
+        if (-not $s) { return @{ State = 'none'; Text = "$Who is a direct member (no PIM-for-Groups assignment to renew)" } }
+        if ($s.Permanent) { return @{ State = 'permanent'; Text = "$Who holds a permanent PIM-for-Groups member assignment" } }
+        if ($s.End -gt $NowUtc.AddDays($Days)) { return @{ State = 'ok'; End = $s.End; Text = "$Who's time-limited PIM-for-Groups member assignment ends $($s.End.ToString('yyyy-MM-dd HH:mm'))Z - renewed when it is within $Days days" } }
+        $req = { param($action, $exp) Invoke-EpsGraph -Method POST -Path 'v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleRequests' -Body @{
+            accessId = 'member'; principalId = $PrincipalId; groupId = $GroupId; action = $action
+            justification = "Entra Policy Suite update job: renew $Who in the SQL admin group (framework 4.5 G4)"
+            scheduleInfo = @{ startDateTime = $NowUtc.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiration = $exp } } }
+        $how = $null; $errs = @()
+        try { [void](& $req 'adminUpdate' @{ type = 'noExpiration' }); $how = 'made permanent' } catch { $errs += "permanent: $((("$($_.Exception.Message)") -split "`n")[0])" }
+        if (-not $how) {
+            $dur = Get-EpsPimGroupMaxAssignment -GroupId $GroupId
+            try { [void](& $req 'adminExtend' @{ type = 'afterDuration'; duration = $dur }); $how = "extended by $dur (the group's PIM policy refuses permanent)" } catch { $errs += "extend ($dur): $((("$($_.Exception.Message)") -split "`n")[0])" }
+        }
+        if (-not $how) { return @{ State = 'failed'; End = $s.End; Text = "WARNING: $Who's PIM-for-Groups member assignment ends $($s.End.ToString('yyyy-MM-dd HH:mm'))Z and could NOT be renewed ($($errs -join '; ')) - the update goes on; renew it before that date (run the install again)" } }
+        $n = Get-EpsPimMemberSchedule -GroupId $GroupId -PrincipalId $PrincipalId
+        if ($n -and ($n.Permanent -or $n.End -gt $s.End)) { return @{ State = 'renewed'; End = $n.End; Text = "$Who's PIM-for-Groups member assignment $how, read back: $(if ($n.Permanent) { 'permanent' } else { 'ends ' + $n.End.ToString('yyyy-MM-dd HH:mm') + 'Z' })" } }
+        @{ State = 'failed'; End = $s.End; Text = "WARNING: $Who's PIM-for-Groups member assignment was $how but does not read back renewed (it still ends $($s.End.ToString('yyyy-MM-dd HH:mm'))Z) - the update goes on; the next run tries again" }
+    } catch { @{ State = 'failed'; Text = "WARNING: $Who's PIM-for-Groups member assignment could not be read for its renewal: $((("$($_.Exception.Message)") -split "`n")[0]) - the update goes on" } }
+}
+
+function Get-EpsTokenRoles {
+    # The application roles in the caller's OWN access token for -Resource (the 'roles' claim) - how the update job sees
+    # which Graph rights its identity holds without any directory read right. $null when the token is not a readable JWT.
+    param([string]$Resource = 'https://graph.microsoft.com')
+    try {
+        $t = "$(Get-EpsToken -Resource $Resource)"; $p = @($t -split '\.')
+        if ($p.Count -lt 2) { return $null }
+        $b = $p[1].Replace('-', '+').Replace('_', '/'); $b += '=' * ((4 - $b.Length % 4) % 4)
+        @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)) | ConvertFrom-Json).roles)
+    } catch { $null }
+}
+
+function Invoke-EpsSqlAdminGroupConverge {
+    <#
+      framework §4.5 SQL-ADMIN-GROUP G2 / G4 / G5, the UPDATE JOB's side (the owner: "both setup and upd"), run as
+      id-eps-updater on every update run and again right before the database setup job of an update:
+        - G5: the updater's own Graph roles (its token's 'roles' claim) - a missing one is REPORTED (the install grants
+          it; the update job never grants itself a right);
+        - G1: the group the SQL server names as its Entra admin; not role-assignable = a FINDING, never moved;
+          a server admin that is not a group, or no group = said, nothing to converge (creating the group is setup's);
+        - G3: id-eps-dbinit in that group (memberOf) - else the shared order (members/$ref, else PIM for Groups,
+          permanent first), read back; both refused THROWS 'EPS-GROUP-ADD: ...' (the caller does not start the job);
+        - G4: a time-limited assignment ending within 30 days renewed - a failed renewal is a warning only.
+      Returns @{ Ok; Lines; Finding; Renewal; MissingRoles } (Ok = the membership is there or there is nothing to converge).
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [datetime]$NowUtc = [datetime]::UtcNow)
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+    $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+    $roles = Get-EpsTokenRoles
+    $missing = @()
+    if ($null -eq $roles) { $lines.Add("G5: the update job's Graph roles could not be read from its token - this run could not check them") }
+    else {
+        $missing = @($script:EpsUpdaterGraphRoles | Where-Object { $roles -notcontains $_ })
+        if ($missing.Count) { $lines.Add("WARNING G5: $($n.UpdaterIdentity) lacks $($missing -join ', ') - run the install again (it grants them; the update job never grants itself a right)") }
+        else { $lines.Add("G5: $($n.UpdaterIdentity) holds $($script:EpsUpdaterGraphRoles -join ', ')") }
+        if ($roles -contains 'RoleManagement.ReadWrite.Directory') { $lines.Add("WARNING G5: $($n.UpdaterIdentity) holds RoleManagement.ReadWrite.Directory, which framework §4.5 G5 does not give an updater - remove it") }
+    }
+    $srv = Invoke-EpsArm -Path "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)" -ApiVersion $script:EpsApi.sql -AllowNotFound
+    $a = if ($srv) { $srv.properties.administrators }
+    if (-not $a -or -not "$($a.sid)") { $lines.Add("no SQL server admin to converge ($(if ($srv) { 'the server names no Entra admin' } else { "no server $($n.SqlServer)" }))"); return @{ Ok = $true; Lines = @($lines); MissingRoles = $missing } }
+    if ("$($a.principalType)" -notin 'Group', '') { $lines.Add("the SQL server's Entra admin is $($a.login) ($($a.principalType)), not a group - nothing to converge (making grp-eps-sql-admins the admin is a setup step)"); return @{ Ok = $true; Lines = @($lines); MissingRoles = $missing } }
+    $g = Invoke-EpsGraph -Path "v1.0/groups/$($a.sid)?`$select=id,displayName,isAssignableToRole"
+    $finding = $null
+    if ($g.isAssignableToRole -ne $true) { $finding = "FINDING (framework §4.5 G1): $($g.displayName) is not role-assignable - replacing it with a role-assignable group is an owner decision, not done by this run"; $lines.Add($finding) }
+    $mi = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.DbInitIdentity)" -ApiVersion $script:EpsApi.mi -AllowNotFound
+    if (-not $mi) { $lines.Add("no $($n.DbInitIdentity) yet - nothing to converge (an install run makes it)"); return @{ Ok = $true; Lines = @($lines); Finding = $finding; MissingRoles = $missing } }
+    $sp = "$($mi.properties.principalId)"
+    $how = Add-EpsSqlAdminMember -PrincipalId $sp -Who $n.DbInitIdentity -GroupId "$($g.id)" -By 'update'   # throws EPS-GROUP-ADD
+    $lines.Add("G2/G3: $($n.DbInitIdentity) in $($g.displayName): $how")
+    $rn = Update-EpsSqlAdminMemberRenewal -GroupId "$($g.id)" -PrincipalId $sp -Who $n.DbInitIdentity -NowUtc $NowUtc
+    $lines.Add("G4: $($rn.Text)")
+    @{ Ok = $true; Lines = @($lines); Finding = $finding; Renewal = $rn; MissingRoles = $missing }
+}
+
+# ---- framework §4.5 SQL-ADMIN-GROUP G3a: moving the SQL server's admin to a (new) group ---------------------------------
+# EPS internal 2026-11-05: the admin was moved to a new role-assignable group with id-eps-dbinit in it (read back), and the
+# setup job still failed 16 sign-ins in 5 minutes - its managed identity's cached token kept the OLD group claims. So: the
+# members first; the admin moves only once they have been in the new group for 24 h (the time is kept in the group's
+# own description, where every later run reads it); right after the move the setup job runs; if it cannot sign in, the
+# admin moves BACK and is read back. Never a store without a working admin path.
+$script:EpsSqlAdminMoveWaitHours = 24
+$script:EpsMembersAddedTag = 'Members added'
+
+function Get-EpsGroupMembersAddedUtc {
+    # the time the replace step last added a member, from the group's description ('... Members added 2026-11-05T21:00:00Z.')
+    param([string]$Description)
+    if ("$Description" -match "$([regex]::Escape($script:EpsMembersAddedTag)) (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)") {
+        return [datetime]::ParseExact($Matches[1], "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)
+    }
+    $null
+}
+
+function Get-EpsSqlServerAdminSid {
+    # the SQL server's Entra admin as its own sub-resource (where a move is written and read back)
+    param([Parameter(Mandatory)][string]$ServerPath)
+    $x = Invoke-EpsArm -Path "$ServerPath/administrators/ActiveDirectory" -ApiVersion $script:EpsApi.sql -AllowNotFound
+    "$($x.properties.sid)"
+}
+
+function Move-EpsSqlServerAdmin {
+    <#
+      framework §4.5 G3a, the move itself - called only when the members have been in -To for 24 h. The admin PUT to -To,
+      read back; then the database setup job starts AT ONCE: it signs in through the new group, or the admin is moved BACK
+      to -Back and read back, and this THROWS 'EPS-SQLADMIN-MOVE: ...' naming both outcomes. Returns @{ State = 'moved'; Text }.
+    #>
+    param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)]$To, [Parameter(Mandatory)]$Back)
+    $n = $Ctx.Names
+    $srv = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.Sql/servers/$($n.SqlServer)"
+    $put = { param($login, $sid, $tenant) [void](Invoke-EpsArm -Method PUT -Path "$srv/administrators/ActiveDirectory" -ApiVersion $script:EpsApi.sql -PollSeconds ($Ctx.PollSeconds ?? 10) -Body @{ properties = @{ administratorType = 'ActiveDirectory'; login = $login; sid = $sid; tenantId = $tenant } }) }
+    $tenant = if ("$($Back.tenantId)") { "$($Back.tenantId)" } else { "$($Ctx.TenantId)" }
+    & $put $To.Name $To.Id $tenant
+    $now = Get-EpsSqlServerAdminSid -ServerPath $srv
+    if ($now -ne $To.Id) { throw "EPS-SQLADMIN-MOVE: the SQL server's admin did not read back as $($To.Name) (it reads $now) - nothing else was done; the admin is still $($Back.login)" }
+    try {
+        $j = Invoke-EpsDbInitJob -Ctx $Ctx
+        @{ State = 'moved'; Text = "the SQL server's admin is now $($To.Name) (role-assignable), read back; $($n.DbInitJob) ($($j.Execution)) signed in through it at once (framework §4.5 G3a)" }
+    } catch {
+        $why = (("$($_.Exception.Message)") -split "`n")[0]
+        $backOk = $false; $backErr = ''
+        try { & $put "$($Back.login)" "$($Back.sid)" $tenant; $backOk = ((Get-EpsSqlServerAdminSid -ServerPath $srv) -eq "$($Back.sid)") } catch { $backErr = (("$($_.Exception.Message)") -split "`n")[0] }
+        throw "EPS-SQLADMIN-MOVE: the database setup job could NOT sign in through $($To.Name) right after the move ($why) - the admin was moved BACK to $($Back.login): $(if ($backOk) { 'read back, the store has its old admin path again' } else { "NOT read back$(if ($backErr) { " ($backErr)" }) - set the server's Entra admin to $($Back.login) yourself now" }). The members stay in $($To.Name); run the install with -ReplaceSqlAdminGroup again later"
+    }
+}
+
+function Invoke-EpsSqlAdminGroupReplace {
+    <#
+      framework §4.5 G1 / G3a: the operator's STEP (install -ReplaceSqlAdminGroup) that replaces a NON-role-assignable SQL
+      admin group - a run never starts it by itself (G1: a plain group is a finding, never moved by a run). Two runs:
+        1. the old group renamed '<name>-old' (kept, never deleted); a new ROLE-ASSIGNABLE group with the standard name made
+           (or the one an earlier run made); every member of the old group (and id-eps-dbinit) copied into it in the G3
+           order, the FIRST add retried (Graph can refuse an add right after the group is made); the time the members were
+           added written into the new group's description; the admin is NOT moved yet ('waiting', with the time);
+        2. once that time is 24 h old: Move-EpsSqlServerAdmin (move, the setup job at once, moved back on a failed sign-in).
+      -NowUtc is the test seam. Returns @{ State = none|done|refused|waiting|moved; Text }. A refusal THROWS.
+    #>
+    param([Parameter(Mandatory)]$Ctx, [datetime]$NowUtc = [datetime]::UtcNow)
+    $n = $Ctx.Names
+    $srv = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.Sql/servers/$($n.SqlServer)"
+    $s = Invoke-EpsArm -Path $srv -ApiVersion $script:EpsApi.sql -AllowNotFound
+    $a = if ($s) { $s.properties.administrators }
+    if (-not $a -or -not "$($a.sid)") { return @{ State = 'none'; Text = 'no SQL server admin to replace (a new server gets a role-assignable group when it is made)' } }
+    if ("$($a.principalType)" -notin 'Group', '') { return @{ State = 'refused'; Text = "the SQL server's admin is $($a.login) ($($a.principalType)), not a group - this step replaces a group only (moving a person / application admin is your own step)" } }
+    $old = Invoke-EpsGraph -Path "v1.0/groups/$($a.sid)?`$select=id,displayName,isAssignableToRole,description"
+    if ($old.isAssignableToRole -eq $true) { return @{ State = 'done'; Text = "$($old.displayName) is role-assignable - nothing to replace" } }
+    $name = $n.SqlAdminGroup
+    # the replacement an earlier run made: role-assignable, the standard name, not the old group
+    $new = @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$name'&`$select=id,displayName,isAssignableToRole,description" -All | Where-Object { "$($_.id)" -ne "$($old.id)" -and $_.isAssignableToRole -eq $true })[0]
+    $oldName = "$($old.displayName)"
+    if ($oldName -eq $name) {
+        $oldName = "$name-old"
+        [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/groups/$($old.id)" -Body @{ displayName = $oldName; description = "Entra Policy Suite: the previous SQL server admin group (not role-assignable), replaced by a role-assignable $name - kept, never deleted" })
+    }
+    if (-not $new) {
+        $new = Invoke-EpsGraph -Method POST -Path 'v1.0/groups' -Body @{ displayName = $name; mailEnabled = $false; mailNickname = "$name-ra"; securityEnabled = $true; isAssignableToRole = $true
+            description = 'Entra Policy Suite: the Azure SQL server admin (role-assignable). Members: the database setup job identity (and support, just in time).' }
+        [void](Invoke-EpsWithRetry { Invoke-EpsGraph -Path "v1.0/groups/$($new.id)?`$select=id" })
+    }
+    # the members: everyone in the old group, and id-eps-dbinit whatever the old group holds
+    $mem = @(Invoke-EpsGraph -Path "v1.0/groups/$($old.id)/members?`$select=id,displayName" -All | ForEach-Object {
+        $t = "$($_.'@odata.type')"; @{ Id = "$($_.id)"; Who = $(if ("$($_.displayName)") { "$($_.displayName)" } else { "$($_.id)" }); Collection = $(if ($t -like '*user') { 'users' } elseif ($t -like '*group') { 'groups' } else { 'servicePrincipals' }) } })
+    $dbi = "$($Ctx.Identities.DbInitIdentity.PrincipalId)"
+    if ($dbi -and -not @($mem | Where-Object { $_.Id -eq $dbi }).Count) { $mem += @{ Id = $dbi; Who = $n.DbInitIdentity; Collection = 'servicePrincipals' } }
+    $added = 0; $first = $true
+    foreach ($m in $mem) {
+        $try = 0
+        while ($true) {
+            try { $how = Add-EpsSqlAdminMember -PrincipalId $m.Id -Who $m.Who -GroupId "$($new.id)" -By 'setup' -Collection $m.Collection; break }
+            catch {
+                $e = "$($_.Exception.Message)"
+                # the first add right after the group is made can be refused while Graph has not seen the group everywhere
+                if ($first -and $try -lt 4 -and $e -match '(?i)not ?found|does not exist|Request_ResourceNotFound|404') { $try++; Start-Sleep -Seconds $(if ($null -ne $script:EpsGraphReadBackSeconds) { $script:EpsGraphReadBackSeconds } else { 15 }); continue }
+                throw "EPS-SQLADMIN-REPLACE: $($m.Who) could not be put into the new group $name ($(($e -split "`n")[0])) - the server's admin was NOT moved; it is still $($a.login)"
+            }
+        }
+        $first = $false
+        if ($how -notmatch '^already a member') { $added++ }
+    }
+    $since = Get-EpsGroupMembersAddedUtc -Description "$($new.description)"
+    if ($added -or -not $since) {
+        $since = $NowUtc
+        [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/groups/$($new.id)" -Body @{ description = "Entra Policy Suite: the Azure SQL server admin (role-assignable). $($script:EpsMembersAddedTag) $($since.ToString('yyyy-MM-ddTHH:mm:ssZ'))." })
+    }
+    $ready = $since.AddHours($script:EpsSqlAdminMoveWaitHours)
+    if ($NowUtc -lt $ready) {
+        return @{ State = 'waiting'; Text = "the members are in the new role-assignable group $name ($(@($mem).Count), $added added now; the old group is '$oldName', kept); the server's admin moves after $($ready.ToString('yyyy-MM-dd HH:mm'))Z - a managed identity's token keeps its old groups up to $($script:EpsSqlAdminMoveWaitHours) h (framework §4.5 G3a): run the install with -ReplaceSqlAdminGroup again after that time" }
+    }
+    $mv = Move-EpsSqlServerAdmin -Ctx $Ctx -To @{ Id = "$($new.id)"; Name = $name } -Back $a
+    $Ctx.SqlAdminGroup = @{ ObjectId = "$($new.id)"; Name = $name; RoleAssignable = $true }
+    $mv.Text = "$($mv.Text); the old group '$oldName' is kept"
+    $mv
+}
+
+function Get-EpsSqlAdminReplacePlan {
+    # -WhatIf for the replace step: READS only, says what the run would do (framework §4.5 G1 / G3a)
+    param([Parameter(Mandatory)]$Ctx, [datetime]$NowUtc = [datetime]::UtcNow)
+    $n = $Ctx.Names
+    $srv = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.Sql/servers/$($n.SqlServer)"
+    $s = Invoke-EpsArm -Path $srv -ApiVersion $script:EpsApi.sql -AllowNotFound
+    $a = if ($s) { $s.properties.administrators }
+    if (-not $a -or -not "$($a.sid)") { return 'replace the SQL admin group: no server admin yet - nothing to replace' }
+    if ("$($a.principalType)" -notin 'Group', '') { return "replace the SQL admin group: the admin is $($a.login) ($($a.principalType)), not a group - not this step" }
+    $old = Invoke-EpsGraph -Path "v1.0/groups/$($a.sid)?`$select=id,displayName,isAssignableToRole"
+    if ($old.isAssignableToRole -eq $true) { return "replace the SQL admin group: $($old.displayName) is role-assignable - nothing to replace" }
+    $new = @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$($n.SqlAdminGroup)'&`$select=id,isAssignableToRole,description" -All | Where-Object { "$($_.id)" -ne "$($old.id)" -and $_.isAssignableToRole -eq $true })[0]
+    $since = if ($new) { Get-EpsGroupMembersAddedUtc -Description "$($new.description)" }
+    if ($since -and $NowUtc -ge $since.AddHours($script:EpsSqlAdminMoveWaitHours)) { return "replace the SQL admin group: MOVE the server's admin from $($old.displayName) to $($n.SqlAdminGroup) (members in it since $($since.ToString('yyyy-MM-dd HH:mm'))Z), start $($n.DbInitJob) at once, move back if it cannot sign in (framework §4.5 G3a)" }
+    "replace the SQL admin group: rename $($old.displayName) to '$($old.displayName)-old' (kept), $(if ($new) { "use the role-assignable $($n.SqlAdminGroup) an earlier run made" } else { "make a role-assignable $($n.SqlAdminGroup)" }), copy the members; the admin moves on a run 24 h after the members are in (framework §4.5 G3a)"
 }
 
 function Initialize-EpsSqlAdminGroup {

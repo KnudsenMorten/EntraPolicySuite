@@ -64,6 +64,24 @@
       "undo": "remove the role assignment (the update job then only checks)"
     },
     {
+      "target": "Entra",
+      "action": "create",
+      "object": "only with -ReplaceSqlAdminGroup: the SQL admin group when it is not role-assignable - renamed '<name>-old' and kept, a new role-assignable grp-eps-sql-admins made, the members copied",
+      "permission": "-",
+      "scope": "the SQL server's Entra admin group",
+      "why": "a role-assignable group can only be changed by a Privileged Role or Global Administrator; the server's admin moves to it on a run 24 hours after the members are in, the database setup job runs at once, and the admin moves back if it cannot sign in",
+      "undo": "set the server's Entra admin back to the '-old' group"
+    },
+    {
+      "target": "Entra",
+      "action": "grant",
+      "object": "id-eps-updater (assigned to the update job only)",
+      "permission": "Microsoft Graph application permissions PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only)",
+      "scope": "the tenant (used only for the SQL admin group's membership)",
+      "why": "the SQL admin group is role-assignable; the update job keeps the database setup identity a member of it through a Privileged Identity Management for Groups assignment and renews a time-limited one before it ends",
+      "undo": "remove the app role assignments (the update job then only reports the membership; run the install to renew it)"
+    },
+    {
       "target": "Azure",
       "action": "remove",
       "object": "custom role 'EntraPolicySuite job starter (<resource group>)' and its assignment to the scheduler's identity, if an older install made them",

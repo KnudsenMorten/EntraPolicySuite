@@ -6,7 +6,9 @@
 #   rolled to the new image (only the image of the container 'eps' changes) -> the update job itself LAST -> read back.
 # Azure is reached as the update job's OWN identity id-eps-updater (Contributor on the resource group + AcrPull - owner
 # 2026-11-03 "Contributor, like SI/PIM"); the job's SQL run record stays with the engine identity (role eps_engine), so
-# this file touches no SQL at all. The updater never grants Graph rights (owner: "Support app, else customer").
+# this file touches no SQL at all. The updater never grants Graph rights (owner: "Support app, else customer"); it holds
+# three PIM-for-Groups roles + GroupMember.Read.All the INSTALL grants (framework §4.5 G5) to converge and renew the database setup identity's
+# membership of the SQL admin group (G2-G4, Invoke-EpsSqlAdminGroupConverge in EPS-DbInit.ps1).
 # A release that changes more than images (a new job, a new right, new settings on a resource) carries 'hold' in its
 # signed manifest - it waits for an install run; the updater only moves images.
 # Dot-source EPS-SqlStore, EPS-Graph, EPS-Arm, EPS-Scheduler, EPS-Install (+ EPS-DbInit) first.
@@ -112,6 +114,10 @@ function Invoke-EpsUpdateApply {
         finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
         & $Emit 'build' 'ok' "built ($($b.Digest))"
         $step = 'migrate'
+        # framework §4.5 SQL-ADMIN-GROUP G2-G4 (the owner: "both setup and upd"): the database setup identity's membership of
+        # the SQL admin group converged and renewed BEFORE its job starts; refused both ways = the job is NOT started
+        try { $cv = Invoke-EpsSqlAdminGroupConverge -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; foreach ($l in $cv.Lines) { & $Log $(if ($l -match '^(WARNING|FINDING)|WARNING:') { 'Warning' } else { 'Info' }) "SQL admin group: $l" } }
+        catch { return (& $fail 'migrate' "$((("$($_.Exception.Message)") -split "`n")[0]) - nothing was moved") }
         & $Emit 'migrate' 'running' "the database setup job $($n.DbInitJob) on $($Target.Version)"
         $ctx = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId; Location = $f.Location; Names = $n; Version = $Target.Version; SolutionRoot = $a.Root; Identities = $f.Identities; PollSeconds = $PollSeconds }
         $j = Invoke-EpsDbInitJob -Ctx $ctx

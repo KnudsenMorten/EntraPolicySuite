@@ -28,6 +28,7 @@ param(
     [string]$SqlLocation,
     [string]$SqlAdminGroupId,
     [string]$SqlAdminGroupName,
+    [switch]$ReplaceSqlAdminGroup,
     [string]$Ring,
     [string[]]$ExcludeGraphRole,
     [switch]$Quiet,

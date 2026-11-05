@@ -267,6 +267,18 @@ function Invoke-EpsUpdateCheck {
         try { $vault = Invoke-EpsVaultShapeCheck -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved0 }
         & $Log $(if ($vault.State -eq 'failed') { 'Warning' } else { 'Info' }) "key vault shape (rule 11): $($vault.State) - $($vault.Reason)"
     }
+    # framework §4.5 SQL-ADMIN-GROUP G2/G4/G5 (the owner: "both setup and upd"): EVERY run with the updater identity
+    # converges the database setup identity's membership of the SQL admin group and renews a time-limited one ending
+    # within 30 days; reports its own Graph roles and a non-role-assignable group (a finding). Never fails the run here:
+    # a refusal is a warning (an update's apply converges again and does not start the database job without it).
+    if ($updater -and -not $CheckOnly -and (Get-Command Invoke-EpsSqlAdminGroupConverge -ErrorAction SilentlyContinue)) {
+        $saved2 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = $ApplyTokenProvider
+        try {
+            $cv = Invoke-EpsSqlAdminGroupConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
+            foreach ($l in $cv.Lines) { & $Log $(if ($l -match '^(WARNING|FINDING)|WARNING:') { 'Warning' } else { 'Info' }) "SQL admin group: $l" }
+        } catch { & $Log 'Warning' "SQL admin group: $((("$($_.Exception.Message)") -split "`n")[0])" }
+        finally { $global:EPS_TokenProvider = $saved2 }
+    }
     # framework rule 11g (5): the build pool as read now -> eps.UplinkState 'buildpool' (the uplink sends it); no pool = ''
     # (the heartbeat field is then left out); a failed read leaves the last stored value as it was
     if ($updater -and -not $CheckOnly -and (Get-Command Get-EpsBuildPoolFact -ErrorAction SilentlyContinue)) {

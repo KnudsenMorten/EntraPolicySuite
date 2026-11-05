@@ -2,7 +2,23 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.84 - the update job keeps the database setup identity in the SQL admin group
+- New: the update job keeps the database setup identity a member of the SQL admin group on every run, and renews a
+  time-limited Privileged Identity Management for Groups assignment before it ends - the install no longer has to be
+  run again for that. An update checks the membership again right before it updates the database, and does not touch
+  the database when the membership cannot be made. A SQL admin group that is not role-assignable is reported, never
+  changed.
+- The update job's identity needs five more Microsoft Graph application permissions for this:
+  PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup,
+  RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only, to read the membership back). Run the
+  install again once to grant them; the update job reports any it lacks. It never gets RoleManagement.ReadWrite.Directory.
+- New: -ReplaceSqlAdminGroup (an install switch, never done without it) replaces a SQL admin group that is not
+  role-assignable: the old group is renamed '<name>-old' and kept, a new role-assignable group gets its members, and
+  the server's admin moves to it on a run at least 24 hours later - then the database setup job runs at once, and if
+  it cannot sign in the admin is moved back. Plan it first with -WhatIf.
+
 ## 2.0.83 - tagging test runs, the identity report in Log Analytics, v1's report mail and SMTP relay, analyzer options, log levels, and the policy Edit form picks instead of typing
+
 - Fixed: a tag type's fallback value (the value every object no rule decides gets) is no longer offered for removal on
   Tag types, and is refused if asked: change the fallback first.
 - Fixed: Jobs shows each next start in the same time zone as the schedule - the install's time zone, named in both
