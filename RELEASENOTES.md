@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.85 - the product pages for Invardia's shop
+- Invardia's product page for Entra Policy Suite: the edition table (Community, Pro, Pro Business - every feature in
+  plain words; Pro Business up to 1,000 users in one tenant), the description, fresh screenshots of the current version,
+  the install lines, support and what comes next. Pro and the trial open when Invardia announces them.
+- Fixed: the architecture page said Community sends nothing to Invardia - it sends counts and states once Invardia has
+  issued its key, and a SuperAdmin can switch that off.
 ## 2.0.84 - the update job keeps the database setup identity in the SQL admin group
 - New: the update job keeps the database setup identity a member of the SQL admin group on every run, and renews a
   time-limited Privileged Identity Management for Groups assignment before it ends - the install no longer has to be
