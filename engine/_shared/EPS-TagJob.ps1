@@ -367,6 +367,9 @@ function Invoke-EpsTagJob {
                     GoLive = $(if ($goLive) { [ordered]@{ TestRunId = $testRunId } }); Staged = $stagedInfo
                     Traces = $(if ($traceIds.Count) { @($plan.Traces.Values) }) } | ConvertTo-Json -Compress -Depth 8)
         } -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @st, HeldReason = @h, Objects = @o, Planned = @p, Overwrites = @ow, Applied = @a, Failed = @f, Skipped = @sk, SummaryJson = @js WHERE RunId = @id' | Out-Null
+        # INSTALL-PRO (2.0.86): the Pro Business cap - the users a whole-tenant user run looked at, noted on the licence and
+        # (at 90 % or more) as ONE warning line on this run. A warning only: tagging never stops at the cap.
+        if ($ObjectType -eq 'User' -and $null -eq $Scope -and (Get-Command Invoke-EpsLicenceUsageNote -ErrorAction SilentlyContinue)) { [void](Invoke-EpsLicenceUsageNote -ConnectionString $ConnectionString -UsersInScope $sum.Objects -Log $log) }
         [pscustomobject]@{ RunId = $runId; Job = $job; Mode = $Mode; Status = $status; HeldReason = $held; Summary = $sum; Applied = $applied; Failed = $failed; Queued = $queuedAd; Plan = $plan; RuleSetHash = $ruleHash }
     } catch {
         $err = "$($_.Exception.Message)"

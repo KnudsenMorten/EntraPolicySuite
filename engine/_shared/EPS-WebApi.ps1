@@ -132,11 +132,16 @@ function Get-EpsWebRoutes {
     @(
         @{ Method = 'GET'; Pattern = '^/api/me$'; Summary = 'Who you are in this app: your name, your role, the version and the environment.'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
-            New-EpsWebResponse -Body ([ordered]@{ identity = $c.Caller.identity; name = $c.Caller.name; role = $c.Role; version = $c.Ctx.Version; edition = 'Community'
+            $lic = if (Get-Command Get-EpsLicence -ErrorAction SilentlyContinue) { try { (Get-EpsLicence -ConnectionString $c.Ctx.ConnectionString).Edition } catch { 'community' } } else { 'community' }
+            New-EpsWebResponse -Body ([ordered]@{ identity = $c.Caller.identity; name = $c.Caller.name; role = $c.Role; version = $c.Ctx.Version; edition = $(if (Get-Command Get-EpsLicenceEditionText -ErrorAction SilentlyContinue) { Get-EpsLicenceEditionText $lic } else { 'Community' })
                 environment = (Get-EpsEnvironmentName -ConnectionString $c.Ctx.ConnectionString)
                 tenantName = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.TenantName' -Default '')"; tenantId = $c.Ctx.AuthConfig.TenantId
                 # owner 2026-11-05 "i hate this, turn if off by default and make a setting to allow to turn on" (the note dialog)
                 askForNote = ("$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.AskForNote' -Default 'false')" -eq 'true')
+                # INSTALL-PRO: the edition from the VERIFIED licence, and the Pro features it switches on (the page loads
+                # pro/*.js only for these)
+                licenceEdition = $lic
+                proFeatures = @(if ($lic -ne 'community') { $script:EpsProFeatures | Where-Object { (Test-EpsProFeatureForEdition -Feature $_ -Edition $lic).Enabled } })
                 noSuperAdmin = -not [int](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.WebAccess WHERE Role = 'SuperAdmin'") }) } }
         # the API reference (framework APIDOC-1): generated from THIS table, for the version that runs, filtered to the
         # caller's role; no SQL beyond the role lookup the dispatcher already did
@@ -1550,6 +1555,16 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $before = if ($s.BeforeSet) { @{ value = $s.Before } } else { @{ value = $null; notSet = $true } }
             if (-not $s.Saved) { return New-EpsWebResponse -Body @{ ok = $true; changed = $false; value = $v.Value; text = 'No change: the setting already has this value.' } -Audit @{ Target = $t; Before = $before; OutcomeText = 'no change' } }
             New-EpsWebResponse -Body @{ ok = $true; changed = $true; value = $v.Value; text = "Saved: $($e.label)." } -Audit @{ Target = $t; Before = $before; After = @{ value = $v.Value } } } }
+        # INSTALL-PRO (2.0.86, Invardia GO 2026-11-05): Administration > Licence - READ ONLY (SI's _LicenceUpdates; framework
+        # §12.25: the licence is written by the update job only, never pasted or uploaded) + "Claim again"
+        @{ Method = 'GET'; Pattern = '^/api/license$'; Summary = 'This install''s license: the edition, validity, users against the license, the Pro features, the request and the claim.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m) New-EpsWebResponse -Body (Get-EpsLicenceView -ConnectionString $c.Ctx.ConnectionString) } }
+        @{ Method = 'POST'; Pattern = '^/api/license/claim-again$'; Summary = 'Claim again: forget a refused claim or a rejected license request, so the next update run asks Invardia again.'; Public = $false
+           Role = 'SuperAdmin'; Action = 'license.claim.again'; Handler = { param($c, $m)
+            $before = Get-EpsLicenceView -ConnectionString $c.Ctx.ConnectionString
+            $n = Clear-EpsLicenceClaim -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body @{ ok = $true; changed = ($n -gt 0); text = $(if ($n -gt 0) { 'Done: the next update run asks Invardia again (or start the update job now on the Jobs page).' } else { 'Nothing to clear: no licence request or claim is held here yet.' }) } `
+                -Audit @{ Target = 'Licence'; Before = @{ claim = $before.claim; request = $before.request } } } }
         # WORKER-GUI (2.0.82, owner 2026-11-05: "i didnt see the ad hybrid worker anywhere in the gui or where to configure it
         # or see the services"): Administration > Hybrid worker
         @{ Method = 'GET'; Pattern = '^/api/worker$'; Summary = 'The hybrid workers (scheduled task, AD domain, environment, version, last seen), the AD work queue, the last connection tests and how to add a worker.'; Public = $true
@@ -1605,6 +1620,8 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             if ($rows.Count -gt 200000) { return New-EpsWebResponse -Status 413 -Body @{ error = 'more than 200,000 audit rows - narrow the filter' } -Audit @{ Target = 'AuditEvent'; Outcome = 'refused'; OutcomeText = 'over 200,000 rows' } }   # SEC-AUDIT-1 S9
             New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = 'attachment; filename="eps-audit.csv"' } `
                 -Audit @{ Target = 'AuditEvent'; After = @{ filter = $f.Echo; rows = $rows.Count } } } }
+        # EPS PRO (2026-11-05): the Pro package's own routes (pro/engine/*.ps1: each file's Get-EpsPro<Name>WebRoutes) - each checks its licence
+        foreach ($pf in @(Get-Command -Name 'Get-EpsPro*WebRoutes' -CommandType Function -ErrorAction SilentlyContinue)) { & $pf }
     )
 }
 
@@ -1650,7 +1667,7 @@ function Get-EpsApiReference {
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
         jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; me = 'App'; version = 'App'; reference = 'App' }
+        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; reference = 'App'; pro = 'Pro features' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {
@@ -2076,7 +2093,10 @@ function Invoke-EpsWebRequest {
     # the commit queue: a tagging-config save is validated and STAGED, not written (owner 2026-10-31); a commit replays it
     $stage = $route.Stage -and (Test-EpsCommitQueueOn -ConnectionString $Ctx.ConnectionString)
     try {
-        if ($stage) {
+        # EPS Pro: a route marked Pro = '<feature>' is refused (403 'pro feature') before anything is staged, QUEUED or run
+        # when the licence does not switch that feature on (the handler and the engine check again)
+        if ($route.Pro -and ($pd = Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature "$($route.Pro)")) { $res = $pd }
+        elseif ($stage) {
             $st = & $route.Stage $c $m
             if ($st.Refusal) { $res = $st.Refusal }
             else {
@@ -2120,6 +2140,16 @@ function Get-EpsWebStaticFile {
     $types = @{ '.html' = 'text/html; charset=utf-8'; '.js' = 'text/javascript; charset=utf-8'; '.css' = 'text/css; charset=utf-8'; '.svg' = 'image/svg+xml'; '.png' = 'image/png'; '.ico' = 'image/x-icon' }
     $rel = if ($Path -in '/', '') { 'index.html' } else { [uri]::UnescapeDataString($Path.TrimStart('/')) }
     if ($rel -match '\.\.|[\\:]' ) { return New-EpsWebError 404 'not found' }
+    # INSTALL-PRO (2.0.86): a Pro page's script (<solution>/pro/web/<feature>.js, only in the Pro package) is served ONLY when
+    # the verified licence switches that feature on here (Test-EpsProFeature) - a Community install answers 404, as for any
+    # file it does not have. Pro code never becomes a security control: it only adds pages.
+    if ($rel -match '^pro/([a-z-]{2,40})\.js$') {
+        $feat = $Matches[1]
+        $on = $false; if (Get-Command Test-EpsProFeature -ErrorAction SilentlyContinue) { try { $on = [bool](Test-EpsProFeature -ConnectionString $Ctx.ConnectionString -Feature $feat).Enabled } catch { $on = $false } }
+        $pf = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent ([IO.Path]::GetFullPath($Ctx.StaticRoot))))) "pro\web\$feat.js"
+        if (-not $on -or -not (Test-Path -LiteralPath $pf -PathType Leaf)) { return New-EpsWebError 404 'not found' }
+        return New-EpsWebResponse -Body ([IO.File]::ReadAllBytes($pf)) -ContentType 'text/javascript; charset=utf-8' -Headers @{ 'Cache-Control' = 'no-cache' }
+    }
     $root = [IO.Path]::GetFullPath($Ctx.StaticRoot)
     $full = [IO.Path]::GetFullPath((Join-Path $root $rel))
     $ext = [IO.Path]::GetExtension($full).ToLowerInvariant()

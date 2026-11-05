@@ -32,6 +32,8 @@ Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/lat
 ```
 
 This is the Community install. Pro customers install from invardia.com: <https://invardia.com/support/eps/>.
+The 60-day trial uses the same Pro lines; the license then arrives by itself. Pro and the trial open when Invardia
+announces them. Everything in Community stays in Community.
 
 Line 2 downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and installs.
 To see the plan first, add `-WhatIf` at the end of line 2: it shows every step the installer would take - nothing is

@@ -118,7 +118,13 @@ function Get-EpsSettingsView {
     $cat = Get-EpsSettingsCatalog
     $stored = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Value, UpdatedAtUtc, UpdatedBy FROM eps.Setting')) { $stored[$r.Name] = $r }
     $at = { param($d) if ($d -is [datetime]) { [datetime]::SpecifyKind($d, 'Utc').ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'") } }
+    # EPS PRO: a Pro feature's settings (proFeature) are listed only when the licence enables that feature
+    $proOn = @{}
     $rows = foreach ($s in @($cat.Catalog.settings)) {
+        if ($s.proFeature) {
+            if (-not $proOn.ContainsKey("$($s.proFeature)")) { $proOn["$($s.proFeature)"] = [bool]((Get-Command Test-EpsProFeature -ErrorAction SilentlyContinue) -and (Test-EpsProFeature -ConnectionString $ConnectionString -Feature "$($s.proFeature)").Enabled -eq $true) }
+            if (-not $proOn["$($s.proFeature)"]) { continue }
+        }
         $r = $stored[$s.key]
         [ordered]@{ key = $s.key; group = $s.group; label = $s.label; type = $s.type; values = $s.values; min = $s.min; max = $s.max; maxLength = $s.maxLength
             maxItems = $s.maxItems; itemHint = $s.itemHint; default = $s.default; role = $s.role; editable = ($s.editable -ne $false); setBy = $s.setBy; pick = $s.pick
@@ -126,7 +132,8 @@ function Get-EpsSettingsView {
             value = $(if ($r) { $r.Value } else { $null }); isSet = [bool]$r; updatedAtUtc = $(if ($r) { & $at $r.UpdatedAtUtc }); updatedBy = $(if ($r) { $r.UpdatedBy }) }
     }
     $unknown = foreach ($k in @($stored.Keys | Sort-Object)) { if (-not $cat.ByKey[$k]) { $r = $stored[$k]; [ordered]@{ key = $k; value = $r.Value; updatedAtUtc = (& $at $r.UpdatedAtUtc); updatedBy = $r.UpdatedBy } } }
-    @{ groups = @($cat.Catalog.groups); rows = @($rows); unknown = @($unknown) }
+    $usedGroups = @($rows | ForEach-Object { $_.group } | Select-Object -Unique)
+    @{ groups = @($cat.Catalog.groups | Where-Object { $usedGroups -contains $_.id -or $_.id -notlike 'Pro*' }); rows = @($rows); unknown = @($unknown) }
 }
 
 function Save-EpsSetting {

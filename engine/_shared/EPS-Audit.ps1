@@ -17,6 +17,7 @@ $script:EpsAuditActions = @(
     'queue.stage', 'queue.commit', 'queue.discard', 'queue.discard-all'   # the commit queue (owner 2026-10-31, PIM's setup)
     'mail.test.request'             # "Send a test mail" (the engine sends it as its own identity)
     'setting.change'                # a setting saved (or refused) on the Settings page; the journal row is eps.ConfigChange
+    'license.claim.again'           # INSTALL-PRO (2.0.86): a SuperAdmin's "Claim again" on the Licence page (the licence is written by the update job only)
     'rule.create', 'rule.update', 'rule.delete', 'rule.move'   # rule cards (journal: eps.ConfigChange)
     'rule.batch', 'rule.batch.check', 'rule.import.plan', 'rules.export'   # the grid (RULES-GRID): a batch of card changes, its check, an import plan, the CSV export
     'tagtype.change', 'tagtype.delete', 'tagvalue.change', 'tagvalue.remove'   # tag types and their allowed values
@@ -58,7 +59,12 @@ $script:EpsAuditActions = @(
     'tamper.alarm-inputs.export'    # READ mark: the alarm inputs downloaded (the break-glass accounts and the tamper allow list)
     'setup.database.apply'          # caj-eps-dbinit set up the database: schema, roles, users (incl. the hybrid worker), the first SuperAdmin, removals
     'update.apply'                  # the updater installed a release (or stopped part way): the components rolled
+    'pro.licenseopt.export', 'pro.licenseprice.change'   # EPS Pro licence optimisation: the priced list downloaded (a READ mark) / a price in Entra Policy Suite's own price table changed
+    'pro.policycode.export', 'pro.policycode.push', 'pro.policycode.import'   # EPS Pro policy as code: the policies as a zip / pushed to the customer's Git / read from Git into a set to review (the tenant is changed only through the restore path)
     'worker.test.request', 'worker.retry'   # WORKER-GUI (2.0.82): an Admin tests the hybrid worker connection (a read-only package) / tries a failed AD tag change again (a new change + package)
+    # EPS PRO (2.0.86): an Admin sets a persona's passkey target / marks stale accounts keep or disable; a SuperAdmin approves
+    # the disable or enables an account again (the engine writes them, pro/engine/EPS-ProStaleWrite.ps1)
+    'pro.passkey.target', 'pro.stale.decide', 'pro.stale.approve', 'pro.stale.reenable'
 )
 
 function Get-EpsAuditActions { $script:EpsAuditActions }

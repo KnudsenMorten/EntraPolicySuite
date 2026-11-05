@@ -91,8 +91,14 @@ function Read-EpsIdentitySources {
     }
     & $Log 'Info' "$($devices.Count) managed device(s); reading the Exchange recipients"
     $recipients = Get-EpsExchangeRecipients -TenantId $TenantId
-    $skus = @{}; foreach ($s in (Invoke-EpsGraph -Path 'v1.0/subscribedSkus?$select=skuId,skuPartNumber' -All)) { $skus[[string]$s.skuId] = [string]$s.skuPartNumber }
-    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Notes = @($noIntune | Where-Object { $_ }) }
+    # the service plans' names too (Pro licence optimisation: a plan switched off for every holder of a licence) - the same
+    # read, the same right (Organization.Read.All)
+    $skus = @{}; $planNames = @{}
+    foreach ($s in (Invoke-EpsGraph -Path 'v1.0/subscribedSkus?$select=skuId,skuPartNumber,servicePlans' -All)) {
+        $skus[[string]$s.skuId] = [string]$s.skuPartNumber
+        foreach ($sp in @($s.servicePlans)) { if ($sp -and $sp.servicePlanId) { $planNames[[string]$sp.servicePlanId] = [string]$sp.servicePlanName } }
+    }
+    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; PlanNames = $planNames; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Notes = @($noIntune | Where-Object { $_ }) }
 }
 
 function Get-EpsLicenseDisplayNames {
@@ -262,6 +268,10 @@ function ConvertTo-EpsIdentityRows {
         $row.UserIsCloudValidated = [bool]($u.mobilePhone -and $u.department -and $u.usageLocation)
         $row.IsLicenseOverProvisioned = $lic.OverProvisioned; $row.HasMinimumNeededLicense = $lic.HasMinimum; $row.MinimumPlanNeeded = $lic.Minimum
         $row.ADDN = $dn; $row.UserLicenseList = $names -join ','
+        # the licences as part numbers and, per licence, the service plans switched off for this user (Pro licence
+        # optimisation reads these; 'PART:planName|planName;PART2:...')
+        $row.SkuPartNumbers = $parts -join ','
+        $row.SkuDisabledPlans = @(foreach ($al in @($u.assignedLicenses)) { $pn = $Sources.Skus[[string]$al.skuId]; if ($pn) { "${pn}:" + (@(@($al.disabledPlans) | Where-Object { $_ } | ForEach-Object { $x = [string]$_; if ($Sources.PlanNames -and $Sources.PlanNames[$x]) { $Sources.PlanNames[$x] } else { $x } }) -join '|') } }) -join ';'
         foreach ($p in $script:EpsIdPlatforms) { foreach ($o in 'Corp', 'Personal') { $row["DeviceCount_${p}_$o"] = [int]$dc["DeviceCount_${p}_$o"] } }
         $row.Device_SmartPhoneActive = ($row.DeviceCount_iPhone_Corp + $row.DeviceCount_iPhone_Personal + $row.DeviceCount_Android_Corp + $row.DeviceCount_Android_Personal) -gt 0
         $row.Device_SmartPhoneActive_CorpOnly = ($row.DeviceCount_iPhone_Corp + $row.DeviceCount_Android_Corp) -gt 0

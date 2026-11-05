@@ -2,6 +2,48 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.86 - Pro: the license path, the trial, the License page and the first Pro features
+- New: Entra Policy Suite Pro and the trial, the same way as PIM Manager and SecurityInsight. Pro and the trial open
+  when Invardia announces them. Everything Entra Policy Suite does today stays in Community - no install loses anything.
+- New: the Pro install line - the same two lines, line 1 from invardia.com/support/eps/. The Pro launcher signs you in
+  to the tenant you install into and takes the Pro package from Invardia (signed by Invardia and checked before
+  anything runs), never from GitHub. The Community line from GitHub is unchanged.
+- New: the license comes by itself. A Pro install asks Invardia for its license from the update job (right after the
+  install, then every night), checks it - Invardia's signature, this product, this tenant, the dates - and keeps it in
+  the install's own Key Vault. It renews by itself before it ends, and takes a re-issued license by itself. Nobody
+  pastes or uploads a license. A Community install never asks.
+- New: Administration > License - the edition (Community, Pro Enterprise, Pro Business or the trial), who it is for,
+  how long it is valid (and the 30 days of grace after), users against the license, the license request, the install
+  key, which Pro features it switches on, and a link to buy or renew. "Claim again" (SuperAdmin) asks Invardia once
+  more after a refusal.
+- New: Pro Business covers up to 1,000 users in scope in one tenant. At 90 % and at or over the limit the Overview,
+  the License page and the user tagging run say so. Nothing stops: tagging and collection go on.
+- New: a Pro install takes its updates from Invardia's signed Pro channel on its update ring; a Community install
+  keeps the Community channel.
+- The heartbeat to Invardia carries the edition from the verified license, the license's state and its id.
+- Pro - available when Pro launches: **Passkey rollout** (Identity report): per persona, how many people can sign in
+  with a passkey, a security key or Windows Hello for Business, a target date and owner per persona, the daily progress
+  and whether the target is on track, the list of who is not ready (CSV), and an optional daily mail to the persona's
+  owner (off by default). Nothing in the tenant changes.
+- Pro - available when Pro launches: **Stale identities** (Identity report): users and guests with no sign-in for 90
+  days (a setting), never signed in, or disabled but still licensed. An Admin marks each keep or disable with a reason,
+  a SuperAdmin approves, and only then are the approved accounts disabled - each read back, recorded and audited, and
+  enabled again from the same page. Break-glass and service accounts are never listed; accounts synced from AD are
+  disabled in AD.
+- Pro - available when Pro launches: **License optimization** (Identity report). The licenses to review from the
+  newest identity report - on disabled accounts, on accounts with no sign-in for a while (90 days, a setting), and
+  licenses a suite of the same person already holds - plus the service plans switched off for everyone who has a
+  license. Each is priced with your own price table (EUR per user per month; it starts with list prices you can change),
+  with the saving per month and per year, per license and per persona, and an Excel download. Read only: Entra Policy
+  Suite never removes or changes a license.
+- Pro - available when Pro launches: **Policy as code** (Conditional Access). Your managed policies as JSON - one file
+  per policy and an index - as a zip, or pushed to your GitHub or Azure DevOps repository as one commit. Review changes
+  there with a pull request, then read the merged commit back: per policy new, changed or the same, and the policies Git
+  does not have. You pick what to apply, and it goes through the same restore as the Backups page (the plan, the
+  break-glass check, a backup first, a new policy created off, never a delete). The Git access key stays in your Key
+  Vault; Entra Policy Suite reads it when it pushes or reads and never stores it.
+- The identity report keeps each user's licenses as part numbers and the service plans switched off per license.
+
 ## 2.0.85 - the product pages for Invardia's shop
 - Invardia's product page for Entra Policy Suite: the edition table (Community, Pro, Pro Business - every feature in
   plain words; Pro Business up to 1,000 users in one tenant), the description, fresh screenshots of the current version,

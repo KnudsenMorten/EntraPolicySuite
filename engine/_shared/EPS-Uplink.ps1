@@ -72,14 +72,14 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId')
     run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -194,11 +194,16 @@ function New-EpsUplinkEnvelope {
     # TEL-01 (framework §8.4 / §8.17): the update ring as an INTEGER 0-10 - left out when the install has none (never null
     # or text: Invardia refuses the whole report). Only the heartbeat carries it (Select-EpsUplinkRecord drops it elsewhere).
     if ("$Ring".Trim() -match '^([0-9]|10)$') { $o.Ring = [int]"$Ring".Trim() }
-    $o.Edition = 'community'          # Entra Policy Suite is Community only for now (owner 2026-10-29)
+    # INSTALL-PRO (2.0.86): the edition from the VERIFIED licence (Get-EpsLicenceUplinkFields, read once per cycle) -
+    # community without one; the heartbeat also carries LicenceState + LicenceId (Select-EpsUplinkRecord keeps them there only)
+    $lf = $script:EpsUplinkLicenceFields
+    $o.Edition = if ($lf -and $lf.Edition) { Select-EpsUplinkEnum $lf.Edition 'Edition' } else { 'community' }
     $o.Hosting = 'container'
     $o.RuntimeIdentity = 'mi-container'
     if ("$TenantId" -match '^[0-9a-fA-F-]{36}$') { $o.ClaimedTenantId = "$TenantId".ToLowerInvariant() }
     $o.LastSeenUtc = ConvertTo-EpsUplinkIso $NowUtc
+    if ($lf -and $lf.LicenceState) { $o.LicenceState = "$($lf.LicenceState)" }
+    if ($lf -and $lf.LicenceId) { $o.LicenceId = "$($lf.LicenceId)" }
     $o
 }
 
@@ -805,6 +810,16 @@ function Set-EpsUplinkState {
 function ConvertFrom-EpsUplinkTime { param([string]$Text) try { [datetime]::Parse($Text, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } catch { $null } }
 
 # ---------------------------------------------------------------------------------------------------- the cycle
+function ConvertFrom-EpsUplinkSupersededBy {
+    <# PURE. The heartbeat answer's `supersededBy` (a licence id: letters, digits, . _ -), or '' (none / not a plain id). #>
+    param([AllowNull()]$Body)
+    try { if ($Body -is [string]) { if (-not $Body.Trim().StartsWith('{')) { return '' }; $Body = $Body | ConvertFrom-Json -Depth 10 } } catch { return '' }
+    if ($null -eq $Body) { return '' }
+    $v = $Body.PSObject.Properties['supersededBy']; if (-not $v -or $v.Value -isnot [string]) { return '' }
+    $s = $v.Value.Trim(); if ($s -match '^[A-Za-z0-9._-]{1,100}$') { return $s }
+    ''
+}
+
 function Invoke-EpsUplinkCycle {
     <#
     .SYNOPSIS
@@ -821,6 +836,9 @@ function Invoke-EpsUplinkCycle {
         $k = Get-EpsUplinkKey
         if (-not $k.Key) { & $say 'Info' "uplink: disabled - $($k.Reason); nothing sent (identified only, never anonymous)"; return (& $finish "disabled: $($k.Reason)") }
         $key = $k.Key; $res.Mode = 'identified'
+        # INSTALL-PRO: the licence fields once per cycle (a read failure = community, never a stop)
+        $script:EpsUplinkLicenceFields = $null
+        if (Get-Command Get-EpsLicence -ErrorAction SilentlyContinue) { try { $lv = Get-EpsLicence -ConnectionString $ConnectionString -TenantId "$TenantId".ToLowerInvariant() -Refresh; $script:EpsUplinkLicenceFields = Get-EpsLicenceUplinkFields -License $lv.License -TenantId "$TenantId".ToLowerInvariant() } catch { $script:EpsUplinkLicenceFields = $null } }
         $host_ = ([uri]$Endpoint).Host
         $st = Get-EpsUplinkState -ConnectionString $ConnectionString
         $post = {
@@ -865,6 +883,10 @@ function Invoke-EpsUplinkCycle {
             # a session can never exceed the consent: with 'none' (or no consent ever received) an open session is recorded as refused
             if ($sup -and $sup.State -eq 'open') { $kept = try { "$((Get-EpsUplinkState -ConnectionString $ConnectionString)['support.consent'])" } catch { '' }; $sup = Test-EpsSupportWithinConsent -State $sup -Consent $kept }
             if ($sup) { try { $res.Support = Save-EpsSupportState -ConnectionString $ConnectionString -State $sup -NowUtc $NowUtc; & $say 'Info' $res.Support } catch { & $say 'Warning' "uplink: the support state could not be recorded: $($_.Exception.Message)" } }
+            # INSTALL-PRO (§100.39 / framework §12.6b, as PIM-Uplink): Invardia re-issued the licence -> `supersededBy: <licence id>`
+            # in the answer; kept for the update job, which knocks for the successor (verified like any delivery)
+            $sb = ConvertFrom-EpsUplinkSupersededBy -Body $r.Body
+            if ($sb -and (Get-Command Set-EpsLicenceSupersededBy -ErrorAction SilentlyContinue)) { try { Set-EpsLicenceSupersededBy -ConnectionString $ConnectionString -LicenceId $sb; & $say 'Info' "uplink: Invardia says the licence is superseded by $sb - the update job asks for it" } catch { & $say 'Warning' "uplink: supersededBy not kept: $($_.Exception.Message)" } }
             # NAM-02: Invardia's environment name, read with each heartbeat; only a good answer replaces the kept one
             # (offline / refused = the last good name stays). Not a POST: outside the POST budget.
             $envr = Get-EpsInvardiaEnvironment -Key $key -Endpoint $Endpoint

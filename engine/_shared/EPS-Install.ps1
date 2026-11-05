@@ -31,6 +31,13 @@ function Grant-EpsUplinkKeyAccess {
     $n = $Ctx.Names; $sub = "/subscriptions/$($Ctx.SubscriptionId)"
     $secret = "$sub/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)/secrets/$($script:EpsUplinkSecret)"
     $s = Invoke-EpsArm -Path $secret -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
+    # INSTALL-PRO (2.0.86): a PRO install's update job claims the key itself (LIC-01) and writes it into this secret. The
+    # read grant needs the secret to exist, so the Pro install creates it holding 'pending' (NOT a key: the uplink treats
+    # it as none) - the update job then replaces the value; the grant stays. A Community install never writes a secret.
+    if (-not $s -and "$($Ctx.Edition)" -eq 'pro') {
+        Invoke-EpsWithRetry { [void](Invoke-EpsArm -Method PUT -Path $secret -ApiVersion $script:EpsWeb.KvApi -Body @{ properties = @{ value = 'pending'; contentType = 'text/plain' } }) }
+        $s = Invoke-EpsArm -Path $secret -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
+    }
     if (-not $s) { return @{ Granted = $false; Reason = "no secret $($script:EpsUplinkSecret) in $($n.KeyVault) yet: the uplink stays disabled until Invardia writes it (then run the install again)" } }
     Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $secret -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.KvSecretsUser)" -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId }
     # OPEN-01 (framework SUPPORT ACCESS): the support-access job (as id-eps-dbinit) asks Invardia for the consent itself with
@@ -425,6 +432,9 @@ function Get-EpsJobBodies {
             # TEL-01: the update ring on the heartbeat (framework §3, §8.17) - only a ring 0-10, never empty or text
             if ("$($Ctx.Ring)" -match '^([0-9]|10)$') { $extra += @{ name = 'EPS_RING'; value = "$($Ctx.Ring)" } }
         }
+        # INSTALL-PRO (2.0.86, PIM's InstallEdition): an install made with the Pro launcher (invardia.com/support/eps/) asks
+        # Invardia for its licence on the update job's first run; a Community install never asks. Only 'pro' is ever written.
+        if ($job -eq 'Update' -and "$($Ctx.Edition)" -eq 'pro') { $extra += @{ name = 'EPS_INSTALL_EDITION'; value = 'pro' } }
         $ids = @{ $miId = @{} }
         # UPDATER-1 phase 2: the update job ALSO carries id-eps-updater (Contributor) for the apply; its SQL, its queue and
         # the install key stay the engine identity's (EPS_ManagedIdentityClientId)
@@ -835,6 +845,11 @@ function Invoke-EpsInstallStep {
                 $old = @($uj.properties.template.containers | ForEach-Object { $_.env } | Where-Object { $_.name -eq 'EPS_RING' })[0]
                 if ("$($old.value)" -match '^([0-9]|10)$') { $Ctx.Ring = "$($old.value)" }
             }
+            # INSTALL-PRO: a re-run with the Community launcher keeps a Pro install Pro (the update job's EPS_INSTALL_EDITION)
+            if ("$($Ctx.Edition)" -ne 'pro') {
+                $upj = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(@(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+                if (@(@($upj.properties.template.containers | ForEach-Object { $_.env }) | Where-Object { $_.name -eq 'EPS_INSTALL_EDITION' -and "$($_.value)" -eq 'pro' }).Count) { $Ctx.Edition = 'pro' }
+            }
             # the jobs on 2025-01-01: the first version that takes an identity on a scale rule (2.0.9, S4)
             foreach ($j in Get-EpsJobBodies -Ctx $Ctx -Image $image) {
                 # public -> private: a job cannot move to another environment - one in the old environment is deleted and
@@ -939,6 +954,14 @@ function Invoke-EpsInstallStep {
             $r = Confirm-EpsInstall -Ctx $Ctx -PollSeconds ($Ctx.PollSeconds ?? 15)
             # a tick that ran and FAILED is a failed install (2.0.7 live 2026-11-01: reported 'ok' with the tick failing)
             if ($r.Tick -ne 'Succeeded') { throw "the tick ($($r.Execution)) ran and ended '$($r.Tick)' - see its log in $($Ctx.Names.Logs); fix the cause and run the install again" }
+            # INSTALL-PRO (Invardia 2026-11-02 "a FRESH Trial/Pro install knocks right after deploy"): a Pro install starts the
+            # update job once now - it asks Invardia for the licence (the trial is answered at once) and claims the key.
+            # Best effort: the nightly run asks anyway.
+            if ("$($Ctx.Edition)" -eq 'pro') {
+                $uj = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/jobs/$(@(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)"
+                try { [void](Invoke-EpsArm -Method POST -Path "$uj/start" -ApiVersion $script:EpsApi.acajob -Body @{}); Write-Host 'Pro: the update job was started - it asks Invardia for the licence now (Administration > Licence shows it).' -ForegroundColor Cyan }
+                catch { Write-Host "Pro: the update job could not be started now ($((("$($_.Exception.Message)") -split "`n")[0])) - it asks for the licence on its nightly run." -ForegroundColor Yellow }
+            }
             # private: the web app has no public address - it is proven from INSIDE the network by the next step
             if ($priv) { return $r }
             & $loadWeb

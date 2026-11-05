@@ -81,12 +81,14 @@ function Get-EpsUpdateHead {
       per-install key. Read only on Invardia's side. No key = no call. @{ Status; Version; Expedite (apply/until/reason or
       $null); Reason }. Never throws; never returns the key.
     #>
-    param([AllowEmptyString()][string]$InstallKey, [Parameter(Mandatory)][ValidateRange(0, 3)][int]$Ring, [scriptblock]$Http, [string]$BaseUrl = $script:EpsUpdateBase)
+    param([AllowEmptyString()][string]$InstallKey, [Parameter(Mandatory)][ValidateRange(0, 3)][int]$Ring, [scriptblock]$Http, [string]$BaseUrl = $script:EpsUpdateBase,
+          # INSTALL-PRO: a Pro install asks for its Pro channel (kind 'code') with the licence in the body (PIM / SI's head)
+          [AllowEmptyString()][string]$LicenceText = '')
     if (-not "$InstallKey".Trim()) { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'no install key: "update now" is not asked' } }
     if ("$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'the install key is not in the expected format: "update now" is not asked' } }
     $url = "$("$BaseUrl".Trim().TrimEnd('/'))/api/updates/$($script:EpsUpdateProduct)/head"
     $h = @{ 'X-Invardia-Install-Key' = "$InstallKey".Trim() }
-    $b = [ordered]@{ ring = $Ring; kind = $script:EpsUpdateKind }
+    $b = if ("$LicenceText".Trim()) { [ordered]@{ ring = $Ring; kind = 'code'; licence = "$LicenceText" } } else { [ordered]@{ ring = $Ring; kind = $script:EpsUpdateKind } }
     $r = if ($Http) { & $Http 'POST' $url $b $h } else { Invoke-EpsUpdateHttp -Method POST -Url $url -Body $b -Headers $h }
     $st = 0; try { $st = [int]$r.status } catch { $st = 0 }
     if ($st -ne 200) { return @{ Status = $st; Version = ''; Expedite = $null; Reason = $(if ($st -eq 403 -and $r.body.ringOnRecord -ne $null) { "Invardia has this install on ring $($r.body.ringOnRecord), not ring $Ring" } else { Get-InvardiaPullReason -Status $st -Body $r.body -ErrorText "$($r.error)" }) } }
@@ -250,7 +252,27 @@ function Invoke-EpsUpdateCheck {
     & $Log $(if ($t.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "release for ring $ringN`: $($t.State) - $($t.Reason)"
     # [object], not [string]: a [string] parameter turns $null into '' and the vault was never read (found live 2026-11-04)
     if ($null -eq $InstallKey) { $k = Get-EpsUplinkKey; $InstallKey = "$($k.Key)"; if (-not $InstallKey) { & $Log 'Info' "no install key ($($k.Reason)): update now and the update run report are skipped" } }
-    $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http
+    $updater = if ($null -ne $UpdaterClientId) { "$UpdaterClientId" } else { "$env:EPS_UPDATER_CLIENT_ID" }
+    if (-not $ApplyTokenProvider -and $updater) { $ApplyTokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+    # INSTALL-PRO (2.0.86; SI / PIM's licence path): knock -> pull -> verify -> store (the install's Key Vault, as the
+    # updater identity, framework §12.25) -> claim the install key (LIC-01) -> the SIGNED Pro channel (kind 'code', the
+    # same verifier, the same sequence guard) instead of the Community channel. No licence = Community, exactly as before;
+    # a Community install never knocks.
+    $proLicence = ''; $proEdition = 'community'
+    if (Get-Command Invoke-EpsLicenceCycle -ErrorAction SilentlyContinue) {
+        $licHttp = if ($Http) { $Http } else { { param($m, $u, $b, $hd) Invoke-EpsUpdateHttp -Method $m -Url $u -Body $b -Headers $hd } }
+        $write = if ($CheckOnly -or -not $ApplyTokenProvider) { { param($n, $v) @{ Ok = $false; Reason = 'this run has no updater identity (id-eps-updater) to write the Key Vault' } } }
+                 else { { param($n, $v) $s0 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = $ApplyTokenProvider; try { Set-EpsInstallSecret -Name $n -Value $v } finally { $global:EPS_TokenProvider = $s0 } } }
+        $lc = Invoke-EpsLicenceCycle -ConnectionString $ConnectionString -Version $Version -Http $licHttp -InstallKey "$InstallKey" -WriteSecret $write -Log $Log
+        if ($lc.InstallKey) { $InstallKey = "$($lc.InstallKey)" }
+        $proLicence = "$($lc.LicenceText)"; $proEdition = "$($lc.Edition)"
+        if ($proEdition -ne 'community') {
+            $pt = Get-EpsProUpdateTarget -RunningVersion $Version -Ring $ringN -Http $licHttp -InstallKey $InstallKey -LicenceText $proLicence -Edition $proEdition -TrustedKeys $TrustedKeys
+            & $Log $(if ($pt.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "Pro channel for ring $ringN`: $($pt.State) - $($pt.Reason)"
+            if ($pt.State -ne 'community') { $t = $pt }
+        }
+    }
+    $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http -LicenceText $proLicence
     # always said (found live 2026-11-04: a silent skip hid why no head call was made)
     & $Log $(if ($InstallKey -and $h.Status -ne 200) { 'Warning' } else { 'Info' }) "update now: $($h.Reason)$(if ($h.Status) { " (HTTP $($h.Status))" })"
     $g = Get-EpsUpdateRunGate -ConnectionString $ConnectionString
@@ -258,8 +280,6 @@ function Invoke-EpsUpdateCheck {
     $track = $null; $applied = $null
     # PHASE 2 (UPDATER-1 apply): the update job has its own identity id-eps-updater (EPS_UPDATER_CLIENT_ID); without it
     # (an install made before it) the job only checks and reports, as phase 1 did
-    $updater = if ($null -ne $UpdaterClientId) { "$UpdaterClientId" } else { "$env:EPS_UPDATER_CLIENT_ID" }
-    if (-not $ApplyTokenProvider -and $updater) { $ApplyTokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
     # framework installer rule 11: EVERY run with the updater identity re-enforces + reads back a private install's vault shape
     $vault = $null
     if ($updater -and -not $CheckOnly -and (Get-Command Invoke-EpsVaultShapeCheck -ErrorAction SilentlyContinue)) {

@@ -4,6 +4,8 @@
     "eps_engine": {
       "identity": "EngineIdentity",
       "grants": {
+        "License": ["SELECT", "INSERT", "UPDATE"],
+        "LicensePull": ["SELECT", "INSERT", "UPDATE"],
         "AdGroupMember": ["SELECT"],
         "AdGroupSnapshotInfo": ["SELECT", "INSERT", "UPDATE"],
         "AdUserSnapshot": ["SELECT"],
@@ -17,6 +19,11 @@
         "CaBackup": ["SELECT", "INSERT", "DELETE"],
         "CaBackupItem": ["SELECT", "INSERT", "DELETE"],
         "CaGraphOption": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "ProPasskeyProgress": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "ProPasskeyTarget": ["SELECT", "UPDATE"],
+        "ProStaleDecision": ["SELECT", "UPDATE"],
+        "ProLicensePrice": ["SELECT"],
+        "ProPolicyCodeSync": ["SELECT", "INSERT"],
         "CaDirectoryName": ["SELECT", "INSERT", "DELETE"],
         "CaFinding": ["SELECT", "INSERT", "UPDATE"],
         "CaMonitor": ["SELECT", "INSERT", "UPDATE", "DELETE"],
@@ -81,6 +88,7 @@
     "eps_web": {
       "identity": "WebIdentity",
       "grants": {
+        "License": ["SELECT", "UPDATE"],
         "AdUserSnapshotInfo": ["SELECT"],
         "AdminUnit": ["SELECT"],
         "AuditEvent": ["SELECT", "INSERT"],
@@ -91,6 +99,11 @@
         "CaBackup": ["SELECT"],
         "CaBackupItem": ["SELECT"],
         "CaGraphOption": ["SELECT"],
+        "ProPasskeyProgress": ["SELECT"],
+        "ProPasskeyTarget": ["SELECT", "INSERT", "UPDATE"],
+        "ProStaleDecision": ["SELECT", "INSERT", "UPDATE"],
+        "ProLicensePrice": ["SELECT", "INSERT", "UPDATE"],
+        "ProPolicyCodeSync": ["SELECT"],
         "CaDirectoryName": ["SELECT"],
         "CaFinding": ["SELECT"],
         "CaMonitor": ["SELECT"],

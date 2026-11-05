@@ -4471,10 +4471,54 @@ function schedPicker(current, job) {
       if ((j.environmentErrors || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'Not read (not "<upn suffix>=<environment>"): ' + j.environmentErrors.join('; ') }));
     });
   }
+  // INSTALL-PRO (2.0.86): Administration > License - READ ONLY, as SI's license page (framework §12.25: the update job asks
+  // Invardia for the license, verifies and installs it; nobody pastes or uploads one) + "Claim again" (SuperAdmin)
+  var LIC_STATE = { none: '', ok: 'within the license', warn: '90 % or more of the license', at: 'at the license', over: 'over the license' };
+  function licenseBanner(l) {
+    var u = l && l.usage;
+    if (!u || ['warn', 'at', 'over'].indexOf(u.state) < 0) return null;
+    return el('div', { class: 'bar bar-warn' }, el('strong', { text: 'License: ' }), u.message + ' ', el('a', { href: '#license', text: 'License' }));
+  }
+  function drawLicense(p) {
+    return api('GET', '/api/license').then(function (l) {
+      var b = licenseBanner(l); if (b) p.appendChild(b);
+      p.appendChild(el('div', { class: 'guide', text: l.howTo }));
+      var rows = [['Edition', l.editionText], ['Status', (l.status === 'Missing' ? 'no license (Community)' : l.status) + (l.reason ? ' - ' + l.reason : '')]];
+      if (l.customer) rows.push(['Licensed to', l.customer]);
+      if (l.validTo) rows.push(['Valid', (l.validFrom || '') + ' to ' + l.validTo + (l.graceUntil ? ' (grace until ' + l.graceUntil + ')' : '')]);
+      if (l.licenseId) rows.push(['License id', l.licenseId]);
+      rows.push(['Tenant', (l.tenantId || '-') + (l.status === 'Valid' || l.status === 'Grace' ? (l.boundHere ? ' (the license names it)' : ' - NOT named by the license') : '')]);
+      var u = l.usage || {};
+      if (u.cap != null) rows.push(['Users in scope', (u.count == null ? 'not counted yet (after the next user tagging run)' : fmtNum(u.count)) + ' of ' + fmtNum(u.cap) + (u.percent != null ? ' (' + u.percent + ' %)' : '') + (LIC_STATE[u.state] ? ' - ' + LIC_STATE[u.state] : '')]);
+      if (l.request) rows.push(['License request', l.request.status + (l.request.message ? ' - ' + l.request.message : '') + (l.request.atUtc ? ' (' + fmtTime(l.request.atUtc) + ')' : '')]);
+      if (l.claim) rows.push(['Install key', l.claim.action + (l.claim.message ? ' - ' + l.claim.message : '') + (l.claim.atUtc ? ' (' + fmtTime(l.claim.atUtc) + ')' : '')]);
+      p.appendChild(el('dl', { class: 'kv' }, rows.map(function (r) { return [el('dt', { text: r[0] }), el('dd', { text: r[1] })]; })));
+      var tb = el('div', { class: 'toolbar' }, el('a', { href: l.buyUrl, target: '_blank', rel: 'noopener', text: l.edition === 'community' ? 'Pro and the trial at invardia.com' : 'Upgrade or renew at invardia.com' }));
+      if (isRole('SuperAdmin') && l.claimAgain) tb.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Claim again', onclick: function () {
+        withReason('Claim again', 'Forgets the refused claim or the rejected request; the next update run asks Invardia again. The license itself is not changed.', function (reason) { return api('POST', '/api/license/claim-again', { reason: reason }); }); } }));
+      p.appendChild(tb);
+      p.appendChild(el('h3', { text: 'Pro features' }));
+      p.appendChild(el('p', { class: 'smeta', text: 'Everything Entra Policy Suite does today stays in Community. Pro adds these; they switch on with a valid Pro license or the trial for this tenant.' }));
+      p.appendChild(table(l.features || [], [{ key: 'name', label: 'Feature' }, { key: 'enabled', label: 'On here', type: 'cat', render: function (f) { return f.enabled ? 'yes' : 'no'; } }, { key: 'why', label: 'Why', wrap: true }], { sort: 'name', dir: 1, empty: 'No Pro feature.' }));
+    });
+  }
+  // the Pro code (pro/<feature>.js) is loaded ONLY for a feature the server says is on for this install - never otherwise
+  var PRO_LOADED = {};
+  function loadProFeatures(m) {
+    (m.proFeatures || []).forEach(function (f) {
+      if (!/^[a-z-]{2,40}$/.test(f) || PRO_LOADED[f]) return;
+      PRO_LOADED[f] = true;
+      var s = document.createElement('script'); s.src = 'pro/' + f + '.js'; s.defer = true; s.onerror = function () { /* this release ships no page for it */ };
+      document.head.appendChild(s);
+    });
+  }
   var PAGES = [
     { id: 'overview', label: 'Overview', role: 'Reader', draw: function (p) {
       // ADMIN-WALK: an install that is not set up yet says so first, with the way there (Get started)
       var setupBar = el('div'); p.appendChild(setupBar);
+      // INSTALL-PRO: the Pro Business cap - a warning at 90 % and at / over the cap (nothing stops)
+      var licBar = el('div'); p.appendChild(licBar);
+      api('GET', '/api/license').then(function (l) { var b = licenseBanner(l); if (b) licBar.appendChild(b); }).catch(function () { });
       api('GET', '/api/onboarding').then(function (g) {
         // ADMIN-WALK-2: 'info' is fine (e.g. no hybrid worker on a cloud-only tenant), as Get started treats it - else the bar never reaches n of n
         var steps = g.steps || [], done = steps.filter(function (s) { return s.state === 'ok' || s.state === 'info'; }).length;
@@ -4663,6 +4707,7 @@ function schedPicker(current, job) {
       });
     } },
     { id: 'worker', label: 'Hybrid worker', role: 'Reader', draw: drawWorker },
+    { id: 'license', label: 'License', role: 'Reader', draw: drawLicense },
     { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p, arg) {
       p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
       // CONFIG-IO-1: the whole configuration as one file, and an import of one (SuperAdmin) - the import shows every change
@@ -4802,7 +4847,7 @@ function schedPicker(current, job) {
       });
     } },
     { id: 'tagtest', label: 'Test runs', role: 'Reader', draw: function (p, arg) { return drawTagTests(p, arg); } },
-    { id: 'backups', label: 'Backups / Undo', role: 'Reader', draw: function (p, arg) { return drawBackups(p, arg); } },
+    { id: 'backups', label: 'Backups / Undo', role: 'Reader', draw: function (p, arg) { return Promise.resolve(drawBackups(p, arg)).then(function () { if (!arg) drawProBackups(p); }); } },
     { id: 'run', label: null, role: 'Reader', draw: function (p, id) {
       return api('GET', '/api/runs/' + encodeURIComponent(id || '')).then(function (j) {
         var r = j.run;
@@ -4857,6 +4902,7 @@ function schedPicker(current, job) {
       { hash: 'access', label: 'Access', desc: 'Who may sign in, and their role.' },
       { hash: 'backups', label: 'Backups / Undo', desc: 'The daily backups of your policies and tagging; put something back, undo a change.' },
       { hash: 'audit', label: 'Audit', desc: 'Every change and who made it.' },
+      { hash: 'license', label: 'License', desc: 'Community or Pro: the edition, validity, users against the license, the Pro features.' },
       { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] }
   ];
   function pageOf(id) { return PAGES.filter(function (x) { return x.id === id; })[0]; }
@@ -4930,8 +4976,38 @@ function schedPicker(current, job) {
       document.getElementById('tenantName').textContent = m.tenantName || '-';
       document.getElementById('tenantId').textContent = m.tenantId || '';
       document.getElementById('noSuperAdmin').hidden = !m.noSuperAdmin;
+      addProMenu(m);
+      loadProFeatures(m);
       render();
       resumeRequests();
     }).catch(function (e) { status('Could not load: ' + e.message); });
   });
+
+  // ---- EPS PRO (2026-11-05): the API a Pro page uses ----------------------------------------------------------------
+  // pro/<feature>.js (loaded by loadProFeatures only for the features /api/me lists) registers its page through
+  // window.EpsPro.addPage and may add a Backups / Undo section; a feature that is off has only its menu entry (addProMenu).
+  var PRO_BACKUPS = [];
+  window.EpsPro = { api: api, el: el, clear: clear, table: table, card: card, withReason: withReason, notice: notice, isRole: isRole,
+    fmtNum: fmtNum, fmtTime: fmtTime, timeEl: timeEl, status: status, qs: qs, textOf: textOf, watchRequest: watchRequest,
+    // the Backups page's restore dialog (plan, break-glass, a backup first, the engine applies) - policy as code applies through it
+    caRestoreDialog: caRestoreDialog,
+    addPage: function (pg) { var old = pageOf(pg.id); if (old) PAGES.splice(PAGES.indexOf(old), 1, pg); else PAGES.push(pg); render(); },
+    addBackupsSection: function (fn) { PRO_BACKUPS.push(fn); } };
+  function drawProBackups(p) { PRO_BACKUPS.forEach(function (f) { try { f(p); } catch (e) { /* a Pro section never breaks the page */ } }); }
+  // the Pro pages' menu entries (names only - no Pro code here). The page itself comes from pro/<feature>.js, which
+  // loadProFeatures loads ONLY when /api/me lists the feature (INSTALL-PRO); otherwise the entry opens a page that says so.
+  var PRO_PAGES = [
+    { feature: 'passkey-tracker', hash: 'passkey', label: 'Passkey rollout', menu: 'Identity report', desc: 'Per persona: who has a passkey or another phishing-resistant method, the target date, who to chase.' },
+    { feature: 'stale-identities', hash: 'stale', label: 'Stale identities', menu: 'Identity report', desc: 'Inactive users and guests: review them, approve, and the engine disables them (and can put them back).' },
+    { feature: 'licence-optimisation', hash: 'license-optimization', label: 'License optimization', menu: 'Identity report', desc: 'Licenses to review - unused, held twice, plans off for everyone - priced with your own prices. Read only.' },
+    { feature: 'policy-as-code', hash: 'policy-as-code', label: 'Policy as code', menu: 'Conditional Access', desc: 'Your policies as JSON in Git: push them, read a reviewed commit back, apply what you pick.' }];
+  function addProMenu(m) {
+    var on = m.proFeatures || [];
+    PRO_PAGES.forEach(function (x) {
+      var grp = NAV_GROUPS.filter(function (g) { return g.label === x.menu; })[0] || NAV_GROUPS[NAV_GROUPS.length - 1];
+      if (!grp.items.some(function (it) { return it.hash === x.hash; })) grp.items.push({ hash: x.hash, label: x.label + ' (Pro)', desc: x.desc });
+      if (on.indexOf(x.feature) < 0 && !pageOf(x.hash)) PAGES.push({ id: x.hash, label: x.label, role: 'Reader', draw: function (p) {
+        p.appendChild(el('div', { class: 'bar bar-info' }, 'A Pro feature - see ', el('a', { href: '#license', text: 'License' }), '. ' + x.desc)); return Promise.resolve(); } });
+    });
+  }
 })();

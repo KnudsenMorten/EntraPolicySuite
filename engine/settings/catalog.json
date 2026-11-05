@@ -20,7 +20,11 @@
     { "id": "Update", "label": "Updates" },
     { "id": "Backup", "label": "Backups" },
     { "id": "CaOptions", "label": "Conditional Access options from Graph" },
-    { "id": "HybridWorker", "label": "Hybrid worker" }
+    { "id": "HybridWorker", "label": "Hybrid worker" },
+    { "id": "ProPasskey", "label": "Pro: passkey rollout" },
+    { "id": "ProStale", "label": "Pro: stale identities" },
+    { "id": "ProLicenseOpt", "label": "Pro: license optimization" },
+    { "id": "ProPolicyCode", "label": "Pro: policy as code" }
   ],
   "settings": [
     {
@@ -827,6 +831,83 @@
       }
     },
     {
+      "key": "ProPasskey.PersonaColumn",
+      "group": "ProPasskey",
+      "proFeature": "passkey-tracker",
+      "label": "The identity report column that names the persona",
+      "type": "text",
+      "maxLength": 100,
+      "default": "UserClassification",
+      "role": "Admin",
+      "info": {
+        "what": "Pro. The passkey rollout groups the users by this column of the identity report - one of your tag columns (the classification tag by default).",
+        "enabled": "The passkey rollout page and its daily counts use this column from the next view or report run.",
+        "disabled": "UserClassification (the default): the classification tag.",
+        "risk": "Display only: nothing in the tenant changes. A column the report does not have puts everyone under '(no persona)'. Reversible.",
+        "requires": "Admin and a Pro licence.",
+        "recommended": "The tag column that holds your personas.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPasskey.PersonaColumn/"
+      }
+    },
+    {
+      "key": "ProPasskey.DigestEnabled",
+      "group": "ProPasskey",
+      "proFeature": "passkey-tracker",
+      "label": "Mail each persona owner who is not ready yet",
+      "type": "boolean",
+      "default": "false",
+      "role": "Admin",
+      "info": {
+        "what": "Pro. After the identity report runs, each persona that has an owner (set on the passkey rollout page) gets at most one mail a day: how many are ready, the target date, and the people who still need a passkey or another phishing-resistant method.",
+        "enabled": "The persona owners get the mail through the product's alert mail settings.",
+        "disabled": "Off (the default): no mail; the page shows the same.",
+        "risk": "The mail names people and their sign-in methods to the persona owner. Reversible.",
+        "requires": "Admin, a Pro licence and working alert mail.",
+        "recommended": "On while a rollout runs, with an owner per persona.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPasskey.DigestEnabled/"
+      }
+    },
+    {
+      "key": "ProStale.InactiveDays",
+      "group": "ProStale",
+      "proFeature": "stale-identities",
+      "label": "Inactive after (days without a sign-in)",
+      "type": "int",
+      "min": 30,
+      "max": 730,
+      "default": "90",
+      "role": "Admin",
+      "info": {
+        "what": "Pro. A user or guest whose last sign-in (interactive, non-interactive or on-premises) is older than this many days is on the stale identities list for review.",
+        "enabled": "The list uses the new number at once.",
+        "disabled": "90 days (the default).",
+        "risk": "The list only proposes: nothing is disabled without an Admin's mark and a SuperAdmin's approval. Reversible.",
+        "requires": "Admin and a Pro licence.",
+        "recommended": "90 days; 180 for organisations with seasonal staff.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProStale.InactiveDays/"
+      }
+    },
+    {
+      "key": "ProStale.NeverSignedInDays",
+      "group": "ProStale",
+      "proFeature": "stale-identities",
+      "label": "Never signed in, created more than (days) ago",
+      "type": "int",
+      "min": 7,
+      "max": 365,
+      "default": "30",
+      "role": "Admin",
+      "info": {
+        "what": "Pro. An account that has never signed in and was created more than this many days ago is on the stale identities list for review.",
+        "enabled": "The list uses the new number at once.",
+        "disabled": "30 days (the default).",
+        "risk": "The list only proposes: nothing is disabled without an Admin's mark and a SuperAdmin's approval. Reversible.",
+        "requires": "Admin and a Pro licence.",
+        "recommended": "30 days.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProStale.NeverSignedInDays/"
+      }
+    },
+    {
       "key": "HybridWorker.StaleMinutes",
       "group": "HybridWorker",
       "label": "A worker is late after (minutes)",
@@ -997,6 +1078,79 @@
         "requires": "Admin. No permission beyond the engine's own read rights.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/CaOptions.Enabled/"
+      }
+    },
+    {
+      "key": "ProLicenseOpt.UnusedDays", "proFeature": "licence-optimisation", "group": "ProLicenseOpt", "label": "A license counts as unused after this many days without a sign-in", "type": "int", "min": 7, "max": 365, "default": "90", "role": "Admin",
+      "info": {
+        "what": "Pro, license optimization: a license on a user with no sign-in (cloud, non-interactive or AD) in this many days - or none ever - is listed as unused and priced as a saving. A license on a disabled account is always listed.",
+        "enabled": "A smaller number lists more licenses (people away for a while are counted too).",
+        "disabled": "A larger number lists fewer (only accounts nobody has used for a long time).",
+        "risk": "None: the list is read only - Entra Policy Suite never removes or changes a license. A person on long leave can show as unused; check before you remove anything.",
+        "requires": "Admin; a Pro license.",
+        "recommended": "90 days, as the identity report's inactivity window.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProLicenseOpt.UnusedDays/"
+      }
+    },
+    {
+      "key": "ProPolicyCode.Provider", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git provider", "type": "enum", "values": ["github", "azuredevops"], "default": "github", "role": "SuperAdmin",
+      "info": {
+        "what": "Pro, policy as code: where the Conditional Access policies are pushed to and read from - GitHub or Azure DevOps (over HTTPS).",
+        "enabled": "github: the repository is owner/repository. azuredevops: organisation/project/repository.",
+        "disabled": "Nothing is pushed or read until the repository and the access key's Key Vault secret are set.",
+        "risk": "Low: changing the provider points the next push and read at another place. Nothing in the tenant changes. Reversible.",
+        "requires": "SuperAdmin; a Pro license.",
+        "recommended": "The one your team reviews changes in.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPolicyCode.Provider/"
+      }
+    },
+    {
+      "key": "ProPolicyCode.Repository", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git repository", "type": "text", "maxLength": 300, "default": "", "role": "SuperAdmin",
+      "info": {
+        "what": "Pro, policy as code: the repository - owner/repository on GitHub, organisation/project/repository on Azure DevOps.",
+        "enabled": "Push writes every managed policy there as one commit; a read takes the folder at a branch, tag or commit.",
+        "disabled": "Empty (the default): policy as code is not set up; the zip download still works.",
+        "risk": "Whoever can merge into that repository decides what a read offers; a policy still changes only when a SuperAdmin applies it here, after the plan and the break-glass check. Reversible.",
+        "requires": "SuperAdmin; a Pro license; a repository your Git administrator created.",
+        "recommended": "A private repository with branch protection and pull request review.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPolicyCode.Repository/"
+      }
+    },
+    {
+      "key": "ProPolicyCode.Branch", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git branch", "type": "text", "maxLength": 200, "default": "main", "role": "SuperAdmin",
+      "info": {
+        "what": "Pro, policy as code: the branch a push commits to, and the one a read takes when no other branch, tag or commit is named.",
+        "enabled": "The push is one commit on this branch.",
+        "disabled": "main (the default).",
+        "risk": "Low: a push to a protected branch is refused by the provider and said. Reversible.",
+        "requires": "SuperAdmin; a Pro license.",
+        "recommended": "A branch of its own (for example eps-export) that changes reach main through a pull request.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPolicyCode.Branch/"
+      }
+    },
+    {
+      "key": "ProPolicyCode.Folder", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Folder in the repository", "type": "text", "maxLength": 200, "default": "conditional-access", "role": "SuperAdmin",
+      "info": {
+        "what": "Pro, policy as code: the folder that holds one JSON file per policy and index.json.",
+        "enabled": "Push writes there; a read takes only the JSON files there.",
+        "disabled": "conditional-access (the default).",
+        "risk": "Low. Reversible.",
+        "requires": "SuperAdmin; a Pro license.",
+        "recommended": "Keep the default.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPolicyCode.Folder/"
+      }
+    },
+    {
+      "key": "ProPolicyCode.TokenSecret", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git access key (Key Vault secret)", "type": "text", "maxLength": 300,
+      "pattern": "^https://[A-Za-z0-9-]{3,24}\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]{1,127}(/[0-9a-f]{32})?/?$", "default": "", "role": "SuperAdmin",
+      "info": {
+        "what": "Pro, policy as code: where the Git access key is kept - the address of a Key Vault secret (https://<vault>.vault.azure.net/secrets/<name>). The engine reads it at each push and read; the key itself is never stored, shown or logged by Entra Policy Suite.",
+        "enabled": "The engine signs in to the Git provider with that key.",
+        "disabled": "Empty (the default): nothing is pushed or read.",
+        "risk": "The engine identity needs 'Key Vault Secrets User' on that one item, granted by your Key Vault administrator. Give the access key only the rights it needs: contents read and write on that one repository. Reversible.",
+        "requires": "SuperAdmin; a Pro license; a Key Vault administrator to store the key and give the engine read on it.",
+        "recommended": "A fine-grained access key for the one repository, with an expiry, in your own Key Vault.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProPolicyCode.TokenSecret/"
       }
     }
   ]

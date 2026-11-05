@@ -234,7 +234,11 @@ if (-not $netPlan.Private) {
 }
 $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); Ring = $Ring; SqlLocation = $SqlLocation
     SqlAdminGroup = $(if ($SqlAdminGroupId) { @{ ObjectId = $SqlAdminGroupId.ToLowerInvariant(); Name = $(if ($SqlAdminGroupName) { $SqlAdminGroupName } else { "group $SqlAdminGroupId" }) } })
-    ReplaceSqlAdminGroup = [bool]$ReplaceSqlAdminGroup }
+    ReplaceSqlAdminGroup = [bool]$ReplaceSqlAdminGroup
+    # INSTALL-PRO (2.0.86): the Pro launcher (invardia.com/support/eps/, its INSTALL-CHANNEL line says 'pro') runs this
+    # installer in its own process with EPS_INSTALL_CHANNEL=pro - the update job then asks Invardia for the licence. Not a
+    # parameter: the two install lines stay the same for both editions; a licence is never part of them.
+    Edition = $(if ("$env:EPS_INSTALL_CHANNEL" -eq 'pro') { 'pro' } else { 'community' }) }
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it
 $front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin (Get-EpsSigninFrontPin -SolutionRoot $sol)

@@ -1180,3 +1180,135 @@ CREATE CLUSTERED INDEX IX_TagRuleHit_RunRule ON eps.TagRuleHit (RunId, RuleId, O
 GO
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 32)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (32, '2.0.83');
+
+-- v33 (INSTALL-PRO, Invardia GO 2026-11-05; the owner: "it must be on par with other 2"): THE install's Pro licence - one
+-- row, the licence FILE text as Invardia signed it (verified on every read, never trusted as stored). Framework §12.25:
+-- written ONLY by the update job (it knocks, pulls, verifies, then stores it in the install's Key Vault AND here); no person
+-- pastes or uploads a licence. Also the knock / pull state (shown on the Licence page) and the install-key claim's state
+-- (LIC-01: claimed / refused with Invardia's reason / retry; a refused claim is not asked again until the licence changes -
+-- ClaimLicenceHash - or "Claim again"). The web app reads it and may only clear the claim / a rejected request. No secret
+-- here: the install key goes to the install's Key Vault (uplink-key); the pull token to eps.LicensePull (engine only).
+IF OBJECT_ID('eps.License') IS NULL
+CREATE TABLE eps.License (
+    Id               INT            NOT NULL CONSTRAINT PK_Licence PRIMARY KEY CONSTRAINT CK_Licence_One CHECK (Id = 1),
+    LicenceText      NVARCHAR(MAX)  NULL,
+    SetBy            NVARCHAR(256)  NULL,
+    SetAtUtc         DATETIME2      NULL,
+    ClaimAction      NVARCHAR(20)   NULL,
+    ClaimMessage     NVARCHAR(1000) NULL,
+    ClaimAtUtc       DATETIME2      NULL,
+    ClaimLicenceHash NVARCHAR(64)   NULL,
+    RequestStatus    NVARCHAR(20)   NULL,     -- Pending | Rejected | Installed | Expired | Error
+    RequestMessage   NVARCHAR(1000) NULL,
+    RequestId        NVARCHAR(100)  NULL,
+    RequestAtUtc     DATETIME2      NULL,
+    NextPollUtc      DATETIME2      NULL,
+    SupersededBy     NVARCHAR(100)  NULL,     -- the heartbeat answer's supersededBy (a licence id): the update job knocks for the successor
+    UsersInScope     INT            NULL,     -- the Business cap: users in scope at the last user tagging run
+    UsageState       NVARCHAR(10)   NULL      -- none | ok | warn | at | over (a warning only; nothing ever stops)
+);
+GO
+IF OBJECT_ID('eps.LicensePull') IS NULL
+CREATE TABLE eps.LicensePull (
+    Id           INT            NOT NULL CONSTRAINT PK_LicencePull PRIMARY KEY CONSTRAINT CK_LicencePull_One CHECK (Id = 1),
+    PullToken    NVARCHAR(400)  NULL,
+    InstallId    NVARCHAR(36)   NULL,         -- the install's lasting id (INV-S16): created once, kept
+    UpdatedAtUtc DATETIME2      NOT NULL CONSTRAINT DF_LicencePull_At DEFAULT SYSUTCDATETIME()
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 33)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (33, '2.0.86');
+
+-- v34 (EPS PRO, 2026-11-05 - Pro features, read and written only when a Pro licence enables them; DESIGN §12):
+-- 'passkey-tracker': a target date and an owner (the digest's recipient) per persona, and the daily count per persona
+IF OBJECT_ID('eps.ProPasskeyTarget') IS NULL
+CREATE TABLE eps.ProPasskeyTarget (
+    Persona       NVARCHAR(200)  NOT NULL PRIMARY KEY,
+    TargetDate    DATE           NULL,
+    Owner         NVARCHAR(320)  NULL,                   -- who gets the digest (ProPasskey.DigestEnabled)
+    LastDigestUtc DATETIME2      NULL,
+    UpdatedBy     NVARCHAR(320)  NOT NULL,
+    UpdatedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_ProPasskeyTarget_At DEFAULT SYSUTCDATETIME()
+);
+IF OBJECT_ID('eps.ProPasskeyProgress') IS NULL
+CREATE TABLE eps.ProPasskeyProgress (
+    Day           DATE           NOT NULL,
+    Persona       NVARCHAR(200)  NOT NULL,
+    Users         INT            NOT NULL,
+    Ready         INT            NOT NULL,
+    AtUtc         DATETIME2      NOT NULL CONSTRAINT DF_ProPasskeyProgress_At DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_ProPasskeyProgress PRIMARY KEY (Day, Persona)
+);
+-- 'stale-identities': an Admin's review of one account (keep / disable, why), the SuperAdmin's approval and what the
+-- engine did (disabled / reenabled / failed) - the undo reads it
+IF OBJECT_ID('eps.ProStaleDecision') IS NULL
+CREATE TABLE eps.ProStaleDecision (
+    ObjectId      NVARCHAR(64)   NOT NULL PRIMARY KEY,
+    Upn           NVARCHAR(320)  NULL,
+    Decision      NVARCHAR(10)   NOT NULL,               -- keep | disable
+    Reason        NVARCHAR(1000) NOT NULL,
+    DecidedBy     NVARCHAR(320)  NOT NULL,
+    DecidedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_ProStaleDecision_At DEFAULT SYSUTCDATETIME(),
+    Status        NVARCHAR(20)   NOT NULL,               -- marked | disabled | reenabled | failed
+    ApprovedBy    NVARCHAR(320)  NULL,
+    ApprovedAtUtc DATETIME2      NULL,
+    ResultText    NVARCHAR(1000) NULL,
+    DoneAtUtc     DATETIME2      NULL,
+    CONSTRAINT CK_ProStaleDecision_Decision CHECK (Decision IN ('keep', 'disable')),
+    CONSTRAINT CK_ProStaleDecision_Status CHECK (Status IN ('marked', 'disabled', 'reenabled', 'failed'))
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 34)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (34, '2.0.86');
+-- ---- version 35: EPS Pro - license optimization + policy as code (owner 2026-11-05: "continue build all pending incl pro
+-- features"; Invardia: every existing feature stays Community, these are Pro - gated by the license) -------------------
+-- eps.ProLicensePrice: the customer's own price per license (SKU part number), EUR per user per month - seeded once with a
+-- starting point the customer edits; never fetched. Read by the license optimization page to price a saving.
+IF OBJECT_ID('eps.ProLicensePrice') IS NULL
+CREATE TABLE eps.ProLicensePrice (
+    SkuPartNumber  NVARCHAR(100)  NOT NULL CONSTRAINT PK_ProLicensePrice PRIMARY KEY,
+    Name           NVARCHAR(200)  NULL,
+    MonthlyEur     DECIMAL(10, 2) NOT NULL,
+    Source         NVARCHAR(20)   NOT NULL CONSTRAINT DF_ProLicensePrice_Src DEFAULT 'customer',   -- seed | customer
+    UpdatedBy      NVARCHAR(320)  NULL,
+    UpdatedAtUtc   DATETIME2      NOT NULL CONSTRAINT DF_ProLicensePrice_At DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT CK_ProLicensePrice_Src CHECK (Source IN ('seed', 'customer')),
+    CONSTRAINT CK_ProLicensePrice_Eur CHECK (MonthlyEur >= 0)
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.ProLicensePrice)
+INSERT INTO eps.ProLicensePrice (SkuPartNumber, Name, MonthlyEur, Source) VALUES
+ ('SPE_E5', 'Microsoft 365 E5', 54.75, 'seed'), ('SPE_E3', 'Microsoft 365 E3', 33.75, 'seed'),
+ ('ENTERPRISEPREMIUM', 'Office 365 E5', 35.70, 'seed'), ('ENTERPRISEPACK', 'Office 365 E3', 21.80, 'seed'),
+ ('STANDARDPACK', 'Office 365 E1', 9.40, 'seed'), ('SPB', 'Microsoft 365 Business Premium', 20.60, 'seed'),
+ ('O365_BUSINESS_PREMIUM', 'Microsoft 365 Business Standard', 11.70, 'seed'), ('O365_BUSINESS_ESSENTIALS', 'Microsoft 365 Business Basic', 5.60, 'seed'),
+ ('EMSPREMIUM', 'Enterprise Mobility + Security E5', 15.40, 'seed'), ('EMS', 'Enterprise Mobility + Security E3', 9.90, 'seed'),
+ ('AAD_PREMIUM', 'Microsoft Entra ID P1', 5.60, 'seed'), ('AAD_PREMIUM_P2', 'Microsoft Entra ID P2', 8.40, 'seed'),
+ ('INTUNE_A', 'Microsoft Intune Plan 1', 7.50, 'seed'), ('EXCHANGESTANDARD', 'Exchange Online (Plan 1)', 3.70, 'seed'),
+ ('EXCHANGEENTERPRISE', 'Exchange Online (Plan 2)', 7.50, 'seed'), ('ATP_ENTERPRISE', 'Defender for Office 365 (Plan 1)', 1.90, 'seed'),
+ ('THREAT_INTELLIGENCE', 'Defender for Office 365 (Plan 2)', 4.70, 'seed');
+GO
+-- eps.ProPolicyCodeSync: each push to / read from the customer's Git repository (policy as code) - what, when, which commit.
+-- The Git access key is NEVER here: it is a Key Vault secret the engine reads at the call.
+IF OBJECT_ID('eps.ProPolicyCodeSync') IS NULL
+CREATE TABLE eps.ProPolicyCodeSync (
+    SyncId         BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ProPolicyCodeSync PRIMARY KEY,
+    Kind           NVARCHAR(10)   NOT NULL,                -- push | import
+    AtUtc          DATETIME2      NOT NULL CONSTRAINT DF_ProPolicyCodeSync_At DEFAULT SYSUTCDATETIME(),
+    RequestedBy    NVARCHAR(320)  NOT NULL,
+    Provider       NVARCHAR(20)   NOT NULL,                -- github | azuredevops
+    Repository     NVARCHAR(300)  NOT NULL,
+    Ref            NVARCHAR(200)  NULL,                    -- the branch / tag / commit asked for
+    CommitSha      NVARCHAR(64)   NULL,                    -- the commit written / read
+    Files          INT            NOT NULL CONSTRAINT DF_ProPolicyCodeSync_F DEFAULT 0,
+    -- an import: the CA backup set it was stored as (Kind Manual, so the EXISTING restore path - plan, break-glass check,
+    -- a backup first, ONE write per policy, a new policy created OFF, never a delete - applies it); this link is what
+    -- marks a set as read from Git
+    BackupId       BIGINT         NULL,
+    Result         NVARCHAR(20)   NOT NULL,                -- ok | failed
+    ResultText     NVARCHAR(2000) NULL,
+    CONSTRAINT CK_ProPolicyCodeSync_Kind CHECK (Kind IN ('push', 'import'))
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 35)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (35, '2.0.86');
