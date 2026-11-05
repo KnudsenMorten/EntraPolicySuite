@@ -114,7 +114,7 @@ function Invoke-EpsAcrBuild {
 
 # framework rule 11g (owner 2026-11-05): a private install's registry build pool - tier S2, 0 instances between builds,
 # 2 while one builds; a build on it waits at least 90 minutes
-$script:EpsBuildPool = @{ Tier = 'S2'; IdleCount = 0; BuildCount = 2; MinTimeoutSeconds = 5400; ApiVersion = '2019-06-01-preview'; WaitMinutes = 20 }
+$script:EpsBuildPool = @{ Tier = 'S2'; IdleCount = 0; CreateCount = 1; BuildCount = 2; MinTimeoutSeconds = 5400; ApiVersion = '2019-06-01-preview'; WaitMinutes = 20 }
 
 function Set-EpsBuildPoolCount {
     <#

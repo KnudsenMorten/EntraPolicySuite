@@ -2125,7 +2125,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   var CAP_BG_CLS = { MISSING: 'c-danger', unknown: 'smeta' };
   function capSubnav(p, on) {
     var seg = el('div', { class: 'rx-seg' });
-    [['', 'Policies'], ['doc', 'Documentation'], ['templates', 'Templates'], ['updates', 'Template updates']].forEach(function (x) {
+    [['', 'Policies'], ['groups', 'Groups'], ['doc', 'Documentation'], ['templates', 'Templates'], ['updates', 'Template updates']].forEach(function (x) {
       seg.appendChild(el('button', { type: 'button', class: on === x[0] ? 'on' : null, text: x[1], onclick: function () { location.hash = '#capolicies' + (x[0] ? '/' + x[0] : ''); } }));
     });
     p.appendChild(seg);
@@ -2206,6 +2206,146 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     if (!capMoves(r.Stage).length) bar.appendChild(el('span', { class: 'count', text: r.Stage === 'Custom' ? 'Not one of the template\'s stages: look at it in the tenant first (Disable is the only move).' : '' }));
     return bar;
   }
+  // CA-EDIT (owner 2026-11-05: "where is the option to modify or/and clone a policy" -> "Edit + clone, any field"; "again
+  // once a policy is imported into from the templates, then it should be fuly manageable in the gui"; "but it is always
+  // 100% opeator controlled"): a wide form with every part of the policy and an Advanced (JSON) box. Check shows what
+  // changes (from the last read, nothing written); Apply sends the operator's request - the engine reads the policy
+  // again, refuses when it changed since or when the break-glass accounts would not stay excluded, writes once and reads
+  // it back. A copy is always created OFF and adopted.
+  var CAP_EDIT_LISTS = [
+    ['Users', [['conditions.users.includeUsers', 'includeUsers', 'Include users', 'a UPN, an id, or All / None / GuestsOrExternalUsers'], ['conditions.users.excludeUsers', 'excludeUsers', 'Exclude users', 'a UPN or an id'],
+      ['conditions.users.includeGroups', 'includeGroups', 'Include groups', 'a group\'s name or id'], ['conditions.users.excludeGroups', 'excludeGroups', 'Exclude groups', 'a group\'s name or id'],
+      ['conditions.users.includeRoles', 'includeRoles', 'Include roles', 'a directory role\'s name or id'], ['conditions.users.excludeRoles', 'excludeRoles', 'Exclude roles', 'a directory role\'s name or id']]],
+    ['Applications', [['conditions.applications.includeApplications', 'includeApplications', 'Include applications', 'an application id, or All / Office365 / MicrosoftAdminPortals / None'], ['conditions.applications.excludeApplications', 'excludeApplications', 'Exclude applications', 'an application id'],
+      ['conditions.applications.includeUserActions', 'includeUserActions', 'User actions', 'urn:user:registersecurityinfo / urn:user:registerdevice']]],
+    ['Conditions', [['conditions.clientAppTypes', 'clientAppTypes', 'Client apps', 'all, browser, mobileAppsAndDesktopClients, exchangeActiveSync, other'],
+      ['conditions.platforms.includePlatforms', 'includePlatforms', 'Include platforms', 'all, android, iOS, windows, macOS, linux'], ['conditions.platforms.excludePlatforms', 'excludePlatforms', 'Exclude platforms', 'android, iOS, windows, macOS, linux'],
+      ['conditions.locations.includeLocations', 'includeLocations', 'Include locations', 'a named location\'s name or id, or All / AllTrusted'], ['conditions.locations.excludeLocations', 'excludeLocations', 'Exclude locations', 'a named location\'s name or id, or AllTrusted'],
+      ['conditions.signInRiskLevels', 'signInRiskLevels', 'Sign-in risk', 'low, medium, high, none'], ['conditions.userRiskLevels', 'userRiskLevels', 'User risk', 'low, medium, high, none']]],
+    ['Grant', [['grantControls.builtInControls', 'builtInControls', 'Grant controls', 'block, mfa, compliantDevice, domainJoinedDevice, approvedApplication, compliantApplication, passwordChange']]]];
+  function capGet(o, path) { return path.split('.').reduce(function (a, k) { return a === null || a === undefined ? undefined : a[k]; }, o); }
+  function capSet(o, path, v) { var ks = path.split('.'), a = o; for (var i = 0; i < ks.length - 1; i++) { if (a[ks[i]] === null || a[ks[i]] === undefined || typeof a[ks[i]] !== 'object') a[ks[i]] = {}; a = a[ks[i]]; } a[ks[ks.length - 1]] = v; }
+  function capEditable(body) {
+    var o = {}; ['displayName', 'state', 'conditions', 'grantControls', 'sessionControls'].forEach(function (k) { o[k] = body && body[k] !== undefined ? JSON.parse(JSON.stringify(body[k])) : null; });
+    if (o.grantControls && o.grantControls.authenticationStrength) o.grantControls.authenticationStrength = o.grantControls.authenticationStrength.id ? { id: o.grantControls.authenticationStrength.id } : null;
+    return o;
+  }
+  function caPolicyEditor(j, mode) {
+    // mode: 'Edit' or 'Clone'. j = the policy page's answer (body, names, review)
+    var pol = j.policy, names = j.names || {}, base = capEditable(j.body || {});
+    if (mode === 'Clone') base.displayName = 'Copy of ' + textOf(pol.DisplayName);
+    var title = (mode === 'Clone' ? 'Clone ' : 'Edit ') + pol.DisplayName;
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': title });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    d.appendChild(el('h3', { text: title }));
+    d.appendChild(el('div', { class: 'guide', text: mode === 'Clone'
+      ? 'A NEW policy, copied from this one with your changes. It is created OFF whatever this one\'s state is, and adopted - move it through the stages when it is ready. Lists: one per line; a name (group, UPN, role, named location) is looked up by the engine.'
+      : 'Change any part of this policy. Check shows what changes before anything is sent; Apply CHANGES the policy in your tenant (the engine reads it again first and refuses if it changed since, or if the break-glass accounts would not stay excluded). Lists: one per line; a name (group, UPN, role, named location) is looked up by the engine.' }));
+    var form = el('div', { class: 'rf-grid' });
+    var row = function (label, node) { form.appendChild(el('div', { class: 'rf-l', text: label })); form.appendChild(el('div', { class: 'rf-c' }, node)); return node; };
+    var name = row('Name', el('input', { type: 'text', 'aria-label': 'Name', maxlength: 256 })); name.value = textOf(base.displayName);
+    var state = row('State', el('select', { 'aria-label': 'State' }, [['enabled', 'On'], ['enabledForReportingButNotEnforced', 'Report-only'], ['disabled', 'Off']].map(function (s) { return el('option', { value: s[0], text: s[1] }); })));
+    state.value = mode === 'Clone' ? 'disabled' : textOf(base.state); if (mode === 'Clone') state.disabled = true;
+    var lists = {};
+    var shown = function (v) { var n = names[v]; return n ? n : v; };
+    CAP_EDIT_LISTS.forEach(function (grp) {
+      form.appendChild(el('h4', { class: 'rf-sub', text: grp[0], style: 'grid-column:1 / -1' }));
+      grp[1].forEach(function (f) {
+        var vals = capGet(base, f[0]) || [];
+        var isApp = f[1] === 'includeApplications' || f[1] === 'excludeApplications';
+        var ta = row(f[2], el('textarea', { rows: Math.min(6, Math.max(2, vals.length + 1)), 'aria-label': f[2], 'data-field': f[1], placeholder: 'one per line: ' + f[3] }));
+        // an application stays its id (its name follows after #, for reading); the others show the name the engine knows
+        ta.value = vals.map(function (v) { return isApp ? (names[v] ? v + ' # ' + names[v] : v) : shown(v); }).join('\n');
+        lists[f[0]] = ta;
+      });
+    });
+    var op = row('Grant: require', el('select', { 'aria-label': 'Grant operator' }, el('option', { value: 'OR', text: 'one of the controls (OR)' }), el('option', { value: 'AND', text: 'all the controls (AND)' })));
+    op.value = textOf(capGet(base, 'grantControls.operator')) || 'OR';
+    var as = row('Authentication strength', el('input', { type: 'text', 'aria-label': 'authenticationStrength', 'data-field': 'authenticationStrength', placeholder: 'its id (empty = none)' }));
+    as.value = textOf(capGet(base, 'grantControls.authenticationStrength.id'));
+    form.appendChild(el('h4', { class: 'rf-sub', text: 'Session', style: 'grid-column:1 / -1' }));
+    var sif = capGet(base, 'sessionControls.signInFrequency') || {};
+    var sifOn = el('input', { type: 'checkbox', 'aria-label': 'signInFrequency' }); sifOn.checked = !!sif.isEnabled;
+    var sifVal = el('input', { type: 'text', 'aria-label': 'Sign-in frequency value', inputmode: 'numeric', style: 'width:6em' }); sifVal.value = textOf(sif.value);
+    var sifType = el('select', { 'aria-label': 'Sign-in frequency unit' }, el('option', { value: 'hours', text: 'hours' }), el('option', { value: 'days', text: 'days' })); sifType.value = sif.type || 'hours';
+    var sifEvery = el('input', { type: 'checkbox', 'aria-label': 'Every time' }); sifEvery.checked = sif.frequencyInterval === 'everyTime';
+    row('Sign-in frequency', el('span', { class: 'rf-check' }, sifOn, ' on, every ', sifVal, ' ', sifType, ' ', el('label', { class: 'rf-check' }, sifEvery, ' or every time')));
+    var pb = capGet(base, 'sessionControls.persistentBrowser') || {};
+    var pbOn = el('input', { type: 'checkbox', 'aria-label': 'persistentBrowser' }); pbOn.checked = !!pb.isEnabled;
+    var pbMode = el('select', { 'aria-label': 'Persistent browser mode' }, el('option', { value: 'never', text: 'never persistent' }), el('option', { value: 'always', text: 'always persistent' })); pbMode.value = pb.mode || 'never';
+    row('Persistent browser', el('span', { class: 'rf-check' }, pbOn, ' on: ', pbMode));
+    d.appendChild(form);
+    // the form -> the policy body (the parts it does not show stay as they are in the base)
+    var lines = function (ta) { return ta.value.split('\n').map(function (x) { return x.replace(/\s+#.*$/, '').trim(); }).filter(function (x) { return x; }); };
+    var fromForm = function () {
+      var b = JSON.parse(JSON.stringify(base));
+      b.displayName = name.value.trim(); b.state = mode === 'Clone' ? 'disabled' : state.value;
+      if (!b.conditions) b.conditions = {};
+      Object.keys(lists).forEach(function (path) {
+        var v = lines(lists[path]), had = capGet(base, path);
+        if (v.length || (had !== null && had !== undefined)) capSet(b, path, v);
+      });
+      ['platforms', 'locations'].forEach(function (k) { var c = b.conditions[k]; if (c && !Object.keys(c).some(function (x) { return Array.isArray(c[x]) ? c[x].length : c[x] !== null && c[x] !== undefined; })) b.conditions[k] = null; });
+      var bic = capGet(b, 'grantControls.builtInControls') || [], asId = as.value.trim(), tou = capGet(b, 'grantControls.termsOfUse') || [];
+      if (!bic.length && !asId && !tou.length) b.grantControls = null;
+      else { if (!b.grantControls) b.grantControls = {}; b.grantControls.operator = op.value; b.grantControls.builtInControls = bic; b.grantControls.authenticationStrength = asId ? { id: asId } : null; }
+      var sc = b.sessionControls ? b.sessionControls : {};
+      sc.signInFrequency = sifOn.checked ? (sifEvery.checked ? { isEnabled: true, frequencyInterval: 'everyTime', authenticationType: (sif.authenticationType || 'primaryAndSecondaryAuthentication') } : { isEnabled: true, value: parseInt(sifVal.value, 10) || 1, type: sifType.value, frequencyInterval: 'timeBased', authenticationType: (sif.authenticationType || 'primaryAndSecondaryAuthentication') }) : null;
+      sc.persistentBrowser = pbOn.checked ? { isEnabled: true, mode: pbMode.value } : null;
+      b.sessionControls = Object.keys(sc).some(function (k) { return sc[k] !== null && sc[k] !== undefined && sc[k] !== false; }) ? sc : null;
+      return b;
+    };
+    // Advanced (JSON): the whole body as it will be sent - for any part the form does not show
+    var adv = el('textarea', { rows: 14, 'aria-label': 'Advanced (JSON)', style: 'width:100%;font-family:ui-monospace,Consolas,monospace;font-size:11.5px' });
+    var useAdv = el('input', { type: 'checkbox', 'aria-label': 'Send the JSON instead of the form' });
+    var advBox = el('details', null, el('summary', { text: 'Advanced (JSON) - every part, for what the form does not show' }),
+      el('p', { class: 'smeta', text: 'The policy as it will be sent: displayName, state, conditions, grantControls, sessionControls. Ids, times and other read-only parts are refused.' }),
+      el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Fill from the form', onclick: function () { adv.value = JSON.stringify(fromForm(), null, 2); } }),
+        el('label', { class: 'rf-check' }, useAdv, ' send this JSON instead of the form')), adv);
+    adv.value = JSON.stringify(base, null, 2);
+    d.appendChild(advBox);
+    var out = el('div');
+    d.appendChild(out);
+    var pending = null;
+    var check = el('button', { type: 'button', text: 'Check' });
+    var buttons = el('div', { class: 'toolbar' }, check, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close }));
+    d.appendChild(buttons);
+    check.addEventListener('click', function () {
+      var b;
+      if (useAdv.checked) { try { b = JSON.parse(adv.value); } catch (e) { clear(out).appendChild(el('p', { class: 'c-danger', text: 'The JSON does not parse: ' + e.message })); return; } }
+      else b = fromForm();
+      pending = b; clear(out).appendChild(el('p', { class: 'smeta', text: 'Checking ...' }));
+      api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/edit-plan', { mode: mode, policy: b }).then(function (pl) {
+        clear(out);
+        if (!pl.ok) { out.appendChild(el('p', { class: 'c-danger', text: 'Cannot ' + (mode === 'Clone' ? 'copy' : 'change') + ': ' + textOf(pl.reason) })); return; }
+        out.appendChild(el('h4', { text: mode === 'Clone' ? 'The copy differs from this policy in' : 'What changes' }));
+        out.appendChild(table(pl.changes || [], [{ key: 'path', label: 'Setting', type: 'cat' }, { key: 'before', label: mode === 'Clone' ? 'This policy' : 'Now', wrap: true }, { key: 'after', label: mode === 'Clone' ? 'The copy' : 'After', wrap: true }], { empty: 'Only the name and the state.' }));
+        var bg = pl.breakGlass || {};
+        out.appendChild(el('p', { class: bg.ok === false ? 'c-danger' : null, text: 'Break-glass: ' + textOf(bg.text) + ' (checked again on the result before the change)' }));
+        if ((pl.unresolved || []).length) out.appendChild(el('ul', { class: 'hints' }, pl.unresolved.map(function (n) { return el('li', { text: 'looked up by the engine when it applies: ' + n }); })));
+        var reason = el('input', { type: 'text', placeholder: 'Reason (optional) - why this change', style: 'width:100%' });
+        var ack = el('input', { type: 'checkbox' });
+        var on = mode === 'Edit' && pl.stateAfter !== 'disabled';
+        var go = el('button', { type: 'button', text: mode === 'Clone' ? 'Create the copy (off)' : 'Apply the change' });
+        go.disabled = on;
+        ack.addEventListener('change', function () { go.disabled = on && !ack.checked; });
+        go.addEventListener('click', function () {
+          go.disabled = true; close();
+          var t = (mode === 'Clone' ? 'Clone ' : 'Edit ') + pol.DisplayName;
+          notice('Sending: ' + t + ' ...');
+          var payload = { policy: pending, expected: pl.expected, reason: reason.value.trim() };
+          (mode === 'Clone' ? api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/clone', payload) : api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/edit', payload))
+            .then(function (x) { afterAction(x, t); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+        });
+        if (on) out.appendChild(el('label', null, ack, ' I have checked who this policy is ON for after the change (the CA Policy Analyzer shows the sign-ins it would have blocked).'));
+        out.appendChild(el('p', null, reason));
+        out.appendChild(el('div', { class: 'toolbar' }, go));
+      }).catch(function (e) { clear(out).appendChild(el('p', { class: 'c-danger', text: e.message })); });
+    });
+    document.body.appendChild(d); d.showModal();
+  }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
     p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy to another stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
@@ -2275,6 +2415,12 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('dt', { text: 'Read' }), el('dd', null, timeEl(pol.SeenAtUtc), ' · changed in the tenant ', timeEl(pol.ModifiedAtUtc))));
       if (owner) p.appendChild(el('div', { class: 'toolbar' }, ad && ad.Status === 'Adopted' ? el('button', { type: 'button', class: 'secondary', text: 'Release', onclick: function () { capRelease(row); } }) : el('button', { type: 'button', text: 'Adopt as it is', onclick: function () { capAdopt(row); } }),
         el('span', { class: 'count', text: 'Recorded in Entra Policy Suite only - nothing in the tenant changes.' })));
+      // CA-EDIT: Edit and Clone - any adopted policy, template-matched or not (SuperAdmin; each after a check and approval)
+      if (isRole('SuperAdmin') && ad && ad.Status === 'Adopted') p.appendChild(el('div', { class: 'toolbar' },
+        el('button', { type: 'button', text: 'Edit', onclick: function () { caPolicyEditor(j, 'Edit'); } }),
+        el('button', { type: 'button', class: 'secondary', text: 'Clone', onclick: function () { caPolicyEditor(j, 'Clone'); } }),
+        el('span', { class: 'count', text: 'Edit changes this policy in your tenant; Clone creates a new one, off. Each shows what changes before you approve it.' })));
+      else if (owner) p.appendChild(el('p', { class: 'smeta', text: 'Adopt it first to edit or clone it from here.' }));
       // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
       p.appendChild(el('h3', { text: 'Stage' }));
       if (owner && ad && ad.Status === 'Adopted') {
@@ -2490,6 +2636,97 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         return api('POST', '/api/v1import', { files: files, reason: reason }); });
     } })));
   }
+  // ---- CA-GROUPS (owner 2026-11-05: "make sure to also include the underlying groups that must be provisioned and
+  // managed"; "Yes, Group.ReadWrite.All"; V1-PARITY): the groups the policies use, made and kept as v1 does. Every change
+  // is shown first (the plan), needs a SuperAdmin, and is applied by the engine - read back, journaled, audited.
+  var GRP_KIND = { breakglass: 'break-glass', sspr: 'registration', target: 'target', pilot: 'pilot', exclude: 'exclude' };
+  // the five change routes, written out (tests/Test-EpsApiReference.ps1 matches every page call to a route)
+  var GRP_PATH = { create: '/api/groups/create', rule: '/api/groups/rule', members: '/api/groups/members', forceupdate: '/api/groups/forceupdate', au: '/api/groups/au' };
+  var GRP_DO = { create: 'create', rule: 'set the rule', update: 'update', add: 'add member', remove: 'remove member', place: 'place in unit', skip: 'no change', refused: 'refused' };
+  function grpQuery(payload) {
+    var q = {}; Object.keys(payload).forEach(function (k) { var v = payload[k]; q[k] = Array.isArray(v) ? v.join(',') : v; }); return q;
+  }
+  function grpDialog(action, payload, title) {
+    // the plan from the last read, then the reason, then the engine request (it plans again from the tenant)
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': title });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Working out what changes ...' }));
+    d.appendChild(el('h3', { text: title }));
+    d.appendChild(body);
+    document.body.appendChild(d); d.showModal();
+    api('GET', '/api/groups/plan?' + qs(grpQuery(Object.assign({ action: action }, payload)))).then(function (pl) {
+      clear(body);
+      body.appendChild(el('div', { class: 'guide', text: 'This CHANGES groups in your tenant, as v1 does. The engine applies it at its next check (within 5 minutes): it reads the groups again first and plans again from what it finds; each change is read back. Only the groups Entra Policy Suite manages are ever touched.' }));
+      body.appendChild(table(pl.items || [], [{ key: 'name', label: 'Group', wrap: true }, { key: 'do', label: 'Change', type: 'cat', render: function (r) { return el('span', { class: r.do === 'refused' ? 'c-danger' : null, text: GRP_DO[r.do] || r.do }); } }, { key: 'detail', label: 'What', wrap: true }], { sort: null, empty: 'Nothing.' }));
+      if (!pl.ok) {
+        body.appendChild(el('p', { class: 'c-danger', text: 'Nothing to send: ' + textOf(pl.reason) }));
+        body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })));
+        return;
+      }
+      var reason = el('input', { type: 'text', placeholder: 'Reason (optional) - e.g. onboarding the pilot', style: 'width:100%' });
+      var go = el('button', { type: 'button', text: 'Change the groups (' + pl.summary + ')' });
+      go.addEventListener('click', function () {
+        go.disabled = true; close();
+        notice('Sending: ' + title + ' ...');
+        api('POST', GRP_PATH[action], Object.assign({}, payload, { reason: reason.value.trim() }))
+          .then(function (x) { afterAction(x, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+      });
+      body.appendChild(el('p', null, reason));
+      body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
+  }
+  function grpMembers(r) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Members of ' + r.name });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    var add = el('textarea', { rows: 4, style: 'width:100%', placeholder: 'user@contoso.com - one per line' });
+    var rem = el('textarea', { rows: 4, style: 'width:100%', placeholder: 'user@contoso.com - one per line' });
+    var lines = function (t) { return t.value.split(/[\n,;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x; }); };
+    d.appendChild(el('h3', { text: 'Members of ' + r.name }));
+    d.appendChild(el('p', { class: 'smeta', text: r.members === null || r.members === undefined ? 'Members: not read yet.' : 'Members now: ' + r.members + (r.kind === 'pilot' ? '. v1\'s advice: Pilot1 1-2 users, Pilot2 5-10, Pilot3 30-50.' : '.') }));
+    d.appendChild(el('div', { class: 'rf-grid' }, el('div', { class: 'rf-l', text: 'Add' }), el('div', { class: 'rf-c' }, add), el('div', { class: 'rf-l', text: 'Remove' }), el('div', { class: 'rf-c' }, rem)));
+    d.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Show the change', onclick: function () {
+      var a = lines(add), x = lines(rem); close();
+      grpDialog('members', { name: r.name, add: a, remove: x }, 'Members of ' + r.name);
+    } }), el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+  }
+  function drawCaGroups(p) {
+    var admin = isRole('Admin'), owner = isRole('SuperAdmin');
+    p.appendChild(el('div', { class: 'guide', text: 'The groups your Conditional Access policies use, as v1 makes them: the target groups of your group targeting method, the break-glass group, the registration group, and for each adopted policy its exclude group and pilot group(s). "Read the groups" reads the tenant (it changes nothing). A SuperAdmin can create a missing group, set a dynamic group\'s rule back to Entra Policy Suite\'s, change the members of an assigned pilot, exclude or break-glass group, run v1\'s group force update for one policy, and make the administrative units - always after seeing the change. A stage move sets the dynamic pilot group\'s rule for the stage, as v1 does.' }));
+    capSubnav(p, 'groups');
+    return api('GET', '/api/groups').then(function (j) {
+      var rows = j.rows || [];
+      var missing = rows.filter(function (r) { return r.canCreate; }), ruleOff = rows.filter(function (r) { return r.canRule; });
+      p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), card(missing.length, 'missing', missing.length > 0),
+        card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
+      p.appendChild(el('div', { class: 'toolbar' },
+        admin ? el('button', { type: 'button', class: 'secondary', text: 'Read the groups', onclick: function () { withReason('Read the groups', 'The engine reads the managed groups and administrative units in the tenant. Read only: nothing changes.', function (reason) { return api('POST', '/api/groups/check', { reason: reason }); }); } }) : null,
+        owner && missing.length ? el('button', { type: 'button', text: 'Create all missing (' + missing.length + ')', onclick: function () { grpDialog('create', { names: missing.map(function (r) { return r.name; }) }, 'Create the missing groups'); } }) : null,
+        owner && ruleOff.length ? el('button', { type: 'button', class: 'secondary', text: 'Set every rule (' + ruleOff.length + ')', onclick: function () { grpDialog('rule', { names: ruleOff.map(function (r) { return r.name; }) }, 'Set the dynamic rules'); } }) : null,
+        owner ? el('button', { type: 'button', class: 'secondary', text: 'Administrative units', onclick: function () { grpDialog('au', {}, 'Administrative units: create and place'); } }) : null,
+        el('span', { class: 'count', text: 'Targeting method: ' + (j.method || 'not set (Get started, step 4)') + '. ' + (j.checkedAtUtc ? 'Last read ' : 'Not read yet.') }), j.checkedAtUtc ? timeEl(j.checkedAtUtc) : null));
+      p.appendChild(el('h3', { text: 'Administrative units' }));
+      p.appendChild(table(j.adminUnits || [], [{ key: 'purpose', label: 'For', type: 'cat' }, { key: 'name', label: 'Administrative unit' }, { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (r) { return r.inTenant === 'missing' ? 'c-danger' : (r.inTenant === 'unknown' ? 'smeta' : ''); } }, { key: 'error', label: 'Note', wrap: true }], { sort: null }));
+      p.appendChild(el('h3', { text: 'Groups' }));
+      var cols = [{ key: 'name', label: 'Group', wrap: true }, { key: 'kind', label: 'Kind', type: 'cat', render: function (r) { return GRP_KIND[r.kind] || r.kind; } }, { key: 'assignment', label: 'Type', type: 'cat' },
+        { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (r) { return r.inTenant === 'missing' ? 'c-danger' : (r.inTenant === 'unknown' ? 'smeta' : ''); } },
+        { key: 'members', label: 'Members', type: 'num' },
+        { key: 'ruleOk', label: 'Rule', type: 'cat', render: function (r) { return el('span', { class: r.ruleOk === false ? 'c-warning' : null, title: r.ruleOk === false ? 'now: ' + textOf(r.ruleInTenant) + ' (' + textOf(r.processingInTenant) + ')\nshould be: ' + textOf(r.rule) + ' (' + textOf(r.processing) + ')' : textOf(r.rule), text: r.assignment !== 'Dynamic' ? '-' : (r.ruleOk === null ? 'not read' : (r.ruleOk ? 'as it should be' + (r.processing === 'Paused' ? ' (paused)' : '') : 'differs')) }); } },
+        { key: 'adminUnit', label: 'Administrative unit', wrap: true, render: function (r) { return el('span', { class: r.inAdminUnit === false ? 'c-warning' : null, text: r.adminUnit + (r.inAdminUnit === false ? ' (not in it)' : (r.inAdminUnit === null ? ' (not read)' : '')) }); } },
+        { key: 'templates', label: 'Used by', wrap: true, render: function (r) { return (r.templates || []).join(', '); } }];
+      if (owner) cols.push({ key: '_act', label: '', render: function (r) {
+        var b = [];
+        if (r.canCreate) b.push(el('button', { type: 'button', text: 'Create', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
+        if (r.canRule) b.push(el('button', { type: 'button', class: 'secondary', text: 'Set rule', onclick: function () { grpDialog('rule', { names: [r.name] }, 'Set the rule of ' + r.name); } }));
+        if (r.canMembers) b.push(el('button', { type: 'button', class: 'secondary', text: 'Members', onclick: function () { grpMembers(r); } }));
+        if (r.kind === 'exclude' && (r.templates || []).length) b.push(el('button', { type: 'button', class: 'link', text: 'Force update ' + r.templates[0], onclick: function () { grpDialog('forceupdate', { template: r.templates[0] }, 'Group force update for ' + r.templates[0]); } }));
+        return el('span', null, b);
+      } });
+      p.appendChild(table(rows, cols, { empty: 'No group to manage yet: set the group targeting method (Get started) and adopt your policies.' }));
+    });
+  }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
     p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
@@ -2532,8 +2769,12 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           if (owner) box.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Add a break-glass account', onclick: function () { gsBreakGlassEdit(null); } })));
         }
         if (s.key === 'method' && admin) box.appendChild(gsMethodPicker(j));
+        // CA-GROUPS (Get started phase 2): a missing group is created from here - the plan first, then the engine
+        var gsMissing = (s.items || []).filter(function (r) { return /^group:/.test(r.item || '') && r.state === 'missing'; }).map(function (r) { return r.item.substring(6); });
+        if (owner && gsMissing.length) box.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Create the missing groups (' + gsMissing.length + ')', onclick: function () { grpDialog('create', { names: gsMissing }, 'Create the missing groups: ' + s.title); } }), el('a', { href: '#capolicies/groups', text: 'All groups' })));
         if ((s.items || []).length) box.appendChild(table(s.items, [{ key: 'title', label: 'Item', wrap: true }, { key: 'state', label: 'State', type: 'cat', cls: function (r) { return GS_CLS[r.state] || ''; }, render: function (r) { return el('span', { text: GS_STATE[r.state] || r.state }); } },
-          { key: 'detail', label: 'What was found', wrap: true }], { sort: null }));
+          { key: 'detail', label: 'What was found', wrap: true },
+          owner ? { key: '_g', label: '', render: function (r) { return /^group:/.test(r.item || '') && r.state === 'missing' ? el('button', { type: 'button', class: 'secondary', text: 'Create', onclick: function () { grpDialog('create', { names: [r.item.substring(6)] }, 'Create ' + r.item.substring(6)); } }) : null; } } : null].filter(Boolean), { sort: null }));
         else box.appendChild(el('p', { class: 'smeta', text: 'Not checked yet - press Check now.' }));
         p.appendChild(box);
       });
@@ -2631,6 +2872,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (arg === 'doc') return drawCaDoc(p);
       if (arg === 'templates') return drawCaTemplates(p);
       if (arg === 'updates') return drawCaTemplateUpdates(p);
+      if (arg === 'groups') return drawCaGroups(p);
       if (arg) { p.removeChild(p.lastChild); return drawCaPolicy(p, arg); }
       return drawCaPolicies(p); } },
     { id: 'ca', label: 'CA Policy Analyzer', role: 'Reader', draw: function (p, arg) { if (arg) { p.removeChild(p.lastChild); return drawCaAnalysis(p, arg); } return drawCa(p); } },
@@ -2807,6 +3049,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       { hash: 'tamper', label: 'Tamper', desc: 'Changes to watched tags that Entra Policy Suite did not make.' }] },
     { label: 'Conditional Access', items: [
       { hash: 'capolicies', label: 'Policies', desc: 'Your policies against their templates; adopt, stage moves.' },
+      { hash: 'capolicies/groups', label: 'Groups', desc: 'The groups the policies use: create, rules, members, administrative units.' },
       { hash: 'capolicies/doc', label: 'Documentation', desc: 'Every policy with its ids resolved, as Excel or CSV.' },
       { hash: 'capolicies/templates', label: 'Templates', desc: 'The template library of this release.' },
       { hash: 'capolicies/updates', label: 'Template updates', desc: 'What a newer template library brings - you decide.' },

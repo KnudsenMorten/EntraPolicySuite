@@ -104,14 +104,19 @@ dialog textarea { width:100%; box-sizing:border-box; margin-top:4px; }
 .settings { border:1px solid var(--border); border-radius:6px; background:var(--surface-card); }
 .setting { padding:8px 12px; border-bottom:1px solid var(--border); }
 .setting:last-child { border-bottom:0; }
-.srow { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
-.sname { flex:1 1 260px; min-width:0; }
+/* SETTINGS-LAYOUT (owner 2026-11-05: "settins view looks crappy"): three columns - name, control, buttons - so every
+   control starts at the same place and Save / More info stay on screen. No fixed width cap (WIDTH-1): the columns share
+   the window; text fields fill theirs, an On/Off or choice list is as wide as its longest choice */
+.srow { display:grid; grid-template-columns:minmax(220px, 1fr) minmax(0, 1.5fr) max-content; gap:6px 16px; align-items:start; }
+.sname { min-width:0; }
 .slabel { font-weight:600; color:var(--text-heading); }
 .skey { font-size:11px; color:var(--text-muted); word-break:break-all; }
-.sctl { flex:1 1 260px; min-width:0; }
-.sctl input, .sctl select, .sctl textarea { width:100%; box-sizing:border-box; }
+.sctl { min-width:0; }
+.sctl input, .sctl textarea { width:100%; box-sizing:border-box; }
+.sctl select { width:auto; min-width:140px; max-width:100%; box-sizing:border-box; }
 .sval { white-space:pre-wrap; word-break:break-word; }
-.sacts { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+.sacts { display:flex; gap:4px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+@media (max-width: 760px) { .srow { grid-template-columns:minmax(0, 1fr); } .sacts { justify-content:flex-start; } }
 .smeta { font-size:11px; color:var(--text-muted); margin-top:3px; }
 .spanel { margin-top:6px; }
 .infobox { background:var(--surface-alt); border-left:3px solid var(--accent); padding:8px 12px; }

@@ -28,6 +28,8 @@ $script:EpsAuditActions = @(
     'identity.action.set'           # ID-ACTIONS (2.0.30): the follow-up fields set on users (EPS data only)
     'onboarding.check', 'breakglass.change'   # GET-STARTED (2.0.28): the engine checks the onboarding steps (reads only); the break-glass list edited (EPS data)
     'ca.policy.stage'               # CA-LIFECYCLE (2.0.27): a SuperAdmin moves ONE adopted policy ONE stage - the engine's one Conditional Access write
+    'ca.policy.edit', 'ca.policy.clone', 'ca.policy.edit.check'   # CA-EDIT (owner 2026-11-05): a SuperAdmin edits ONE adopted policy / clones it into a new one (created off, adopted)
+    'ca.group.check', 'ca.group.create', 'ca.group.rule', 'ca.group.members', 'ca.group.forceupdate', 'ca.group.au'   # CA-GROUPS (2.0.81): the groups the policies use - read, and a SuperAdmin's changes (the engine writes them, EPS-GroupWrite.ps1)
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names
     'identity.run.request', 'identity.export', 'view.save', 'view.delete'   # the identity report (read only) and saved views (LIST-1)
     'tamper.event.accept'           # the change was legitimate (no outside change)

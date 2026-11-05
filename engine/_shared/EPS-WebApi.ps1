@@ -79,6 +79,21 @@ function Get-EpsWebPaging {
 function New-EpsWebResponse { param([int]$Status = 200, $Body, [string]$ContentType = 'application/json; charset=utf-8', [hashtable]$Headers = @{}, $Audit) @{ Status = $Status; Body = $Body; ContentType = $ContentType; Headers = $Headers; Audit = $Audit } }
 function New-EpsWebError { param([int]$Status, [string]$Message) New-EpsWebResponse -Status $Status -Body @{ error = $Message } }
 
+function Invoke-EpsGroupRoute {
+    # CA-GROUPS: the five group routes (Apply = Engine) - the engine makes the plan again from the tenant and writes
+    # (EPS-GroupWrite.ps1, loaded by the engine only); the web app never reaches here with the write loaded
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Action)
+    $b = $Context.Body; $list = { param($v) @(@($v) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    $names = if ($Action -eq 'members') { & $list $b.name } else { & $list $b.names }
+    $t = "Groups|$Action$(if ($names.Count -eq 1) { "|$($names[0])" } elseif ($b.template) { "|$($b.template)" })"
+    if (-not (Get-Command Invoke-EpsGroupChange -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a group' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+    $s = Invoke-EpsGroupChange -ConnectionString $Context.Ctx.ConnectionString -Action $Action -Names $names -Add (& $list $b.add) -Remove (& $list $b.remove) -Template "$($b.template)" -Actor $Context.Caller.identity -Reason "$($b.reason)"
+    if ($s.Result -eq 'refused') { return New-EpsWebResponse -Status 409 -Body @{ error = "Not changed: $($s.Reason). Nothing in the tenant was changed." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "$($s.Reason)" } }
+    $after = @{ items = @($s.Items | ForEach-Object { "$($_.do) $($_.name): $($_.result)$(if ($_.error) { " ($($_.error))" })" }) }
+    if ($s.Result -eq 'failed') { return New-EpsWebResponse -Status 502 -Body @{ error = "Not changed: $($s.Text)" } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = "$($s.Reason)"; After = $after } }
+    New-EpsWebResponse -Body @{ ok = $true; partial = ($s.Result -eq 'partial'); text = "Groups ($Action): $($s.Text)" } -Audit @{ Target = $t; After = $after; Outcome = $(if ($s.Result -eq 'partial') { 'error' } else { 'ok' }); OutcomeText = $(if ($s.Result -eq 'partial') { "$($s.Reason)" }) }
+}
+
 function Get-EpsWebRoutes {
     # Method, Pattern (anchored; named groups become $m), Role, Action (audited when set), Handler { param($c, $m) }
     # $c = @{ Ctx; Caller; Role; Query; Body (parsed JSON); Correlation }. A handler returns New-EpsWebResponse.
@@ -724,6 +739,34 @@ function Get-EpsWebRoutes {
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not moved: $($s.Reason). The policy was not changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
             New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Moved $($s.Before.displayName) from $($s.Before.stage) to $to$(if ($s.After.displayName -cne $s.Before.displayName) { " (now $($s.After.displayName))" }).$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
                 -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        # CA-EDIT (owner 2026-11-05: "where is the option to modify or/and clone a policy" -> "Edit + clone, any field"; "but
+        # it is always 100% opeator controlled"): the check of an edit / a copy (nothing written - the page shows it before
+        # the operator approves), then the edit and the copy themselves, applied by the engine from his signed request
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/edit-plan$'; Summary = 'Check an edit or a copy of one Conditional Access policy without making it: what changes, and the break-glass check, from the last read. Changes nothing.'; Body = 'mode: Edit or Clone; policy: the policy as it should be (displayName, state, conditions, grantControls, sessionControls)'; Public = $false
+           Role = 'SuperAdmin'; Action = 'ca.policy.edit.check'; Handler = { param($c, $m)
+            $mode = if ("$($c.Body.mode)") { "$($c.Body.mode)" } else { 'Edit' }
+            if ($mode -notin 'Edit', 'Clone') { return New-EpsWebError 400 'mode: Edit or Clone' }
+            $plan = Get-EpsCaEditPlanFromStore -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Edit $c.Body.policy -Mode $mode
+            if (-not $plan) { return New-EpsWebError 404 'no such policy in the last read of the policy list' }
+            New-EpsWebResponse -Body $plan -Audit @{ Target = "CaPolicy|$($m.policy)"; After = @{ mode = $mode; ok = [bool]$plan.ok; changes = @($plan.changes).Count }; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/edit$'; Summary = 'Edit one adopted Conditional Access policy (any part: name, state, conditions, grant, session) after the engine checks it again against the live policy (break-glass included).'; Body = 'policy: the policy as it should be; expected: the review hash as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.edit'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"
+            if (-not (Get-Command Invoke-EpsCaPolicyEdit -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaPolicyEdit -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Policy $c.Body.policy -Expected "$($c.Body.expected)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'invalid' { 400 } 'missing' { 404 } 'changed' { 409 } 'notadopted' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not changed: $($s.Reason). The policy was not changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Changed $($s.Before.displayName) ($(@($s.After.parts) -join ', '))$(if ($s.After.displayName -cne $s.Before.displayName) { " - now $($s.After.displayName)" }).$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
+                -Audit @{ Target = "$t ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/clone$'; Summary = 'Copy one adopted Conditional Access policy into a new one, created off and adopted, after the engine checks it again (break-glass included).'; Body = 'policy: the copy as it should be (a new displayName); expected: the review hash of the source as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.clone'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"
+            if (-not (Get-Command Invoke-EpsCaPolicyClone -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaPolicyClone -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Policy $c.Body.policy -Expected "$($c.Body.expected)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'invalid' { 400 } 'missing' { 404 } 'changed' { 409 } 'notadopted' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not copied: $($s.Reason). Nothing was created." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; policyId = $s.NewId; text = "Created $($s.After.displayName), a copy of $($s.Before.displayName): OFF, adopted - move it through the stages when it is ready.$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
+                -Audit @{ Target = "CaPolicy|$($s.NewId) ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
         # GET-STARTED (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak glass, auth methods, naming
         # conv for groups etc. see all req in v1 scripts"; DESIGN §5.10): the engine checks, the page shows what it found
         @{ Method = 'GET'; Pattern = '^/api/onboarding$'; Summary = 'Get started: every onboarding step with what the last check found, the break-glass accounts and the targeting method.'; Public = $false
@@ -738,6 +781,8 @@ function Get-EpsWebRoutes {
             if (-not (Get-Command Invoke-EpsOnboardingCheck -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine checks the tenant' }
             $r = Invoke-EpsOnboardingCheck -ConnectionString $c.Ctx.ConnectionString
             Save-EpsOnboardingCheck -ConnectionString $c.Ctx.ConnectionString -Rows $r.Rows -Actor $c.Caller.identity
+            # CA-GROUPS: the same check reads the managed groups for Conditional Access > Groups (reads only)
+            if (Get-Command Read-EpsManagedGroupState -ErrorAction SilentlyContinue) { $mg = Get-EpsManagedGroups -ConnectionString $c.Ctx.ConnectionString; Save-EpsManagedGroupState -ConnectionString $c.Ctx.ConnectionString -Replace -Rows @(Read-EpsManagedGroupState -Names @($mg.Groups.Keys) -AdminUnits $mg.AdminUnits) }
             $n = { param($s) @($r.Rows | Where-Object { $_.state -eq $s }).Count }
             New-EpsWebResponse -Body @{ ok = $true; text = "Checked $(@($r.Rows).Count) item(s): $(& $n 'ok') ok, $(& $n 'missing') missing, $(& $n 'check') to check. Nothing in the tenant was changed." } -Audit @{ Target = 'Onboarding'; After = @{ items = @($r.Rows).Count; missing = (& $n 'missing') } } } }
         @{ Method = 'POST'; Pattern = '^/api/breakglass$'; Summary = 'Add or change a break-glass account in Entra Policy Suite''s list (the accounts every policy must exclude).'; Body = 'upn; displayName; method: MFA or FIDO; placement: where it is kept (no secret); enabled; reason'; Public = $false
@@ -747,6 +792,37 @@ function Get-EpsWebRoutes {
             if ($bad) { return New-EpsWebResponse -Status 400 -Body @{ error = $bad } -Audit @{ Target = "BreakGlassAccount|$upn"; Outcome = 'refused'; OutcomeText = $bad } }
             $s = Save-EpsBreakGlassAccount -ConnectionString $c.Ctx.ConnectionString -UserPrincipalName $upn -DisplayName "$($b.displayName)" -Method "$($b.method)" -Placement "$($b.placement)" -Enabled $(if ($null -eq $b.enabled) { $true } else { [bool]$b.enabled }) -Actor $c.Caller.identity
             New-EpsWebResponse -Body @{ ok = $true; text = $(if ($s.Result -eq 'unchanged') { "Nothing to change for $upn." } else { "Saved $upn in the break-glass list. Nothing in the tenant changed - read the policy list again to check every policy excludes it." }) } -Audit @{ Target = "BreakGlassAccount|$upn"; Before = $s.Before; After = $s.After } } }
+        # CA-GROUPS (owner 2026-11-05: "make sure to also include the underlying groups that must be provisioned and managed";
+        # "Yes, Group.ReadWrite.All"; V1-PARITY): the groups the policies use, as v1 makes them. The page and the preview read
+        # SQL only; every change is a SuperAdmin's request, applied by the engine (EPS-GroupWrite.ps1), read back, journaled
+        @{ Method = 'GET'; Pattern = '^/api/groups$'; Summary = 'The groups the Conditional Access policies use (target, break-glass, registration, pilot and exclude groups) and their administrative units, as the engine last read them.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $o = Get-EpsGroupOverview -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body @{ method = $o.Method; rows = @($o.Rows); adminUnits = @($o.AdminUnits); inUse = $o.InUse; checkedAtUtc = @(ConvertTo-EpsWebValue ([pscustomobject]@{ At = $o.CheckedAtUtc }))[0].At } } }
+        @{ Method = 'GET'; Pattern = '^/api/groups/plan$'; Summary = 'What a group change would do, from the last read. Changes nothing.'; Body = 'action: create, rule, members, forceupdate or au; names (comma separated); add, remove (user principal names, comma separated); template'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $sp = { param($v) @("$v" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+            $mg = Get-EpsManagedGroups -ConnectionString $cs
+            $bg = @(Invoke-EpsSql -ConnectionString $cs -Query 'SELECT UserPrincipalName FROM eps.BreakGlassAccount' | ForEach-Object { "$($_.UserPrincipalName)" })
+            $pl = Get-EpsGroupPlan -Managed $mg -State (Get-EpsManagedGroupState -ConnectionString $cs) -Action "$($c.Query.action)" -Names (& $sp $c.Query.names) -Add (& $sp $c.Query.add) -Remove (& $sp $c.Query.remove) -Template "$($c.Query.template)" -BreakGlassUpns $bg
+            New-EpsWebResponse -Body @{ ok = $pl.ok; reason = $pl.reason; action = $pl.action; summary = $pl.summary; items = @($pl.items | ForEach-Object { [ordered]@{ name = $_.name; do = $_.do; detail = $_.detail } }) } } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/check$'; Summary = 'Read the managed groups and administrative units in the tenant now (reads only).'; Body = 'reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.group.check'; NeedsReason = $true; Handler = { param($c, $m)
+            if (-not (Get-Command Read-EpsManagedGroupState -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine reads the tenant' }
+            $mg = Get-EpsManagedGroups -ConnectionString $c.Ctx.ConnectionString
+            $rows = @(Read-EpsManagedGroupState -Names @($mg.Groups.Keys) -AdminUnits $mg.AdminUnits)
+            Save-EpsManagedGroupState -ConnectionString $c.Ctx.ConnectionString -Replace -Rows $rows
+            New-EpsWebResponse -Body @{ ok = $true; text = "Read $(@($rows | Where-Object { "$($_.Name)" -notlike 'au:*' }).Count) group(s): $(@($rows | Where-Object { "$($_.Name)" -notlike 'au:*' -and $_.Found -eq $false }).Count) missing. Nothing in the tenant was changed." } -Audit @{ Target = 'Groups'; After = @{ groups = @($rows).Count } } } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/create$'; Summary = 'Create the named groups that are missing, as v1 makes them (type, rule, description, administrative unit).'; Body = 'names: the groups; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.create'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'create' } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/rule$'; Summary = 'Set the membership rule of the named dynamic groups to Entra Policy Suite''s (v1''s, or the pilot rule of the policy''s stage).'; Body = 'names; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.rule'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'rule' } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/members$'; Summary = 'Add or remove members of ONE assigned pilot, exclude or break-glass group (a break-glass account never leaves the break-glass group).'; Body = 'name; add, remove: user principal names; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.members'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'members' } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/forceupdate$'; Summary = 'v1''s group force update for ONE policy: its exclude group, and its dynamic pilot group back to the Pilot1 rule; a missing one is created.'; Body = 'template: CAnnn; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.forceupdate'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'forceupdate' } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/au$'; Summary = 'Create the administrative units of the Conditional Access groups and place each managed group in its unit.'; Body = 'reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.au'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'au' } }
         @{ Method = 'GET'; Pattern = '^/api/capolicies/templates$'; Summary = 'The Conditional Access template library of this release (CA000-CA800), each template with its stages and its notes.'; Body = 'id: one template, with its body'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             $cat = Get-EpsCaTemplateCatalog
@@ -1060,7 +1136,7 @@ function Get-EpsApiReference {
     #>
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
-        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; tamper = 'Tamper'
+        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; groups = 'Conditional Access'; tamper = 'Tamper'
         worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }

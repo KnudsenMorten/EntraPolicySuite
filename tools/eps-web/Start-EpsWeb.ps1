@@ -13,7 +13,7 @@
 param([string]$ConnectionString = $env:EPS_SQL_CONNECTION, [int]$Port = $(if ($env:EPS_WEB_PORT) { [int]$env:EPS_WEB_PORT } else { 8081 }))
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-SqlStore', 'EPS-Scheduler', 'EPS-Conditions', 'EPS-WebAuth', 'EPS-Audit', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-Mail', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-Onboarding', 'EPS-IdentityReport', 'EPS-WebApi') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-Scheduler', 'EPS-Conditions', 'EPS-WebAuth', 'EPS-Audit', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-Mail', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-IdentityReport', 'EPS-WebApi') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 $cfg = Get-EpsWebAuthConfig
 if (-not $cfg.Issuers.Count -or -not $cfg.Audiences.Count) { Write-Host '[eps web] EPS_TENANT_ID and EPS_WEB_CLIENT_ID must be set - not starting (fail closed)'; exit 2 }

@@ -924,3 +924,23 @@ IF COL_LENGTH('eps.SupportAccess', 'AdminNow') IS NULL ALTER TABLE eps.SupportAc
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 21)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (21, '2.0.73');
+
+-- v22 (2.0.81, CA-GROUPS - owner 2026-11-05: "make sure to also include the underlying groups that must be provisioned
+-- and managed"): the groups (and administrative units, Name 'au:<name>') Entra Policy Suite manages, as the engine last
+-- read them in the tenant. The engine writes it (a read, a group change); the web app shows it.
+IF OBJECT_ID('eps.ManagedGroup') IS NULL
+CREATE TABLE eps.ManagedGroup (
+    Name          NVARCHAR(300)  NOT NULL CONSTRAINT PK_ManagedGroup PRIMARY KEY,
+    ObjectId      NVARCHAR(64)   NULL,
+    Found         BIT            NULL,                    -- NULL = could not be read
+    Dynamic       BIT            NULL,
+    RuleInTenant  NVARCHAR(MAX)  NULL,
+    Processing    NVARCHAR(20)   NULL,                    -- On | Paused
+    Members       INT            NULL,
+    AdminUnit     NVARCHAR(256)  NULL,                    -- the unit it is in ('' none, NULL not readable)
+    Error         NVARCHAR(400)  NULL,
+    CheckedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_ManagedGroup_At DEFAULT SYSUTCDATETIME()
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 22)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (22, '2.0.81');

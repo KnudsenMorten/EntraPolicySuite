@@ -5,7 +5,8 @@
 #   of my tenant !!"
 #
 # So NOTHING in this file writes a Conditional Access policy, a named location or an authentication strength - not here,
-# and nowhere else but the one stage move in EPS-CaWrite.ps1 (CA-LIFECYCLE, owner 2026-11-03 "Write on approval"):
+# and nowhere else but the stage move, the edit and the copy in EPS-CaWrite.ps1 (CA-LIFECYCLE, owner 2026-11-03 "Write on
+# approval"; CA-EDIT, owner 2026-11-05 "Edit + clone, any field"):
 # tests/Test-EpsNoCaWrite.ps1 fails the build on any other write to identity/conditionalAccess/*. What is here:
 #   * the template library (engine/ca/templates.json - v1's CA000-CA800 as data) and the match of a tenant policy to its
 #     template by v1's naming (the CA number in the display name)
@@ -469,11 +470,11 @@ function Get-EpsCaStagePlan {
         $want = (@(1..$n | ForEach-Object { $Catalog.pilotRule["Pilot$_"] }) -join ', ')
         $rule = @($Names.Values | Where-Object { $_.Kind -eq 'group' -and "$($_.Name)" -ieq $g } | ForEach-Object { "$($_.Detail)" })[0]
         $takes = 0; foreach ($i in 1..3) { if ($rule -and $rule -match [regex]::Escape($Catalog.pilotRule["Pilot$i"])) { $takes = $i } }
-        $plan.notes.Add($(if ($null -eq $rule) { "The pilot group $g is dynamic: v1 widens its rule to take $want on $($Catalog.pilotRule.attribute). Entra Policy Suite does not change groups - check its rule in Entra." }
+        $plan.notes.Add($(if ($null -eq $rule) { "The pilot group $g is dynamic: v1 widens its rule to take $want on $($Catalog.pilotRule.attribute). With the move, the engine sets its rule as v1 does (CA-GROUPS)." }
             elseif ($takes -eq $n) { "The pilot group $g already takes $want." }
-            else { "The pilot group $g is dynamic and its rule takes $(if ($takes) { "up to $($Catalog.pilotRule["Pilot$takes"])" } else { 'no pilot value' }) now: v1 changes it to take $want on $($Catalog.pilotRule.attribute). Entra Policy Suite does not change groups - change its rule in Entra yourself." }))
+            else { "The pilot group $g is dynamic and its rule takes $(if ($takes) { "up to $($Catalog.pilotRule["Pilot$takes"])" } else { 'no pilot value' }) now: v1 changes it to take $want on $($Catalog.pilotRule.attribute). With the move, the engine sets its rule as v1 does (CA-GROUPS)." }))
     }
-    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -eq 'Prod') { $plan.notes.Add('v1 also pauses the dynamic pilot group''s rule at Prod. Entra Policy Suite leaves the group as it is.') }
+    if ($Ctx.Method -eq 'Dynamic_Using_Tags' -and $To -eq 'Prod') { $plan.notes.Add('At Prod the engine pauses the dynamic pilot group''s rule, as v1 does (CA-GROUPS).') }
     if ($Ctx.Method -like 'Manual_*' -and $To -like 'Pilot*') { $plan.notes.Add("The policy applies to the members of $(@($plan.set['conditions.users.includeGroups'].values)[0]): check the group has the right members.") }
     if (-not $plan.changes.Count) { return & $no "the policy is already as $To wants it" }
     $plan.ok = $true; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes)
@@ -491,6 +492,151 @@ function Get-EpsCaStagePlanFromStore {
     $rv = $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20
     $plan = Get-EpsCaStagePlan -Policy ($r.BodyJson | ConvertFrom-Json -AsHashtable -Depth 20) -Review $rv -To $To -Ctx $ctx -Names $names
     $plan.expected = $rv.hash
+    $plan
+}
+
+# ---- CA-EDIT (owner 2026-11-05: "where is the option to modify or/and clone a policy" -> "Edit + clone, any field";
+# "but it is always 100% opeator controlled"): the PLAN of an edit or a clone, pure. Nothing here writes: the page shows
+# the plan, the engine (EPS-CaWrite.ps1, the edit and the copy) makes it again from the LIVE
+# policy before its one write.
+$script:EpsCaEditTop = @('displayName', 'state', 'conditions', 'grantControls', 'sessionControls')
+$script:EpsCaEditStates = @('enabled', 'disabled', 'enabledForReportingButNotEnforced')
+# the lists an operator may fill with NAMES (a group's name, a user's UPN, a role's or a named location's name); the
+# engine turns each into its id (GET) - an id or a keyword stays as it is
+$script:EpsCaEditNamePaths = [ordered]@{
+    'conditions.users.includeUsers' = 'user'; 'conditions.users.excludeUsers' = 'user'
+    'conditions.users.includeGroups' = 'group'; 'conditions.users.excludeGroups' = 'group'
+    'conditions.users.includeRoles' = 'role'; 'conditions.users.excludeRoles' = 'role'
+    'conditions.locations.includeLocations' = 'location'; 'conditions.locations.excludeLocations' = 'location'
+}
+$script:EpsCaEditKeywords = @('All', 'None', 'GuestsOrExternalUsers', 'AllTrusted')
+
+function ConvertTo-EpsCaEditBody {
+    <#
+      The operator's policy body -> @{ Ok; Reason; Body }: a hashtable with only the parts an operator edits (name, state,
+      conditions, grant, session). Any other top-level part (id, created / modified times, templateId, @odata, anything
+      unknown) is REFUSED - it is not his to set. Nested @odata annotations are dropped; an authentication strength is
+      sent by its id only (its details are read only).
+    #>
+    param($Body)
+    if ($null -eq $Body) { return @{ Ok = $false; Reason = 'policy: the policy body is missing' } }
+    $h = try { ConvertTo-Json -InputObject $Body -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30 } catch { $null }
+    if ($h -isnot [System.Collections.IDictionary]) { return @{ Ok = $false; Reason = 'policy: a JSON object' } }
+    $bad = @($h.Keys | Where-Object { "$_" -notin $script:EpsCaEditTop })
+    if ($bad.Count) { return @{ Ok = $false; Reason = "policy: $($bad -join ', ') cannot be set here (only $($script:EpsCaEditTop -join ', '))" } }
+    $strip = $null
+    $strip = { param($v)
+        if ($v -is [System.Collections.IDictionary]) { $o = [ordered]@{}; foreach ($k in @($v.Keys)) { if ("$k" -like '*@odata*') { continue }; $o["$k"] = & $strip $v[$k] }; return $o }
+        if ($v -is [System.Collections.IList]) { return , @(foreach ($i in $v) { & $strip $i }) }
+        $v }
+    $out = [ordered]@{}
+    foreach ($k in $script:EpsCaEditTop) { if ($h.Contains($k)) { $out[$k] = & $strip $h[$k] } }
+    $as = Get-EpsCaV $out 'grantControls.authenticationStrength'
+    if ($as -is [System.Collections.IDictionary]) { $out.grantControls.authenticationStrength = $(if ($as.id) { [ordered]@{ id = "$($as.id)" } } else { $null }) }
+    if ($out.Contains('displayName') -and ("$($out.displayName)".Trim() -eq '' -or "$($out.displayName)".Length -gt 256)) { return @{ Ok = $false; Reason = 'displayName: 1 to 256 characters' } }
+    if ($out.Contains('displayName')) { $out.displayName = "$($out.displayName)".Trim() }
+    if ($out.Contains('state') -and "$($out.state)" -notin $script:EpsCaEditStates) { return @{ Ok = $false; Reason = "state: one of $($script:EpsCaEditStates -join ', ')" } }
+    foreach ($k in 'conditions', 'grantControls', 'sessionControls') { if ($out.Contains($k) -and $null -ne $out[$k] -and $out[$k] -isnot [System.Collections.IDictionary]) { return @{ Ok = $false; Reason = "${k}: an object" } } }
+    if ($out.Contains('conditions') -and $null -eq $out.conditions) { return @{ Ok = $false; Reason = 'conditions: a policy needs its conditions' } }
+    @{ Ok = $true; Body = $out }
+}
+
+function Resolve-EpsCaEditNames {
+    <#
+      The names in a body's lists -> ids, with -Lookup { param($kind, $value) -> @{ Id; Name; Detail } or $null }. An id
+      or a keyword (All, None, GuestsOrExternalUsers, AllTrusted) stays. -Strict: a name that is not found refuses the
+      whole change (the engine); without it the name stays and is listed in Unresolved (the preview).
+      Returns @{ Ok; Reason; Body; Names ("kind|id" -> @{ Kind; Name; Detail }); Unresolved }.
+    #>
+    param([Parameter(Mandatory)]$Body, [Parameter(Mandatory)][scriptblock]$Lookup, [switch]$Strict)
+    $names = @{}; $unres = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in $script:EpsCaEditNamePaths.Keys) {
+        $kind = $script:EpsCaEditNamePaths[$path]
+        $parts = $path.Split('.'); $o = $Body
+        foreach ($s in $parts[0..($parts.Count - 2)]) { if ($o -is [System.Collections.IDictionary]) { $o = $o[$s] } else { $o = $null }; if ($null -eq $o) { break } }
+        if ($o -isnot [System.Collections.IDictionary] -or $null -eq $o[$parts[-1]]) { continue }
+        $vals = [System.Collections.Generic.List[string]]::new()
+        foreach ($v in @($o[$parts[-1]])) {
+            $v = "$v".Trim(); if (-not $v) { continue }
+            if ($v -match $script:EpsCaGuidRx -or $v -in $script:EpsCaEditKeywords) { $vals.Add($v); continue }
+            $hit = & $Lookup $kind $v
+            if ($hit -and $hit.Id) { $vals.Add("$($hit.Id)"); $names["$kind|$("$($hit.Id)".ToLowerInvariant())"] = @{ Kind = $kind; Name = "$($hit.Name)"; Detail = $hit.Detail }; continue }
+            if ($Strict) { return @{ Ok = $false; Reason = $(if ($hit -and $hit.Reason) { $hit.Reason } else { "the $kind '$v' ($path) is not in the tenant" }) } }
+            $unres.Add("$v ($kind)"); $vals.Add($v)
+        }
+        $o[$parts[-1]] = @($vals)
+    }
+    @{ Ok = $true; Body = $Body; Names = $names; Unresolved = @($unres) }
+}
+
+function Get-EpsCaEditPlan {
+    <#
+      The plan of an edit (-Mode Edit) or a clone (-Mode Clone) of ONE policy, pure. -Live = the policy as read; -Edit = the
+      operator's body (ConvertTo-EpsCaEditBody, names resolved). Edit: a part he left out stays as it is; only the parts that
+      really change go in the PATCH. Clone: a NEW policy from -Live with his changes, ALWAYS created off (disabled), with a
+      new name (not the source's, not one of -ExistingNames). The break-glass check runs on the RESULT: an edit is refused
+      unless the result is off or keeps the break-glass accounts excluded (it never "fixes" it); a clone is refused when
+      it would NOT exclude them (it starts off; it must be able to go on later).
+      Returns @{ ok; reason; mode; after; patch; changes (path / before / after, ids named); breakGlass; displayNameBefore;
+      displayNameAfter; stateBefore; stateAfter }.
+    #>
+    param([Parameter(Mandatory)]$Live, [Parameter(Mandatory)]$Edit, [ValidateSet('Edit', 'Clone')][string]$Mode = 'Edit', $BreakGlass = @{}, [bool]$IsBreakGlassPolicy,
+          [hashtable]$Names = @{}, [string[]]$ExistingNames = @())
+    $live = ConvertTo-Json -InputObject $Live -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30
+    # the live policy as the operator edits it (read-only parts and annotations out), so a part he did not touch compares equal
+    $src = [ordered]@{}; foreach ($k in $script:EpsCaEditTop) { if ($live.Contains($k)) { $src[$k] = $live[$k] } }
+    $base = (ConvertTo-EpsCaEditBody $src).Body
+    if (-not $base) { $base = [ordered]@{} }
+    $after = [ordered]@{}
+    foreach ($k in $script:EpsCaEditTop) { if ($Edit.Contains($k)) { $after[$k] = $Edit[$k] } elseif ($base.Contains($k)) { $after[$k] = $base[$k] } }
+    $plan = [ordered]@{ ok = $true; reason = $null; mode = $Mode; after = $after; patch = [ordered]@{}; changes = @(); breakGlass = $null
+        displayNameBefore = "$($live.displayName)"; displayNameAfter = "$($after.displayName)"; stateBefore = "$($live.state)"; stateAfter = "$($after.state)" }
+    $refuse = { param($why) $plan.ok = $false; $plan.reason = $why; $plan }
+    if ($Mode -eq 'Clone') {
+        $after.state = 'disabled'; $plan.stateAfter = 'disabled'
+        if (-not $Edit.Contains('displayName') -or "$($after.displayName)" -ieq "$($live.displayName)") { return & $refuse 'a copy needs a new name (not the name of the policy it copies)' }
+        if (@($ExistingNames | Where-Object { "$_" -ieq "$($after.displayName)" }).Count) { return & $refuse "a policy named '$($after.displayName)' is already in the tenant - pick another name" }
+    }
+    $cb = ConvertTo-EpsCaCanonical $base; $ca = ConvertTo-EpsCaCanonical $after
+    $nameIt = { param($t) if ($t) { Format-EpsCaIds -Text $t -Names $Names } else { $t } }
+    $plan.changes = @(Compare-EpsCaCanonical -Before $cb -After $ca | ForEach-Object { [ordered]@{ path = $_.path; before = (& $nameIt $_.before); after = (& $nameIt $_.after) } })
+    if ($Mode -eq 'Edit') {
+        foreach ($k in $script:EpsCaEditTop) {
+            $jb = ConvertTo-Json -InputObject $cb[$k] -Depth 30 -Compress; $ja = ConvertTo-Json -InputObject $ca[$k] -Depth 30 -Compress
+            if ($jb -cne $ja) { $plan.patch[$k] = $after[$k] }
+        }
+        if (-not $plan.patch.Count) { return & $refuse 'nothing to change - the policy is already like this' }
+    }
+    $bg = Test-EpsCaBreakGlassExclusion -Policy $after -BreakGlass $BreakGlass -IsBreakGlassPolicy $IsBreakGlassPolicy
+    $plan.breakGlass = [ordered]@{ ok = $bg.Ok; exempt = [bool]$bg.Exempt; text = $bg.Text; missing = @($bg.Missing) }
+    if ($Mode -eq 'Edit' -and $plan.stateAfter -ne 'disabled' -and $bg.Ok -ne $true) { return & $refuse "the break-glass check refuses it: $($bg.Text)" }
+    if ($Mode -eq 'Clone' -and $bg.Ok -eq $false) { return & $refuse "the break-glass check refuses it: the copy $($bg.Text)" }
+    $plan
+}
+
+function Get-EpsCaEditPlanFromStore {
+    # the web app's preview of an edit / a clone: from what the engine last read (eps.CaPolicy) - no Graph. Names are
+    # turned into ids from the names the engine already stored; one it does not know stays a name (the engine looks it up).
+    # Returns the plan (+ expected, adopted, unresolved), or $null when the policy is not in the last read.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$PolicyId, [Parameter(Mandatory)]$Edit, [ValidateSet('Edit', 'Clone')][string]$Mode = 'Edit')
+    $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT BodyJson, ReviewJson FROM eps.CaPolicy WHERE PolicyId = @p')[0]
+    if (-not $r -or -not $r.BodyJson -or $r.BodyJson -is [DBNull]) { return $null }
+    $live = $r.BodyJson | ConvertFrom-Json -AsHashtable -Depth 30
+    $rv = if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20 } else { @{} }
+    $ad = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT Status FROM eps.CaAdoption WHERE PolicyId = @p')[0]
+    $adopted = [bool]($ad -and "$($ad.Status)" -eq 'Adopted')
+    $e = ConvertTo-EpsCaEditBody $Edit
+    if (-not $e.Ok) { return [ordered]@{ ok = $false; reason = $e.Reason; mode = $Mode; adopted = $adopted; expected = $rv.hash; changes = @() } }
+    $names = Get-EpsCaNameMap -ConnectionString $ConnectionString
+    $lookup = { param($kind, $v) foreach ($k in $names.Keys) { $n = $names[$k]; if ($n.Kind -eq $kind -and ("$($n.Name)" -ieq $v -or ($kind -eq 'user' -and "$($n.Detail)" -ieq $v))) { return @{ Id = ($k -split '\|', 2)[1]; Name = $n.Name; Detail = $n.Detail } } }; $null }.GetNewClosure()
+    $rs = Resolve-EpsCaEditNames -Body $e.Body -Lookup $lookup
+    $ctx = Get-EpsCaContext -ConnectionString $ConnectionString -Names $names -NoGraph
+    $t = if ($rv.templateId) { (Get-EpsCaTemplateCatalog).ById["$($rv.templateId)"] }
+    $existing = if ($Mode -eq 'Clone') { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT DisplayName FROM eps.CaPolicy' | ForEach-Object { "$($_.DisplayName)" }) } else { @() }
+    $plan = Get-EpsCaEditPlan -Live $live -Edit $rs.Body -Mode $Mode -BreakGlass $ctx.BreakGlass -IsBreakGlassPolicy ([bool]($t -and $t.breakGlassPolicy)) -Names $names -ExistingNames $existing
+    $plan.expected = $rv.hash; $plan.adopted = $adopted; $plan.unresolved = @($rs.Unresolved)
+    if ($plan.ok -and -not $adopted) { $plan.ok = $false; $plan.reason = "only an adopted policy is $(if ($Mode -eq 'Clone') { 'copied' } else { 'edited' }) from here - adopt it first" }
+    $plan.Remove('after'); $plan.Remove('patch')
     $plan
 }
 
@@ -724,7 +870,11 @@ function Get-EpsCaContext {
     }
     $gids = [System.Collections.Generic.List[string]]::new(); $rel = [System.Collections.Generic.List[string]]::new()
     foreach ($n in @($relNames.Keys)) {
-        if ($NoGraph) { break }
+        if ($NoGraph) {
+            # CA-EDIT: the preview knows the break-glass group(s) by the names the engine stored (no Graph)
+            foreach ($k in @($Names.Keys)) { $x = $Names[$k]; if ($x.Kind -eq 'group' -and "$($x.Name)" -ieq $n) { $gid = ($k -split '\|', 2)[1]; $rel.Add($gid); if ($bgNames.ContainsKey($n)) { $gids.Add($gid) } } }
+            continue
+        }
         try {
             foreach ($g in @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$($n.Replace("'", "''"))'&`$select=id,displayName,membershipRule" -All)) {
                 $Names["group|$("$($g.id)".ToLowerInvariant())"] = @{ Kind = 'group'; Name = [string]$g.displayName; Detail = $(if ($g.membershipRule) { [string]$g.membershipRule }) }

@@ -776,10 +776,20 @@ function Invoke-EpsAgentPoolStep {
     # framework rule 15: a pool left Failed / Canceled (an earlier run) is made again, never waited on
     # framework rule 11g (owner 2026-11-05): tier S2, 0 instances - it runs only while it builds (Invoke-EpsAcrBuild scales
     # it to 2 and back to 0); a pool of another tier (made before 11g) is made again, as the tier cannot be changed in place
+    # framework 11g update (Invardia d3adfdd2, 2026-11-05): the recreate is ONE intent across runs - a delete can take ~14
+    # min, longer than one run's wait. A pool found 'Deleting' (an earlier run's delete) is waited for, never deleted
+    # again; a pool missing is made (the recreate finished). The delete itself waits WaitMinutes.
+    if ($have -and "$($have.properties.provisioningState)" -eq 'Deleting') {
+        $poll = [math]::Max(0, [int]($Ctx.PollSeconds ?? 10)); $sw = [Diagnostics.Stopwatch]::StartNew(); $n = 0
+        while ($have -and "$($have.properties.provisioningState)" -eq 'Deleting' -and $sw.Elapsed.TotalMinutes -lt $script:EpsBuildPool.WaitMinutes -and $n++ -lt 1000) {
+            Start-Sleep -Seconds $poll; $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool -AllowNotFound }
+        if ($have -and "$($have.properties.provisioningState)" -eq 'Deleting') { throw "the registry's build pool $($Ctx.Names.AgentPool) is still being deleted after $($script:EpsBuildPool.WaitMinutes) min - run the install again; it finishes making the pool again" } }
     $tierWrong = $have -and "$($have.properties.tier)" -ne $script:EpsBuildPool.Tier
-    if ($tierWrong -and "$($have.properties.provisioningState)" -notin 'Failed', 'Canceled') { [void](Invoke-EpsArm -Method DELETE -Path $p -ApiVersion $script:EpsNetApi.acrPool -PollSeconds ($Ctx.PollSeconds ?? 10)) }
+    if ($tierWrong -and "$($have.properties.provisioningState)" -notin 'Failed', 'Canceled') { [void](Invoke-EpsArm -Method DELETE -Path $p -ApiVersion $script:EpsNetApi.acrPool -PollSeconds ($Ctx.PollSeconds ?? 10) -WaitSeconds ($script:EpsBuildPool.WaitMinutes * 60)) }
     if (-not $have -or $tierWrong -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId -or "$($have.properties.provisioningState)" -in 'Failed', 'Canceled') {
-        $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = $script:EpsBuildPool.IdleCount; tier = $script:EpsBuildPool.Tier; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
+        # framework 11g update: Azure refuses to CREATE a pool at count 0 (AgentPoolInvalidCount) - made at 1, then set to
+        # 0 below (PATCH, read back) once it is Succeeded
+        $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = $script:EpsBuildPool.CreateCount; tier = $script:EpsBuildPool.Tier; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
     }
     for ($i = 0; "$($have.properties.provisioningState)" -notin 'Succeeded', 'Failed', 'Canceled' -and $i -lt 60; $i++) { Start-Sleep -Seconds ($Ctx.PollSeconds ?? 10); $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool }
     if ("$($have.properties.provisioningState)" -ne 'Succeeded') { throw "the registry's build pool $($Ctx.Names.AgentPool) is '$($have.properties.provisioningState)' - without it the image cannot be built in a private registry" }

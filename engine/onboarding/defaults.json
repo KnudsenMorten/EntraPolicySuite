@@ -1,16 +1,17 @@
 {
   "_": "GET-STARTED (DESIGN §5.10): what v1's scripts set up before anything ran (Entra-ConditionalAccess-Management.ps1), as data the wizard checks the tenant against. The engine's Graph roles are the install's list (tests/Test-EpsOnboarding.ps1 keeps them equal to EPS-Install.ps1).",
-  "engineGraphRoles": ["User.ReadWrite.All", "Device.ReadWrite.All", "GroupMember.Read.All", "Organization.Read.All", "AuditLog.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "DeviceManagementManagedDevices.Read.All", "Application.Read.All", "Policy.ReadWrite.ConditionalAccess"],
+  "engineGraphRoles": ["User.ReadWrite.All", "Device.ReadWrite.All", "GroupMember.Read.All", "Organization.Read.All", "AuditLog.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "DeviceManagementManagedDevices.Read.All", "Application.Read.All", "Policy.ReadWrite.ConditionalAccess", "Group.ReadWrite.All", "AdministrativeUnit.ReadWrite.All"],
   "roleSince": {
     "User.ReadWrite.All": "2.0.0", "Device.ReadWrite.All": "2.0.0", "GroupMember.Read.All": "2.0.0", "Organization.Read.All": "2.0.0", "AuditLog.Read.All": "2.0.0",
-    "RoleManagement.Read.Directory": "2.0.1", "Policy.Read.All": "2.0.1", "DeviceManagementManagedDevices.Read.All": "2.0.6", "Application.Read.All": "2.0.14", "Policy.ReadWrite.ConditionalAccess": "2.0.27"
+    "RoleManagement.Read.Directory": "2.0.1", "Policy.Read.All": "2.0.1", "DeviceManagementManagedDevices.Read.All": "2.0.6", "Application.Read.All": "2.0.14", "Policy.ReadWrite.ConditionalAccess": "2.0.27", "Group.ReadWrite.All": "2.0.81", "AdministrativeUnit.ReadWrite.All": "2.0.81"
   },
   "roleFor": {
     "User.ReadWrite.All": "user tagging (write the tag attributes)", "Device.ReadWrite.All": "device tagging", "GroupMember.Read.All": "group conditions, the wizard's group checks",
     "Organization.Read.All": "licences (Teams Rooms, the identity report)", "AuditLog.Read.All": "the tamper monitor's 'who', the CA Policy Analyzer's sign-ins",
     "Policy.Read.All": "reading the Conditional Access policies, strengths and named locations", "RoleManagement.Read.Directory": "role names, the break-glass role check",
     "DeviceManagementManagedDevices.Read.All": "the identity report's Intune devices", "Application.Read.All": "application names in the CA documentation, this check of the engine's own rights",
-    "Policy.ReadWrite.ConditionalAccess": "the stage buttons (CA-LIFECYCLE)"
+    "Policy.ReadWrite.ConditionalAccess": "the stage buttons (CA-LIFECYCLE)",
+    "Group.ReadWrite.All": "the groups the policies use: create them, the pilot rule per stage, the pilot and exclude members (CA-GROUPS)", "AdministrativeUnit.ReadWrite.All": "the administrative units of the Conditional Access groups (CA-GROUPS)"
   },
   "exchangeRole": { "name": "Exchange Recipient Administrator", "templateId": "31392ffb-586c-42d1-9346-e59415a2cc4e", "for": "mailbox-type conditions (Exchange.ManageAsApp)" },
   "globalAdministratorTemplateId": "62e90394-69f5-4237-9190-012177145e10",

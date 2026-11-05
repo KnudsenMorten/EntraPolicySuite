@@ -2,6 +2,34 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.81 - edit and clone a Conditional Access policy, and the groups your policies use
+- New: Edit on an adopted policy's page changes any part of it - its name, state, the users, groups and roles it
+  includes or excludes, applications, user actions, client apps, platforms, locations, sign-in and user risk, the
+  grant controls and authentication strength, and the session controls - in a form, with an Advanced (JSON) box for
+  anything the form does not show. Groups, users, roles and named locations can be typed by name.
+- New: Clone creates a new policy from an adopted one with your changes. The copy is always created off and is
+  adopted at once; move it through the stages when it is ready.
+- Both are SuperAdmin only and always your own action: Check shows what changes before anything is sent, you approve
+  it with a reason, and the engine reads the policy again first. It refuses when the policy changed since you looked,
+  or when the result would no longer exclude the break-glass accounts. Every change is read back, recorded in the
+  policy's history and the audit trail. Nothing edits or copies a policy by itself.
+- Fixed: the Settings page lines every setting up in three columns (name, value, buttons), so Save and More info stay
+  on screen on a wide window.
+- Fixed: an install with a private registry makes its build pool the way Azure accepts it, and a pool being replaced
+  is finished by the next run instead of being left out.
+- New page Conditional Access > Groups: every group the policies use - the target groups, the break-glass group, the
+  registration group, and each adopted policy's exclude and pilot groups - with whether it is in your tenant, its
+  members, whether a dynamic group's rule is as it should be, and its administrative unit.
+- A SuperAdmin can create a missing group exactly as v1 did, set a dynamic group's rule back, change the members of a
+  pilot or exclude group, run v1's group force update for one policy, and create the three administrative units and
+  place the groups in them. Each change is shown first and needs a reason; the engine applies it and reads it back.
+  Nothing changes a group by itself.
+- Get started: a missing group can be created from its step.
+- A stage move now also sets the policy's dynamic pilot group for the stage, as v1 did (Pilot1 to Pilot3 widen it, Prod
+  pauses its rule). If the group cannot be set, the policy is not changed.
+- The engine needs two more Microsoft Graph permissions for this, Group.ReadWrite.All and
+  AdministrativeUnit.ReadWrite.All: run the install again once (Get started, step 1, shows when they are granted).
+
 ## 2.0.80 - the report backlog in the heartbeat
 - The 4-hourly heartbeat tells Invardia how many run reports are still waiting to be sent and how old the oldest
   is (0 when it has caught up), so a backlog shows up at once.
