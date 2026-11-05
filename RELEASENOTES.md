@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.75 - a private install's build pool runs only while it builds
+- On a private-network install, the registry's build pool has no running instances between builds. Installing or
+  updating starts two instances for the image build and stops them again afterwards, also when the build fails, and
+  checks that they stopped. A build on the pool may take up to 90 minutes. A pool made by an earlier release is made
+  again in the new size, with no instances running.
+
 ## 2.0.74 - updates install only between runs
 - An update never changes the database while another job runs. When a new release is due, no new job starts (a "Run
   now" waits); the update waits until the running jobs have finished - at most 45 minutes - and only then installs.

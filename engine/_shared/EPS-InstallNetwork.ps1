@@ -774,12 +774,18 @@ function Invoke-EpsAgentPoolStep {
     $p ="/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($Ctx.Names.ResourceGroup)/providers/Microsoft.ContainerRegistry/registries/$($Ctx.Names.Registry)/agentPools/$($Ctx.Names.AgentPool)"
     $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool -AllowNotFound
     # framework rule 15: a pool left Failed / Canceled (an earlier run) is made again, never waited on
-    if (-not $have -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId -or "$($have.properties.provisioningState)" -in 'Failed', 'Canceled') {
-        $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = 1; tier = 'S1'; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
+    # framework rule 11g (owner 2026-11-05): tier S2, 0 instances - it runs only while it builds (Invoke-EpsAcrBuild scales
+    # it to 2 and back to 0); a pool of another tier (made before 11g) is made again, as the tier cannot be changed in place
+    $tierWrong = $have -and "$($have.properties.tier)" -ne $script:EpsBuildPool.Tier
+    if ($tierWrong -and "$($have.properties.provisioningState)" -notin 'Failed', 'Canceled') { [void](Invoke-EpsArm -Method DELETE -Path $p -ApiVersion $script:EpsNetApi.acrPool -PollSeconds ($Ctx.PollSeconds ?? 10)) }
+    if (-not $have -or $tierWrong -or "$($have.properties.virtualNetworkSubnetResourceId)" -ne $Ctx.Network.EndpointsSubnetId -or "$($have.properties.provisioningState)" -in 'Failed', 'Canceled') {
+        $have = Invoke-EpsArm -Method PUT -Path $p -ApiVersion $script:EpsNetApi.acrPool -Body @{ location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite' }; properties = @{ count = $script:EpsBuildPool.IdleCount; tier = $script:EpsBuildPool.Tier; os = 'Linux'; virtualNetworkSubnetResourceId = $Ctx.Network.EndpointsSubnetId } }
     }
     for ($i = 0; "$($have.properties.provisioningState)" -notin 'Succeeded', 'Failed', 'Canceled' -and $i -lt 60; $i++) { Start-Sleep -Seconds ($Ctx.PollSeconds ?? 10); $have = Invoke-EpsArm -Path $p -ApiVersion $script:EpsNetApi.acrPool }
     if ("$($have.properties.provisioningState)" -ne 'Succeeded') { throw "the registry's build pool $($Ctx.Names.AgentPool) is '$($have.properties.provisioningState)' - without it the image cannot be built in a private registry" }
-    @{ Note = "the build pool $($Ctx.Names.AgentPool) in $($Ctx.Network.EndpointsSubnetName); its way out: $($out.Path)" }
+    # idle between builds: a pool found running (an earlier run stopped part way) is set back to 0, read back
+    if ([int]$have.properties.count -ne $script:EpsBuildPool.IdleCount) { [void](Set-EpsBuildPoolCount -PoolPath $p -Count $script:EpsBuildPool.IdleCount -PollSeconds ($Ctx.PollSeconds ?? 10)) }
+    @{ Note = "the build pool $($Ctx.Names.AgentPool) ($($script:EpsBuildPool.Tier), 0 instances between builds) in $($Ctx.Network.EndpointsSubnetName); its way out: $($out.Path)" }
 }
 
 function Get-EpsInsideCheckScript {
