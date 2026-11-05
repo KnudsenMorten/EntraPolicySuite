@@ -63,14 +63,14 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess')
-    run       = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool')
+    run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -201,13 +201,35 @@ function Select-EpsUplinkRecord {
     foreach ($k in @($Record.Keys)) {
         if ($allowed -cnotcontains $k) { continue }
         $v = $Record[$k]
-        if ($null -eq $v -or ($v -is [string] -and -not $v) -or ($v -is [System.Collections.IDictionary] -and -not $v.Count)) { continue }
+        # PSBase.Count = the number of entries: a plain .Count reads a KEY named 'count' first (BuildPool { count: 0 } was
+        # taken for an empty dictionary and dropped - found by Test-EpsUplink 2026-11-05)
+        if ($null -eq $v -or ($v -is [string] -and -not $v) -or ($v -is [System.Collections.IDictionary] -and -not $v.PSBase.Count)) { continue }
         $o[$k] = $v
     }
     $o
 }
 
 # ---------------------------------------------------------------------------------------------------- the heartbeat
+function ConvertFrom-EpsUplinkBuildPool {
+    <#
+      PURE. The stored build-pool fact (eps.UplinkState 'buildpool', JSON) -> [ordered]@{ tier; count; building; checkedUtc }
+      exactly, or $null (empty / not JSON / not this shape = the field is left out). Read with System.Text.Json, which keeps
+      the time as the text it is (ConvertFrom-Json would turn it into a DateTime).
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if (-not "$Text".Trim()) { return $null }
+    try {
+        $doc = [System.Text.Json.JsonDocument]::Parse("$Text")
+        try {
+            $r = $doc.RootElement
+            $tier = $r.GetProperty('tier').GetString(); $count = $r.GetProperty('count').GetInt32()
+            $building = $r.GetProperty('building').GetBoolean(); $at = $r.GetProperty('checkedUtc').GetString()
+        } finally { $doc.Dispose() }
+        if ("$tier" -notmatch '^[A-Za-z0-9]{1,10}$' -or $count -lt 0 -or $count -gt 100 -or "$at" -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { return $null }
+        return [ordered]@{ tier = "$tier"; count = [int]$count; building = [bool]$building; checkedUtc = "$at" }
+    } catch { return $null }
+}
+
 function ConvertTo-EpsUplinkUpdateWaited {
     <#
       PURE. The update run's give-up line ("update to 2.0.74 waited 45 min for running jobs (UserTagging, ...), retries next
@@ -288,7 +310,10 @@ function New-EpsUplinkHeartbeat {
             $ck = ConvertTo-EpsUplinkIso $sa.CheckedAtUtc; if ($ck) { $x.checkedUtc = $ck }
             $o.SupportAccess = $x
         }
-        # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
+        # framework rule 11g (5): BuildPool { tier, count, building, checkedUtc } as the update job last READ it (stored in
+        # eps.UplinkState 'buildpool'). No pool / never read / not this shape = LEFT OUT (absent = "no pool, shared builders")
+        $bpx = ConvertFrom-EpsUplinkBuildPool -Text "$($Facts.BuildPool)"
+        if ($bpx) { $o.BuildPool = $bpx }        # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
         $steps = [System.Collections.Generic.List[object]]::new()
         foreach ($s in @($Facts.SetupSteps)) {
             if (-not $s -or $steps.Count -ge 40 -or "$($s.key)" -notmatch '^[a-z0-9-]{1,60}$') { continue }
@@ -442,6 +467,7 @@ function Get-EpsUplinkHeartbeatFacts {
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
         SignIn = (Get-EpsUplinkSignIn -Query $q)
+        BuildPool = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'buildpool'")" } catch { '' })   # rule 11g (5): as the update job last read it
         SupportAccess = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Level, SessionUntil, ReadUser, AdminNow, CheckedAtUtc FROM eps.SupportAccess WHERE Id = 1')[0] } catch { $null })   # OPEN-01 #4: what caj-eps-support applied (read only)
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })

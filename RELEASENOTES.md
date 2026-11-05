@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.77 - the build pool in the heartbeat
+- A private-network install tells Invardia the state of its registry build pool (size, instances running, when it
+  was checked), as the update job read it. An install without a pool sends nothing for it.
+- A heartbeat value with an entry named "count" that is 0 is no longer dropped as empty.
+
 ## 2.0.76 - the update waits for running jobs (fix)
 - In 2.0.74 and 2.0.75 the update stopped before it could check which jobs were running, so it installed nothing. It
   changed nothing, and nothing else was affected. Now it checks, waits for running jobs and installs. An install on
@@ -9,12 +14,16 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 - Only Entra Policy Suite's own jobs are waited for, never another product's job in the same resource group.
 
 ## 2.0.75 - a private install's build pool runs only while it builds
+- **Superseded by 2.0.76 - do not install** (the update in this release stops safely before it installs anything; see
+  2.0.76). Its GitHub release is marked pre-release.
 - On a private-network install, the registry's build pool has no running instances between builds. Installing or
   updating starts two instances for the image build and stops them again afterwards, also when the build fails, and
   checks that they stopped. A build on the pool may take up to 90 minutes. A pool made by an earlier release is made
   again in the new size, with no instances running.
 
 ## 2.0.74 - updates install only between runs
+- **Superseded by 2.0.76 - do not install** (the update in this release stops safely before it installs anything; see
+  2.0.76). Its GitHub release is marked pre-release.
 - An update never changes the database while another job runs. When a new release is due, no new job starts (a "Run
   now" waits); the update waits until the running jobs have finished - at most 45 minutes - and only then installs.
   If they are still running after 45 minutes, nothing is changed and the update tries again the next night; Invardia

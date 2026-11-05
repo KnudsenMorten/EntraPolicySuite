@@ -267,6 +267,18 @@ function Invoke-EpsUpdateCheck {
         try { $vault = Invoke-EpsVaultShapeCheck -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved0 }
         & $Log $(if ($vault.State -eq 'failed') { 'Warning' } else { 'Info' }) "key vault shape (rule 11): $($vault.State) - $($vault.Reason)"
     }
+    # framework rule 11g (5): the build pool as read now -> eps.UplinkState 'buildpool' (the uplink sends it); no pool = ''
+    # (the heartbeat field is then left out); a failed read leaves the last stored value as it was
+    if ($updater -and -not $CheckOnly -and (Get-Command Get-EpsBuildPoolFact -ErrorAction SilentlyContinue)) {
+        $saved1 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = $ApplyTokenProvider
+        try { $bp = Get-EpsBuildPoolFact -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved1 }
+        & $Log 'Info' "build pool (rule 11g): $($bp.Reason)"
+        if ($null -ne $bp.None) {
+            $bv = if ($bp.None) { '' } else { ($bp.Fact | ConvertTo-Json -Compress) }
+            try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = $bv } -Query "MERGE eps.UplinkState AS d USING (SELECT N'buildpool' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'buildpool', @v);" | Out-Null }
+            catch { & $Log 'Warning' "build pool: not stored: $($_.Exception.Message)" }
+        }
+    }
     $quiet = $null
     if ($t.State -eq 'available' -and $updater -and -not $CheckOnly) {
         $saved = $global:EPS_TokenProvider

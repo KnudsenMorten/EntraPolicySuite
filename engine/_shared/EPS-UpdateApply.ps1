@@ -177,3 +177,21 @@ function Invoke-EpsVaultShapeCheck {
         @{ State = 'failed'; Reason = "$($f.Names.KeyVault) still not private after the fix: $($t2.Drift -join ', ')" }
     } catch { @{ State = 'failed'; Reason = "not checked: $((("$($_.Exception.Message)") -split "`n")[0])" } }
 }
+
+function Get-EpsBuildPoolFact {
+    <#
+      framework rule 11g (5): the registry build pool AS READ NOW, for the heartbeat's BuildPool { tier, count, building,
+      checkedUtc } - the engine identity holds no Azure right, so the update job (as id-eps-updater) reads it on each run and
+      the uplink sends what it stored. No pool (a public install) = @{ None = $true } (the field is then LEFT OUT - absent
+      means "no pool, shared builders"; count 0 would claim a pool). Never throws: @{ None; Fact; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [string]$SelfKey = 'caj-eps-update', [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $f = Get-EpsUpdateFacts -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -SelfKey $SelfKey
+        $p = Invoke-EpsArm -Path "$($f.RegistryId)/agentPools/$($f.Names.AgentPool)" -ApiVersion $script:EpsBuildPool.ApiVersion -AllowNotFound
+        if (-not $p) { return @{ None = $true; Fact = $null; Reason = 'no build pool (a public install builds on shared builders)' } }
+        $n = [int]$p.properties.count
+        $fact = [ordered]@{ tier = "$($p.properties.tier)"; count = $n; building = ($n -gt 0); checkedUtc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        @{ None = $false; Fact = $fact; Reason = "$($f.Names.AgentPool): $($fact.tier), $n instance(s)" }
+    } catch { @{ None = $null; Fact = $null; Reason = "not read: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}
