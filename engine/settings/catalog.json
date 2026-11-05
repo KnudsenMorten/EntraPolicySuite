@@ -883,7 +883,7 @@
         "disabled": "90 days (the default).",
         "risk": "The list only proposes: nothing is disabled without an Admin's mark and a SuperAdmin's approval. Reversible.",
         "requires": "Admin and a Pro licence.",
-        "recommended": "90 days; 180 for organisations with seasonal staff.",
+        "recommended": "90 days; 180 for organizations with seasonal staff.",
         "docUrl": "https://invardia.com/docs/eps/settings/ProStale.InactiveDays/"
       }
     },
@@ -1096,7 +1096,7 @@
       "key": "ProPolicyCode.Provider", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git provider", "type": "enum", "values": ["github", "azuredevops"], "default": "github", "role": "SuperAdmin",
       "info": {
         "what": "Pro, policy as code: where the Conditional Access policies are pushed to and read from - GitHub or Azure DevOps (over HTTPS).",
-        "enabled": "github: the repository is owner/repository. azuredevops: organisation/project/repository.",
+        "enabled": "github: the repository is owner/repository. azuredevops: organization/project/repository.",
         "disabled": "Nothing is pushed or read until the repository and the access key's Key Vault secret are set.",
         "risk": "Low: changing the provider points the next push and read at another place. Nothing in the tenant changes. Reversible.",
         "requires": "SuperAdmin; a Pro license.",
@@ -1107,7 +1107,7 @@
     {
       "key": "ProPolicyCode.Repository", "proFeature": "policy-as-code", "group": "ProPolicyCode", "label": "Git repository", "type": "text", "maxLength": 300, "default": "", "role": "SuperAdmin",
       "info": {
-        "what": "Pro, policy as code: the repository - owner/repository on GitHub, organisation/project/repository on Azure DevOps.",
+        "what": "Pro, policy as code: the repository - owner/repository on GitHub, organization/project/repository on Azure DevOps.",
         "enabled": "Push writes every managed policy there as one commit; a read takes the folder at a branch, tag or commit.",
         "disabled": "Empty (the default): policy as code is not set up; the zip download still works.",
         "risk": "Whoever can merge into that repository decides what a read offers; a policy still changes only when a SuperAdmin applies it here, after the plan and the break-glass check. Reversible.",

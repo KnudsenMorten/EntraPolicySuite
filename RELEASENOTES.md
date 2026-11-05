@@ -2,7 +2,8 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
-## 2.0.86 - Pro: the license path, the trial, the License page and the first Pro features
+## 2.0.87 - Pro: the license path, the trial, the License page and the first Pro features
+- (2.0.86 was published on GitHub but never released to an install: its documentation pack failed a spelling check. 2.0.87 is the same release with that text fixed.)
 - New: Entra Policy Suite Pro and the trial, the same way as PIM Manager and SecurityInsight. Pro and the trial open
   when Invardia announces them. Everything Entra Policy Suite does today stays in Community - no install loses anything.
 - New: the Pro install line - the same two lines, line 1 from invardia.com/support/eps/. The Pro launcher signs you in
