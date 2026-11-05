@@ -68,8 +68,8 @@ function Read-EpsDbInitSettings {
     <#
       PURE. SEC-08 row 9: per execution, settings a setup script asks the job to write (EPS_DBINIT_SETTINGS, a JSON object).
       ONLY these keys, each checked: Mail.Mode (sharedMailbox | none), Mail.Sender (one mail address), Mail.Recipients (a
-      JSON list of 1-20 mail addresses), Platform.EnvironmentName (plain text, at most 120). Anything else refuses the
-      whole input. Returns @{ Ok; Reason; Settings (ordered) }.
+      JSON list of 1-20 mail addresses), Platform.EnvironmentName (plain text, at most 120), IdentityReport.LogAnalytics.Target
+      (Test-EpsLaTarget). Anything else refuses the whole input. Returns @{ Ok; Reason; Settings (ordered) }.
     #>
     param([AllowEmptyString()][string]$Json)
     if (-not "$Json".Trim()) { return @{ Ok = $true; Reason = ''; Settings = [ordered]@{} } }
@@ -87,6 +87,16 @@ function Read-EpsDbInitSettings {
                 $s[$k] = (ConvertTo-Json -InputObject @($l) -Compress)
             }
             'Platform.EnvironmentName' { if ("$v" -notmatch '^[^\x00-\x1f<>''"]{1,120}$') { return @{ Ok = $false; Reason = 'Platform.EnvironmentName is not plain text of at most 120 characters' } }; $s[$k] = "$v" }
+            # V1-PARITY P11: Initialize-EpsLogAnalytics.ps1's target (the workspace, the endpoint, the rule, the stream's
+            # columns) - checked whole by Test-EpsLaTarget (EPS-LogAnalytics.ps1, loaded by the job's entry)
+            'IdentityReport.LogAnalytics.Target' {
+                $j = if ($v -is [string]) { "$v" } else { ConvertTo-Json -InputObject $v -Compress -Depth 6 }
+                if ($j.Length -gt 8000) { return @{ Ok = $false; Reason = 'IdentityReport.LogAnalytics.Target is longer than 8000 characters' } }
+                if (-not (Get-Command Test-EpsLaTarget -ErrorAction SilentlyContinue)) { return @{ Ok = $false; Reason = 'IdentityReport.LogAnalytics.Target cannot be checked here (EPS-LogAnalytics.ps1 is not loaded)' } }
+                $t = Test-EpsLaTarget -Json $j
+                if (-not $t.Ok) { return @{ Ok = $false; Reason = "IdentityReport.LogAnalytics.Target: $($t.Reason)" } }
+                $s[$k] = $j
+            }
             default { return @{ Ok = $false; Reason = "setting '$k' may not be written by the setup job" } }
         }
     }
@@ -348,29 +358,71 @@ function Find-EpsSqlAdminGroup {
     # The group by its standard name (grp-eps-sql-admins); several with that name = refused (never a guess).
     param([Parameter(Mandatory)]$Ctx)
     $name = $Ctx.Names.SqlAdminGroup
-    $g = @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$name'&`$select=id,displayName" -All)
+    $g = @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$name'&`$select=id,displayName,isAssignableToRole" -All)
     if ($g.Count -gt 1) { throw "$($g.Count) groups are named $name - say which with -SqlAdminGroupId" }
-    if ($g.Count) { return @{ ObjectId = "$($g[0].id)"; Name = "$($g[0].displayName)" } }
+    if ($g.Count) { return @{ ObjectId = "$($g[0].id)"; Name = "$($g[0].displayName)"; RoleAssignable = ($g[0].isAssignableToRole -eq $true) } }
     $null
 }
 
+function Get-EpsPimGroupMaxAssignment {
+    # The longest ACTIVE member assignment the group's PIM-for-Groups policy allows (its rule Expiration_Admin_Assignment,
+    # an ISO 8601 duration such as P180D) - read when the caller may read it, else the default P180D.
+    param([Parameter(Mandatory)][string]$GroupId)
+    try {
+        $a = @(Invoke-EpsGraph -Path "v1.0/policies/roleManagementPolicyAssignments?`$filter=scopeId eq '$GroupId' and scopeType eq 'Group' and roleDefinitionId eq 'member'&`$expand=policy(`$expand=rules)" -All)
+        $d = "$(@(@($a | ForEach-Object { $_.policy.rules }) | Where-Object { "$($_.id)" -eq 'Expiration_Admin_Assignment' })[0].maximumDuration)"
+        if ($d -match '^P') { return $d }
+    } catch { }
+    'P180D'
+}
+
 function Add-EpsDbInitToGroup {
-    # The job's identity in the group, READ BACK (spec point 7: membership first, then the first start - a managed
-    # identity's token is cached). Idempotent. Throws on a refusal.
+    <#
+      The job's identity in the group, READ BACK before anything depends on it (spec point 7: membership first, then the
+      first start - a managed identity's token is cached). Framework §4.5 point 5 (owner 2026-11-05 via SI: "it must be
+      in setup"): this setup code makes the membership, never a hand: members/$ref first; refused -> an ACTIVE
+      PIM-for-Groups member assignment, permanent first, time-limited only when the group's PIM policy refuses permanent
+      (and then said, with the end date); both refused -> one error naming both, so the dependent job never starts.
+      Idempotent. Returns how it was made; throws 'EPS-GROUP-ADD: ...' on a refusal or a read-back that never shows it.
+    #>
     param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$GroupId)
     $sp = "$($Ctx.Identities.DbInitIdentity.PrincipalId)"
-    if (-not $sp) { throw "the principal of $($Ctx.Names.DbInitIdentity) is not known - run the identities step" }
+    $who = $Ctx.Names.DbInitIdentity
+    if (-not $sp) { throw "the principal of $who is not known - run the identities step" }
     # read from the IDENTITY's side (memberOf): a group's /members silently leaves service principals out for a caller
-    # without directory read rights (found live at internal 2026-11-04: the member was there, the list showed only a user)
+    # without directory read rights (found live at internal 2026-11-04: the member was there, the list showed only a user);
+    # an ACTIVE PIM-for-Groups member shows there too
     $isIn = { @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$sp/memberOf?`$select=id" -All | Where-Object { "$($_.id)" -eq $GroupId }).Count -gt 0 }
     if (& $isIn) { return 'already a member' }
-    try { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "v1.0/groups/$GroupId/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$sp" }) } }
-    catch { if ("$_" -notmatch '(?i)already exist') { throw } }
+    $how = $null; $refRefused = $null
+    try { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "v1.0/groups/$GroupId/members/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$sp" }) }; $how = 'added (members/$ref)' }
+    catch { if ("$_" -match '(?i)already exist') { $how = 'added (members/$ref)' } else { $refRefused = (("$($_.Exception.Message)") -split "`n")[0] } }
+    if (-not $how) {
+        # an ACTIVE PIM-for-Groups member assignment (the caller needs PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup)
+        $pim = { param($exp) Invoke-EpsGraph -Method POST -Path 'v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleRequests' -Body @{
+            accessId = 'member'; principalId = $sp; groupId = $GroupId; action = 'adminAssign'
+            justification = "Entra Policy Suite setup: the database setup job's identity ($who) in the SQL admin group (framework 4.5)"
+            scheduleInfo = @{ startDateTime = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiration = $exp } } }
+        try { [void](& $pim @{ type = 'noExpiration' }); $how = 'added by a permanent PIM-for-Groups member assignment (members/$ref was refused)' }
+        catch {
+            $pimErr = (("$($_.Exception.Message)") -split "`n")[0]
+            if ($pimErr -match '(?i)ExpirationRule|expiration|PolicyValidation|maximum') {
+                # the group's PIM policy refuses permanent: the longest it allows - a renewal date someone must own
+                $dur = Get-EpsPimGroupMaxAssignment -GroupId $GroupId
+                $end = [datetime]::UtcNow.Add([System.Xml.XmlConvert]::ToTimeSpan($dur))
+                try { [void](& $pim @{ type = 'afterDuration'; duration = $dur }); $how = "added by a TIME-LIMITED PIM-for-Groups member assignment until $($end.ToString('yyyy-MM-dd HH:mm'))Z (the group's PIM policy refuses permanent; members/`$ref was refused) - run the install again before that date to renew it" }
+                catch { $pimErr = "$pimErr; then time-limited ($dur): $((("$($_.Exception.Message)") -split "`n")[0])" }
+            }
+            if (-not $how) {
+                throw "EPS-GROUP-ADD: $who could not be put into the group $GroupId - members/`$ref: $refRefused; PIM-for-Groups member assignment: $pimErr. The database setup job is NOT started. Run the install as someone who may add members to that group (an owner of it, or Group.ReadWrite.All / GroupMember.ReadWrite.All), or who may assign PIM-for-Groups members (PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup), then run it again"
+            }
+        }
+    }
     for ($i = 0; $i -lt 9; $i++) {
-        if (& $isIn) { return 'added, read back' }
+        if (& $isIn) { return "$how, read back" }
         Start-Sleep -Seconds $(if ($null -ne $script:EpsGraphReadBackSeconds) { $script:EpsGraphReadBackSeconds } else { 15 })
     }
-    throw "$($Ctx.Names.DbInitIdentity) is still not a member of the group $GroupId after it was added"
+    throw "EPS-GROUP-ADD: $who is still not a member of the group $GroupId after it was $($how -replace '^added ', 'added ') - the database setup job is NOT started; run the install again"
 }
 
 function Initialize-EpsSqlAdminGroup {
@@ -380,7 +432,9 @@ function Initialize-EpsSqlAdminGroup {
           job's identity added; a person / application admin cannot hold a member, so the database steps run as the
           signed-in person, said plainly (to stop that: make grp-eps-sql-admins the admin);
         - a new server: the customer's group (-SqlAdminGroupId), else grp-eps-sql-admins (found, else created).
-      Never throws on a refused Graph write: returns @{ Use = $false; Why } and the install goes on the old way.
+      A group it cannot find or make returns @{ Use = $false; Why } (the install goes on the old way); the job's identity
+      refused by BOTH members/$ref and PIM-for-Groups (framework §4.5 point 5) THROWS 'EPS-GROUP-ADD: ...' - the step
+      fails, both errors named, and nothing that needs the membership (the database setup job) starts.
       Sets $Ctx.SqlAdminGroup (the 'sql' step names it as a new server's admin) and $Ctx.DbJob.
     #>
     param([Parameter(Mandatory)]$Ctx, [switch]$NoCreate)
@@ -392,30 +446,44 @@ function Initialize-EpsSqlAdminGroup {
         if ($a -and "$($a.sid)") {
             if ("$($a.principalType)" -notin 'Group', '') { $res = @{ Use = $false; Why = "the SQL server's Entra admin is $($a.login) ($($a.principalType)), not a group - the database steps run as you; make $($n.SqlAdminGroup) the admin to stop that" } }
             else {
-                $g = try { Invoke-EpsGraph -Path "v1.0/groups/$($a.sid)?`$select=id,displayName" } catch { $null }
+                $g = try { Invoke-EpsGraph -Path "v1.0/groups/$($a.sid)?`$select=id,displayName,isAssignableToRole" } catch { $null }
                 if (-not $g) { $res = @{ Use = $false; Why = "the SQL server's Entra admin $($a.login) is not a group - the database steps run as you" } }
                 else {
                     $how = Add-EpsDbInitToGroup -Ctx $Ctx -GroupId "$($g.id)"
                     $Ctx.SqlAdminGroup = @{ ObjectId = "$($g.id)"; Name = "$($g.displayName)" }
-                    $res = @{ Use = $true; Why = "$($n.DbInitIdentity) in the server's admin group $($g.displayName) ($how)" }
+                    # framework §4.5 point 1 (owner 2026-11-05 "i propose that it is role assign grp" / "i agree. safer"): an
+                    # existing group that is NOT role-assignable is REPORTED, never moved here - moving it is an owner decision
+                    $fnd = if ($g.isAssignableToRole -ne $true) { "; FINDING (framework §4.5 point 1): $($g.displayName) is not role-assignable - any Groups / User Administrator or its owner could change who administers the database; replacing it with a role-assignable group is an owner decision, not done by this run" } else { '' }
+                    $res = @{ Use = $true; Why = "$($n.DbInitIdentity) in the server's admin group $($g.displayName) ($how)$fnd" }
                 }
             }
         } else {
             $grp = if ($Ctx.SqlAdminGroup -and $Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup } else { Find-EpsSqlAdminGroup -Ctx $Ctx }
             if (-not $grp -and -not $NoCreate) {
-                $c = Invoke-EpsGraph -Method POST -Path 'v1.0/groups' -Body @{ displayName = $n.SqlAdminGroup; mailEnabled = $false; mailNickname = $n.SqlAdminGroup; securityEnabled = $true
+                # framework §4.5 point 1 (owner 2026-11-05 "i propose that it is role assign grp" / "i agree. safer"): a
+                # product's SQL admin group IS role-assignable - only a Privileged Role / Global Administrator (or
+                # RoleManagement.ReadWrite.Directory) can change its members, so a Groups / User Administrator cannot take
+                # over the database. Said explicitly, never left to a default. Adding a member then needs that right; the
+                # §4.5 point 5 order names it when refused.
+                $c = Invoke-EpsGraph -Method POST -Path 'v1.0/groups' -Body @{ displayName = $n.SqlAdminGroup; mailEnabled = $false; mailNickname = $n.SqlAdminGroup; securityEnabled = $true; isAssignableToRole = $true
                     description = 'Entra Policy Suite: the Azure SQL server admin. Members: the database setup job identity (and support, just in time).' }
-                $grp = @{ ObjectId = "$($c.id)"; Name = "$($c.displayName)" }
+                $grp = @{ ObjectId = "$($c.id)"; Name = "$($c.displayName)"; RoleAssignable = $true }
                 [void](Invoke-EpsWithRetry { Invoke-EpsGraph -Path "v1.0/groups/$($grp.ObjectId)?`$select=id" })
             }
             if (-not $grp) { $res = @{ Use = $false; Why = "no $($n.SqlAdminGroup) group" } }
             else {
                 $how = Add-EpsDbInitToGroup -Ctx $Ctx -GroupId $grp.ObjectId
                 $Ctx.SqlAdminGroup = $grp
-                $res = @{ Use = $true; Why = "$($n.DbInitIdentity) in $($grp.Name) ($how) - the new server's admin" }
+                $fnd = if ($grp.ContainsKey('RoleAssignable') -and $grp.RoleAssignable -ne $true) { "; FINDING (framework §4.5 point 1): $($grp.Name) is not role-assignable - replacing it with a role-assignable group is an owner decision, not done by this run" } else { '' }
+                $res = @{ Use = $true; Why = "$($n.DbInitIdentity) in $($grp.Name) ($how) - the new server's admin$fnd" }
             }
         }
-    } catch { $res = @{ Use = $false; Why = "the SQL admin group could not be set up ($($_.Exception.Message)) - the database steps run as you; the next run tries again" } }
+    } catch {
+        # framework §4.5 point 5: the job's identity could not be put into the group by setup - stop here; the database
+        # steps never fall back to running as the signed-in person for this (SEC-08)
+        if ("$($_.Exception.Message)" -like 'EPS-GROUP-ADD:*') { throw }
+        $res = @{ Use = $false; Why = "the SQL admin group could not be set up ($($_.Exception.Message)) - the database steps run as you; the next run tries again" }
+    }
     $Ctx.DbJob = $res
     $res
 }

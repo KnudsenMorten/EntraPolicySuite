@@ -37,9 +37,18 @@ function Select-EpsCaPolicies {
     # none given = no personas (2.0.25, owner 2026-11-02: "templates is a import only feature" - the run never reads the
     # template catalog). -Excludes (CA-LIMITS): the monitor's own "left out" policy ids, taken out last, at each run.
     # Returns @{ Ids; Errors; Unmatched; Excluded } (Excluded = the ids the selection took and -Excludes left out).
-    param([object[]]$Policies, [string[]]$Ids = @(), [string[]]$Names = @(), [string[]]$Prefixes = @(), [string[]]$Patterns = @(), [string[]]$Personas = @(), [object[]]$PersonaList, [Collections.IDictionary]$PersonaTakes, [string[]]$Excludes = @())
+    # + V1-PARITY P13 (v1's Test-Policies-by-SigninLogs.ps1 -Policies 6,200-249 -PolicyStates): -Numbers = policy numbers
+    # (CA006 and its lifecycle variants for 6, never CA0060); -States = only policies in these states (enabled,
+    # enabledForReportingButNotEnforced, disabled), applied to the whole selection last.
+    param([object[]]$Policies, [string[]]$Ids = @(), [string[]]$Names = @(), [string[]]$Prefixes = @(), [string[]]$Patterns = @(), [string[]]$Personas = @(), [object[]]$PersonaList, [Collections.IDictionary]$PersonaTakes, [string[]]$Excludes = @(),
+          [int[]]$Numbers = @(), [string[]]$States = @())
     $out = [System.Collections.Generic.List[string]]::new(); $err = [System.Collections.Generic.List[string]]::new(); $miss = [System.Collections.Generic.List[string]]::new()
     $add = { param($id) if (-not $out.Contains($id)) { $out.Add($id) } }
+    if (@($Numbers).Count) {
+        $want = [System.Collections.Generic.HashSet[int]]::new([int[]]@($Numbers))
+        $m = @($Policies | Where-Object { "$($_.displayName)" -match '^(?i)CA(\d{3})(?=$|[^0-9A-Za-z])' -and $want.Contains([int]$Matches[1]) } | Sort-Object displayName)
+        if (-not $m.Count) { $miss.Add("number(s) $(ConvertTo-EpsCaNumberText $Numbers)") } else { foreach ($x in $m) { & $add $x.id } }
+    }
     foreach ($id in $Ids) { if ($id -notmatch $script:EpsCaGuid) { $err.Add("'$id' is not a policy id"); continue }; if (@($Policies | Where-Object { $_.id -eq $id }).Count) { & $add $id } else { $miss.Add($id) } }
     foreach ($n in $Names) {
         $m = @($Policies | Where-Object { $_.displayName -ieq $n })
@@ -70,7 +79,37 @@ function Select-EpsCaPolicies {
         $ex = [System.Collections.Generic.HashSet[string]]::new([string[]]@($Excludes | ForEach-Object { "$_".Trim() } | Where-Object { $_ }), [StringComparer]::OrdinalIgnoreCase)
         foreach ($id in @($out)) { if ($ex.Contains($id)) { [void]$out.Remove($id); $left.Add($id) } }
     }
-    @{ Ids = @($out); Errors = @($err); Unmatched = @($miss); Excluded = @($left) }
+    $stateOut = [System.Collections.Generic.List[string]]::new()
+    if (@($States).Count) {
+        foreach ($id in @($out)) { $p = @($Policies | Where-Object { "$($_.id)" -ieq $id })[0]; if ($p -and "$($p.state)" -notin $States) { [void]$out.Remove($id); $stateOut.Add($id) } }
+    }
+    @{ Ids = @($out); Errors = @($err); Unmatched = @($miss); Excluded = @($left); NotInState = @($stateOut) }
+}
+
+$script:EpsCaPolicyStates = @('enabled', 'enabledForReportingButNotEnforced', 'disabled')
+
+function ConvertFrom-EpsCaNumberRanges {
+    # V1-PARITY P13: v1's policy number list '6,200-249' -> the numbers (0-999), or @{ Error }. Pure.
+    param([string]$Text)
+    $nums = [System.Collections.Generic.SortedSet[int]]::new()
+    foreach ($part in @("$Text" -split '[,;\s]+' | Where-Object { $_ })) {
+        if ($part -match '^(?i)(?:CA)?(\d{1,3})$') { [void]$nums.Add([int]$Matches[1]); continue }
+        if ($part -match '^(?i)(?:CA)?(\d{1,3})-(?:CA)?(\d{1,3})$') {
+            $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
+            if ($lo -gt $hi) { return @{ Error = "'$part': the range runs from the lower number to the higher" } }
+            for ($i = $lo; $i -le $hi; $i++) { [void]$nums.Add($i) }; continue
+        }
+        return @{ Error = "'$part' is not a policy number or a range (e.g. 6,200-249)" }
+    }
+    @{ Numbers = @($nums) }
+}
+
+function ConvertTo-EpsCaNumberText {
+    # the numbers back as ranges (6, 200-249) - for a message
+    param([int[]]$Numbers)
+    $n = @($Numbers | Sort-Object -Unique); $parts = @(); $i = 0
+    while ($i -lt $n.Count) { $j = $i; while ($j + 1 -lt $n.Count -and $n[$j + 1] -eq $n[$j] + 1) { $j++ }; $parts += $(if ($j -gt $i) { "$($n[$i])-$($n[$j])" } else { "$($n[$i])" }); $i = $j + 1 }
+    $parts -join ','
 }
 
 # ---- the personas (CA-PERSONA, owner 2026-11-02: "it should be possible edit/delete/create existing monitors persona. this
@@ -774,26 +813,31 @@ function Get-EpsCaSignIns {
     # ONE fetch for every policy of the run: per kind (interactive user, non-interactive user, service principal), the
     # window in slices, every page, de-duplicated by id, kept only when it references one of the run's policies.
     # Returns @{ Rows = @{ kind -> list }; Scanned = n }.
-    param([Parameter(Mandatory)][datetime]$Start, [Parameter(Mandatory)][datetime]$End, [Parameter(Mandatory)][string[]]$PolicyIds, [string[]]$Kinds = @('user-interactive'), [int]$SliceHours = 0)
+    # -MaxSignIns (V1-PARITY P13, v1's -MaxSignIns): stop after that many sign-ins in all (0 = no cap); Capped says so
+    param([Parameter(Mandatory)][datetime]$Start, [Parameter(Mandatory)][datetime]$End, [Parameter(Mandatory)][string[]]$PolicyIds, [string[]]$Kinds = @('user-interactive'), [int]$SliceHours = 0, [int]$MaxSignIns = 0)
     $ref = [System.Collections.Generic.HashSet[string]]::new([string[]]$PolicyIds, [StringComparer]::OrdinalIgnoreCase)
     $sel = 'id,createdDateTime,userId,userPrincipalName,userDisplayName,appDisplayName,ipAddress,clientAppUsed,conditionalAccessStatus,appliedConditionalAccessPolicies,location,deviceDetail,riskLevelDuringSignIn,riskState,resourceDisplayName,status,isInteractive'
     $types = @{ 'user-interactive' = @('interactiveUser', $sel); 'user-noninteractive' = @('nonInteractiveUser', $sel); 'spn' = @('servicePrincipal', $null) }
-    $rows = @{}; $scanned = 0
+    $rows = @{}; $scanned = 0; $capped = $false
     foreach ($k in $Kinds) {
         $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $keep = [System.Collections.Generic.List[object]]::new()
         foreach ($sl in (Split-EpsTimeWindow -Start $Start -End $End -Hours $SliceHours)) {
+            if ($MaxSignIns -gt 0 -and $scanned -ge $MaxSignIns) { $capped = $true; break }
             $op = if ($sl.IsLast) { 'le' } else { 'lt' }
             $f = "createdDateTime ge $($sl.Start.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) and createdDateTime $op $($sl.End.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) and signInEventTypes/any(t:t eq '$($types[$k][0])')"
             $q = "beta/auditLogs/signIns?`$filter=$([uri]::EscapeDataString($f))&`$top=1000" + $(if ($types[$k][1]) { "&`$select=$($types[$k][1])" })
-            foreach ($si in @(Invoke-EpsGraph -Path $q -All)) {
+            $room = if ($MaxSignIns -gt 0) { $MaxSignIns - $scanned } else { 0 }
+            foreach ($si in @(Invoke-EpsGraph -Path $q -All -MaxItems $room)) {
                 if ($si.id -and -not $seen.Add([string]$si.id)) { continue }
+                if ($MaxSignIns -gt 0 -and $scanned -ge $MaxSignIns) { $capped = $true; break }
                 $scanned++
                 if (@($si.appliedConditionalAccessPolicies | Where-Object { $_.id -and $ref.Contains([string]$_.id) }).Count) { $keep.Add($si) }
             }
         }
         $rows[$k] = $keep
     }
-    @{ Rows = $rows; Scanned = $scanned }
+    if ($MaxSignIns -gt 0 -and $scanned -ge $MaxSignIns) { $capped = $true }
+    @{ Rows = $rows; Scanned = $scanned; Capped = $capped }
 }
 
 function Measure-EpsCaSignIns {
@@ -893,9 +937,11 @@ function Invoke-EpsCaPolicyAnalyzer {
     $plist = if (@($Request.Policies.Personas).Count) { @(Get-EpsCaEffectivePersonaList -ConnectionString $ConnectionString -Policies $policies) } else { @() }
     # the older series of a monitor (policyPrefixes / policyPatterns, before 2.0.24) are still honoured; the monitor's own
     # "left out" policies (excludePolicyIds, CA-LIMITS) are taken out at each run
-    $sel = Select-EpsCaPolicies -Policies $policies -Ids @($Request.Policies.Ids) -Names @($Request.Policies.Names) -Prefixes @($Request.Policies.Prefixes) -Patterns @($Request.Policies.Patterns) -Personas @($Request.Policies.Personas) -PersonaList $plist -Excludes @($Request.Policies.Excludes)
+    $sel = Select-EpsCaPolicies -Policies $policies -Ids @($Request.Policies.Ids) -Names @($Request.Policies.Names) -Prefixes @($Request.Policies.Prefixes) -Patterns @($Request.Policies.Patterns) -Personas @($Request.Policies.Personas) -PersonaList $plist -Excludes @($Request.Policies.Excludes) `
+        -Numbers @($Request.Policies.Numbers | Where-Object { $null -ne $_ }) -States @($Request.Policies.States | Where-Object { $_ })
     foreach ($e in $sel.Errors) { & $Log 'Warning' $e }; foreach ($u in $sel.Unmatched) { & $Log 'Warning' "no policy matches '$u'" }
     if (@($sel.Excluded).Count) { & $Log 'Info' "$(@($sel.Excluded).Count) policy(ies) left out of this monitor" }
+    if (@($sel.NotInState).Count) { & $Log 'Info' "$(@($sel.NotInState).Count) policy(ies) left out: not in the state(s) $(@($Request.Policies.States) -join ', ')" }
     if (-not $sel.Ids.Count) { throw "no policy to analyse ($(@($sel.Errors + $sel.Unmatched) -join '; '))" }
     $mode = if ("$($Request.Mode)" -eq 'WhatIf') { 'WhatIf' } else { 'SignInLogs' }   # SignInLogs is the default (owner 2026-10-30)
     $full = @{}; foreach ($id in $sel.Ids) { $full[$id] = Invoke-EpsGraph -Path "v1.0/identity/conditionalAccess/policies/$id" }
@@ -903,10 +949,13 @@ function Invoke-EpsCaPolicyAnalyzer {
     if ($mode -eq 'SignInLogs') {
         $hours = if ([int]$Request.LookbackHours -gt 0) { [int]$Request.LookbackHours } else { 24 }
         $winStart = $winEnd.AddHours(-$hours)
+        # V1-PARITY P13 (v1's -StartTime / -EndTime): a fixed window instead of "the last N hours"
+        if ($Request.WindowStart -and $Request.WindowEnd) { $winStart = ([datetime]$Request.WindowStart).ToUniversalTime(); $winEnd = ([datetime]$Request.WindowEnd).ToUniversalTime(); $hours = ($winEnd - $winStart).TotalHours }
         $tg = @($full.Values | ForEach-Object { Get-EpsCaTargeting $_ })
         $kinds = @(); if (@($tg | Where-Object Users).Count) { $kinds += 'user-interactive'; if ($Request.IncludeNonInteractive) { $kinds += 'user-noninteractive' } }; if (@($tg | Where-Object Spns).Count) { $kinds += 'spn' }
-        $shared = Get-EpsCaSignIns -Start $winStart -End $winEnd -PolicyIds $sel.Ids -Kinds $kinds -SliceHours $(if ([int]$Request.LookbackHours -gt 24) { 24 } else { 0 })   # CA-ANALYZER-PARTS (owner 2026-11-03): EPS decides - a day at a time; a stored value is ignored
+        $shared = Get-EpsCaSignIns -Start $winStart -End $winEnd -PolicyIds $sel.Ids -Kinds $kinds -SliceHours $(if ($hours -gt 24) { 24 } else { 0 }) -MaxSignIns ([int]$Request.MaxSignIns)   # CA-ANALYZER-PARTS (owner 2026-11-03): EPS decides - a day at a time; a stored value is ignored
         & $Log 'Info' "sign-ins $($winStart.ToString('u')) .. $($winEnd.ToString('u')): $($shared.Scanned) scanned once for $($sel.Ids.Count) policy(ies) ($($kinds -join ', '))"
+        if ($shared.Capped) { & $Log 'Warning' "the sign-in cap of $([int]$Request.MaxSignIns) was reached - not every sign-in of the window was read" }
     }
     $analyses = [System.Collections.Generic.List[object]]::new(); $impactedTotal = 0
     foreach ($id in $sel.Ids) {
@@ -925,6 +974,7 @@ function Invoke-EpsCaPolicyAnalyzer {
         } else {
             $m = Measure-EpsCaSignIns -Policy $p -ScopedUsers $users -SignIns $shared -Targeting $tg; $records = $m.Records
             if ($m.MixedState) { $warn += "the policy's state changed in the window: $($m.MixedState) result(s) of the other mode left out" }
+            if ($shared.Capped) { $warn += "the sign-in cap ($([int]$Request.MaxSignIns)) was reached: not every sign-in of the window was read" }
             if ("$($p.state)" -eq 'disabled') { $warn += 'the policy is DISABLED: it produces no sign-in results' }
         }
         if ($notes.guests) { $warn += $notes.guests }
@@ -1009,6 +1059,32 @@ VALUES (@a, @r, @p, @n, @s, @m, @ws, @we, @i, @im, @ni, @e, @b, @c, @u, @w, @mo)
     $aid
 }
 
+function ConvertTo-EpsCaAnalysisHtml {
+    # V1-PARITY P13 (v1's -OutputFormats HTML): one analysis as a self-contained HTML page - the summary, then a table of
+    # every user (the impacted first). Every value is encoded; no script, no outside file. Pure.
+    param([Parameter(Mandatory)]$Analysis, [object[]]$Rows = @(), [Parameter(Mandatory)][string[]]$Columns)
+    $h = { param($s) [Net.WebUtility]::HtmlEncode("$s") }
+    $sb = [Text.StringBuilder]::new()
+    [void]$sb.Append('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>')
+    [void]$sb.Append((& $h "CA Policy Analyzer - $($Analysis.DisplayName)")).Append('</title><style>body{font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1b1b1b;margin:16px}h1{font-size:18px}table{border-collapse:collapse}th,td{border-bottom:1px solid #ddd;padding:3px 8px;text-align:left;vertical-align:top}th{background:#f3f3f3;position:sticky;top:0}tr.imp td{background:#fff1f0}.meta td{border:0;padding:1px 8px}</style></head><body>')
+    [void]$sb.Append('<h1>').Append((& $h "CA Policy Analyzer: $($Analysis.DisplayName)")).Append('</h1><table class="meta">')
+    $win = if ($Analysis.WindowStartUtc) { "$(([datetime]$Analysis.WindowStartUtc).ToString('yyyy-MM-dd HH:mm')) - $(([datetime]$Analysis.WindowEndUtc).ToString('yyyy-MM-dd HH:mm')) UTC" } else { '' }
+    foreach ($kv in @(@('Policy state', $Analysis.PolicyState), @('Method', $(if ($Analysis.Mode -eq 'WhatIf') { 'predicted (What-If)' } else { 'observed (sign-in logs)' })), @('Window', $win),
+                      @('In scope', $Analysis.InScope), @('Impacted', $Analysis.Impacted), @('Not impacted', $Analysis.NotImpacted), @('Errors', $Analysis.Errors), @('Analysed', $(if ($Analysis.CreatedAtUtc) { ([datetime]$Analysis.CreatedAtUtc).ToString('yyyy-MM-dd HH:mm') + ' UTC' })))) {
+        if ("$($kv[1])" -ne '') { [void]$sb.Append('<tr><td><b>').Append((& $h $kv[0])).Append('</b></td><td>').Append((& $h $kv[1])).Append('</td></tr>') }
+    }
+    [void]$sb.Append('</table><p>Read only: the analyzer changes nothing.</p><table><tr>')
+    foreach ($c in $Columns) { [void]$sb.Append('<th>').Append((& $h $c)).Append('</th>') }
+    [void]$sb.Append('</tr>')
+    foreach ($r in $Rows) {
+        [void]$sb.Append($(if ($r.Impacted) { '<tr class="imp">' } else { '<tr>' }))
+        foreach ($c in $Columns) { $v = $r.$c; if ($v -is [datetime]) { $v = $v.ToString('yyyy-MM-dd HH:mm') }; [void]$sb.Append('<td>').Append((& $h $v)).Append('</td>') }
+        [void]$sb.Append('</tr>')
+    }
+    [void]$sb.Append('</table></body></html>')
+    $sb.ToString()
+}
+
 function ConvertTo-EpsCaRequest {
     # a request from the GUI / a saved monitor -> the analyzer's request, validated: @{ Ok; Request; Error }
     param($Body)
@@ -1019,8 +1095,16 @@ function ConvertTo-EpsCaRequest {
     $exc = @(& $s $Body.excludePolicyIds | Select-Object -Unique)
     if ($exc.Count -gt 500) { return @{ Ok = $false; Error = 'at most 500 left-out policies' } }
     foreach ($x in $exc) { if ($x -notmatch $script:EpsCaGuid) { return @{ Ok = $false; Error = "excludePolicyIds: '$x' is not a policy id" } } }
+    # V1-PARITY P13: policy numbers and ranges (6,200-249) and a state filter, as v1's Test-Policies-by-SigninLogs.ps1
+    $nums = @()
+    if ("$($Body.policyNumbers)".Trim()) {
+        if ("$($Body.policyNumbers)".Length -gt 500) { return @{ Ok = $false; Error = 'policyNumbers: at most 500 characters' } }
+        $nr = ConvertFrom-EpsCaNumberRanges "$($Body.policyNumbers)"; if ($nr.Error) { return @{ Ok = $false; Error = "policyNumbers: $($nr.Error)" } }; $nums = @($nr.Numbers)
+    }
+    $states = @(& $s $Body.policyStates | Select-Object -Unique)
+    foreach ($x in $states) { if ($x -notin $script:EpsCaPolicyStates) { return @{ Ok = $false; Error = "policyStates: '$x' is not one of $($script:EpsCaPolicyStates -join ', ')" } } }
     $all = @($ids + $names + $pre + $pat + $per)
-    if (-not $all.Count -and -not $Body.listOnly) { return @{ Ok = $false; Error = 'name at least one policy (an id, an exact name, a persona, a prefix such as CA006 or CA2, or a wildcard such as CA2*)' } }
+    if (-not $all.Count -and -not $nums.Count -and -not $Body.listOnly) { return @{ Ok = $false; Error = 'name at least one policy (an id, an exact name, a persona, a prefix such as CA006 or CA2, a wildcard such as CA2*, or policy numbers such as 6,200-249)' } }
     if ($all.Count -gt 200) { return @{ Ok = $false; Error = 'at most 200 policy names in one run' } }
     foreach ($x in $all) { if ($x -match '[\u0000-\u001f]' -or $x.Length -gt 256) { return @{ Ok = $false; Error = 'a policy name has a control character or is too long' } } }
     foreach ($x in $pat) { if ($x -match '^[*?]*$') { return @{ Ok = $false; Error = "'$x' would match every policy - name a series, e.g. CA2*" } } }
@@ -1030,6 +1114,20 @@ function ConvertTo-EpsCaRequest {
     # its code stays, it is not offered - only SignInLogs is taken
     $mode = if ("$($Body.mode)" -in '', 'SignInLogs') { 'SignInLogs' } elseif ("$($Body.mode)" -eq 'WhatIf') { return @{ Ok = $false; Error = 'the What-If mode is parked for now - analyse the sign-in logs (put the policy in report-only first)' } } else { return @{ Ok = $false; Error = 'mode is SignInLogs' } }
     $h = 24; if ($null -ne $Body.lookbackHours -and "$($Body.lookbackHours)" -ne '') { if (-not [int]::TryParse("$($Body.lookbackHours)", [ref]$h) -or $h -lt 1 -or $h -gt 720) { return @{ Ok = $false; Error = 'lookbackHours: 1 to 720 (30 days, the sign-in log retention)' } } }
+    # V1-PARITY P13 (v1's -StartTime / -EndTime): a fixed window, both ends in UTC, inside the last 30 days, start before end
+    $ws = $null; $we = $null
+    if ("$($Body.windowStart)" -or "$($Body.windowEnd)") {
+        $p1 = [datetimeoffset]::MinValue; $p2 = [datetimeoffset]::MinValue; $inv = [Globalization.CultureInfo]::InvariantCulture; $st = [Globalization.DateTimeStyles]::AssumeUniversal
+        $t1 = if ($Body.windowStart -is [datetime]) { $Body.windowStart.ToUniversalTime().ToString('o') } else { "$($Body.windowStart)" }
+        $t2 = if ($Body.windowEnd -is [datetime]) { $Body.windowEnd.ToUniversalTime().ToString('o') } else { "$($Body.windowEnd)" }
+        if (-not [datetimeoffset]::TryParse($t1, $inv, $st, [ref]$p1) -or -not [datetimeoffset]::TryParse($t2, $inv, $st, [ref]$p2)) { return @{ Ok = $false; Error = 'windowStart and windowEnd: both, as dates and times (UTC)' } }
+        $ws = $p1.UtcDateTime; $we = $p2.UtcDateTime; $now = [datetime]::UtcNow
+        if ($ws -ge $we) { return @{ Ok = $false; Error = 'windowStart must be before windowEnd' } }
+        if ($we -gt $now.AddMinutes(5)) { return @{ Ok = $false; Error = 'windowEnd is in the future' } }
+        if ($ws -lt $now.AddDays(-30)) { return @{ Ok = $false; Error = 'windowStart: at most 30 days back (the sign-in log retention)' } }
+    }
+    # v1's -MaxSignIns: at most that many sign-ins in all (0 or empty = every sign-in of the window)
+    $cap = 0; if ($null -ne $Body.maxSignIns -and "$($Body.maxSignIns)" -ne '') { if (-not [int]::TryParse("$($Body.maxSignIns)", [ref]$cap) -or $cap -lt 0 -or $cap -gt 5000000) { return @{ Ok = $false; Error = 'maxSignIns: 0 (no cap) to 5,000,000' } } }
     # the monitor's own alert recipients (mail addresses, at most 20); none = the install's Mail.Recipients
     $to = @(& $s $Body.alertTo)
     if ($to.Count -gt 20) { return @{ Ok = $false; Error = 'at most 20 alert recipients' } }
@@ -1046,7 +1144,8 @@ function ConvertTo-EpsCaRequest {
             if ("$($p.Value)") { $sim[$p.Name] = "$($p.Value)" }
         }
     }
-    @{ Ok = $true; Request = @{ Policies = @{ Ids = $ids; Names = $names; Prefixes = $pre; Patterns = $pat; Personas = $per; Excludes = $exc }; Mode = $mode; LookbackHours = $h; SliceHours = $slice
+    @{ Ok = $true; Request = @{ Policies = @{ Ids = $ids; Names = $names; Prefixes = $pre; Patterns = $pat; Personas = $per; Excludes = $exc; Numbers = $nums; States = $states }; Mode = $mode; LookbackHours = $h; SliceHours = $slice
+                                WindowStart = $ws; WindowEnd = $we; MaxSignIns = $cap
                                 IncludeGuests = [bool]$Body.includeGuests; IncludeDisabled = [bool]$Body.includeDisabled
                                 IncludeNonInteractive = [bool]$Body.includeNonInteractive; Simulate = $sim; ListOnly = [bool]$Body.listOnly; AlertTo = $to } }
 }

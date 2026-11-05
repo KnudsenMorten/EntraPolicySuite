@@ -1268,3 +1268,54 @@ function Send-EpsCaMonitorAlert {
     if ($r.Sent) { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query "UPDATE eps.CaFinding SET AlertedAtUtc = SYSUTCDATETIME() WHERE FindingId IN ($((@($open | ForEach-Object { [long]$_.FindingId })) -join ','))") }
     @{ Findings = $open.Count; Sent = $r.Sent; Reason = $r.Reason }
 }
+
+# ---- CA-TEMPLATES left-over: remove policies that are OFF (v1's optional "REMOVE CA POLICIES" block, E-CM L984-1003:
+# the policies whose name is like a pattern, e.g. "*-initial*", deleted). In EPS it is the operator's action: picked or by
+# a name pattern, ONLY policies that are off, the exact list shown, typed to confirm, a backup first, one DELETE each (the
+# one pinned DELETE lives in EPS-CaWrite.ps1). This plan writes nothing.
+$script:EpsCaRemoveMax = 200
+
+function Test-EpsCaRemovePattern {
+    # a name pattern for Remove policies: * and ? wildcards, at least 3 other characters (never "everything")
+    param([string]$Pattern)
+    $p = "$Pattern".Trim()
+    if (-not $p) { return 'no pattern' }
+    if ($p.Length -gt 200) { return 'the pattern is longer than 200 characters' }
+    if (($p -replace '[\*\?]', '').Length -lt 3) { return 'the pattern needs at least 3 characters besides * and ? (it must never take every policy)' }
+    $null
+}
+
+function Get-EpsCaRemovePlan {
+    <#
+      PURE: which policies a "Remove policies" request would delete. -Rows: the policies as last read (PolicyId,
+      DisplayName, State, Hash, Adopted, PairStatus). Picked by -PolicyIds, or by -Pattern (v1's -like on the name, case
+      insensitive). Each: ok only when it is OFF (state disabled) and not in a version pair still in use (its own buttons
+      remove an old version). Returns @{ ok; reason; pattern; items (policyId, displayName, state, adopted, ok, reason,
+      expected); count; confirm (the text to type) }.
+    #>
+    param([object[]]$Rows = @(), [string[]]$PolicyIds = @(), [string]$Pattern)
+    $ids = @($PolicyIds | Where-Object { "$_" -match '^[0-9a-fA-F-]{36}$' } | ForEach-Object { "$_".ToLowerInvariant() } | Select-Object -Unique)
+    $pat = "$Pattern".Trim()
+    if (-not $ids.Count -and -not $pat) { return [ordered]@{ ok = $false; reason = 'pick the policies to remove, or give a name pattern (e.g. *-Initial-*)'; items = @(); count = 0 } }
+    if ($pat) { $why = Test-EpsCaRemovePattern -Pattern $pat; if ($why) { return [ordered]@{ ok = $false; reason = $why; items = @(); count = 0 } } }
+    $hit = @($Rows | Where-Object { $_ -and (($ids.Count -and "$($_.PolicyId)".ToLowerInvariant() -in $ids) -or ($pat -and "$($_.DisplayName)" -like $pat)) } | Sort-Object { "$($_.DisplayName)" })
+    $items = [System.Collections.Generic.List[object]]::new()
+    foreach ($r in $hit) {
+        $why = if ("$($r.State)" -ne 'disabled') { "it is $($r.State) - only a policy that is OFF is removed (Disable it first)" }
+               elseif ("$($r.PairStatus)" -in 'Testing', 'Promoted', 'RolledBack') { 'it is part of a version pair - use the pair''s own buttons' }
+        $items.Add([ordered]@{ policyId = "$($r.PolicyId)"; displayName = "$($r.DisplayName)"; state = "$($r.State)"; adopted = ("$($r.Adopted)" -in '1', 'True'); ok = -not $why; reason = $why; expected = "$($r.Hash)" })
+    }
+    foreach ($i in $ids) { if (-not @($items | Where-Object { "$($_.policyId)".ToLowerInvariant() -eq $i }).Count) { $items.Add([ordered]@{ policyId = $i; displayName = $i; state = $null; adopted = $false; ok = $false; reason = 'not in the last read of the policy list'; expected = $null }) } }
+    $ok = @($items | Where-Object { $_.ok })
+    $res = [ordered]@{ ok = [bool]$ok.Count; reason = $null; pattern = $(if ($pat) { $pat }); items = @($items); count = $ok.Count; confirm = "DELETE $($ok.Count)" }
+    if (-not $ok.Count) { $res.reason = $(if ($items.Count) { 'none of these policies can be removed: ' + (@($items | ForEach-Object { "$($_.displayName) ($($_.reason))" }) -join '; ') } else { "no policy's name is like '$pat'" }) }
+    elseif ($ok.Count -gt $script:EpsCaRemoveMax) { $res.ok = $false; $res.reason = "$($ok.Count) policies - at most $($script:EpsCaRemoveMax) in one request" }
+    $res
+}
+
+function Get-EpsCaRemovePlanFromStore {
+    # the plan from the last read of the policy list (eps.CaPolicy), with the adoption and version-pair state
+    param([Parameter(Mandatory)][string]$ConnectionString, [string[]]$PolicyIds = @(), [string]$Pattern)
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT p.PolicyId, p.DisplayName, p.State, JSON_VALUE(p.ReviewJson, '$.hash') AS Hash, CASE WHEN a.Status = 'Adopted' THEN 1 ELSE 0 END AS Adopted, (SELECT TOP (1) v.Status FROM eps.CaVersionPair v WHERE v.OldPolicyId = p.PolicyId OR v.NewPolicyId = p.PolicyId ORDER BY v.PairId DESC) AS PairStatus FROM eps.CaPolicy p LEFT JOIN eps.CaAdoption a ON a.PolicyId = p.PolicyId")
+    Get-EpsCaRemovePlan -Rows $rows -PolicyIds $PolicyIds -Pattern $Pattern
+}

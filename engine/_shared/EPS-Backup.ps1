@@ -232,6 +232,117 @@ function Get-EpsCaUndoPlanFromStore {
     $p
 }
 
+# ---- UNDO-BACKUP left-over: named locations and authentication strengths put back from a backup (create when missing,
+# the backup's definition back when changed - NEVER deleted). The writes are EPS-OnboardWrite.ps1's Restore-EpsCaObjects
+# (engine only, pinned); this part only plans.
+
+function ConvertTo-EpsNamedLocationShape {
+    # a named location -> the parts a restore compares and writes: @{ type = ip | country | other; body (what Graph takes);
+    # key (compared) }
+    param([Parameter(Mandatory)]$Location)
+    $l = if ($Location -is [string]) { $Location | ConvertFrom-Json -AsHashtable -Depth 30 } else { ConvertTo-Json -InputObject $Location -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30 }
+    $ot = "$($l['@odata.type'])"
+    if ($ot -match 'ipNamedLocation') {
+        $r = @(@($l.ipRanges) | Where-Object { $_ } | ForEach-Object { $c = "$($_.cidrAddress)"; [ordered]@{ '@odata.type' = $(if ($c -match ':') { '#microsoft.graph.iPv6CidrRange' } else { '#microsoft.graph.iPv4CidrRange' }); cidrAddress = $c } } | Sort-Object { $_.cidrAddress })
+        $body = [ordered]@{ '@odata.type' = '#microsoft.graph.ipNamedLocation'; displayName = "$($l.displayName)"; isTrusted = [bool]$l.isTrusted; ipRanges = @($r) }
+        return @{ type = 'ip'; body = $body; key = "ip|$([bool]$l.isTrusted)|$(@($r | ForEach-Object { $_.cidrAddress }) -join ',')" }
+    }
+    if ($ot -match 'countryNamedLocation') {
+        $cc = @(@($l.countriesAndRegions) | Where-Object { $_ } | ForEach-Object { "$_".ToUpperInvariant() } | Sort-Object -Unique)
+        $m = if ("$($l.countryLookupMethod)") { "$($l.countryLookupMethod)" } else { 'clientIpAddress' }
+        $body = [ordered]@{ '@odata.type' = '#microsoft.graph.countryNamedLocation'; displayName = "$($l.displayName)"; countriesAndRegions = @($cc); includeUnknownCountriesAndRegions = [bool]$l.includeUnknownCountriesAndRegions; countryLookupMethod = $m }
+        return @{ type = 'country'; body = $body; key = "country|$($cc -join ',')|$([bool]$l.includeUnknownCountriesAndRegions)|$m" }
+    }
+    @{ type = 'other'; body = $null; key = $null }
+}
+
+function Get-EpsCaObjectRestorePlan {
+    <#
+      PURE: what putting the picked named locations / authentication strengths of a backup back would do.
+        -Backup   the backup's items (ItemType namedLocation | authStrength, ObjectId, DisplayName, BodyJson)
+        -Current  @{ NamedLocations = @(...); AuthStrengths = @(...) } - the tenant now (live in the engine; the newest
+                  backup in the web app's preview)
+      Each item: matched by its id, else by its exact name; then
+        create  - gone: made again from the backup's definition
+        patch   - there but different: the backup's definition put back (a location: its whole definition; a strength:
+                  its name / description, and its allowed combinations)
+        none    - as in the backup already
+        refused - a built-in strength (Microsoft's own), a location of a kind EPS does not write
+      NOTHING is ever deleted: a location or strength made after the backup stays. Returns @{ ok; items; summary }.
+    #>
+    param([object[]]$Backup = @(), [hashtable]$Current = @{})
+    $nl = @($Current.NamedLocations | Where-Object { $_ }); $st = @($Current.AuthStrengths | Where-Object { $_ })
+    $items = [System.Collections.Generic.List[object]]::new()
+    foreach ($b in @($Backup | Where-Object { $_ })) {
+        $body = if ($b.BodyJson -is [string]) { $b.BodyJson | ConvertFrom-Json -AsHashtable -Depth 30 } else { ConvertTo-Json -InputObject $b.BodyJson -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30 }
+        $kind = "$($b.ItemType)"; $name = "$($body.displayName)"; $bid = "$($body.id)"
+        $it = [ordered]@{ kind = $kind; objectId = $bid; displayName = $name; action = 'none'; ok = $true; reason = $null; currentId = $null; changes = @(); body = $null; combinations = $null }
+        if ($kind -eq 'namedLocation') {
+            $want = ConvertTo-EpsNamedLocationShape -Location $body
+            if ($want.type -eq 'other') { $it.ok = $false; $it.action = 'refused'; $it.reason = 'a named location of a kind Entra Policy Suite does not write - put it back by hand'; $items.Add($it); continue }
+            $cur = @($nl | Where-Object { "$($_.id)" -eq $bid })[0]; if (-not $cur) { $cur = @($nl | Where-Object { "$($_.displayName)" -ceq $name })[0] }
+            if (-not $cur) { $it.action = 'create'; $it.body = $want.body; $it.reason = 'not in the tenant - made again'; $items.Add($it); continue }
+            $it.currentId = "$($cur.id)"
+            $now = ConvertTo-EpsNamedLocationShape -Location $cur
+            if ($now.type -ne $want.type) { $it.ok = $false; $it.action = 'refused'; $it.reason = "a location of this name is now a $($now.type) location - put it back by hand"; $items.Add($it); continue }
+            $ch = [System.Collections.Generic.List[string]]::new()
+            if ("$($cur.displayName)" -cne $name) { $ch.Add("name: $($cur.displayName) -> $name") }
+            if ($now.key -ne $want.key) { $ch.Add($(if ($want.type -eq 'ip') { "ranges / trusted: $($now.key.Substring(3)) -> $($want.key.Substring(3))" } else { "countries: $($now.key.Substring(8)) -> $($want.key.Substring(8))" })) }
+            if ($ch.Count) { $it.action = 'patch'; $it.body = $want.body; $it.changes = @($ch) } else { $it.reason = 'as in the backup already' }
+            $items.Add($it); continue
+        }
+        if ($kind -eq 'authStrength') {
+            if ("$($body.policyType)" -eq 'builtIn') { $it.ok = $false; $it.action = 'refused'; $it.reason = 'a built-in strength (Microsoft''s own) - it cannot be changed'; $items.Add($it); continue }
+            $comb = @(@($body.allowedCombinations) | Where-Object { $_ } | ForEach-Object { "$_" } | Sort-Object -Unique)
+            $cur = @($st | Where-Object { "$($_.id)" -eq $bid })[0]; if (-not $cur) { $cur = @($st | Where-Object { "$($_.displayName)" -ceq $name })[0] }
+            if (-not $cur) { $it.action = 'create'; $it.body = [ordered]@{ displayName = $name; description = "$($body.description)"; allowedCombinations = @($comb) }; $it.reason = 'not in the tenant - made again'; $items.Add($it); continue }
+            if ("$($cur.policyType)" -eq 'builtIn') { $it.ok = $false; $it.action = 'refused'; $it.reason = 'its name is now a built-in strength''s - put it back by hand'; $items.Add($it); continue }
+            $it.currentId = "$($cur.id)"
+            $ch = [System.Collections.Generic.List[string]]::new(); $patch = [ordered]@{}
+            if ("$($cur.displayName)" -cne $name) { $ch.Add("name: $($cur.displayName) -> $name"); $patch.displayName = $name }
+            if ("$($cur.description)" -cne "$($body.description)") { $ch.Add('description'); $patch.description = "$($body.description)" }
+            $have = @(@($cur.allowedCombinations) | Where-Object { $_ } | ForEach-Object { "$_" } | Sort-Object -Unique)
+            if (($have -join ',') -ne ($comb -join ',')) { $ch.Add("allowed combinations: $($have -join ' + ') -> $($comb -join ' + ')"); $it.combinations = @($comb) }
+            if ($ch.Count) { $it.action = 'patch'; $it.body = $(if ($patch.Count) { $patch }); $it.changes = @($ch) } else { $it.reason = 'as in the backup already' }
+            $items.Add($it); continue
+        }
+        $it.ok = $false; $it.action = 'refused'; $it.reason = "not a named location or an authentication strength ($kind)"; $items.Add($it)
+    }
+    [ordered]@{ ok = [bool]@($items | Where-Object { $_.ok -and $_.action -in 'create', 'patch' }).Count; items = @($items)
+        summary = [ordered]@{ create = @($items | Where-Object { $_.ok -and $_.action -eq 'create' }).Count; patch = @($items | Where-Object { $_.ok -and $_.action -eq 'patch' }).Count
+                              same = @($items | Where-Object { $_.ok -and $_.action -eq 'none' }).Count; refused = @($items | Where-Object { -not $_.ok }).Count } }
+}
+
+function Get-EpsCaObjectBackupItems {
+    # the picked named locations / strengths of ONE backup (none picked = all of them); $null = no such backup
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$BackupId, [string[]]$ObjectIds = @())
+    $h = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ b = $BackupId } -Query 'SELECT BackupId, Kind, TakenAtUtc FROM eps.CaBackup WHERE BackupId = @b')[0]
+    if (-not $h) { return $null }
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ b = $BackupId } -Query "SELECT ItemType, ObjectId, DisplayName, BodyJson FROM eps.CaBackupItem WHERE BackupId = @b AND ItemType IN ('namedLocation', 'authStrength')")
+    if ($ObjectIds.Count) { $want = @($ObjectIds | ForEach-Object { "$_".ToLowerInvariant() }); $rows = @($rows | Where-Object { "$($_.ObjectId)".ToLowerInvariant() -in $want }) }
+    @{ Header = $h; Rows = $rows }
+}
+
+function Get-EpsCaObjectRestorePlanFromStore {
+    # the web app's preview (no Graph): compared with the NEWEST backup's copy of the tenant; the engine reads the tenant
+    # again before it writes
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$BackupId, [string[]]$ObjectIds = @())
+    $b = Get-EpsCaObjectBackupItems -ConnectionString $ConnectionString -BackupId $BackupId -ObjectIds $ObjectIds
+    if (-not $b) { return $null }
+    $last = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) BackupId, TakenAtUtc FROM eps.CaBackup WHERE Kind IN ('Daily', 'Manual') ORDER BY BackupId DESC")[0]
+    $cur = @{ NamedLocations = @(); AuthStrengths = @() }
+    if ($last) {
+        foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ b = [long]$last.BackupId } -Query "SELECT ItemType, BodyJson FROM eps.CaBackupItem WHERE BackupId = @b AND ItemType IN ('namedLocation', 'authStrength')")) {
+            $o = $r.BodyJson | ConvertFrom-Json -Depth 30
+            if ("$($r.ItemType)" -eq 'namedLocation') { $cur.NamedLocations += $o } else { $cur.AuthStrengths += $o }
+        }
+    }
+    $p = Get-EpsCaObjectRestorePlan -Backup $b.Rows -Current $cur
+    $p.backupId = $BackupId; $p.takenAtUtc = $b.Header.TakenAtUtc
+    $p.comparedWith = $(if ($last) { "the newest backup ($($last.BackupId), $(([datetime]$last.TakenAtUtc).ToString('yyyy-MM-dd HH:mm')) UTC) - the engine reads the tenant again before it writes" } else { 'no newer backup - the engine reads the tenant before it writes' })
+    $p
+}
+
 function Get-EpsConfigBackupDetail {
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$BackupId)
     $h = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ b = $BackupId } -Query 'SELECT BackupId, Kind, TakenAtUtc, TakenBy, Cause, RefId, CountsJson FROM eps.ConfigBackup WHERE BackupId = @b')[0]
@@ -246,40 +357,46 @@ function Get-EpsConfigRestorePlan {
       now and turned into the SAME requests a person makes on the pages - each goes through its own route (its checks, its
       journal, its audit; the commit queue stages the rules and tag types when it is on). Nothing is written here.
       Order: condition types, tag types, tag values, then each object type's rules as ONE batch (the import's own plan:
-      the backup's rules CSV against the rules now, rules not in the backup deleted), then the settings.
+      the backup's rules CSV against the rules now, rules not in the backup deleted), then the settings, the personas and
+      the monitors of the CA Policy Analyzer.
+      -BackupId reads a stored backup; -Items takes the items of an IMPORT file instead (CONFIG-IO-1: @{ Entity; ItemKey;
+      BodyJson }, already checked by Read-EpsConfigImportFile) and words the changes as an import (-Import).
       -Entities limits it (the undo of one commit: only what that commit touched). Returns @{ ok; requests; summary;
-      notes } - a request: @{ id; entity; key; method; path; body; summary }.
+      counts (new / changed / same / refused); notes } - a request: @{ id; entity; key; method; path; body; summary; new }.
     #>
-    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$BackupId, [string[]]$Entities = @())
-    $d = Get-EpsConfigBackupDetail -ConnectionString $ConnectionString -BackupId $BackupId
-    if (-not $d) { return $null }
+    param([Parameter(Mandatory)][string]$ConnectionString, [long]$BackupId = 0, [object[]]$Items, [string[]]$Entities = @(), [switch]$Import)
+    if ($null -ne $Items) { $d = @{ Header = @{ TakenAtUtc = $null; Kind = 'Import' }; Items = @($Items) } }
+    else { $d = Get-EpsConfigBackupDetail -ConnectionString $ConnectionString -BackupId $BackupId; if (-not $d) { return $null } }
     $want = { param($e) -not $Entities.Count -or $Entities -contains $e }
     $by = @{}; foreach ($i in $d.Items) { if (-not $by[$i.Entity]) { $by[$i.Entity] = [System.Collections.Generic.List[object]]::new() }; $by[$i.Entity].Add(@{ Key = "$($i.ItemKey)"; Body = ($i.BodyJson | ConvertFrom-Json) }) }
-    $reqs = [System.Collections.Generic.List[object]]::new(); $notes = [System.Collections.Generic.List[string]]::new(); $n = 0
-    $add = { param($entity, $key, $method, $path, $body, $summary) $script:__n++; $reqs.Add([ordered]@{ id = $script:__n; entity = $entity; key = $key; method = $method; path = $path; body = $body; summary = $summary }) }
+    $reqs = [System.Collections.Generic.List[object]]::new(); $notes = [System.Collections.Generic.List[string]]::new()
+    $counts = [ordered]@{ new = 0; changed = 0; same = 0; refused = 0 }
+    $vb = if ($Import) { @{ back = 'Change'; again = 'Create'; addAgain = 'Add'; to = 'as in the file' } } else { @{ back = 'Put back'; again = 'Create again'; addAgain = 'Add again'; to = 'back to the backup' } }
     $script:__n = 0
+    $add = { param($entity, $key, $method, $path, $body, $summary, [bool]$isNew) $script:__n++; if ($isNew) { $counts.new++ } else { $counts.changed++ }
+        $reqs.Add([ordered]@{ id = $script:__n; entity = $entity; key = $key; method = $method; path = $path; body = $body; summary = $summary; new = $isNew }) }
     $same = { param($a, $b, [string[]]$cols) foreach ($c in $cols) { if ("$($a.$c)" -cne "$($b.$c)") { return $false } }; $true }
     if (& $want 'ConditionType') {
         $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT ObjectType, Id, Property, Operator, Guard, Description, Enabled FROM eps.ConditionType')) { $now["$($r.ObjectType):$($r.Id)".ToLowerInvariant()] = $r }
         foreach ($it in @($by['ConditionType'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.ObjectType):$($b.Id)".ToLowerInvariant()]
-            if ($c -and (& $same $b $c 'Property', 'Operator', 'Guard', 'Description', 'Enabled')) { continue }
-            & $add 'ConditionType' $it.Key 'PUT' "/api/conditions/$($b.ObjectType)/$($b.Id)" ([ordered]@{ property = $b.Property; operator = $b.Operator; guard = $b.Guard; description = $b.Description; enabled = [bool]$b.Enabled }) "$(if ($c) { 'Put back' } else { 'Create again' }) condition type $($b.ObjectType) $($b.Id)" }
+            if ($c -and (& $same $b $c 'Property', 'Operator', 'Guard', 'Description', 'Enabled')) { $counts.same++; continue }
+            & $add 'ConditionType' $it.Key 'PUT' "/api/conditions/$($b.ObjectType)/$($b.Id)" ([ordered]@{ property = $b.Property; operator = $b.Operator; guard = $b.Guard; description = $b.Description; enabled = [bool]$b.Enabled }) "$(if ($c) { $vb.back } else { $vb.again }) condition type $($b.ObjectType) $($b.Id)" (-not $c) }
     }
     if (& $want 'TagType') {
         $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT ObjectType, Name, Description, Attribute, ValueMode, AllowMultiple, FallbackAD, FallbackCloud, Enabled, UpdatedAtUtc FROM eps.TagType')) { $now["$($r.ObjectType):$($r.Name)".ToLowerInvariant()] = $r }
         foreach ($it in @($by['TagType'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.ObjectType):$($b.Name)".ToLowerInvariant()]
-            if ($c -and (& $same $b $c 'Description', 'Attribute', 'ValueMode', 'AllowMultiple', 'FallbackAD', 'FallbackCloud', 'Enabled')) { continue }
+            if ($c -and (& $same $b $c 'Description', 'Attribute', 'ValueMode', 'AllowMultiple', 'FallbackAD', 'FallbackCloud', 'Enabled')) { $counts.same++; continue }
             $body = [ordered]@{ attribute = $b.Attribute; valueMode = $b.ValueMode; enabled = [bool]$b.Enabled; description = $b.Description; allowMultiple = [bool]$b.AllowMultiple; fallbackAD = $b.FallbackAD; fallbackCloud = $b.FallbackCloud }
             if ($c) { $body.expected = $(if ($c.UpdatedAtUtc -is [datetime]) { [datetime]::SpecifyKind($c.UpdatedAtUtc, 'Utc').ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'") } else { "$($c.UpdatedAtUtc)" }) }
-            & $add 'TagType' $it.Key 'PUT' "/api/tagtypes/$($b.ObjectType)/$($b.Name)" $body "$(if ($c) { 'Put back' } else { 'Create again' }) $("$($b.ObjectType)".ToLowerInvariant()) tag type $($b.Name) ($($b.Attribute))" }
+            & $add 'TagType' $it.Key 'PUT' "/api/tagtypes/$($b.ObjectType)/$($b.Name)" $body "$(if ($c) { $vb.back } else { $vb.again }) $("$($b.ObjectType)".ToLowerInvariant()) tag type $($b.Name) ($($b.Attribute))" (-not $c) }
         $gone = @($now.Keys | Where-Object { $k = $_; -not @($by['TagType'] | Where-Object { $_ -and "$($_.Body.ObjectType):$($_.Body.Name)".ToLowerInvariant() -eq $k }).Count })
-        if ($gone.Count) { $notes.Add("tag type(s) made after the backup stay: $(@($gone | ForEach-Object { $now[$_].Name }) -join ', ') - delete them on the Tag types page if you want them gone") }
+        if ($gone.Count -and @($by['TagType']).Count) { $notes.Add("tag type(s) not in the $(if ($Import) { 'file' } else { 'backup' }) stay: $(@($gone | ForEach-Object { $now[$_].Name }) -join ', ') - delete them on the Tag types page if you want them gone") }
     }
     if (& $want 'TagValue') {
         $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT ObjectType, TagType, Value, IsPattern, Description FROM eps.TagValue')) { $now["$($r.ObjectType):$($r.TagType):$($r.Value)".ToLowerInvariant()] = $r }
         foreach ($it in @($by['TagValue'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.ObjectType):$($b.TagType):$($b.Value)".ToLowerInvariant()]
-            if ($c -and (& $same $b $c 'IsPattern', 'Description')) { continue }
-            & $add 'TagValue' $it.Key 'PUT' "/api/tagtypes/$($b.ObjectType)/$($b.TagType)/values" ([ordered]@{ value = $b.Value; description = $b.Description; isPattern = [bool]$b.IsPattern }) "$(if ($c) { 'Put back' } else { 'Add again' }) value '$($b.Value)' of $($b.TagType)" }
+            if ($c -and (& $same $b $c 'IsPattern', 'Description')) { $counts.same++; continue }
+            & $add 'TagValue' $it.Key 'PUT' "/api/tagtypes/$($b.ObjectType)/$($b.TagType)/values" ([ordered]@{ value = $b.Value; description = $b.Description; isPattern = [bool]$b.IsPattern }) "$(if ($c) { $vb.back } else { $vb.addAgain }) value '$($b.Value)' of $($b.TagType)" (-not $c) }
     }
     foreach ($ot in 'User', 'Device') {
         if (-not (& $want "${ot}TagRule")) { continue }
@@ -288,25 +405,43 @@ function Get-EpsConfigRestorePlan {
         $cur = @(Read-EpsRuleCardsForEdit -ConnectionString $ConnectionString -ObjectType $ot)
         $p = ConvertFrom-EpsRuleCsv -Text "$($it.Body.csv)" -ObjectType $ot -Current $cur -DeleteMissing
         $ops = @($p.Ops)
-        foreach ($e in @($p.Errors)) { $notes.Add("$ot rules: $e") }
+        foreach ($e in @($p.Errors)) { $notes.Add("$ot rules: $e"); $counts.refused++ }
         if ($ops.Count) {
             $chk = Test-EpsRuleBatch -ConnectionString $ConnectionString -ObjectType $ot -Ops $ops -Current $cur
             if ($chk -and @($chk.Items | Where-Object unchanged).Count) { $ops = @(for ($i = 0; $i -lt $ops.Count; $i++) { if (-not $chk.Items[$i].unchanged) { $ops[$i] } }) }
         }
-        if ($ops.Count) { & $add "${ot}TagRule" $ot 'POST' "/api/rules/$ot/batch" ([ordered]@{ ops = @($ops) }) "$ot rules back to the backup: $($ops.Count) change(s) (rules not in the backup are deleted)" }
+        if ($ops.Count) { & $add "${ot}TagRule" $ot 'POST' "/api/rules/$ot/batch" ([ordered]@{ ops = @($ops) }) "$ot rules $($vb.to): $($ops.Count) change(s) (rules not in the $(if ($Import) { 'file' } else { 'backup' }) are deleted)" $false }
+        else { $counts.same++ }
     }
     if (& $want 'Setting') {
         $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Value FROM eps.Setting')) { $now["$($r.Name)".ToLowerInvariant()] = $r }
         foreach ($it in @($by['Setting'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.Name)".ToLowerInvariant()]
-            if ($c -and "$($c.Value)" -ceq "$($b.Value)") { continue }
+            if (Test-EpsBackupSecret -Name "$($b.Name)" -Value "$($b.Value)") { $counts.refused++; $notes.Add("setting $($b.Name) looks like a secret - never imported or restored"); continue }
+            if ($c -and "$($c.Value)" -ceq "$($b.Value)") { $counts.same++; continue }
             $e = Get-EpsSettingEntry "$($b.Name)"
-            if (-not $e) { $notes.Add("setting $($b.Name) is not in this version's catalog - left as it is"); continue }
-            if ($e.editable -eq $false) { continue }
-            & $add 'Setting' $it.Key 'PUT' "/api/settings/$($b.Name)" ([ordered]@{ value = $b.Value; expected = $(if ($c) { $c.Value } else { $null }) }) "Setting $($e.label): '$(if ($c) { $c.Value } else { '(default)' })' -> '$($b.Value)'" }
+            if (-not $e) { $counts.refused++; $notes.Add("setting $($b.Name) is not in this version's catalog - left as it is"); continue }
+            if ($e.editable -eq $false) { $counts.refused++; $notes.Add("setting $($b.Name) is set by $($e.setBy), not here - left as it is"); continue }
+            & $add 'Setting' $it.Key 'PUT' "/api/settings/$($b.Name)" ([ordered]@{ value = $b.Value; expected = $(if ($c) { $c.Value } else { $null }) }) "Setting $($e.label): '$(if ($c) { $c.Value } else { '(default)' })' -> '$($b.Value)'" (-not $c) }
     }
-    if (@($by['Scope']).Count) { $notes.Add("saved scopes are in the backup ($(@($by['Scope']).Count)) but are put back by hand (Jobs: saved scopes)") }
-    [ordered]@{ ok = $true; backupId = $BackupId; takenAtUtc = $d.Header.TakenAtUtc; kind = $d.Header.Kind; requests = @($reqs); notes = @($notes)
-        summary = "$($reqs.Count) change(s) to make: $(@($reqs | Group-Object entity | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', ')" }
+    if (& $want 'Persona') {
+        $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, PolicyIdsJson, RulesJson, ExcludeIdsJson FROM eps.CaPersona')) { $now["$($r.Name)".ToLowerInvariant()] = $r }
+        $norm = { param($j) (@(if ($j -is [string]) { $j | ConvertFrom-Json } else { $j }) | Where-Object { $_ } | ForEach-Object { "$_".ToLowerInvariant() } | Sort-Object -Unique) -join ',' }
+        foreach ($it in @($by['Persona'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.Name)".ToLowerInvariant()]
+            if ("$($b.Name)" -notmatch '^[A-Za-z0-9_.-]{1,100}$') { $counts.refused++; $notes.Add("persona '$($b.Name)': not a name a persona can have - left out"); continue }
+            if ($c -and (& $norm $c.PolicyIdsJson) -eq (& $norm $b.PolicyIds) -and (& $norm $c.RulesJson) -eq (& $norm $b.Rules) -and (& $norm $c.ExcludeIdsJson) -eq (& $norm $b.ExcludeIds)) { $counts.same++; continue }
+            & $add 'Persona' $it.Key 'PUT' "/api/ca/personas/$($b.Name)" ([ordered]@{ policyIds = @($b.PolicyIds); rules = @($b.Rules); excludeIds = @($b.ExcludeIds) }) "$(if ($c) { $vb.back } else { $vb.again }) persona $($b.Name)" (-not $c) }
+    }
+    if (& $want 'Monitor') {
+        $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled FROM eps.CaMonitor')) { $now["$($r.Name)".ToLowerInvariant()] = $r }
+        foreach ($it in @($by['Monitor'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.Name)".ToLowerInvariant()]
+            if ("$($b.Name)" -notmatch '^[A-Za-z0-9_.-]{1,100}$') { $counts.refused++; $notes.Add("monitor '$($b.Name)': not a name a monitor can have - left out"); continue }
+            $defJ = ConvertTo-Json -InputObject $b.Definition -Depth 20 -Compress
+            if ($c -and ((("$($c.Definition)" | ConvertFrom-Json) | ConvertTo-Json -Depth 20 -Compress) -ceq $defJ) -and "$($c.Schedule)" -ceq "$($b.Schedule)" -and [bool]$c.Enabled -eq [bool]$b.Enabled) { $counts.same++; continue }
+            & $add 'Monitor' $it.Key 'PUT' "/api/ca/monitors/$($b.Name)" ([ordered]@{ definition = $b.Definition; schedule = "$($b.Schedule)"; enabled = [bool]$b.Enabled }) "$(if ($c) { $vb.back } else { $vb.again }) monitor $($b.Name) ($($b.Schedule)$(if (-not $b.Enabled) { ', off' }))" (-not $c) }
+    }
+    if (@($by['Scope']).Count) { $notes.Add("saved scopes are in the $(if ($Import) { 'file' } else { 'backup' }) ($(@($by['Scope']).Count)) but are put back by hand (Jobs: saved scopes)") }
+    [ordered]@{ ok = $true; backupId = $(if ($BackupId) { $BackupId }); takenAtUtc = $d.Header.TakenAtUtc; kind = $d.Header.Kind; requests = @($reqs); notes = @($notes); counts = $counts
+        summary = "$($reqs.Count) change(s) to make: $(@($reqs | Group-Object entity | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', ') - $($counts.new) new, $($counts.changed) changed, $($counts.same) the same, $($counts.refused) refused" }
 }
 
 function Get-EpsCommitUndoPlan {
@@ -421,6 +556,64 @@ function Get-EpsConfigSnapshot {
     }
     if ($skipped) { $counts.SecretsLeftOut = $skipped }
     @{ Items = @($items); Counts = $counts }
+}
+
+# ---- CONFIG-IO-1 (DESIGN §3 "Export / import / undo of every rule set and setting"; framework CONFIG-IO-1): the whole
+# configuration as ONE file - the same items a configuration backup holds (rules, tag types and values, condition types,
+# saved scopes, the non-secret settings) plus the CA Policy Analyzer's personas and monitors. An import is the SAME path as
+# a restore: Get-EpsConfigRestorePlan -Items turns the file into the requests the pages make, each sent through its own
+# route (its checks, journal, audit; the commit queue stages what it stages). Never in the file: secrets, approvals,
+# decisions, the audit trail, the journal, adoption records, backups.
+$script:EpsConfigFormat = 'eps-configuration'
+$script:EpsConfigEntities = @('Rules', 'TagType', 'TagValue', 'ConditionType', 'Scope', 'Setting', 'Persona', 'Monitor')
+$script:EpsConfigMaxItems = 20000
+$script:EpsConfigMaxBytes = 900KB   # the web app takes a request of at most 1 MB
+
+function Get-EpsConfigExport {
+    # the export file (an ordered object; the route sends it as JSON)
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$ExportedBy, [string]$Version)
+    $s = Get-EpsConfigSnapshot -ConnectionString $ConnectionString
+    $items = [System.Collections.Generic.List[object]]::new()
+    foreach ($i in $s.Items) { $items.Add([ordered]@{ entity = $i.e; key = $i.k; body = ($i.b | ConvertFrom-Json -Depth 20) }) }
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, PolicyIdsJson, RulesJson, ExcludeIdsJson FROM eps.CaPersona ORDER BY Name')) {
+        $items.Add([ordered]@{ entity = 'Persona'; key = "$($r.Name)"; body = [ordered]@{ Name = "$($r.Name)"; PolicyIds = @("$($r.PolicyIdsJson)" | ConvertFrom-Json); Rules = @("$($r.RulesJson)" | ConvertFrom-Json); ExcludeIds = @("$(if ($r.ExcludeIdsJson -isnot [DBNull]) { $r.ExcludeIdsJson } else { '[]' })" | ConvertFrom-Json) } })
+    }
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled FROM eps.CaMonitor ORDER BY Name')) {
+        $items.Add([ordered]@{ entity = 'Monitor'; key = "$($r.Name)"; body = [ordered]@{ Name = "$($r.Name)"; Definition = ("$($r.Definition)" | ConvertFrom-Json -Depth 20); Schedule = "$($r.Schedule)"; Enabled = [bool]$r.Enabled } })
+    }
+    $counts = [ordered]@{}; foreach ($g in @($items | Group-Object { $_.entity })) { $counts[$g.Name] = $g.Count }
+    if ($s.Counts.SecretsLeftOut) { $counts.SecretsLeftOut = $s.Counts.SecretsLeftOut }
+    [ordered]@{ format = $script:EpsConfigFormat; formatVersion = 1; productVersion = $Version; exportedAtUtc = [datetime]::UtcNow.ToString('o'); exportedBy = $ExportedBy
+        note = 'Entra Policy Suite configuration (CONFIG-IO-1). Secrets, approvals, records and the audit trail are never in it. Import it on Administration > Settings: every change is shown first.'
+        counts = $counts; items = @($items) }
+}
+
+function Read-EpsConfigImportFile {
+    <#
+      Checks an import file (the parsed JSON, or its text) and returns @{ Ok; Error; Items (Entity, ItemKey, BodyJson - the
+      shape Get-EpsConfigRestorePlan takes); Refused (count); Notes }. Refused, never imported: an entity this file format
+      does not carry (records, approvals, the journal, ...), a setting that looks like a secret.
+    #>
+    param($File)
+    $f = $File
+    if ($f -is [string]) {
+        if ([Text.Encoding]::UTF8.GetByteCount($f) -gt $script:EpsConfigMaxBytes) { return @{ Ok = $false; Error = "the file is larger than $($script:EpsConfigMaxBytes / 1KB) KB - export a part (the rules CSV on the Tagging page) or ask support" } }
+        try { $f = $f | ConvertFrom-Json -Depth 30 } catch { return @{ Ok = $false; Error = 'the file is not JSON - export one from Administration > Settings' } }
+    }
+    if (-not $f -or "$($f.format)" -ne $script:EpsConfigFormat) { return @{ Ok = $false; Error = "not an Entra Policy Suite configuration file - export one from Administration > Settings" } }
+    if ([int]"$($f.formatVersion)" -ne 1) { return @{ Ok = $false; Error = "format version $($f.formatVersion) is not known to this version - export it again" } }
+    $all = @($f.items)
+    if ($all.Count -gt $script:EpsConfigMaxItems) { return @{ Ok = $false; Error = "$($all.Count) items - at most $($script:EpsConfigMaxItems)" } }
+    $items = [System.Collections.Generic.List[object]]::new(); $notes = [System.Collections.Generic.List[string]]::new(); $refused = 0
+    foreach ($i in $all) {
+        $e = "$($i.entity)"
+        if ($e -notin $script:EpsConfigEntities) { $refused++; $notes.Add("'$e' is never imported (only rules, tag types and values, condition types, saved scopes, settings, personas and monitors)"); continue }
+        if ($null -eq $i.body) { $refused++; $notes.Add("$e '$($i.key)': no body - left out"); continue }
+        if ($e -eq 'Setting' -and (Test-EpsBackupSecret -Name "$($i.body.Name)" -Value "$($i.body.Value)")) { $refused++; $notes.Add("setting $($i.body.Name) looks like a secret - never imported"); continue }
+        $items.Add(@{ Entity = $e; ItemKey = "$($i.key)"; BodyJson = (ConvertTo-Json -InputObject $i.body -Depth 20 -Compress) })
+    }
+    @{ Ok = $true; Items = @($items); Refused = $refused; Notes = @($notes | Select-Object -Unique)
+       From = [ordered]@{ productVersion = "$($f.productVersion)"; exportedAtUtc = "$($f.exportedAtUtc)"; exportedBy = "$($f.exportedBy)" } }
 }
 
 function Save-EpsConfigBackupSet {

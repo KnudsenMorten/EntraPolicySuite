@@ -6,7 +6,8 @@
 #   the plan and gave a reason; no schedule, job, tick or monitor calls anything here.
 #
 # Loaded by the ENGINE only (tools/eps-engine/job-entry.ps1): the web app never loads this file. Callers: the routes
-# POST /api/groups/{create|rule|members|forceupdate|au} (the engine runs them from the SuperAdmin's signed request) and
+# POST /api/groups/{create|rule|editrule|members|forceupdate|au} (the engine runs them from the SuperAdmin's signed
+# request), POST /api/groups/validate (Test-EpsGroupRule: Entra's rule check, changes nothing) and
 # the stage move (Invoke-EpsCaStageMove sets the dynamic pilot group's rule for the stage, as v1's CAnnn.ps1 does), and
 # a template deploy (EPS-CaWrite.ps1 creates the groups the new policy needs first, as v1's Initial_Setup does).
 # tests/Test-EpsGroups.ps1 pins it.
@@ -45,7 +46,7 @@ function Invoke-EpsGroupChangeItems {
                         catch { $r.detail += "; NOT placed in $an ($((("$($_.Exception.Message)") -split '->')[-1].Trim()))" }
                     }
                 }
-                { $_ -in 'rule', 'update' } {
+                { $_ -in 'rule', 'update', 'editrule' } {
                     $id = "$($Live[$it.name].ObjectId)"
                     $r.before = @{ membershipRule = "$($Live[$it.name].RuleInTenant)"; membershipRuleProcessingState = "$($Live[$it.name].Processing)" }
                     [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/groups/$id" -Body $it.body)
@@ -96,15 +97,27 @@ function Invoke-EpsGroupChange {
       Returns @{ Result = ok | partial | refused | failed; Reason; Items; Text }.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Action, [string[]]$Names = @(), [string[]]$Add = @(), [string[]]$Remove = @(),
-          [string]$Template, [string[]]$Templates = @(), [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
+          [string]$Template, [string[]]$Templates = @(), [string]$Rule, [switch]$Back, [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
     $m = Get-EpsManagedGroups -ConnectionString $ConnectionString -Templates $Templates
     $read = switch ($Action) { 'forceupdate' { @($m.Groups.Values | Where-Object { @($_.templates) -contains $Template } | ForEach-Object name) } 'au' { @($m.Groups.Keys) } default { @($Names | Where-Object { $m.Groups.Contains($_) }) } }
     $live = @{}; foreach ($x in @(Read-EpsManagedGroupState -Names @($read) -AdminUnits $m.AdminUnits)) { $live["$($x.Name)"] = $x }
     $bg = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT UserPrincipalName FROM eps.BreakGlassAccount' | ForEach-Object { "$($_.UserPrincipalName)" })
-    $plan = Get-EpsGroupPlan -Managed $m -State $live -Action $Action -Names $Names -Add $Add -Remove $Remove -Template $Template -BreakGlassUpns $bg
+    $plan = Get-EpsGroupPlan -Managed $m -State $live -Action $Action -Names $Names -Add $Add -Remove $Remove -Template $Template -BreakGlassUpns $bg -Rule $Rule -Back:$Back
     if (-not $plan.ok) { return @{ Result = 'refused'; Reason = $plan.reason; Items = @($plan.items) } }
     & $Log 'Info' "Groups: $Action ($($plan.summary)), requested by $Actor"
     $items = Invoke-EpsGroupChangeItems -Plan $plan -Managed $m -Live $live -Log $Log
+    # GROUPS-ACTIONS: the operator's own rule is kept as this install's rule for the group (only once it is written and
+    # read back); "back to v1's rule" drops it
+    foreach ($it in @($items | Where-Object { $_.do -eq 'editrule' -and $_.result -eq 'done' })) {
+        $pi = @($plan.items | Where-Object { $_.name -eq $it.name -and $_.do -eq 'editrule' })[0]
+        [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = "$($it.name)"; r = $(if ($pi.back) { [DBNull]::Value } else { "$($pi.customRule)" }); b = $Actor; why = $(if ($Reason) { $Reason.Substring(0, [Math]::Min(1000, $Reason.Length)) } else { [DBNull]::Value }) } -Query @"
+SET XACT_ABORT ON; BEGIN TRAN;
+DELETE FROM eps.GroupRuleOverride WHERE Name = @n;
+IF @r IS NOT NULL INSERT INTO eps.GroupRuleOverride (Name, MembershipRule, SetBy, Reason) VALUES (@n, @r, @b, @why);
+COMMIT;
+"@)
+        if ($pi.back) { $it.detail += ' (your rule dropped)' } else { $it.customRule = $pi.customRule }
+    }
     # read back what was touched, store it, journal it
     $touched = @($items | Where-Object { $_.result -eq 'done' -and "$($_.name)" -notlike 'au:*' } | ForEach-Object name | Select-Object -Unique)
     if ($touched.Count -or @($items | Where-Object { "$($_.name)" -like 'au:*' -and $_.result -eq 'done' }).Count) {
@@ -136,7 +149,10 @@ function Set-EpsPilotGroupForStage {
     if ($method -ne 'Dynamic_Using_Tags') { return @{ Result = 'n/a'; Reason = 'assigned pilot groups: the policy names the stage''s group' } }
     $pd = (Get-EpsGroupDefaults).templates[$TemplateId].pilotDynamic
     if (-not $pd) { return @{ Result = 'n/a'; Reason = "v1 has no dynamic pilot group for $TemplateId" } }
-    $want = Get-EpsPilotStageRule -Pilot $pd -Stage $To
+    # GROUPS-ACTIONS: a rule the operator set for this pilot group is its Pilot1 base, widened for the stage (as v1 widens
+    # its own); without a "_pilot1" clause it is kept as it is, and Prod still pauses it when v1 pauses
+    $ov = (Get-EpsGroupRuleOverrides -ConnectionString $ConnectionString)[$pd.name]
+    $want = if ($ov) { Get-EpsCustomPilotRule -Rule $ov.rule -Stage $To -ProdProcessing "$($pd.prod)" } else { Get-EpsPilotStageRule -Pilot $pd -Stage $To }
     $live = @(Read-EpsManagedGroupState -Names @($pd.name))[0]
     if ($null -eq $live.Found) { return @{ Result = 'failed'; Reason = "the pilot group $($pd.name) could not be read: $($live.Error)" } }
     if (-not $live.Found) { return @{ Result = 'refused'; Reason = "the pilot group $($pd.name) is not in the tenant - create it on Conditional Access > Groups first" } }
@@ -153,4 +169,35 @@ function Set-EpsPilotGroupForStage {
     [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $p -Query (Get-EpsJournalSql))
     Save-EpsManagedGroupState -ConnectionString $ConnectionString -Rows @(@{ Name = $pd.name; ObjectId = $live.ObjectId; Found = $true; Dynamic = $true; RuleInTenant = $after.membershipRule; Processing = $after.membershipRuleProcessingState; Members = $live.Members; AdminUnit = $live.AdminUnit })
     @{ Result = 'ok'; Before = $before; After = $after }
+}
+
+function Test-EpsGroupRule {
+    <#
+      GROUPS-ACTIONS "Validate" (owner 2026-11-05: "... or create or validate etc"): checks a membership rule with Microsoft
+      Entra BEFORE it is saved - nothing is created or changed. Graph's documented check is POST
+      beta/groups/evaluateDynamicMembership { memberId, membershipRule }: it parses the rule (a rule it cannot parse is a
+      400 with Entra's own message) and says whether that one user would be a member. The user is the one the operator
+      named, else any user of the tenant (the syntax check needs one). A beta API: when it is not available the answer says
+      so, and the rule is still checked when it is saved (Entra refuses it, the read back shows it).
+      Returns @{ Valid ($true / $false / $null = Entra gave no answer); Matches ($true / $false / $null); User; Text }.
+    #>
+    param([Parameter(Mandatory)][string]$Rule, [string]$TestUser)
+    $rule = ConvertTo-EpsGroupRuleText $Rule
+    if (-not $rule) { return @{ Valid = $false; Text = 'no rule given' } }
+    if ($rule.Length -gt $script:EpsGroupRuleMax) { return @{ Valid = $false; Text = "longer than $($script:EpsGroupRuleMax) characters (Microsoft Entra's limit)" } }
+    $u = $null
+    try {
+        $u = if ($TestUser) { Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString($TestUser))?`$select=id,userPrincipalName" }
+             else { @((Invoke-EpsGraph -Path 'v1.0/users?$top=1&$select=id,userPrincipalName').value)[0] }
+    } catch { return @{ Valid = $null; Text = $(if ($TestUser) { "$TestUser is not a user in the tenant - give another test user" } else { "no user could be read to check the rule with: $((("$($_.Exception.Message)") -split '->')[-1].Trim())" }) } }
+    if (-not $u) { return @{ Valid = $null; Text = 'no user in the tenant to check the rule with' } }
+    try {
+        $r = Invoke-EpsGraph -Method POST -Path 'beta/groups/evaluateDynamicMembership' -Body ([ordered]@{ memberId = "$($u.id)"; membershipRule = $rule })
+        $hit = [bool]$r.membershipRuleEvaluationResult
+        @{ Valid = $true; Matches = $hit; User = "$($u.userPrincipalName)"; Text = "Microsoft Entra accepts the rule. $($u.userPrincipalName) would $(if ($hit) { 'BE' } else { 'NOT be' }) a member." }
+    } catch {
+        $e = (("$($_.Exception.Message)") -split '->')[-1].Trim()
+        if ($e -match '(?i)\b400\b|BadRequest|Invalid|parse|syntax|rule') { return @{ Valid = $false; User = "$($u.userPrincipalName)"; Text = "Microsoft Entra refuses the rule: $e" } }
+        @{ Valid = $null; User = "$($u.userPrincipalName)"; Text = "The rule could not be checked before saving ($e) - it is checked when it is saved: Entra refuses a rule it cannot read, and the read back shows it." }
+    }
 }

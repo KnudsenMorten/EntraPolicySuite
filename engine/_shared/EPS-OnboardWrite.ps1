@@ -170,6 +170,79 @@ function Invoke-EpsOnboardChange {
        Text = "$($ok.Count) done$(if ($failed.Count) { ", $($failed.Count) failed: $(@($failed | ForEach-Object { "$($_.name) ($($_.error))" }) -join '; ')" })$(if (@($items | Where-Object { $_.do -eq 'skip' }).Count) { ", $(@($items | Where-Object { $_.do -eq 'skip' }).Count) already there" })$(if ($Action -eq 'breakglass' -and $ok.Count) { '. Set each new account''s password or Temporary Access Pass in Entra, register its FIDO2 key and make it Global Administrator - Entra Policy Suite never shows its password' })." }
 }
 
+# ---- UNDO-BACKUP left-over: named locations and authentication strengths put back from a backup ---------------------
+# The operator's request (POST /api/backups/ca/{id}/restore-other: SuperAdmin, a reason, applied by the engine): the tenant
+# read LIVE, the plan made again (EPS-Backup.ps1 Get-EpsCaObjectRestorePlan: create when missing, the backup's definition
+# back when changed, NEVER a delete), a backup of what is touched BEFORE any write (none = nothing written), each write
+# read back and journaled. Five more writes, pinned in tests/Test-EpsNoCaWrite.ps1 and tests/Test-EpsOnboardWrite.ps1.
+
+function Restore-EpsCaObjectItems {
+    # the writes of ONE object restore plan, each read back - its only caller is Invoke-EpsCaObjectRestore
+    param([Parameter(Mandatory)][object[]]$Items, [scriptblock]$Log = { param($l, $m) })
+    $done = [System.Collections.Generic.List[object]]::new()
+    foreach ($it in @($Items | Where-Object { $_.ok -and $_.action -in 'create', 'patch' })) {
+        $r = [ordered]@{ kind = $it.kind; displayName = $it.displayName; action = $it.action; result = 'failed'; text = $null }
+        try {
+            if ($it.kind -eq 'namedLocation') {
+                if ($it.action -eq 'create') { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/identity/conditionalAccess/namedLocations' -Body $it.body) }
+                else { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/identity/conditionalAccess/namedLocations/$($it.currentId)" -Body $it.body) }
+                $back = @(Invoke-EpsGraph -Path 'v1.0/identity/conditionalAccess/namedLocations' -All | Where-Object { "$($_.displayName)" -ceq "$($it.body.displayName)" })
+                if ($back.Count -ne 1) { throw "read back: $($back.Count) named locations with this name" }
+                if ((ConvertTo-EpsNamedLocationShape -Location $back[0]).key -ne (ConvertTo-EpsNamedLocationShape -Location $it.body).key) { throw 'read back: it is not as in the backup' }
+            } else {
+                if ($it.action -eq 'create') { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/policies/authenticationStrengthPolicies' -Body $it.body) }
+                else {
+                    if ($it.body) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/policies/authenticationStrengthPolicies/$($it.currentId)" -Body $it.body) }
+                    if ($it.combinations) { [void](Invoke-EpsGraph -Method POST -Path "v1.0/policies/authenticationStrengthPolicies/$($it.currentId)/updateAllowedCombinations" -Body @{ allowedCombinations = @($it.combinations) }) }
+                }
+                $back = @(Invoke-EpsGraph -Path "v1.0/policies/authenticationStrengthPolicies?`$filter=policyType eq 'custom'" -All | Where-Object { "$($_.displayName)" -ceq "$($it.displayName)" })
+                if ($back.Count -ne 1) { throw "read back: $($back.Count) strengths with this name" }
+                $want = @(if ($it.action -eq 'create') { $it.body.allowedCombinations } elseif ($it.combinations) { $it.combinations } else { $back[0].allowedCombinations })
+                if ((@($back[0].allowedCombinations | ForEach-Object { "$_" } | Sort-Object -Unique) -join ',') -ne (@($want | ForEach-Object { "$_" } | Sort-Object -Unique) -join ',')) { throw 'read back: its allowed combinations are not as in the backup' }
+            }
+            $r.result = 'done'; $r.text = $(if ($it.action -eq 'create') { 'made again' } else { 'put back: ' + (@($it.changes) -join '; ') })
+        } catch {
+            $r.text = (("$($_.Exception.Message)" -split '->')[-1]).Trim()
+            if ($r.text -match '(?i)403|Authorization_RequestDenied|privilege') { $r.text += " (the engine needs $(if ($it.kind -eq 'namedLocation') { 'Policy.ReadWrite.ConditionalAccess' } else { 'Policy.ReadWrite.AuthenticationMethod' }) - run the install again to grant it)" }
+        }
+        & $Log $(if ($r.result -eq 'failed') { 'Warning' } else { 'Info' }) "  restore $($it.kind) $($it.action) $($it.displayName): $($r.result)$(if ($r.result -eq 'failed') { " - $($r.text)" })"
+        $done.Add($r)
+    }
+    , @($done)
+}
+
+function Invoke-EpsCaObjectRestore {
+    <#
+      Puts the picked named locations / authentication strengths of ONE backup back (the operator's request): the tenant
+      read LIVE, the plan made again, a backup of what is about to change BEFORE any write, the writes (read back), one
+      journal row per item. Returns @{ Result = ok | partial | refused | failed; Reason; Items; Text }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$BackupId, [string[]]$ObjectIds = @(),
+          [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
+    $b = Get-EpsCaObjectBackupItems -ConnectionString $ConnectionString -BackupId $BackupId -ObjectIds $ObjectIds
+    if (-not $b) { return @{ Result = 'refused'; Reason = 'no such backup (it may have been removed by the retention)'; Items = @() } }
+    if (-not $b.Rows.Count) { return @{ Result = 'refused'; Reason = 'the backup holds none of these named locations or strengths'; Items = @() } }
+    $nl = try { @(Invoke-EpsGraph -Path 'v1.0/identity/conditionalAccess/namedLocations' -All) } catch { return @{ Result = 'failed'; Reason = "the named locations could not be read: $((("$($_.Exception.Message)") -split '->')[-1].Trim())"; Items = @() } }
+    $st = try { @(Invoke-EpsGraph -Path 'v1.0/identity/conditionalAccess/authenticationStrength/policies' -All) } catch { return @{ Result = 'failed'; Reason = "the authentication strengths could not be read: $((("$($_.Exception.Message)") -split '->')[-1].Trim())"; Items = @() } }
+    $plan = Get-EpsCaObjectRestorePlan -Backup $b.Rows -Current @{ NamedLocations = $nl; AuthStrengths = $st }
+    $todo = @($plan.items | Where-Object { $_.ok -and $_.action -in 'create', 'patch' })
+    if (-not $todo.Count) { return @{ Result = 'refused'; Reason = 'nothing to put back: ' + (@($plan.items | ForEach-Object { "$($_.displayName) ($($_.reason))" }) -join '; '); Items = @($plan.items) } }
+    # what is about to change, as it is now, stored first (no backup, no change)
+    $tl = @($todo | Where-Object { $_.kind -eq 'namedLocation' -and $_.currentId } | ForEach-Object { $id = $_.currentId; @($nl | Where-Object { "$($_.id)" -eq $id })[0] })
+    $ts = @($todo | Where-Object { $_.kind -eq 'authStrength' -and $_.currentId } | ForEach-Object { $id = $_.currentId; @($st | Where-Object { "$($_.id)" -eq $id })[0] })
+    try { [void](Save-EpsCaBackupSet -ConnectionString $ConnectionString -Kind BeforeChange -NamedLocations $tl -AuthStrengths $ts -TakenBy $Actor -Cause "before the restore of $($todo.Count) named location(s) / strength(s) from backup $BackupId") }
+    catch { return @{ Result = 'refused'; Reason = "the backup before the change could not be written ($($_.Exception.Message)) - nothing was changed"; Items = @($plan.items) } }
+    & $Log 'Info' "restore from backup $BackupId`: $($todo.Count) named location(s) / strength(s), requested by $Actor"
+    $done = Restore-EpsCaObjectItems -Items $todo -Log $Log
+    foreach ($d in @($done | Where-Object { $_.result -eq 'done' })) {
+        $p = New-EpsJournalParameters -Actor $Actor -Entity $(if ($d.kind -eq 'namedLocation') { 'NamedLocation' } else { 'AuthenticationStrength' }) -Key "$($d.displayName)" -Action $(if ($d.action -eq 'create') { 'Create' } else { 'Update' }) -Before $null -After ([ordered]@{ restoredFrom = $BackupId; do = $d.action; text = $d.text; reason = $Reason } | ConvertTo-Json -Compress)
+        [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $p -Query (Get-EpsJournalSql))
+    }
+    $ok = @($done | Where-Object { $_.result -eq 'done' }); $bad = @($done | Where-Object { $_.result -ne 'done' })
+    @{ Result = $(if (-not $bad.Count) { 'ok' } elseif ($ok.Count) { 'partial' } else { 'failed' }); Reason = (@($bad | ForEach-Object { "$($_.displayName): $($_.text)" }) -join '; '); Items = @($done)
+       Text = "$($ok.Count) put back$(if (@($plan.items | Where-Object { $_.action -eq 'none' }).Count) { ", $(@($plan.items | Where-Object { $_.action -eq 'none' }).Count) as in the backup already" })$(if ($bad.Count) { ", $($bad.Count) failed: " + (@($bad | ForEach-Object { "$($_.displayName) ($($_.text))" }) -join '; ') })" }
+}
+
 # ---- the daily service-tag job (v1's EntraNamedLocations_AzureNetworkServiceTags.ps1, its VisualCron job) --------------
 $script:EpsServiceTagApi = '2022-05-01'   # v1's $apiVersion
 $script:EpsServiceTagPages = @('https://www.microsoft.com/en-us/download/details.aspx?id=56519', 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519')

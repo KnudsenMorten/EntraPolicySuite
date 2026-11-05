@@ -2,6 +2,151 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.83 - tagging test runs, the identity report in Log Analytics, v1's report mail and SMTP relay, analyzer options, log levels, and the policy Edit form picks instead of typing
+- Fixed: a tag type's fallback value (the value every object no rule decides gets) is no longer offered for removal on
+  Tag types, and is refused if asked: change the fallback first.
+- Fixed: Jobs shows each next start in the same time zone as the schedule - the install's time zone, named in both
+  column headers - and the time is picked on a 24-hour clock.
+- Changed: a Test run started while changes wait in the commit queue tests those waiting changes unless you choose
+  otherwise; the commit queue shows a change field by field (what changes, before and after) instead of two raw texts,
+  and with a second approver your own staged changes are left for another admin to commit.
+- Changed: in the rules grid on a laptop screen the rule panel folds away (one click opens it), a rule with a change
+  waiting is marked on its row, and "In the selected rules, set ... to ..." says what the bulk set does.
+- Changed: people are picked from the directory, not typed, in a Test run, a saved scope and "Never tag these users".
+- Changed: the Audit page shows readable actions and the changes by default (reads - views, exports, checks, sign-ins -
+  one choice away), each change field by field; Tamper puts Accept / Restore first; a tag change links its run; the
+  Overview's last runs open their run; the identity report shows readable labels and method names, offers a column's
+  values in its filter, and opens the tag changes of the person you look at; the undo of a tagging run and of a commit
+  of the rules each say what the other one is for.
+- Changed: the install puts the database setup job's identity into the SQL admin group itself - directly, or, where
+  that is not allowed, as an active Privileged Identity Management member of the group (permanent, or for the longest
+  time the group's policy allows, with the end date shown so the install is run again before it). When neither is
+  allowed, the install stops and names both reasons and the right that is missing; it no longer runs the database
+  steps as you instead.
+- Changed: a new install creates the SQL admin group as a role-assignable group, so only a Privileged Role
+  Administrator or a Global Administrator can change who administers the database. An existing group that is not
+  role-assignable is reported by the install and left as it is.
+- New: test the changes waiting in the commit queue BEFORE you commit them - "Test these staged changes" on the commit
+  queue and the Rules page, or "Which rules" in the Test run dialog. The test uses the rules as the commit would make
+  them and writes nothing; commit them afterwards and Go live runs exactly those rules on everyone. A test run that
+  was started before this version has to be run again once before it can go live.
+- Changed: a commit says what it starts - for example "User tagging APPLY - it writes the tags on 92 users (the last
+  run on everyone)". The commit queue lists what waits (tick to commit or discard) apart from what was committed, with
+  before and after side by side. "Test this rule" in a rule's side panel tests it on the people you pick.
+- Changed: Jobs offers what each job does - Preview / Apply and a scope only for tagging; "Back up now", "Run the report
+  now", "Check for an update now" and Run now for the others; internal jobs are no longer listed. The schedule is
+  picked (every day / week / month / every few minutes or hours, and the time), not typed, with On / Off and a Next
+  run column. Runs can be filtered on every job, and every job has a readable name.
+- Changed: the Overview's numbers are links to what they count, and an install that is not set up yet says so with a
+  link to Get started.
+- Changed: tagging rules - the persona is picked from the ones the rules use (or typed new), a group condition picks
+  its group from the tenant, a tag value shows the rules that set it (and can only be removed when none does), the
+  grid's conditions wrap and its filter pane can be folded away, and leaving the grid with edits that are not staged
+  asks first.
+- Changed: the identity report shows its columns by readable names, its filter starts on the name, and a click on a
+  person or device opens every value they have with "Test run on this user".
+- Fixed: tables no longer show a filter box over a column of buttons; the tag changes of an object are one click from
+  the Tamper page.
+- New: the identity report in Log Analytics, as v1 did it. After each report run, every user's row goes to the table
+  EntraUsersMetadata_CL in your workspace in v1's columns, and v1's exposure lists are read back with the Entra sign-in
+  logs: service accounts and shared device users signing in from a trusted or a non-trusted location, their sign-ins,
+  and those with no sign-in in 90 days. They are on the Identity page under Exposure (Log Analytics) and export to Excel
+  as v1's workbook. An account with a capital letter in its user principal name is now found too (v1 missed it).
+- Set it up once with the new script Initialize-EpsLogAnalytics.ps1: it makes the table (or adds what a table v1 made
+  lacks, keeping its columns), a data collection endpoint and rule, and gives the engine two rights only - Monitoring
+  Metrics Publisher on that one rule and Log Analytics Reader on that one workspace. No new Microsoft Graph permission.
+  Then a SuperAdmin switches on Settings > Identity report > Send the report to Log Analytics (off by default).
+- New: test runs for tagging. The Test run button on the Rules page tries the rules on the people you pick - a list,
+  a group, an OU, a filter or a saved scope - for all tag types or the ones you choose: Test writes nothing, Apply
+  writes only their tags. Tagging > Test runs shows each run: the counts per tag value and per rule, and per person
+  every tag as it is now and as the rules want it, with the rule that decided it; open a person for the whole decision,
+  rule by rule. It replaces "Try on a user".
+- New: Go live on a test of all tag types runs the same rules once on everyone (a SuperAdmin, with a reason). It is
+  refused when the rules changed after the test - test again first - and the mass-change guard still holds it. The
+  scheduled tagging runs go on as before; Go live does not change them.
+- New: the Matched count on the Rules page explains itself. "who?" next to it (and "Who it matched" in the side panel)
+  lists who the rule decided in the last run - each with the value the rule set and the value it had - searchable, as
+  CSV, and from any recent run; open a tested person's whole decision, or start a test run on anyone in the list. A rule
+  that decided nobody says why (switched off, never wins because an earlier rule takes every match, changed after the
+  run, or nobody met all its conditions) and shows the closest misses from the latest test run.
+- New: Administration > Settings can export the whole configuration as one file - the tagging rules, tag types and
+  values, condition types, saved scopes, the settings and the CA Policy Analyzer's personas and monitors - and import
+  such a file. An import shows every change first (new, changed, the same, refused); you untick what you want to keep,
+  and each change goes through the same checks as on its own page. Secrets, approvals and records are never in the file
+  and never imported. SuperAdmin only.
+- New: Remove policies on the Conditional Access page deletes policies that are off - the ones you select, or every
+  policy whose name matches a pattern such as *-Initial-*, as v1 could. Only policies that are off are removed; you see
+  the exact list, type the count to confirm, and a backup of each is taken first. SuperAdmin only.
+- New: a backup's named locations and authentication strengths can be put back - made again when they are gone, their
+  definition back when they changed. Nothing is ever deleted.
+- Changed: promoting a new version of a template now also sets the template's shared dynamic pilot group as v1 did (Prod
+  pauses its rule), before either policy changes; if the group cannot be set, nothing is changed.
+- New: the identity report workbook can go to its own recipients (Settings > Identity report > Who gets the workbook),
+  as v1 mailed it to its own list; empty sends it to the alert recipients as before.
+- New: alert mail and the report can go through your own SMTP relay, as v1 sent its mail (Settings > Alert mail = smtp,
+  with the server, port, TLS and from address). When the relay needs a password, it stays in your Key Vault: you name
+  the secret and give the engine read on it; Entra Policy Suite reads it when it sends and never stores or shows it.
+  Without a secret the mail is sent anonymously. Send a test mail works for both kinds.
+- New in the CA Policy Analyzer (More options), as v1's evaluator had them: policy numbers and ranges such as 6,200-249,
+  only the policies that are on, report-only or off, a fixed window from - to instead of the last hours (for one
+  analysis; a monitor keeps reading the last hours), and at most a number of sign-ins. An analysis exports to Excel and
+  HTML as well as CSV.
+- New: the log level per feature, as v1's verbose switches (Settings > Logging): Off keeps only warnings and errors,
+  Normal (the default) the information lines, Verbose also one line per planned tag change. Run logs are kept 90 days
+  by default (Keep run logs), the runs themselves and the audit trail always.
+- New: Import v1 also reads v1's Automation-DefaultVariables.psm1 (from v1's FUNCTIONS folder) for the identity
+  report's mail and OUs, the mail relay and the tag attributes - only those values; a password is never imported. Get
+  started shows each break-glass account's v1 tag values next to it.
+- Conditional Access > Groups: every row has its actions first - Check (read that group now), Create, Edit rule, Set rule,
+  Members, force update and Copy id (the group's object id for the Microsoft Entra admin center) - also before the groups were read.
+  A page not read yet says so, with a button to read the groups; the page updates itself when the engine is done.
+- Edit rule: the rule in your tenant and v1's rule side by side, and an editor. Validate asks Microsoft Entra to check
+  the rule before anything is saved, and whether a test user would be a member. A SuperAdmin saves it with a reason; it
+  is kept as your rule for that group, so Set rule, the force update and the stage moves keep it. Back to v1's rule
+  puts v1's rule back.
+- A pilot group's own rule is its Pilot1 base: each stage widens its _pilot1 part as v1 does, and Prod pauses it.
+- New: in the Conditional Access Edit and Clone form every list of users, groups, roles, applications and named locations
+  shows its entries as names with an Add button: search by name among what Entra Policy Suite already knows, add All /
+  None / guests and the other special values with one click, and an Admin can search the whole tenant for the rest.
+  Break-glass accounts and groups are marked, and removing one warns you that an enabled policy without them is refused.
+- New: every setting with a fixed set of choices is a check box or a dropdown - Block access or Grant access with the
+  controls, client apps, platforms, risk levels, user actions, authentication flows, sign-in frequency, persistent
+  browser, Conditional Access App Control - and the authentication strength is picked from your tenant's strengths by
+  name. Typing is only needed in Advanced (JSON).
+- New: the choices come from Microsoft Graph. A new monthly job reads which values each policy setting allows and your
+  tenant's authentication strengths, named locations and directory roles; a value Microsoft adds later is offered too,
+  marked "new from Graph", and listed on the job's run. It only reads; Run now reads at once (Jobs). Run the install
+  again once to add the job; until it has run, the form uses the list that ships with this release.
+- Get started: every step says how to fix what it found - a link to the page that does it, or the command to run with
+  a Copy button. A step that needs an earlier one waits until that one is ready, and says which.
+- A policy's page shows who it hits: Analyse this policy (the last 7 days, read only) and the last analysis's count of
+  impacted users - also in the dialog before you move a policy to Pilot2, Pilot3 or Prod. "Pick more in the Analyzer"
+  opens the Analyzer with the policy ticked.
+- Conditional Access > Policies: each row starts with its Actions (open, edit, clone, analyse, move to a stage, adopt or
+  release); the cards at the top filter the list; the state reads On, Report-only or Off; Deploy a new policy from a
+  template is one click away.
+- Templates show what a template does in words (the JSON is still there behind a toggle), link the policy deployed from
+  it, and deploy a selection at the stage you pick (off or Pilot1). Template updates offer "Test the new version next to
+  it" per policy.
+- People are picked, not typed: the members of a group and the people on the Access page; a person's role changes in
+  place.
+- Settings: a search box and an index of the groups; a link to a setting from another page lands on its group. The group
+  targeting method is a choice of v1's three; the authentication strength and location names and the region are picked
+  from lists; a setting a script sets shows the command to run.
+- Hybrid worker: the connection test shows the worker's answer when it comes; failed AD changes can be tried again
+  several at once.
+- Faster pages after a big run: the database now refreshes its statistics in the background, and after a tagging run,
+  the identity report, a backup, the CA Policy Analyzer, the service-tag job or an import the engine refreshes only the
+  statistics that run made out of date. No data changes, and a refresh that cannot run never stops the job.
+- Changed: "Analyse this policy" reads the sign-ins since the policy's last change (its stage move or its adoption) and
+  says whose sign-ins those are - at Pilot1 the pilot group's report-only sign-ins. Before Prod the dialog says plainly
+  that users outside the pilot group were not in that analysis. The line shows the new answer by itself when it is in.
+- Changed: Get started's "Fix it" commands are ready to run with your tenant and subscription filled in; an Admin is
+  told what to ask a SuperAdmin for; a step that waits for an earlier one has its buttons switched off until then; the
+  three group targeting methods are explained. The Overview counts a step that only informs as ready.
+- Changed: the policy list's actions are one menu button; the open-findings card filters the list; the documentation
+  shows readable columns and On / Report-only / Off (all columns on a switch); templates name their strengths and
+  controls in words; the last SuperAdmin is not offered Remove.
 ## 2.0.82 - deploy templates, the hybrid worker page, Get started creates what is missing, backup and undo
 - New: Conditional Access > Templates shows which templates are in your tenant already, and a SuperAdmin deploys a
   template as a NEW policy - off, or report-only for the pilot group - one at a time or the selected ones. What it

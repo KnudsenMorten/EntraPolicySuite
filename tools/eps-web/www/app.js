@@ -127,21 +127,32 @@
       });
     }).catch(function () { /* the bar is a help, not a must */ });
   }
-  function withReason(title, text, fn) {
+  // NOTE-OFF (owner 2026-11-05: "i hate this, turn if off by default and make a setting to allow to turn on"): the setting
+  // Platform.AskForNote (off by default). Off: an action that only reads is sent at once; one that changes something asks
+  // OK / Cancel without the note field. On: the note field as before.
+  // ADMIN-WALK 2026-11-05: a read is marked EXPLICITLY by its caller (opts.readOnly) - never guessed from the help text
+  // (the text match sent Release, Adopt, Import v1, Discard and monitor saves on one click). Unmarked = it asks.
+  function withReason(title, text, fn, opts) {
+    var ask = !!(me && me.askForNote);
+    var send = function (reason) {
+      notice('Sending: ' + title + ' ...');
+      fn(reason).then(function (r) { afterAction(r, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+    };
+    if (!ask && opts && opts.readOnly === true) { send(''); return; }
     var d = document.getElementById('reasonDialog');
     document.getElementById('reasonTitle').textContent = title;
     document.getElementById('reasonText').textContent = text;
     var inp = document.getElementById('reasonInput'); inp.value = '';
+    inp.hidden = !ask; document.querySelector('label[for="reasonInput"]').hidden = !ask;
     var form = document.getElementById('reasonForm');
     var done = function (ev) {
       ev.preventDefault(); var reason = inp.value.trim();   // optional (owner 2026-11-02)
       form.removeEventListener('submit', done); d.close();
-      notice('Sending: ' + title + ' ...');
-      fn(reason).then(function (r) { afterAction(r, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+      send(reason);
     };
     form.addEventListener('submit', done);
     document.getElementById('reasonCancel').onclick = function () { form.removeEventListener('submit', done); d.close(); };
-    d.showModal(); inp.focus();
+    d.showModal(); if (ask) inp.focus(); else document.getElementById('reasonOk').focus();
   }
 
   // ---- tables (BRAND-2.7) ----------------------------------------------------------------------------------------
@@ -197,7 +208,8 @@
         var dt = el('details', { class: 'msel', 'aria-label': 'Filter ' + c.label }, sum, box);
         dt._reset = function () { picked = {}; Array.prototype.forEach.call(box.querySelectorAll('input'), function (x) { x.checked = false; }); sum.textContent = 'any'; };
         fc.appendChild(dt);
-      } else if (c.type !== 'num') {
+      } else if (c.type !== 'num' && !c.nofilter && !(c.render && /^_/.test(c.key || ''))) {
+        // ADMIN-WALK: no "contains" box over a render-only column (actions, check boxes) - it has nothing to filter on
         var i = el('input', { type: 'search', placeholder: c.type === 'date' ? 'contains (yyyy-mm-dd)' : 'contains', 'aria-label': 'Filter ' + c.label });
         i.addEventListener('input', function () { state.f[c.key] = i.value.toLowerCase(); draw(); }); fc.appendChild(i);
       }
@@ -212,8 +224,14 @@
     });
     // a 'cat' column's values for one row: one value, or - with multi (a separator) - each part of a joined list, so a row
     // in two personas ("Users-Internal, Pilots") matches either (CA-LIMITS fix 3)
-    function catVals(r, c) { var v = r[c.key] === null || r[c.key] === undefined ? '' : String(r[c.key]); return c.multi && v ? v.split(c.multi) : [v]; }
-    function cellText(r, c) { var v = r[c.key]; if (c.type === 'date') return fmtTime(v).toLowerCase(); return v === null || v === undefined ? '' : String(v).toLowerCase(); }
+    // ADMIN-WALK-2: a 'cat' column with a render filters on what the column SHOWS (On / Off, a job's name), never the raw
+    // value (true / false, UserTagging); the search matches what is shown too
+    function shownText(r, c) {
+      if (!c.render) return null;
+      try { var o = c.render(r); if (o === null || o === undefined) return ''; if (typeof o === 'string' || typeof o === 'number') return String(o); return textOf(o.textContent); } catch (e) { return null; }
+    }
+    function catVals(r, c) { var s = c.type === 'cat' ? shownText(r, c) : null; var v = s !== null ? s : (r[c.key] === null || r[c.key] === undefined ? '' : String(r[c.key])); return c.multi && v ? v.split(c.multi) : [v]; }
+    function cellText(r, c) { var v = r[c.key]; if (c.type === 'date') return fmtTime(v).toLowerCase(); var s = c.type === 'cat' ? shownText(r, c) : null; if (s !== null && s !== '') return (s + ' ' + (v === null || v === undefined ? '' : String(v))).toLowerCase(); return v === null || v === undefined ? '' : String(v).toLowerCase(); }
     function draw() {
       var list = rows.filter(function (r) {
         for (var k in state.f) { if (!state.f[k] || (Array.isArray(state.f[k]) && !state.f[k].length)) continue; var c = cols.filter(function (x) { return x.key === k; })[0];
@@ -249,7 +267,8 @@
           tr.appendChild(el('td', { class: 'selcol' }, cb));
         }
         cols.forEach(function (c) {
-          var td = el('td', { class: (c.type === 'num' ? 'num ' : '') + (c.wrap ? 'wrap ' : '') + (c.cls ? c.cls(r) : '') });
+          // ADMIN-WALK-2: a date never wraps over three lines
+          var td = el('td', { class: (c.type === 'num' ? 'num ' : '') + (c.wrap ? 'wrap ' : '') + (c.type === 'date' || c.nowrap ? 'nowrap ' : '') + (c.cls ? c.cls(r) : '') });
           if (c.render) { var n = c.render(r); if (n) td.appendChild(typeof n === 'string' ? document.createTextNode(n) : n); }
           else if (c.type === 'date') td.appendChild(timeEl(r[c.key]));
           else if (c.type === 'num') td.textContent = fmtNum(r[c.key]);
@@ -297,7 +316,7 @@
     filters.forEach(function (f) {
       if (f.hidden) { st.values[f.key] = f.value; return; }   // a fixed filter the page sets (no input)
       var inp;
-      if (f.options) { inp = el('select', { 'aria-label': f.label }, f.options.map(function (o) { return el('option', { value: o, text: o === '' ? f.label + ': any' : jobName(o) }); })); inp.addEventListener('change', function () { st.values[f.key] = inp.value; st.page = 1; load(); }); }
+      if (f.options) { inp = el('select', { 'aria-label': f.label }, f.options.map(function (o) { return el('option', { value: o, text: f.optionText && f.optionText[o] !== undefined ? f.optionText[o] : (o === '' ? f.label + ': any' : jobName(o)) }); })); inp.addEventListener('change', function () { st.values[f.key] = inp.value; st.page = 1; load(); }); }
       else { inp = el('input', { type: f.type || 'search', placeholder: f.label, 'aria-label': f.label }); inp.addEventListener('change', function () { st.values[f.key] = inp.value; st.page = 1; load(); }); }
       if (f.value) { inp.value = f.value; st.values[f.key] = f.value; }
       bar.appendChild(inp);
@@ -323,7 +342,11 @@
   }
 
   // ---- pages -------------------------------------------------------------------------------------------------------
-  function card(num, label, alert) { return el('div', { class: 'card' + (alert ? ' alert' : '') }, el('div', { class: 'num', text: fmtNum(num) }), el('div', { class: 'lbl', text: label })); }
+  // a count; with href the whole card is a link to what it counts (ADMIN-WALK: "click 3 open tag changes to get to them")
+  function card(num, label, alert, href) {
+    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: fmtNum(num) }), el('div', { class: 'lbl', text: label }));
+    return c;
+  }
   function stCell(key) { return function (r) { return 'st-' + r[key]; }; }
 
   // ---- settings (SETTING-INFO-1): rendered from the catalog, nothing per setting is written in the page --------------
@@ -385,6 +408,29 @@
     var text = (c ? c.body + ' ' + (r.info && r.info.risk ? r.info.risk + ' ' : '') : '') + 'Now: ' + showValue(r, now) + '. New: ' + showValue(r, next) + '.';
     withReason(title, text, function (reason) { return api('PUT', '/api/settings/' + encodeURIComponent(r.key), { value: next, expected: r.isSet ? r.value : null, reason: reason }); });
   }
+  // ADMIN-WALK (owner: "too shaky for a text field"): a text setting whose values are KNOWN is picked from a list - the
+  // tenant's names the engine stored (the CA editor's picker route) or a fixed list; the stored value stays an option
+  var AZURE_REGIONS = ['westeurope', 'northeurope', 'swedencentral', 'norwayeast', 'denmarkeast', 'germanywestcentral', 'francecentral', 'uksouth', 'ukwest', 'switzerlandnorth', 'polandcentral', 'italynorth', 'spaincentral', 'eastus', 'eastus2', 'centralus', 'westus2', 'westus3', 'canadacentral', 'brazilsouth', 'australiaeast', 'japaneast', 'southeastasia', 'centralindia', 'southafricanorth', 'uaenorth'];
+  // which list a setting is picked from is the catalog's "pick" (never a setting key written here): a kind of the tenant's
+  // names, or a fixed list
+  var SETTING_PICK = { authStrength: { kind: 'authStrength' }, location: { kind: 'location' }, azureRegion: { list: AZURE_REGIONS } };
+  function settingPickSelect(r, now) {
+    var src = SETTING_PICK[r.pick];
+    var s = el('select', { 'aria-label': r.label });
+    var fill = function (names) {
+      clear(s);
+      var seen = {};
+      [''].concat(now ? [String(now)] : []).concat(names).forEach(function (v) { if (seen[v]) return; seen[v] = 1; s.appendChild(el('option', { value: v, text: v === '' ? '(not set)' : v })); });
+      s.value = now === null || now === undefined ? '' : String(now);
+    };
+    if (src.list) fill(src.list);
+    else {
+      fill([]); s.appendChild(el('option', { value: '', disabled: true, text: 'loading the tenant\'s names ...' }));
+      api('GET', '/api/capolicies/pick?' + qs({ kind: src.kind, q: '' })).then(function (d) { fill((d.rows || []).map(function (x) { return x.name; }).filter(function (x) { return x; })); })
+        .catch(function () { fill([]); });
+    }
+    return s;
+  }
   function settingRow(r) {
     var now = r.isSet ? r.value : r.default;
     var canEdit = r.editable && isRole(r.role);
@@ -395,12 +441,30 @@
     var ctl = null, read = null;
     if (canEdit) {
       if (r.type === 'boolean') ctl = el('select', { 'aria-label': r.label }, el('option', { value: 'true', text: 'On' }), el('option', { value: 'false', text: 'Off' }));
-      else if (r.type === 'enum') ctl = el('select', { 'aria-label': r.label }, (r.values || []).map(function (v) { return el('option', { value: v, text: v }); }));
+      // a stored value outside the list (e.g. v1's raw 'Dynamic' from an import) stays visible as its own option
+      else if (r.type === 'enum') ctl = el('select', { 'aria-label': r.label }, (r.values || []).concat((now !== null && now !== undefined && (r.values || []).indexOf(String(now)) < 0) ? [String(now)] : []).map(function (v) { return el('option', { value: v, text: v === '' ? '(not set)' : ((r.values || []).indexOf(v) < 0 ? v + ' (as imported)' : v) }); }));
+      else if (r.type === 'text' && SETTING_PICK[r.pick]) ctl = settingPickSelect(r, now);
       else if (r.type === 'list') ctl = el('textarea', { rows: 3, 'aria-label': r.label, placeholder: 'one per line' + (r.itemHint ? ': ' + r.itemHint : '') });
       else ctl = el('input', { type: 'text', 'aria-label': r.label, inputmode: (r.type === 'int' || r.type === 'number') ? 'decimal' : null, maxlength: r.maxLength || null });
-      ctl.value = r.type === 'list' ? parseList(now).join('\n') : (now === null || now === undefined ? '' : String(now));
+      if (!(r.type === 'text' && SETTING_PICK[r.pick])) ctl.value = r.type === 'list' ? parseList(now).join('\n') : (now === null || now === undefined ? '' : String(now));
       read = function () { return r.type === 'list' ? JSON.stringify(ctl.value.split('\n').map(function (x) { return x.trim(); }).filter(function (x) { return x; })) : ctl.value.trim(); };
-      head.appendChild(el('div', { class: 'sctl' }, ctl));
+      // ADMIN-WALK-2: a list of people (the catalog's "pick": "user", e.g. "Never tag these users") gets a picker that adds
+      // a person's UPN to the list; the list itself stays for a wildcard pattern (Sync_*@contoso.com)
+      var extra = null;
+      if (r.type === 'list' && r.pick === 'user') {
+        var lh = el('div', { class: 'cap-pick', hidden: true });
+        var lb = el('button', { type: 'button', class: 'secondary', text: 'Pick people' });
+        var lines0 = function () { return ctl.value.split('\n').map(function (x) { return x.trim(); }).filter(function (x) { return x; }); };
+        lb.addEventListener('click', function () {
+          lh.hidden = !lh.hidden;
+          if (!lh.hidden && !lh.firstChild) capPicker(lh, 'user', [], { known: {} }, function (v, nm, detail) {
+            var u = String([detail, nm, v].filter(function (x) { return x && String(x).indexOf('@') > 0; })[0] || nm || v).toLowerCase();
+            if (lines0().map(function (x) { return x.toLowerCase(); }).indexOf(u) < 0) ctl.value = lines0().concat([u]).join('\n');
+          }, lines0);
+        });
+        extra = el('div', null, el('div', { class: 'toolbar' }, lb, el('span', { class: 'smeta', text: 'or type a pattern on its own line' })), lh);
+      }
+      head.appendChild(el('div', { class: 'sctl' }, ctl, extra));
     } else {
       head.appendChild(el('div', { class: 'sctl sval', text: showValue(r, now) }));
     }
@@ -420,7 +484,19 @@
     }
     head.appendChild(acts);
     var meta = el('div', { class: 'smeta' });
-    if (!r.editable) meta.appendChild(document.createTextNode('Set by ' + r.setBy + ', not here. '));
+    if (!r.editable) {
+      // ADMIN-WALK: a setting a script sets shows the command, with Copy (as the Hybrid worker page)
+      var scr = /([A-Za-z-]+)\.ps1/.exec(r.setBy || '');
+      if (scr) {
+        // ADMIN-WALK-2 N6: runnable, never "-?" - the tenant filled in, the rest as <values> to fill in
+        var scrArgs = { 'Initialize-EpsMailSender': " -SubscriptionId <subscription id> -Sender '<eps-alerts@contoso.com>' -Recipients '<alerts@contoso.com>'" }[scr[1]] || ' -SubscriptionId <subscription id>';
+        var cmd = 'Invoke-WebRequest https://invardia.com/support/eps/' + scr[1] + '.ps1 -OutFile .\\' + scr[1] + '.ps1; .\\' + scr[1] + '.ps1 -TenantId ' + ((me && me.tenantId) || '<tenant id>') + scrArgs;
+        meta.appendChild(document.createTextNode('Set by the script ' + scr[1] + '.ps1, not here: '));
+        meta.appendChild(el('code', { text: cmd })); meta.appendChild(document.createTextNode(' '));
+        meta.appendChild(el('button', { type: 'button', class: 'link', text: 'Copy', onclick: function () { if (navigator.clipboard) navigator.clipboard.writeText(cmd).then(function () { notice('Copied: ' + scr[1] + '.ps1 - fill in the <values>.'); }); } }));
+        meta.appendChild(document.createTextNode(' '));
+      } else meta.appendChild(document.createTextNode('Set by ' + r.setBy + ', not here. '));
+    }
     else if (!canEdit) meta.appendChild(document.createTextNode('Changed by a' + (r.role === 'Admin' ? 'n Admin' : ' SuperAdmin') + '. '));
     if (r.isSet && r.updatedAtUtc) { meta.appendChild(document.createTextNode('Changed ')); meta.appendChild(timeEl(r.updatedAtUtc)); if (r.updatedBy) meta.appendChild(document.createTextNode(' by ' + r.updatedBy)); meta.appendChild(document.createTextNode('.')); }
     else meta.appendChild(document.createTextNode('Default (' + showValue(r, r.default) + ').'));
@@ -431,7 +507,72 @@
   function textOf(v) { return v === null || v === undefined ? '' : String(v); }
 // the job names people see (owner 2026-11-02: "chane the wording from tick to engine, we dont understand tick");
 // the stored name stays 'Tick'
-function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
+// ADMIN-WALK (2026-11-05): every job by a name people understand, not its internal one
+var JOB_NAMES = { Tick: 'Engine', UserTagging: 'User tagging', DeviceTagging: 'Device tagging', IdentityReport: 'Identity report', NamedLocations: 'Named locations (Azure service tags)',
+  TamperMonitor: 'Tamper monitor', PolicyDeploy: 'Policy deploy', CAPolicyAnalyzer: 'CA Policy Analyzer', Config: 'Configuration changes', Uplink: 'Invardia status reports',
+  Update: 'Update check', Backup: 'Backup', CaOptions: 'Conditional Access options from Graph' };
+function jobName(j) { return JOB_NAMES[j] || textOf(j); }
+// a schedule in words, and a picker for it (ADMIN-WALK: frequency + time / day, never a free-text box). The value it
+// produces is the scheduler's own text: 'daily HH:mm' | 'weekly <mon..sun> HH:mm' | 'monthly <1-28> HH:mm' | 'every <N>m|h' | 'manual'
+var SCHED_DAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
+function schedText(s) {
+  var t = textOf(s).trim().toLowerCase(), m;
+  if (t === 'manual') return 'Only by Run now';
+  if ((m = /^daily (\d\d:\d\d)$/.exec(t))) return 'Every day at ' + m[1];
+  if ((m = /^weekly (\w{3}) (\d\d:\d\d)$/.exec(t))) { var d = SCHED_DAYS.filter(function (x) { return x[0] === m[1]; })[0]; return 'Every ' + (d ? d[1] : m[1]) + ' at ' + m[2]; }
+  if ((m = /^monthly (\d{1,2}) (\d\d:\d\d)$/.exec(t))) return 'On day ' + m[1] + ' of every month at ' + m[2];
+  if ((m = /^every (\d+)m$/.exec(t))) return 'Every ' + m[1] + ' minutes';
+  if ((m = /^every (\d+)h$/.exec(t))) return 'Every ' + m[1] + ' hour' + (m[1] === '1' ? '' : 's');
+  return textOf(s);
+}
+// ADMIN-WALK-2: the scheduler's start note in words ("requested on its queue" / "started <execution>" / "start failed: x")
+function lastStartText(s) {
+  var t = textOf(s), m;
+  if (!t) return '';
+  if (/requested on its queue/i.test(t)) return 'Started (handed to the engine)';
+  if ((m = /^start failed: (.*)$/i.exec(t))) return 'Did not start: ' + m[1];
+  if (/^started /i.test(t)) return el('span', { title: t, text: 'Started' });
+  return t;
+}
+function schedPicker(current, job) {
+  var t = textOf(current).trim().toLowerCase(), m;
+  var kind = el('select', { 'aria-label': 'How often ' + jobName(job) + ' runs' }, [['daily', 'Every day'], ['weekly', 'Every week'], ['monthly', 'Every month'], ['minutes', 'Every N minutes'], ['hours', 'Every N hours'], ['manual', 'Only by Run now']].map(function (k) { return el('option', { value: k[0], text: k[1] }); }));
+  // ADMIN-WALK-2 N3: a 24-hour time from two lists (an <input type=time> shows the browser's 12-hour clock: "12:30 AM")
+  var hh = el('select', { 'aria-label': 'Hour (24-hour)' }), mm = el('select', { 'aria-label': 'Minute' });
+  for (var h = 0; h < 24; h++) hh.appendChild(el('option', { value: ('0' + h).slice(-2), text: ('0' + h).slice(-2) }));
+  for (var mi = 0; mi < 60; mi += 5) mm.appendChild(el('option', { value: ('0' + mi).slice(-2), text: ('0' + mi).slice(-2) }));
+  var time = { node: el('span', null, hh, ':', mm) };
+  Object.defineProperty(time, 'value', { get: function () { return hh.value + ':' + mm.value; }, set: function (v) {
+    var x = /^(\d\d):(\d\d)/.exec(v || '01:00') || [0, '01', '00'];
+    if (!mm.querySelector('option[value="' + x[2] + '"]')) mm.appendChild(el('option', { value: x[2], text: x[2] }));
+    hh.value = x[1]; mm.value = x[2]; } });
+  time.value = '01:00';
+  var day = el('select', { 'aria-label': 'Day of the week' }, SCHED_DAYS.map(function (d) { return el('option', { value: d[0], text: d[1] }); }));
+  var mday = el('select', { 'aria-label': 'Day of the month' }); for (var i = 1; i <= 28; i++) mday.appendChild(el('option', { value: String(i), text: String(i) }));
+  var mins = el('select', { 'aria-label': 'Minutes' }, [5, 10, 15, 20, 30, 45].map(function (n) { return el('option', { value: String(n), text: n + ' min' }); }));
+  var hrs = el('select', { 'aria-label': 'Hours' }, [1, 2, 3, 4, 6, 8, 12, 24].map(function (n) { return el('option', { value: String(n), text: n + ' h' }); }));
+  if ((m = /^daily (\d\d:\d\d)$/.exec(t))) { kind.value = 'daily'; time.value = m[1]; }
+  else if ((m = /^weekly (\w{3}) (\d\d:\d\d)$/.exec(t))) { kind.value = 'weekly'; day.value = m[1]; time.value = m[2]; }
+  else if ((m = /^monthly (\d{1,2}) (\d\d:\d\d)$/.exec(t))) { kind.value = 'monthly'; mday.value = String(+m[1]); time.value = m[2]; }
+  else if ((m = /^every (\d+)m$/.exec(t))) { kind.value = 'minutes'; if (!mins.querySelector('option[value="' + m[1] + '"]')) mins.appendChild(el('option', { value: m[1], text: m[1] + ' min' })); mins.value = m[1]; }
+  else if ((m = /^every (\d+)h$/.exec(t))) { kind.value = 'hours'; if (!hrs.querySelector('option[value="' + m[1] + '"]')) hrs.appendChild(el('option', { value: m[1], text: m[1] + ' h' })); hrs.value = m[1]; }
+  else if (t === 'manual') kind.value = 'manual';
+  var node = el('span');
+  var draw = function () {
+    clear(node); node.appendChild(kind);
+    var k = kind.value;
+    if (k === 'weekly') node.appendChild(day);
+    if (k === 'monthly') { node.appendChild(document.createTextNode(' day ')); node.appendChild(mday); }
+    if (k === 'daily' || k === 'weekly' || k === 'monthly') { node.appendChild(document.createTextNode(' at ')); node.appendChild(time.node); }
+    if (k === 'minutes') node.appendChild(mins);
+    if (k === 'hours') node.appendChild(hrs);
+  };
+  kind.addEventListener('change', draw); draw();
+  return { node: node, read: function () {
+    var k = kind.value, tm = (time.value || '01:00').substring(0, 5);
+    return k === 'daily' ? 'daily ' + tm : k === 'weekly' ? 'weekly ' + day.value + ' ' + tm : k === 'monthly' ? 'monthly ' + mday.value + ' ' + tm : k === 'minutes' ? 'every ' + mins.value + 'm' : k === 'hours' ? 'every ' + hrs.value + 'h' : 'manual';
+  } };
+}
   function valueInput(tt, cur, label) {
     // the tag type's allowed values as suggestions; the server refuses a value that is not on the list
     var id = 'vals-' + Math.random().toString(36).substring(2);
@@ -448,7 +589,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var types = j.tagTypes.filter(function (t) { return t.enabled || t.name === card.TagType; });
     var tsel = el('select', { 'aria-label': 'Tag type' }, el('option', { value: '', text: '- tag type -' }), types.map(function (t) { return el('option', { value: t.name, text: t.name + ' (' + t.attribute + ', ' + t.valueMode + ')' + (t.enabled ? '' : ' - switched off') }); }));
     tsel.value = textOf(card.TagType);
-    var persona = el('input', { type: 'text', 'aria-label': 'Persona', placeholder: 'e.g. Internal_Admin', maxlength: 200 }); persona.value = textOf(card.Persona);
+    // ADMIN-WALK: the persona offers the ones the rules already use (a new one can still be typed)
+    var pid = 'personas-' + Math.random().toString(36).substring(2);
+    var known = {}; (j.rows || []).forEach(function (r) { if (r.Persona) known[r.Persona] = 1; });
+    var persona = el('input', { type: 'text', 'aria-label': 'Persona', placeholder: 'pick one the rules use, or type a new one (e.g. Internal_Admin)', maxlength: 200, list: pid }); persona.value = textOf(card.Persona);
+    var personaList = el('datalist', { id: pid }, Object.keys(known).sort().map(function (n) { return el('option', { value: n }); }));
     var notes = el('input', { type: 'text', 'aria-label': 'Notes', placeholder: 'why this rule exists (optional)', maxlength: 1000 }); notes.value = textOf(card.Notes);
     var enabled = el('input', { type: 'checkbox', 'aria-label': 'Enabled' }); enabled.checked = card.Enabled !== false;
     // RULE-EDITOR (owner 2026-11-02: "impossible to see the names, values etc"): a two-column form - a label, then the
@@ -473,14 +618,18 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       s.value = textOf(c.ConditionType);
       var t = el('input', { type: 'text', 'aria-label': 'Target', placeholder: 'target, e.g. *@contoso.com or TRUE', maxlength: 1024 }); t.value = textOf(c.Target);
       var help = el('div', { class: 'smeta cond-help' });
-      var showHelp = function () { var d = ctypes.filter(function (x) { return x.id === s.value; })[0]; help.textContent = d ? d.description + (d.modifiesValue ? ' (it also sets the value)' : '') : ''; };
+      // ADMIN-WALK: a group condition's target is picked from the tenant's groups (the stored names, or "Search the
+      // tenant"), not typed; the group's display name goes in (v1's MemberOfGroup names the group)
+      var gPick = el('div', { class: 'cap-pick', hidden: true }), gBtn = el('button', { type: 'button', class: 'secondary', text: 'Pick a group', hidden: true });
+      gBtn.addEventListener('click', function () { gPick.hidden = !gPick.hidden; if (!gPick.hidden && !gPick.firstChild) capPicker(gPick, 'group', [], { known: {} }, function (v, name) { t.value = name || v; gPick.hidden = true; }, function () { return []; }); });
+      var showHelp = function () { var d = ctypes.filter(function (x) { return x.id === s.value; })[0]; help.textContent = d ? d.description + (d.modifiesValue ? ' (it also sets the value)' : '') : ''; gBtn.hidden = !/MemberOfGroup/i.test(s.value); if (gBtn.hidden) gPick.hidden = true; };
       s.addEventListener('change', showHelp); showHelp();
-      var row = el('div', { class: 'cond' }, s, t, el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { condHost.removeChild(row); } }), help);
+      var row = el('div', { class: 'cond' }, s, el('span', { class: 'cond-target' }, t, gBtn), el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { condHost.removeChild(row); } }), help, gPick);
       row._read = function () { return { conditionType: s.value, target: t.value }; };
       condHost.appendChild(row);
     }
     (card.Conditions && card.Conditions.length ? card.Conditions : [{}]).forEach(condRow);
-    if (ot === 'User') fieldRow('Persona', persona);
+    if (ot === 'User') fieldRow('Persona', el('span', null, persona, personaList));
     fieldRow('Tag type', tsel);
     fieldRow(ot === 'User' ? 'Values' : 'Value', valHost);
     fieldRow('Enabled', el('label', { class: 'rf-check' }, enabled, ' the rule runs'));
@@ -527,44 +676,99 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
   // ---- the commit queue (owner 2026-10-31, PIM's setup): staged rule changes, committed by hand -------------------------
   function prettyJson(s) { if (!s) return ''; try { var o = JSON.parse(s); delete o.reason; delete o.expected; return JSON.stringify(o, null, 1); } catch (e) { return textOf(s); } }
+  // ADMIN-WALK-2: a staged change as a FIELD diff - the fields that change, before -> after, highlighted; the rest folded
+  var QD_SKIP = { reason: 1, expected: 1, ruleId: 1, ruleSet: 1, order: 1, updatedAtUtc: 1, UpdatedAtUtc: 1 };
+  function qdVal(v) {
+    if (v === null || v === undefined || v === '') return '(empty)';
+    if (Array.isArray(v)) return v.length ? v.map(function (x) { return x && typeof x === 'object' ? (x.conditionType || x.ConditionType ? (x.conditionType || x.ConditionType) + ' = ' + textOf(x.target !== undefined ? x.target : x.Target) : JSON.stringify(x)) : String(x); }).join('\n') : '(none)';
+    if (typeof v === 'object') return JSON.stringify(v);
+    if (v === true) return 'yes'; if (v === false) return 'no';
+    return String(v);
+  }
+  function queueDiff(r) {
+    var parse = function (s) { try { return JSON.parse(s) || {}; } catch (e) { return null; } };
+    var b = r.BeforeJson ? parse(r.BeforeJson) : {}, a = r.Op === 'Delete' ? {} : parse(r.BodyJson);
+    if (b === null || a === null) return el('pre', { text: prettyJson(r.BodyJson) });
+    // a key only one side has is not part of this change - unless the change creates or deletes the whole item
+    var src = r.Op === 'Delete' ? b : a, keys = Object.keys(src).filter(function (k) { return !QD_SKIP[k]; });
+    var lc = {}; Object.keys(b).forEach(function (k) { lc[k.toLowerCase()] = k; });
+    var changed = [], same = [];
+    keys.forEach(function (k) {
+      var bk = b.hasOwnProperty(k) ? k : lc[k.toLowerCase()];
+      var bv = r.Op === 'Create' || !r.BeforeJson ? undefined : b[bk], av = r.Op === 'Delete' ? undefined : a[k];
+      var row = el('tr', null, el('th', { text: k }), el('td', { class: 'qd-before', text: r.Op === 'Create' ? '(new)' : qdVal(bv) }), el('td', { class: 'qd-after', text: r.Op === 'Delete' ? '(deleted)' : qdVal(av) }));
+      (r.Op === 'Create' || r.Op === 'Delete' || qdVal(bv) !== qdVal(av) ? changed : same).push(row);
+    });
+    var t = el('table', { class: 'qd' }, el('thead', null, el('tr', null, el('th', { text: 'Field' }), el('th', { text: 'Before' }), el('th', { text: 'After' }))), el('tbody', null, changed));
+    changed.forEach(function (x) { x.className = 'qd-changed'; });
+    var out = el('div', { class: 'qdiff' }, changed.length ? t : el('span', { class: 'smeta', text: 'no field changes (a move or a re-save)' }));
+    if (same.length) out.appendChild(el('details', null, el('summary', { text: fmtNum(same.length) + ' field(s) unchanged' }), el('table', { class: 'qd' }, el('tbody', null, same))));
+    return out;
+  }
   function drawQueue(p) {
     p.appendChild(el('div', { class: 'guide', text: 'Changes to rules, tag types, tag values and condition types wait here until an admin commits them. A commit writes the chosen changes (each is checked again; one that someone changed meanwhile fails and says so) and then starts ONE tagging run on everyone, in the job\'s own mode - the mass-change guard still holds an unusually large run. Nothing is committed automatically. Discard keeps the change in the list as discarded.' }));
     return api('GET', '/api/queue').then(function (j) {
-      if (!j.enabled) p.appendChild(el('div', { class: 'guide', text: 'The commit queue is switched off (Settings > Commit queue): saves are written at once.' }));
+      if (!j.enabled) p.appendChild(el('div', { class: 'guide' }, 'The commit queue is switched off (', el('a', { href: '#settings/CommitQueue', text: 'Settings > Commit queue' }), '): saves are written at once.'));
       var pending = j.rows.filter(function (r) { return r.Status === 'Pending'; });
-      var picked = {};
-      var cols = [];
-      if (isRole('Admin')) cols.push({ key: '_pick', label: '', render: function (r) {
-        if (r.Status !== 'Pending') return null;
-        var cb = el('input', { type: 'checkbox', 'aria-label': 'Select change ' + r.Id }); cb.checked = !!picked[r.Id];
-        cb.addEventListener('change', function () { picked[r.Id] = cb.checked; }); return cb; } });
-      cols = cols.concat([{ key: 'Id', label: '#', type: 'num' }, { key: 'Status', label: 'State', type: 'cat', cls: stCell('Status') }, { key: 'ObjectType', label: 'For', type: 'cat' },
-        { key: 'Op', label: 'Change', type: 'cat' }, { key: 'Summary', label: 'What', wrap: true }, { key: 'StagedBy', label: 'Staged by' }, { key: 'StagedAtUtc', label: 'Staged', type: 'date' },
-        { key: 'StageReason', label: 'Why', wrap: true },
-        { key: '_diff', label: 'Before / after', render: function (r) {
-          var d = el('details'); d.appendChild(el('summary', { text: 'show' }));
-          d.appendChild(el('div', null, el('strong', { text: 'Before' }), el('pre', { text: r.BeforeJson ? prettyJson(r.BeforeJson) : '(new)' })));
-          d.appendChild(el('div', null, el('strong', { text: 'After' }), el('pre', { text: r.Op === 'Delete' ? '(deleted)' : prettyJson(r.BodyJson) }))); return d; } },
+      var done = j.rows.filter(function (r) { return r.Status !== 'Pending'; });
+      // ADMIN-WALK: before / after shown inline (not behind "show"), side by side
+      var diffCol = { key: '_diff', label: 'What changes', render: queueDiff };
+      // ADMIN-WALK-2: with a second approver required, your OWN staged changes are committed by another admin - said per row
+      var mine = function (r) { return !!(me && r.StagedBy && String(r.StagedBy).toLowerCase() === String(me.identity || '').toLowerCase()); };
+      var twoMen = j.secondApprover === 'all';
+      var cols = [{ key: 'Id', label: '#', type: 'num' }, { key: 'ObjectType', label: 'For', type: 'cat' },
+        { key: 'Op', label: 'Change', type: 'cat' }, { key: 'Summary', label: 'What', wrap: true },
+        { key: 'StagedBy', label: 'Staged by', render: function (r) { return twoMen && r.Status === 'Pending' && mine(r) ? el('span', null, textOf(r.StagedBy), el('div', { class: 'smeta', text: 'yours - another admin commits it (second approver)' })) : textOf(r.StagedBy); } },
+        { key: 'StagedAtUtc', label: 'Staged', type: 'date' },
+        { key: 'StageReason', label: 'Why', wrap: true }, diffCol];
+      // what a commit starts, in words: "UserTagging APPLY on 92 users" per object type of the chosen changes
+      var effect = function (rows) {
+        var ots = {}; rows.forEach(function (r) { ots[r.ObjectType] = 1; });
+        return Object.keys(ots).map(function (ot) {
+          var jb = (j.jobs || {})[ot]; if (!jb) return '';
+          if (!jb.enabled) return jb.job + ' is switched off: no run starts.';
+          var who = jb.objects !== null && jb.objects !== undefined ? fmtNum(jb.objects) + ' ' + (ot === 'User' ? 'users' : 'devices') + ' (the last run on everyone)' : 'everyone';
+          return jobName(jb.job) + ' ' + (jb.mode === 'Apply' ? 'APPLY - it WRITES the tags' : 'PREVIEW - it writes nothing') + ' on ' + who + '.';
+        }).join(' ');
+      };
+      var commit = function (rows) {
+        if (!rows.length) { notice('Select at least one change.', 'warn'); return; }
+        if (twoMen) {
+          var own = rows.filter(mine); rows = rows.filter(function (r) { return !mine(r); });
+          if (!rows.length) { notice('A second approver is required: another admin commits the change(s) you staged.', 'warn'); return; }
+          if (own.length) notice(fmtNum(own.length) + ' of the chosen change(s) are yours - left for another admin (second approver).', 'warn');
+        }
+        var x = rows.map(function (r) { return r.Id; });
+        withReason('Commit ' + x.length + ' change(s)', 'The changes are written now, then the tagging run starts within 5 minutes: ' + effect(rows) + ' Test them first with Tagging > Test runs > "Test these staged changes".' + (j.secondApprover === 'all' ? ' A second approver is required: you cannot commit a change you staged.' : ''), function (reason) { return api('POST', '/api/queue/commit', { ids: x, reason: reason }); });
+      };
+      var bulk = isRole('Admin') ? [{ label: 'Commit selected', run: commit },
+        { label: 'Discard selected', run: function (rows) { var x = rows.map(function (r) { return r.Id; });
+          withReason('Discard ' + x.length + ' change(s)', 'They are not written; they stay in the list as discarded.', function (reason) { return api('POST', '/api/queue/discard', { ids: x, reason: reason }); }); } }] : [];
+      var tools = el('div', { class: 'toolbar' }, el('span', { class: 'count', text: fmtNum(pending.length) + ' change(s) waiting' }));
+      if (isRole('Admin') && pending.length) {
+        var stOts = {}; pending.forEach(function (r) { if (r.ObjectType) stOts[r.ObjectType] = 1; }); Object.keys(stOts).forEach(function (ot) { tools.appendChild(el('a', { href: '#tagtest/' + ot + '/staged', class: 'btn-link', text: 'Test these staged ' + (ot === 'User' ? 'user' : 'device') + ' changes' })); });
+        var allMine = twoMen && pending.every(mine);
+        tools.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Commit all (' + pending.length + ')', disabled: allMine, title: allMine ? 'A second approver is required: another admin commits the changes you staged.' : null, onclick: function () { commit(pending); } }));
+        if (allMine) tools.appendChild(el('span', { class: 'smeta', text: 'Every waiting change is yours: another admin commits them (second approver).' }));
+        if (isRole('SuperAdmin')) tools.appendChild(el('button', { type: 'button', class: 'link', text: 'Discard ALL', onclick: function () {
+          withReason('Discard ALL ' + pending.length + ' waiting change(s)', 'Every waiting change is discarded, also other admins\' changes.', function (reason) { return api('POST', '/api/queue/discard-all', { expectedCount: pending.length, reason: reason }); }); } }));
+      }
+      p.appendChild(tools);
+      p.appendChild(el('h3', { text: 'Waiting' }));
+      p.appendChild(table(pending, cols, { sort: 'Id', dir: 1, bulk: bulk, empty: 'Nothing waiting.' }));
+      p.appendChild(el('h3', { text: 'Committed and discarded' }));
+      p.appendChild(table(done, [{ key: 'Id', label: '#', type: 'num' }, { key: 'Status', label: 'State', type: 'cat', cls: stCell('Status') }].concat(cols.slice(1)).concat([
         { key: 'CommittedBy', label: 'Committed / discarded by', render: function (r) { return textOf(r.CommittedBy || r.DiscardedBy); } },
-        { key: 'Error', label: 'Result', wrap: true, render: function (r) { return textOf(r.Error || r.DiscardReason || (r.Status === 'Applied' ? 'written' : '')); } }]);
-      if (isRole('Admin')) {
-        var ids = function (all) { return (all ? pending.map(function (r) { return r.Id; }) : Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number)); };
-        var commit = function (all) { return function () { var x = ids(all); if (!x.length) { status('Select at least one change.'); return; }
-          withReason('Commit ' + x.length + ' change(s)', 'The changes are written now, then one tagging run on everyone is requested in the job\'s own mode (the scheduler starts it within 5 minutes).' + (j.secondApprover === 'all' ? ' A second approver is required: you cannot commit a change you staged.' : ''), function (reason) { return api('POST', '/api/queue/commit', { ids: x, reason: reason }); }); }; };
-        p.appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'count', text: fmtNum(pending.length) + ' change(s) waiting' }),
-          el('button', { type: 'button', text: 'Commit selected', onclick: commit(false) }), ' ', el('button', { type: 'button', text: 'Commit all', onclick: commit(true) }), ' ',
-          el('button', { type: 'button', class: 'secondary', text: 'Discard selected', onclick: function () { var x = ids(false); if (!x.length) { status('Select at least one change.'); return; }
-            withReason('Discard ' + x.length + ' change(s)', 'Nothing is written. The changes stay in the list as discarded.', function (reason) { return api('POST', '/api/queue/discard', { ids: x, reason: reason }); }); } }),
-          isRole('SuperAdmin') && pending.length ? el('button', { type: 'button', class: 'link', text: 'Discard ALL', onclick: function () {
-            withReason('Discard ALL ' + pending.length + ' waiting change(s)', 'Every waiting change is discarded, also other admins\' changes.', function (reason) { return api('POST', '/api/queue/discard-all', { expectedCount: pending.length, reason: reason }); }); } }) : null));
-      } else p.appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'count', text: fmtNum(pending.length) + ' change(s) waiting' })));
-      p.appendChild(table(j.rows, cols, { sort: 'Id', dir: -1, empty: 'Nothing waiting, and nothing committed yet.' }));
+        { key: 'Error', label: 'Result', wrap: true, render: function (r) { return textOf(r.Error || r.DiscardReason || (r.Status === 'Applied' ? 'written' : '')); } }]), { sort: 'Id', dir: -1, empty: 'Nothing committed yet.' }));
     });
   }
   function queueBanner(p) {
     return api('GET', '/api/queue').then(function (j) {
+      // every staged item counts (rules, tag types, values, condition types) - ADMIN-WALK: the banner and the queue agree
       var n = j.rows.filter(function (r) { return r.Status === 'Pending'; }).length;
-      if (n) p.insertBefore(el('div', { class: 'guide' }, fmtNum(n) + ' change(s) wait in the commit queue and are NOT applied yet. ', el('a', { href: '#queue', text: 'Review and commit' })), p.firstChild);
+      // below the page heading, not above it (ADMIN-WALK)
+      var h = p.querySelector('h2'); var at = h && h.parentNode === p ? h.nextSibling : p.firstChild;
+      if (n) p.insertBefore(el('div', { class: 'guide' }, fmtNum(n) + ' change(s) wait in the commit queue and are NOT applied yet. ', el('a', { href: '#queue', text: 'Review and commit' }), ' · ', el('a', { href: '#tagtest/' + (location.hash.indexOf('Device') >= 0 ? 'Device' : 'User') + '/staged', text: 'Test them first' })), at);
     }).catch(function () { });
   }
 
@@ -739,7 +943,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
 
   function drawRuleGrid(host, x) {
+    // ADMIN-WALK: the grid's answers are shown where the admin looks (the notice), not only in the footer line
+    var gridMsg = function (t) { status(t); if (t) notice(t, /^(Not taken|Select|Click|Give|Editing|Pasting|The browser|Nothing|That is)/.test(t) ? 'warn' : null); };
     var ot = x.ot, j = x.j, admin = x.admin, G = GRID;
+    var gridTagTypes = (j.tagTypes || []).filter(function (t) { return t.enabled; }).map(function (t) { return t.name; });   // RULES-MATCHED: the test run's tag types
     if (G.ot !== ot) { G.ot = ot; G.edits = {}; G.added = []; G.dels = {}; G.keys = {}; G.anchor = null; G.act = null; G.c1 = 0; G.c2 = 0; G.setCol = ''; G.undo = []; G.redo = []; }
     // drag and drop reorders only the run order as it is: not while a search or filter hides rules (a drop between two
     // shown rules would say nothing about the hidden ones in between)
@@ -784,7 +991,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var moveAct = function (dr, dc, extend) { var i = actRow(); if (i < 0) i = 0; var ni = Math.max(0, Math.min(R.length - 1, i + dr)), nc = Math.max(0, Math.min(lastC, (G.act ? G.act.c : 2) + dc)); if (extend) extendTo(ni, nc, false); else selectOnly(ni, nc, false); };
     var lastSelId = function () { var s = selExisting(); return s.length ? s[s.length - 1].id : null; };
     var newRow = function (after) { var a = { k: ++G.addSeq, body: blankBody(ot), after: after || null }; G.added.push(a); return { key: 'a' + a.k, id: null, r: null, added: a, body: a.body, ro: false }; };
-    var need = function (t) { status(t || 'Select one or more rules first (click, shift-click, ctrl-click).'); };
+    var need = function (t) { gridMsg(t || 'Select one or more rules first (click, shift-click, ctrl-click).'); };
     // the history: a snapshot of the page's drafts before each change that changed something
     var snapOf = function () { return JSON.stringify({ e: G.edits, a: G.added, d: G.dels, s: G.addSeq }); };
     var restoreSnap = function (t) { var o = JSON.parse(t); G.edits = o.e; G.added = o.a; G.dels = o.d; G.addSeq = o.s; };
@@ -793,14 +1000,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (snapOf() !== before) { G.undo.push(before); if (G.undo.length > GRID_UNDO) G.undo.shift(); G.redo = []; }
     };
     var undo = function () {
-      if (!G.undo.length) { status('Nothing to undo on this page. A change already staged is undone by discarding it in the commit queue.'); return; }
+      if (!G.undo.length) { gridMsg('Nothing to undo on this page. A change already staged is undone by discarding it in the commit queue.'); return; }
       G.redo.push(snapOf()); restoreSnap(G.undo.pop()); paint(); wrap.focus();
-      status('Undone - ' + fmtNum(G.undo.length) + ' more step(s) can be undone, Ctrl+Y redoes.');
+      gridMsg('Undone - ' + fmtNum(G.undo.length) + ' more step(s) can be undone, Ctrl+Y redoes.');
     };
     var redo = function () {
-      if (!G.redo.length) { status('Nothing to redo.'); return; }
+      if (!G.redo.length) { gridMsg('Nothing to redo.'); return; }
       G.undo.push(snapOf()); restoreSnap(G.redo.pop()); paint(); wrap.focus();
-      status('Redone - ' + fmtNum(G.redo.length) + ' more step(s) can be redone.');
+      gridMsg('Redone - ' + fmtNum(G.redo.length) + ' more step(s) can be redone.');
     };
     var staged = function () { G.edits = {}; G.added = []; G.dels = {}; G.undo = []; G.redo = []; };
 
@@ -817,7 +1024,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       build(); clear(tbody);
       var ai = actRow();
       R.forEach(function (w, ri) {
-        var tr = el('tr', { class: (w.ro ? 'rg-rro ' : '') + (w.added ? 'rg-new ' : '') + (w.id && G.dels[w.id] ? 'rg-del ' : '') + (G.keys[w.key] ? 'rg-rsel' : '') });
+        // ADMIN-WALK-2: a rule with a change waiting in the commit queue is marked on its row (rg-staged), not only in a column
+        var tr = el('tr', { class: (w.ro ? 'rg-rro ' : '') + (w.added ? 'rg-new ' : '') + (w.id && G.dels[w.id] ? 'rg-del ' : '') + (w.r && w.r.staged ? 'rg-staged ' : '') + (G.keys[w.key] ? 'rg-rsel' : ''), title: w.r && w.r.staged ? 'Waiting in the commit queue: ' + w.r.staged : null });
         cols.forEach(function (c, ci) {
           var cls = [];
           if (c.ro || w.ro) cls.push('rg-ro');
@@ -831,6 +1039,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
             if (dragOk) { grab = true; cls.push('rg-grab'); tip = 'Rule ' + w.id + ' - select the rules, then drag their # to a new place in the run order'; }
             else tip = 'Clear the search and filters to drag rules to a new place (Move works with a filter too)';
           }
+          // RULES-MATCHED (owner 2026-11-03 "but a button with more context" - NEXT TO the count): the Matched cell = the count
+          // + a small icon button that opens who the rule decided; it never selects, edits or touches the grid's undo
+          if (c.key === 'matched' && w.r && w.id) {
+            tr.appendChild(el('td', { 'data-r': String(ri), 'data-c': String(ci), class: cls.join(' '), title: tip }, v !== '' ? fmtNum(v) : '',
+              el('button', { type: 'button', class: 'rg-who', tabindex: '-1', text: 'ⓘ', title: 'Who this rule decided in the last run - and why, if nobody', 'aria-label': 'Who rule ' + w.id + ' matched',
+                onclick: function (ev) { ev.stopPropagation(); ev.preventDefault(); openRuleMatched(ot, w.r, gridTagTypes); } })));
+            return;
+          }
           tr.appendChild(el('td', { 'data-r': String(ri), 'data-c': String(ci), class: cls.join(' '), title: tip, draggable: grab ? 'true' : null, text: c.key === 'matched' && v !== '' ? fmtNum(v) : v }));
         });
         tbody.appendChild(tr);
@@ -842,10 +1058,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     // in-place edit of the active cell (seed = the key that started it)
     var startEdit = function (seed) {
       var ri = actRow(); if (ri < 0) return;
-      if (!admin) { status('Editing the rules needs the Admin role.'); return; }
+      if (!admin) { gridMsg('Editing the rules needs the Admin role.'); return; }
       var w = R[ri], c = cols[G.act.c];
-      if (c.ro) { status(c.label + ' is not edited here.'); return; }
-      if (w.ro) { status('A staged new rule is changed in the commit queue (discard it there).'); return; }
+      if (c.ro) { gridMsg(c.label + ' is not edited here.'); return; }
+      if (w.ro) { gridMsg('A staged new rule is changed in the commit queue (discard it there).'); return; }
       var td = tbody.querySelector('td[data-r="' + ri + '"][data-c="' + G.act.c + '"]'); if (!td) return;
       var cur = cellGet(w, c), inp, extra = null;
       if (c.kind === 'bool') { inp = el('select', { 'aria-label': c.label }, el('option', { value: 'TRUE', text: 'TRUE' }), el('option', { value: 'FALSE', text: 'FALSE' })); inp.value = cur; }
@@ -860,7 +1076,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       G.editing = { inp: inp };
       var finish = function (save, mv) {
         if (!G.editing) return; G.editing = null;
-        if (save) change(function () { var e = setCell(w, c, inp.value); if (e) status('Not taken: ' + e); });
+        if (save) change(function () { var e = setCell(w, c, inp.value); if (e) gridMsg('Not taken: ' + e); });
         if (mv) moveAct(mv[0], mv[1], false);
         paint(); wrap.focus(); scrollAct();
       };
@@ -885,9 +1101,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     };
     var copyOut = function (withHead) {
       var t = copyText(withHead); if (t === null) { need(); return; }
-      var ok = function () { status('Copied ' + fmtNum(t.split('\r\n').length) + ' row(s) - paste them into Excel.'); };
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok).catch(function () { status('The browser refused the clipboard - select cells and press Ctrl+C.'); });
-      else status('The browser has no clipboard access - select cells and press Ctrl+C.');
+      var ok = function () { gridMsg('Copied ' + fmtNum(t.split('\r\n').length) + ' row(s) - paste them into Excel.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(ok).catch(function () { gridMsg('The browser refused the clipboard - select cells and press Ctrl+C.'); });
+      else gridMsg('The browser has no clipboard access - select cells and press Ctrl+C.');
     };
     var headerOf = function (line) {
       var map = {}, hit = 0;
@@ -900,7 +1116,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     };
     var pasteText = function (t) { change(function () { pasteRaw(t); }); };
     var pasteRaw = function (t) {
-      if (!admin) { status('Pasting changes the rules: that needs the Admin role.'); return; }
+      if (!admin) { gridMsg('Pasting changes the rules: that needs the Admin role.'); return; }
       var m = parseTsv(t);
       if (!m.length || (m.length === 1 && m[0].length === 1 && m[0][0] === '')) return;
       var errs = [], n = 0;
@@ -915,23 +1131,23 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           Object.keys(hm).forEach(function (key) { put(w, cols[colIdx[key]], line[hm[key]]); });
         });
       } else {
-        var i0 = actRow(); if (i0 < 0) { status('Click the cell to paste into first.'); return; }
+        var i0 = actRow(); if (i0 < 0) { gridMsg('Click the cell to paste into first.'); return; }
         var c0 = G.act.c, cells = 0;
         R.forEach(function (w) { if (G.keys[w.key]) cells += G.c2 - G.c1 + 1; });
         if (m.length === 1 && m[0].length === 1 && cells > 1) selRows().forEach(function (w) { for (var ci = G.c1; ci <= G.c2; ci++) put(w, cols[ci], m[0][0]); });
         else { var snap = R.slice(); m.forEach(function (line, li) { var w = snap[i0 + li] || newRow(null); line.forEach(function (v, lj) { put(w, cols[c0 + lj], v); }); }); }
       }
       paint();
-      status((errs.length ? 'Not taken: ' + errs.slice(0, 3).join('; ') + '. ' : '') + 'Pasted ' + fmtNum(n) + ' cell(s) - marked; review and stage them when done (every cell is checked by the server then).');
+      gridMsg((errs.length ? 'Not taken: ' + errs.slice(0, 3).join('; ') + '. ' : '') + 'Pasted ' + fmtNum(n) + ' cell(s) - marked; review and stage them when done (every cell is checked by the server then).');
     };
     var fillDown = function () {
-      if (!admin) { status('Editing the rules needs the Admin role.'); return; }
+      if (!admin) { gridMsg('Editing the rules needs the Admin role.'); return; }
       var ws = selRows().filter(function (w) { return !w.ro; });
       if (ws.length < 2) { need('Select two or more rows (shift-click) to fill down.'); return; }
       var cs = cols.slice(G.c1, G.c2 + 1).filter(function (c) { return !c.ro; });
       if (!cs.length) { need('Select an editable column to fill down.'); return; }
       change(function () { ws.slice(1).forEach(function (w) { cs.forEach(function (c) { setCell(w, c, cellGet(ws[0], c)); }); }); });
-      paint(); status('Filled ' + fmtNum(ws.length - 1) + ' row(s) from the first - review and stage them when done.');
+      paint(); gridMsg('Filled ' + fmtNum(ws.length - 1) + ' row(s) from the first - review and stage them when done.');
     };
     var draftOps = function () {
       var ops = [];
@@ -946,7 +1162,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (!admin) return;
       var ws = selRows().filter(function (w) { return !w.ro; }); if (!ws.length) { need(); return; }
       change(function () { ws.forEach(function (w) { setCell(w, cols[colIdx.enabled], on ? 'TRUE' : 'FALSE'); }); });
-      paint(); status((on ? 'Switched on: ' : 'Switched off: ') + fmtNum(ws.length) + ' rule(s) - marked; review and stage them when done (Ctrl+Z undoes).');
+      paint(); gridMsg((on ? 'Switched on: ' : 'Switched off: ') + fmtNum(ws.length) + ' rule(s) - marked; review and stage them when done (Ctrl+Z undoes).');
     };
     var deleteSel = function () {
       if (!admin) return;
@@ -960,14 +1176,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         ex.forEach(function (w) { if (unmark) delete G.dels[w.id]; else G.dels[w.id] = true; });
       });
       paint();
-      status(unmark ? 'No longer marked for delete: ' + fmtNum(ex.length) + ' rule(s).' : (ex.length ? fmtNum(ex.length) + ' rule(s) marked for delete' : '') + (adds.length ? (ex.length ? ', ' : '') + fmtNum(adds.length) + ' new row(s) removed' : '') + ' - review and stage when done (Ctrl+Z undoes).');
+      gridMsg(unmark ? 'No longer marked for delete: ' + fmtNum(ex.length) + ' rule(s).' : (ex.length ? fmtNum(ex.length) + ' rule(s) marked for delete' : '') + (adds.length ? (ex.length ? ', ' : '') + fmtNum(adds.length) + ' new row(s) removed' : '') + ' - review and stage when done (Ctrl+Z undoes).');
     };
     var duplicateSel = function () {
       if (!admin) return;
       var ws = selExisting(); if (!ws.length) { need(); return; }
       var last = ws[ws.length - 1];
       change(function () { ws.forEach(function (w) { var nw = newRow(last.id); nw.added.body = cloneBody(w.body); }); });
-      paint(); status('Duplicated ' + fmtNum(ws.length) + ' rule(s) - the copies (new rows at the end of the grid) go right after rule ' + last.id + ' when staged. Ctrl+Z undoes.');
+      paint(); gridMsg('Duplicated ' + fmtNum(ws.length) + ' rule(s) - the copies (new rows at the end of the grid) go right after rule ' + last.id + ' when staged. Ctrl+Z undoes.');
     };
     var moveOp = function (ws, to, ref, refPos) {
       var op = { op: 'move', ids: ws.map(function (w) { return w.id; }), to: to };
@@ -978,7 +1194,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var ws = selExisting(); if (!ws.length) { need(); return; }
       if (G.moveTo === 'before' || G.moveTo === 'after') {
         var pos = parseInt(G.moveRef, 10), ref = x.all.filter(function (r) { return r.id && r.pos === pos; })[0];
-        if (!ref) { status('Give the number (#) of the rule to move them ' + G.moveTo + '.'); return; }
+        if (!ref) { gridMsg('Give the number (#) of the rule to move them ' + G.moveTo + '.'); return; }
         moveOp(ws, G.moveTo, ref.id, pos); return;
       }
       moveOp(ws, G.moveTo, null, null);
@@ -987,7 +1203,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var ws = selRows().filter(function (w) { return !w.ro; }); if (!ws.length) { need(); return; }
       var c = cols[colIdx[G.setCol]], errs = [];
       change(function () { ws.forEach(function (w) { var e = setCell(w, c, G.setVal); if (e) errs.push(e); }); });
-      paint(); status(errs.length ? 'Not taken: ' + errs[0] : c.label + ' set on ' + fmtNum(ws.length) + ' rule(s) - marked; review and stage them when done.');
+      paint(); gridMsg(errs.length ? 'Not taken: ' + errs[0] : c.label + ' set on ' + fmtNum(ws.length) + ' rule(s) - marked; review and stage them when done.');
     };
     var addRow = function () { var w = null; change(function () { w = newRow(lastSelId()); }); build(); var i = rowIndex(w.key); selectOnly(i, colIdx[ot === 'User' ? 'persona' : 'tagType'], false); paint(); scrollAct(); wrap.focus(); };
     var nDraft = function () { return Object.keys(G.edits).filter(function (id) { return !G.dels[id]; }).length + G.added.length + Object.keys(G.dels).length; };
@@ -1006,7 +1222,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           el('button', { type: 'button', class: 'secondary', text: 'Redo', disabled: !G.redo.length, title: 'Ctrl+Y (or Ctrl+Shift+Z) - ' + fmtNum(G.redo.length) + ' step(s)', onclick: redo })));
         if (nd) {
           bar.appendChild(el('button', { type: 'button', text: 'Review and stage ' + fmtNum(nd) + ' edited rule(s)', onclick: function () { reviewBatch(ot, j, draftOps(), 'Stage ' + fmtNum(nd) + ' edited / new / deleted rule(s)', staged); } }));
-          bar.appendChild(el('button', { type: 'button', class: 'link', text: 'Discard the edits', onclick: function () { change(function () { G.edits = {}; G.added = []; G.dels = {}; }); paint(); status('The edits on this page are discarded (nothing was staged) - Undo brings them back.'); } }));
+          bar.appendChild(el('button', { type: 'button', class: 'link', text: 'Discard the edits', onclick: function () { change(function () { G.edits = {}; G.added = []; G.dels = {}; }); paint(); gridMsg('The edits on this page are discarded (nothing was staged) - Undo brings them back.'); } }));
         }
         var g1 = el('span', { class: 'rg-grp' },
           el('button', { type: 'button', class: 'secondary', text: 'Paste ...', title: 'paste cells from Excel (or press Ctrl+V in the grid)', onclick: function () { pasteDialog(pasteText); } }),
@@ -1020,7 +1236,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         sc.addEventListener('change', function () { G.setCol = sc.value; });
         var sv = el('input', { type: 'text', 'aria-label': 'Value to set', placeholder: 'value', maxlength: '1024' }); sv.value = G.setVal;
         sv.addEventListener('input', function () { G.setVal = sv.value; });
-        var g2 = el('span', { class: 'rg-grp' }, 'Set ', sc, ' to ', sv, el('button', { type: 'button', class: 'secondary', text: 'Set', onclick: setValueSel }));
+        // ADMIN-WALK-2: the bulk set says what it does ("In the selected rules, set the column ... to ...")
+        var g2 = el('span', { class: 'rg-grp', title: 'Writes one value into this column of every selected rule (on this page; staged with Review and stage)' }, 'In the selected rules, set ', sc, ' to ', sv, el('button', { type: 'button', class: 'secondary', text: 'Set in the selection', onclick: setValueSel }));
         var mt = el('select', { 'aria-label': 'Move to' }, [['top', 'to the top'], ['bottom', 'to the bottom'], ['before', 'before #'], ['after', 'after #']].map(function (o) { return el('option', { value: o[0], text: o[1] }); })); mt.value = G.moveTo;
         var mr = el('input', { type: 'text', 'aria-label': 'Rule number', placeholder: '#', size: '4', maxlength: '6' }); mr.value = G.moveRef;
         mt.addEventListener('change', function () { G.moveTo = mt.value; }); mr.addEventListener('input', function () { G.moveRef = mr.value; });
@@ -1030,7 +1247,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       }
     };
 
+    // the Matched cell's "who" button is not a cell click: no selection, no edit (RULES-MATCHED)
+    var isWho = function (e) { return !!(e.target.closest && e.target.closest('.rg-who')); };
     tbody.addEventListener('mousedown', function (e) {
+      if (isWho(e)) return;
       var td = e.target.closest ? e.target.closest('td[data-c]') : null;
       if (!td || G.editing) return;
       var ri = Number(td.getAttribute('data-r')), ci = Number(td.getAttribute('data-c')), full = ci <= 1;
@@ -1049,7 +1269,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var ri = pendClick; pendClick = null; if (!R[ri]) return;
       selectOnly(ri, 0, true); if (R[ri].r && R[ri].id) x.side(R[ri].r); paint(); wrap.focus();
     });
-    tbody.addEventListener('dblclick', function (e) { var td = e.target.closest ? e.target.closest('td[data-c]') : null; if (td && !G.editing) startEdit(); });
+    tbody.addEventListener('dblclick', function (e) { if (isWho(e)) return; var td = e.target.closest ? e.target.closest('td[data-c]') : null; if (td && !G.editing) startEdit(); });
 
     // drag and drop (RULES-GRID extras): the selected rules' # dragged between two rules = the same move-to-position as
     // "Move before / after #" (one block, kept in its run order), reviewed by the server first. Only on the unfiltered
@@ -1074,7 +1294,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       pendClick = null;
       drag = { ids: ws.map(function (w) { return w.id; }), keys: {} }; ws.forEach(function (w) { drag.keys[w.key] = true; });
       if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', drag.ids.join(',')); }
-      status('Drop the ' + fmtNum(ws.length) + ' selected rule(s) between two rules (Esc cancels).');
+      gridMsg('Drop the ' + fmtNum(ws.length) + ' selected rule(s) between two rules (Esc cancels).');
     });
     tbody.addEventListener('dragover', function (e) {
       var t = dropAt(e); clearDrop(); if (!t) return;
@@ -1086,10 +1306,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       e.preventDefault();
       var ws = selExisting().filter(function (w) { return drag.keys[w.key]; }), moves = dropChanges(t);
       drag = null;
-      if (!moves) { status('That is where they are already.'); return; }
+      if (!moves) { gridMsg('That is where they are already.'); return; }
       moveOp(ws, t.before ? 'before' : 'after', t.w.id, t.w.r.pos);
     });
-    tbody.addEventListener('dragend', function () { clearDrop(); if (drag) status(''); drag = null; });
+    tbody.addEventListener('dragend', function () { clearDrop(); if (drag) gridMsg(''); drag = null; });
 
     wrap.addEventListener('keydown', function (e) {
       if (G.editing) return;
@@ -1117,7 +1337,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   document.addEventListener('copy', function (e) {
     if (!gridActive || !document.body.contains(gridActive.wrap) || !gridActive.wrap.contains(document.activeElement) || gridActive.editing()) return;
     var t = gridActive.copy(); if (t === null || !e.clipboardData) return;
-    e.clipboardData.setData('text/plain', t); e.preventDefault(); status('Copied - paste it into Excel.');
+    e.clipboardData.setData('text/plain', t); e.preventDefault(); gridMsg('Copied - paste it into Excel.');
   });
   document.addEventListener('paste', function (e) {
     if (!gridActive || !document.body.contains(gridActive.wrap) || !gridActive.wrap.contains(document.activeElement) || gridActive.editing() || !e.clipboardData) return;
@@ -1127,12 +1347,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // ---- the rules view (RULES-UX, owner 2026-10-31: "it must be grouped differently. like condition groups. why not
   // grids. filter options" - the mock-up approved: "love it"). A grid grouped by persona (each rule = one condition
   // group, its conditions ANDed, the alternatives for a tag type ORed in run order), filters with counts, a side panel
-  // for the selected rule and "Try on a user". Staged changes from the commit queue show in place.
+  // for the selected rule, and the Test run button (TAG-TEST). Staged changes from the commit queue show in place.
   var RULES = { view: store.get('eps.rules.view', 'cards'), groupBy: store.get('eps.rules.groupBy', 'persona'), q: '',tags: {}, states: {}, conds: {}, open: {}, sel: null, tryReq: null, tryOut: null };
   var RULE_STATE_TEXT = { off: 'Off', staged: 'Staged - not applied', hint: 'Hint', on: 'On' };
   function drawRules(p, ot, j) {
     var admin = isRole('Admin'), S = RULES;
     var attr = {}; j.tagTypes.forEach(function (t) { attr[t.name] = t.attribute; });
+    var ttNames = j.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; });   // the test run's tag types
     var valueOf = function (r) { return ot === 'User' ? (textOf(r.TagValueAD) === textOf(r.TagValueCloud) ? (textOf(r.TagValueAD) || '-') : 'AD ' + (textOf(r.TagValueAD) || '-') + ' / cloud ' + (textOf(r.TagValueCloud) || '-')) : (textOf(r.TagValue) || '(clear)'); };
     var rows = j.rows.map(function (r, i) { return { id: r.RuleId, pos: i + 1, card: r, persona: ot === 'User' ? textOf(r.Persona) : textOf(r.TagType), tagType: r.TagType, value: valueOf(r),
       conds: r.Conditions || [], enabled: r.Enabled, hints: r.Hints || [], matched: r.Matched, staged: null }; });
@@ -1163,8 +1384,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       });
       clear(host);
       if (!j.featureEnabled) host.appendChild(el('div', { class: 'guide', text: (ot === 'User' ? 'User' : 'Device') + ' tagging is switched off (Settings): rules can be edited, nothing runs.' }));
-      var nStaged = rows.filter(function (r) { return r.staged; }).length;
-      if (nStaged) host.appendChild(el('div', { class: 'bar bar-warn rx-banner' }, el('strong', { text: fmtNum(nStaged) + ' change(s) wait in the commit queue' }), ' - not applied yet; marked "staged" below. ', el('a', { href: '#queue', text: 'Review and commit' })));
+      // ADMIN-WALK: the banner counts EVERY waiting item (rules, tag types, values, condition types) - as the queue does
+      var nStaged = (queue || []).filter(function (q) { return q.Status === 'Pending'; }).length;
+      var nRuleRows = rows.filter(function (r) { return r.staged; }).length;
+      if (nStaged) host.appendChild(el('div', { class: 'bar bar-warn rx-banner' }, el('strong', { text: fmtNum(nStaged) + ' change(s) wait in the commit queue' }), ' - not applied yet' + (nRuleRows ? '; ' + fmtNum(nRuleRows) + ' rule(s) marked "staged" below' : '') + '. ', el('a', { href: '#tagtest/' + ot + '/staged', text: 'Test them first' }), ' · ', el('a', { href: '#queue', text: 'Review and commit' })));
 
       var stateOf = function (r) { return !r.enabled ? 'off' : r.staged ? 'staged' : r.hints.length ? 'hint' : 'on'; };
       var search = el('input', { type: 'search', placeholder: 'persona, value, condition, target ...', 'aria-label': 'Search the rules' }); search.value = S.q;
@@ -1176,10 +1399,25 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           return el('button', { type: 'button', class: S.view === v[0] ? 'on' : null, 'aria-pressed': S.view === v[0] ? 'true' : 'false', text: v[1], onclick: function () { S.view = v[0]; store.set('eps.rules.view', v[0]); build(queue); } }); })),
         el('label', { class: 'rx-search' }, 'Search ', search), S.view === 'grid' ? null : el('label', null, 'Group by ', group),
         admin ? el('button', { type: 'button', text: 'New rule', onclick: function () { side(null, 'new'); } }) : null,
+        // TAG-TEST (owner 2026-11-05): test the rules on the people you pick, see per person why, then go live
+        admin ? el('button', { type: 'button', class: 'secondary', text: 'Test run', onclick: function () { openTestRun(ot, j.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; })); } }) : null,
+        el('a', { href: '#tagtest/' + ot, text: 'Test runs' }),
         admin ? el('button', { type: 'button', class: 'secondary', text: 'Deleted rules', onclick: function () { side(null, 'deleted'); } }) : null,
         el('a', { href: '#conditions', text: 'Condition types' }));
       host.appendChild(bar);
       var lay = el('div', { class: 'rx-lay' }), filt = el('aside', { class: 'rx-filters', 'aria-label': 'Filters' }), main = el('div', { class: 'rx-main' }), sideBox = el('aside', { class: 'rx-side', 'aria-label': 'The selected rule' });
+      // ADMIN-WALK (1366 px): the filter pane can be folded away - folded by default in the grid view on a laptop screen
+      var fKey = 'eps.rules.filters.' + S.view, fSaved = store.get(fKey);
+      filt.hidden = fSaved ? fSaved === 'hidden' : (S.view === 'grid' && window.innerWidth < 1500);
+      bar.appendChild(el('button', { type: 'button', class: 'link', text: filt.hidden ? 'Show filters' : 'Hide filters', onclick: function (ev) { filt.hidden = !filt.hidden; store.set(fKey, filt.hidden ? 'hidden' : 'shown'); ev.target.textContent = filt.hidden ? 'Show filters' : 'Hide filters'; } }));
+      // ADMIN-WALK-2 (1366 px): the rule panel folds too in the grid view below 1500 px - the grid gets the width; a
+      // button opens it (remembered per view)
+      if (S.view === 'grid') {
+        var sKey = 'eps.rules.side.grid', sSaved = store.get(sKey);
+        sideBox.hidden = sSaved ? sSaved === 'hidden' : window.innerWidth < 1500;
+        bar.appendChild(el('button', { type: 'button', class: 'link', text: sideBox.hidden ? 'Show the rule panel' : 'Hide the rule panel', onclick: function (ev) { sideBox.hidden = !sideBox.hidden; store.set(sKey, sideBox.hidden ? 'hidden' : 'shown'); ev.target.textContent = sideBox.hidden ? 'Show the rule panel' : 'Hide the rule panel'; lay.classList.toggle('rx-noside', sideBox.hidden); } }));
+        if (sideBox.hidden) lay.classList.add('rx-noside');
+      }
       lay.appendChild(filt); lay.appendChild(main); lay.appendChild(sideBox); host.appendChild(lay);
 
       var anyOn = function (o) { return Object.keys(o).some(function (k) { return o[k]; }); };
@@ -1254,21 +1492,22 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
                 var st = stateOf(r);
                 var tr = el('tr', { class: 'rx-row' + (S.sel === r ? ' sel' : ''), tabindex: '0' },
                   el('td', { class: 'num', text: r.pos ? '#' + r.pos : 'new' }), el('td', null, chips), el('td', null, el('code', { text: r.value })),
-                  el('td', { class: 'num', text: r.matched === null || r.matched === undefined ? '-' : fmtNum(r.matched) }),
+                  el('td', { class: 'num' }, r.matched === null || r.matched === undefined ? '-' : fmtNum(r.matched),
+                    r.id && j.matchedRun ? el('button', { type: 'button', class: 'link rx-who', text: 'who?', title: 'Who this rule decided in the last run - and why, if nobody', onclick: function (ev) { ev.stopPropagation(); openRuleMatched(ot, r, ttNames); } }) : null),
                   el('td', null, el('span', { class: stCls[st], text: (r.staged ? 'Staged: ' + r.staged : RULE_STATE_TEXT[st]) }), r.hints.length ? el('div', { class: 'smeta', text: r.hints.map(function (h) { return h.text; }).join(' ') }) : null));
                 var pick = function () { S.sel = r; drawMain(); side(r); };
                 tr.addEventListener('click', pick); tr.addEventListener('keydown', function (e) { if (e.key === 'Enter') pick(); });
                 tb.appendChild(tr);
               });
               body.appendChild(el('div', { class: 'rx-scroll' }, el('table', { class: 'rx-table' },
-                el('thead', null, el('tr', null, el('th', { class: 'num', scope: 'col', text: 'Order' }), el('th', { scope: 'col', text: 'Conditions (all must match)' }), el('th', { scope: 'col', text: 'Tag Value' }), el('th', { class: 'num', scope: 'col', text: 'Matched', title: 'How many accounts this rule matched in the last run' }), el('th', { scope: 'col', text: 'State' }))), tb)));
+                el('thead', null, el('tr', null, el('th', { class: 'num', scope: 'col', text: 'Order' }), el('th', { scope: 'col', text: 'Conditions (all must match)' }), el('th', { scope: 'col', text: 'Tag Value' }), el('th', { class: 'num', scope: 'col', text: 'Matched', title: j.matchedRun ? 'How many ' + (ot === 'User' ? 'users' : 'devices') + ' this rule decided in the last run on everyone (' + j.matchedRun.mode + ', ' + fmtTime(j.matchedRun.startedAtUtc) + ') - "who?" lists them' : 'Counted by the first run on everyone' }), el('th', { scope: 'col', text: 'State' }))), tb)));
             });
           }
           main.appendChild(sec);
         });
       };
 
-      // the side panel: the selected rule, its actions, and "Try on a user"
+      // the side panel: the selected rule and its actions (testing the rules is the Test run button - TAG-TEST)
       var side = function (r, mode) {
         clear(sideBox);
         var panel = el('div');
@@ -1288,6 +1527,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           [[ot === 'User' ? 'Persona' : 'Tag type', r.persona], ['Tag type', r.tagType + (attr[r.tagType] ? ' (' + attr[r.tagType] + ')' : '')], ['Value', r.value],
            ['Matched', r.matched === null || r.matched === undefined ? 'not run yet' : fmtNum(r.matched) + ' in the last run'], ['Notes', textOf(c.Notes) || '-']].forEach(function (x) { dl.appendChild(el('dt', { text: x[0] })); dl.appendChild(el('dd', { text: x[1] })); });
           panel.appendChild(dl);
+          // RULES-MATCHED: the context of the count - who it decided, and why nobody when 0
+          if (r.id) panel.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: r.matched ? 'Who it matched (' + fmtNum(r.matched) + ')' : 'Why nothing matched', onclick: function () { openRuleMatched(ot, r, ttNames); } })));
           panel.appendChild(el('strong', { class: 'smeta', text: 'Conditions - all must match' }));
           r.conds.forEach(function (x) { panel.appendChild(el('div', { class: 'rx-chip rx-chip-l' }, el('code', { text: x.ConditionType }), ' ', textOf(x.Target))); });
           r.hints.forEach(function (h) { panel.appendChild(el('div', { class: 'guide', text: h.text })); });
@@ -1308,46 +1549,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
               }).catch(function (e) { status('Could not load: ' + e.message); });
             } }));
             if (admin) acts.appendChild(el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { withReason('Delete rule ' + r.id, 'Objects it tagged keep their tag until another rule or the fallback changes it. Deleted rules can put it back.', function (reason) { return api('DELETE', '/api/rules/' + ot + '/' + r.id, { expected: c.UpdatedAtUtc, reason: reason }); }); } }));
+            // ADMIN-WALK: test this rule on a few people from here, its tag type pre-ticked (Test writes nothing)
+            if (admin) acts.appendChild(el('button', { type: 'button', class: 'link', text: 'Test this rule…', onclick: function () { openTestRun(ot, j.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; }), { tagTypes: [c.TagType], staged: !!nStaged }); } }));
             panel.appendChild(acts);
             if (j.queueOn) panel.appendChild(el('div', { class: 'smeta', text: 'Edits wait in the commit queue - nothing changes until a commit.' }));
           }
           panel.appendChild(slot);
         } else panel.appendChild(el('div', { class: 'smeta', text: 'Select a rule to see it, change it, or see its history.' }));
         sideBox.appendChild(panel);
-        sideBox.appendChild(tryBox());
-      };
-
-      // "Try on a user": a traced preview of one object (the engine reads it); the answer comes with the next tick
-      var tryBox = function () {
-        var box = el('div', { class: 'rx-try' }, el('h3', { text: 'Try on a ' + (ot === 'User' ? 'user' : 'device') }));
-        var inp = el('input', { type: 'text', placeholder: ot === 'User' ? 'user@contoso.com' : 'device name', 'aria-label': 'Object to try' });
-        var out = el('div', { class: 'rx-tryout' });
-        var show = function (res) {
-          clear(out);
-          if (!res.done) { out.appendChild(el('div', { class: 'smeta', text: 'Waiting for the engine (' + res.status + ') - within 5 minutes; nothing is written.' })); return; }
-          if (!res.traces.length) { out.appendChild(el('div', { class: 'guide', text: res.status === 'Done' ? 'The object was not found, or the run did not trace it.' : res.status + ': ' + textOf(res.statusText) })); return; }
-          res.traces.forEach(function (t) {
-            out.appendChild(el('strong', { text: textOf(t.Name) + (t.Synced ? ' (AD-synced)' : '') }));
-            var dec = el('ul', { class: 'rx-dec' });
-            (t.Decisions || []).forEach(function (d) { dec.appendChild(el('li', null, el('strong', { text: d.TagType + ': ' }), el('code', { text: textOf(d.Wanted) || '(empty)' }), ' - ' + (d.Persona ? 'rule for ' + d.Persona : textOf(d.Reason)) + (d.Action === 'Change' ? ' (would CHANGE from ' + (textOf(d.Current) || 'empty') + ')' : ' (already so)'))); });
-            out.appendChild(dec);
-            var why = el('details'); why.appendChild(el('summary', { text: 'Why - every rule, top down' }));
-            (t.Rules || []).forEach(function (x) { why.appendChild(el('div', { class: 'smeta', text: '#' + x.RuleId + ' ' + textOf(x.Persona) + ' / ' + x.TagType + ': ' + x.Result + (x.Reason ? ' - ' + x.Reason : '') +
-              (x.Conditions ? ' - ' + x.Conditions.map(function (k) { return k.ConditionType + (k.Met ? ' yes' : ' NO'); }).join(', ') : '') })); });
-            out.appendChild(why);
-          });
-        };
-        var poll = function (id, n) {
-          api('GET', '/api/rules/try/' + id).then(function (res) { S.tryOut = res; show(res); if (!res.done && n < 40) setTimeout(function () { if (S.tryReq === id) poll(id, n + 1); }, 10000); }).catch(function (e) { out.textContent = 'Could not read the answer: ' + e.message; });
-        };
-        box.appendChild(el('div', { class: 'rx-tryrow' }, inp, admin ? el('button', { type: 'button', text: 'Try', onclick: function () {
-          if (!inp.value.trim()) { inp.focus(); return; }
-          api('POST', '/api/rules/' + ot + '/try', { object: inp.value.trim() }).then(function (res) { S.tryReq = res.requestId; status(res.text); poll(res.requestId, 0); }).catch(function (e) { status('Refused: ' + e.message); });
-        } }) : null));
-        box.appendChild(el('div', { class: 'smeta', text: 'Shows which rule wins per tag type, and why. A preview: nothing is written.' }));
-        box.appendChild(out);
-        if (S.tryOut) show(S.tryOut);
-        return box;
       };
 
       search.addEventListener('input', function () { S.q = search.value; drawMain(); });
@@ -1357,6 +1566,296 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       drawMain(); side(S.sel);
     };
     api('GET', '/api/queue').then(function (q) { build(q.rows); }).catch(function () { build([]); });
+  }
+
+  // ---- TAG-TEST: test runs (owner 2026-11-05: "tagging troubeshooting mode must be a button, where i can scope the
+  // target group (who) is impacted ... test something in test mode and then move to prod"). WHO / WHAT / HOW -> the
+  // engine runs it -> the result per person (the troubleshooting view) -> Go live = ONE Apply on everyone with the rules
+  // the test proved. Tagging stays automatic: Go live never changes the schedule or the mode setting.
+  var TT_KINDS = [['Objects', 'People I name'], ['Filter', 'A filter (a property like a pattern)'], ['Group', 'Members of a group'], ['OU', 'Users in an OU (AD-synced users)'], ['Saved', 'A saved scope']];
+  function openTestRun(ot, tagTypes, preset) {
+    preset = preset || {};
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Test run' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var noun = ot === 'User' ? 'users' : 'devices';
+    d.appendChild(el('h3', { text: 'Test run - ' + noun }));
+    d.appendChild(el('div', { class: 'guide', text: 'Run the ' + ot.toLowerCase() + ' tagging rules on the ' + noun + ' you pick. Test writes nothing: you see per ' + (ot === 'User' ? 'person' : 'device') + ' every tag as it is now and as the rules would set it, and why. Apply to this scope writes the tags of exactly these ' + noun + '. From a good test you can go live: one run on everyone with the same rules. The scheduled runs go on as they are.' }));
+    var form = el('div', { class: 'rf-grid' });
+    var row = function (label, node) { form.appendChild(el('div', { class: 'rf-l', text: label })); form.appendChild(el('div', { class: 'rf-c' }, node)); return node; };
+    var kind = el('select', { 'aria-label': 'Who' }, TT_KINDS.filter(function (k) { return ot === 'User' || k[0] !== 'OU'; }).map(function (k) { return el('option', { value: k[0], text: k[1] }); }));
+    kind.value = preset.kind || 'Objects';
+    row('Who', kind);
+    var whoBox = el('div', { class: 'rf-vals' }); row('', whoBox);
+    var list = el('textarea', { rows: 5, style: 'width:100%', 'aria-label': 'The ' + noun, placeholder: ot === 'User' ? 'anna@contoso.com - one per line (UPN, object id or display name)' : 'PC-0042 - one per line (name or object id)' });
+    var count = el('span', { class: 'smeta' });
+    var prop = el('input', { type: 'text', 'aria-label': 'Property', value: ot === 'User' ? 'userPrincipalName' : 'displayName' });
+    var pat = el('input', { type: 'text', 'aria-label': 'Pattern', placeholder: ot === 'User' ? '*@pilot.contoso.com' : 'KIOSK-*' });
+    var saved = el('select', { 'aria-label': 'Saved scope' });
+    var lines = function () { return list.value.split(/[\n;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x; }); };
+    var drawWho = function () {
+      clear(whoBox); var k = kind.value;
+      if (k === 'Objects' || k === 'Group' || k === 'OU') {
+        list.placeholder = k === 'Group' ? 'the group\'s display name - one per line, at most 5 (its direct members)' : k === 'OU' ? 'OU=Pilot,OU=Users,DC=contoso,DC=com - one per line, at most 5' : (ot === 'User' ? 'anna@contoso.com - one per line (UPN, object id or display name)' : 'PC-0042 - one per line (name or object id)');
+        whoBox.appendChild(list); whoBox.appendChild(count);
+        count.textContent = k === 'Objects' ? fmtNum(lines().length) + ' named' : 'the engine finds them and counts them in the result';
+        // ADMIN-WALK-2: pick people / groups from the directory instead of typing them (the list stays for a paste)
+        var pk = k === 'Group' ? 'group' : (k === 'Objects' && ot === 'User' ? 'user' : null);
+        if (pk) {
+          var pickHost = el('div', { class: 'cap-pick', hidden: true });
+          var pickBtn = el('button', { type: 'button', class: 'secondary', text: pk === 'group' ? 'Pick a group' : 'Pick people' });
+          pickBtn.addEventListener('click', function () {
+            pickHost.hidden = !pickHost.hidden;
+            if (!pickHost.hidden && !pickHost.firstChild) capPicker(pickHost, pk, [], { known: {} }, function (v, name, detail) {
+              var u = pk === 'user' ? String([detail, name, v].filter(function (x) { return x && String(x).indexOf('@') > 0; })[0] || name || v) : String(name || v);
+              if (lines().indexOf(u) < 0) { list.value = lines().concat([u]).join('\n'); list.dispatchEvent(new Event('input')); }
+            }, lines);
+          });
+          whoBox.appendChild(el('div', { class: 'toolbar' }, pickBtn)); whoBox.appendChild(pickHost);
+        }
+      } else if (k === 'Filter') { whoBox.appendChild(el('span', null, prop, ' like ', pat)); whoBox.appendChild(el('span', { class: 'smeta', text: 'the engine counts who matches in the result' })); }
+      else { whoBox.appendChild(saved); }
+    };
+    list.addEventListener('input', function () { if (kind.value === 'Objects') count.textContent = fmtNum(lines().length) + ' named'; });
+    kind.addEventListener('change', drawWho);
+    api('GET', '/api/scopes').then(function (s) { clear(saved); (s.rows || []).filter(function (x) { return x.ObjectType === ot; }).forEach(function (x) { saved.appendChild(el('option', { value: x.Name, text: x.Name + ' (' + x.Kind + ')' })); }); if (!saved.options.length) saved.appendChild(el('option', { value: '', text: '(no saved ' + ot.toLowerCase() + ' scope)' })); }).catch(function () { /* the other kinds still work */ });
+    if (preset.values) list.value = preset.values.join('\n');
+    drawWho();
+    var what = el('div', { class: 'values' });
+    var boxes = (tagTypes || []).map(function (n) { var cb = el('input', { type: 'checkbox', value: n }); cb.checked = (preset.tagTypes || []).indexOf(n) >= 0; what.appendChild(el('label', { class: 'rf-check' }, cb, ' ' + n)); return cb; });
+    row('Tag types', el('div', null, what, el('div', { class: 'smeta', text: 'None ticked = all tag types. Go live needs a test of all of them.' })));
+    // ADMIN-WALK: test the STAGED rules (the commit queue's waiting changes, in memory) before they are committed - a test only
+    var rsC = el('input', { type: 'radio', name: 'ttrules', value: 'committed' }), rsS = el('input', { type: 'radio', name: 'ttrules', value: 'staged' });
+    (preset.staged ? rsS : rsC).checked = true;
+    var stagedNote = el('span', { class: 'smeta' });
+    row('Which rules', el('div', null, el('label', { class: 'rf-check' }, rsC, ' The rules as they are now'), ' ', el('label', { class: 'rf-check' }, rsS, ' With the changes waiting in the commit queue (not committed yet)'), el('div', null, stagedNote)));
+    api('GET', '/api/queue').then(function (q) { var n = (q.rows || []).filter(function (r) { return r.Status === 'Pending' && r.ObjectType === ot; }).length; stagedNote.textContent = n ? fmtNum(n) + ' ' + ot.toLowerCase() + ' change(s) wait in the commit queue.' : 'No ' + ot.toLowerCase() + ' change waits in the commit queue.'; if (!n) { rsS.disabled = true; rsC.checked = true; }
+      // ADMIN-WALK-2 N1: with changes waiting, a test without a preset tests THEM (the admin just staged a change)
+      else if (preset.staged === undefined) { rsS.checked = true; }
+      syncHow(); }).catch(function () { /* the choice still works */ });
+    var howT = el('input', { type: 'radio', name: 'tthow', value: 'Test', checked: true }), howA = el('input', { type: 'radio', name: 'tthow', value: 'Apply' });
+    var syncHow = function () { if (rsS.checked) { howT.checked = true; howA.disabled = true; } else howA.disabled = false; };
+    rsC.addEventListener('change', syncHow); rsS.addEventListener('change', syncHow);
+    row('How', el('div', null, el('label', { class: 'rf-check' }, howT, ' Test - writes nothing'), ' ', el('label', { class: 'rf-check' }, howA, ' Apply to these ' + noun + ' only - writes their tags (not with the waiting changes: commit them first)')));
+    syncHow();
+    var reason = el('input', { type: 'text', style: 'width:100%', placeholder: 'Reason (needed for Apply) - e.g. the new Finance rules on the pilot' });
+    row('Reason', reason);
+    d.appendChild(form);
+    var go = el('button', { type: 'button', text: 'Start the test run' });
+    go.addEventListener('click', function () {
+      var k = kind.value, who;
+      if (k === 'Objects' || k === 'Group' || k === 'OU') { if (!lines().length) { list.focus(); return; } who = { kind: k, values: lines() }; }
+      else if (k === 'Filter') { if (!pat.value.trim()) { pat.focus(); return; } who = { kind: 'Filter', property: prop.value.trim(), pattern: pat.value.trim() }; }
+      else { if (!saved.value) return; who = { kind: 'Saved', name: saved.value }; }
+      var how = howA.checked ? 'Apply' : 'Test';
+      if (how === 'Apply' && !reason.value.trim()) { reason.focus(); notice('Apply to these ' + noun + ' writes their tags: give a reason.', 'warn'); return; }
+      go.disabled = true; close();
+      api('POST', '/api/tagging/' + ot + '/testrun', { who: who, tagTypes: boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; }), how: how, staged: rsS.checked, reason: reason.value.trim() })
+        .then(function (r) { location.hash = '#tagtest/' + ot; afterAction(r, (how === 'Test' ? 'Test run on ' : 'Apply to ') + r.who); })
+        .catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+    });
+    d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+  }
+  var TT_STATUS = { Planned: 'would change', Applied: 'written', Failed: 'failed', Queued: 'queued for the hybrid worker', Skipped: 'skipped', 'Already so': 'already so' };
+  function ttPerson(runId, p) {
+    // one person: the whole decision - every rule top down, each condition's real value against its target
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': p.name });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Reading ...' }));
+    d.appendChild(el('h3', { text: p.name + (p.synced ? ' (AD-synced)' : '') })); d.appendChild(body);
+    d.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+    api('GET', '/api/tagging/testruns/' + encodeURIComponent(runId) + '/people/' + encodeURIComponent(p.objectId)).then(function (x) {
+      clear(body);
+      if (x.note) body.appendChild(el('div', { class: 'guide', text: x.note }));
+      if (x.decisions && x.decisions.length) {
+        body.appendChild(el('h4', { text: 'The tag per tag type' }));
+        body.appendChild(table(x.decisions.map(function (dd) { return { TagType: dd.TagType, Now: textOf(dd.Current), Wanted: textOf(dd.Wanted), Action: dd.Action === 'Change' ? 'would change' : dd.Action === 'Skipped' ? 'skipped: ' + textOf(dd.Why) : 'already so', By: dd.Persona ? 'rule for ' + dd.Persona : textOf(dd.Reason) }; }),
+          [{ key: 'TagType', label: 'Tag type' }, { key: 'Now', label: 'Now' }, { key: 'Wanted', label: 'The rules want' }, { key: 'Action', label: '', type: 'cat' }, { key: 'By', label: 'Decided by', wrap: true }], { sort: null }));
+      }
+      if (x.rules && x.rules.length) {
+        body.appendChild(el('h4', { text: 'Every rule, top down' }));
+        x.rules.forEach(function (rr) {
+          var head = '#' + rr.RuleId + ' ' + textOf(rr.Persona) + ' / ' + rr.TagType + ': ' + ({ Matched: 'MATCHED', NotMatched: 'no match', Skipped: 'skipped', NotNeeded: 'not needed' }[rr.Result] || rr.Result) + (rr.Reason ? ' - ' + rr.Reason : '');
+          var box = el('div', { class: 'rule' + (rr.Result === 'Matched' ? '' : ' off') }, el('strong', { text: head }));
+          (rr.Conditions || []).forEach(function (k) { box.appendChild(el('div', { class: 'smeta' }, el('span', { class: k.Met ? 'c-good' : 'c-danger', text: k.Met ? 'yes ' : 'NO ' }), el('code', { text: k.ConditionType }), ' wants ' + textOf(k.Target) + ' - ' + (k.Unavailable ? 'not available: ' + k.Unavailable : 'is ' + (textOf(k.Actual) || '(empty)')))); });
+          body.appendChild(box);
+        });
+      }
+      if (x.changes && x.changes.length) {
+        body.appendChild(el('h4', { text: 'Its changes in this run' }));
+        body.appendChild(table(x.changes, [{ key: 'TagType', label: 'Tag type' }, { key: 'OldValue', label: 'Now' }, { key: 'NewValue', label: 'New' }, { key: 'Status', label: 'Status', type: 'cat' }, { key: 'Error', label: 'Error', wrap: true }], { sort: null }));
+      }
+    }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); });
+  }
+  // RULES-MATCHED (owner 2026-11-03: "what is this matched. maybe give more context here which users are in scope like a
+  // list" / "i like the matched" / "but a button with more context"): who ONE rule decided in a run - each object with the
+  // value the rule set and the value it had, its full decision when a test run traced it, else "Test this one"; and when
+  // the rule decided nobody, why (off, never wins, changed after the run, no object met all its conditions) with the
+  // closest misses of the newest test run and a shortcut to test the rule's tag type
+  function openRuleMatched(ot, rule, tagTypes) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Who rule ' + rule.id + ' decided' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var noun = ot === 'User' ? 'user' : 'device';
+    var st = { runId: '', q: '', page: 1 };
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Reading ...' }));
+    d.appendChild(el('h3', { text: 'Rule ' + (rule.pos ? '#' + rule.pos + ' ' : '') + '(id ' + rule.id + ') - ' + rule.tagType + ' = ' + textOf(rule.value) }));
+    d.appendChild(body);
+    d.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+    var testThese = function (names, types) { close(); openTestRun(ot, tagTypes, { kind: 'Objects', values: names, tagTypes: types || [rule.tagType] }); };
+    var load = function () {
+      return api('GET', '/api/rules/' + ot + '/' + encodeURIComponent(rule.id) + '/matched?' + qs({ runId: st.runId, q: st.q, page: st.page })).then(function (x) {
+        clear(body);
+        var run = x.run;
+        // which run: the newest on everyone by default; any run that kept a list can be picked
+        var runSel = el('select', { 'aria-label': 'Run' }, (x.runs || []).map(function (r) {
+          return el('option', { value: r.runId, text: (r.test ? 'Test run' : r.everyone ? 'Run on everyone' : 'Scoped run') + ' (' + r.mode + ', ' + r.status + ') ' + fmtTime(r.startedAtUtc) }); }));
+        if (run) runSel.value = run.runId;
+        runSel.addEventListener('change', function () { st.runId = runSel.value; st.page = 1; load(); });
+        body.appendChild(el('div', { class: 'guide', text: run
+          ? 'Matched = the ' + noun + 's this rule DECIDED in the ' + (run.test ? 'test run' : run.everyone ? 'last run on everyone' : 'scoped run') + ' of ' + fmtTime(run.startedAtUtc) + ' (' + run.mode + '): its conditions all met, and it set (or confirmed) ' + rule.tagType + '. A ' + noun + ' an earlier rule already decided for this tag type is not counted here.'
+          : 'No run on everyone has finished yet, so nothing is counted. The next scheduled run counts it, or start a Test run on a few ' + noun + 's.' }));
+        if ((x.runs || []).length) body.appendChild(el('div', { class: 'toolbar' }, el('span', { text: 'Run: ' }), runSel));
+        if (x.why && x.why.length && (!x.total || x.why.length)) {
+          var box = el('div', { class: x.total ? 'bar bar-info' : 'bar bar-warn' });
+          box.appendChild(el('strong', { text: x.total ? 'Note' : 'Why nobody' }));
+          var ul = el('ul'); x.why.forEach(function (w) { ul.appendChild(el('li', { text: w })); }); box.appendChild(ul);
+          body.appendChild(box);
+        }
+        if (!x.total) {
+          if (x.misses && x.misses.length) {
+            body.appendChild(el('h4', { text: 'Closest misses - from the test run of ' + fmtTime(x.missRun.startedAtUtc) }));
+            body.appendChild(table(x.misses, [
+              { key: 'name', label: noun === 'user' ? 'User' : 'Device', render: function (r) { return el('button', { type: 'button', class: 'link', text: r.name, onclick: function () { ttPerson(x.missRun.runId, { objectId: r.objectId, name: r.name }); } }); } },
+              { key: 'met', label: 'Conditions met', render: function (r) { return r.met + ' of ' + r.of; } },
+              { key: 'failed', label: 'Not met', wrap: true, render: function (r) { return (r.failed || []).join('; '); } }], { sort: null }));
+          }
+          if (isRole('Admin')) body.appendChild(el('div', { class: 'toolbar' },
+            el('button', { type: 'button', text: 'Test run on ' + rule.tagType, onclick: function () { close(); openTestRun(ot, tagTypes, { tagTypes: [rule.tagType] }); } }),
+            el('span', { class: 'smeta', text: 'Pick a few ' + noun + 's you expect this rule to hit: the test run shows per ' + noun + ' every condition\'s real value against its target.' })));
+          return;
+        }
+        var shown = fmtNum(x.total) + ' decided' + (x.capped ? ' - the list keeps the first ' + fmtNum(x.hitMax) : '');
+        if (!x.kept) { body.appendChild(el('div', { class: 'bar bar-info', text: shown + '. That run did not keep the list (a run before this version, or an older one) - the next run keeps it.' })); return; }
+        var search = el('input', { type: 'search', placeholder: 'Search a name or value', value: st.q, 'aria-label': 'Search' });
+        var go = function () { st.q = search.value.trim(); st.page = 1; load(); };
+        search.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+        body.appendChild(el('div', { class: 'toolbar' }, search, el('button', { type: 'button', class: 'secondary', text: 'Search', onclick: go }),
+          el('span', { class: 'count', text: shown + (st.q ? ' - ' + fmtNum(x.stored) + ' found' : '') }),
+          el('a', { href: '/api/rules/' + ot + '/' + encodeURIComponent(rule.id) + '/matched?' + qs({ runId: run.runId, q: st.q, format: 'csv' }), text: 'Export CSV' }),
+          isRole('Admin') && x.rows.length ? el('button', { type: 'button', class: 'secondary', text: 'Test run on this page', title: 'A test run (writes nothing) on the ' + noun + 's shown, for ' + rule.tagType, onclick: function () { testThese(x.rows.map(function (r) { return r.name || r.objectId; })); } }) : null));
+        body.appendChild(table(x.rows, [
+          { key: 'name', label: noun === 'user' ? 'User' : 'Device', render: function (r) {
+            if (r.traced) return el('button', { type: 'button', class: 'link', text: r.name || r.objectId, title: 'Its whole decision in that test run', onclick: function () { ttPerson(run.runId, { objectId: r.objectId, name: r.name }); } });
+            return el('span', null, r.name || r.objectId, isRole('Admin') ? el('button', { type: 'button', class: 'link', text: 'Why? (test)', title: 'A test run on this ' + noun + ' (writes nothing) shows every rule and condition for it', onclick: function () { testThese([r.name || r.objectId], []); } }) : null); } },
+          { key: 'tagType', label: 'Tag type', type: 'cat' },
+          { key: 'value', label: 'The rule set', render: function (r) { return el('code', { text: r.value || '(empty)' }); } },
+          { key: 'current', label: 'It had', render: function (r) { return el('code', { text: r.current || '(empty)' }); } },
+          { key: 'changed', label: '', type: 'cat', render: function (r) { return el('span', { class: r.changed ? 'c-warning' : 'c-good', text: r.changed ? (run.mode === 'Apply' ? 'changed' : 'would change') : 'already so' }); } }],
+          { sort: null, empty: 'No ' + noun + ' matches the search.' }));
+        var pages = Math.max(1, Math.ceil(x.stored / x.pageSize));
+        if (pages > 1) body.appendChild(el('div', { class: 'pager' },
+          el('button', { type: 'button', class: 'secondary', text: 'Previous', disabled: st.page <= 1, onclick: function () { st.page--; load(); } }),
+          el('span', { text: 'Page ' + st.page + ' of ' + pages }),
+          el('button', { type: 'button', class: 'secondary', text: 'Next', disabled: st.page >= pages, onclick: function () { st.page++; load(); } })));
+      }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: 'Could not read: ' + e.message })); });
+    };
+    load();
+  }
+  function drawTagTests(p, arg) {
+    var m = /^run\/(.+)$/.exec(arg || '');
+    if (m) return drawTagTestRun(p, m[1]);
+    var ot = /^Device/.test(arg || '') ? 'Device' : 'User';
+    // #tagtest/<User|Device>/staged (the commit queue's "Test these staged changes"): opens the dialog on the staged rules
+    // ADMIN-WALK-2 N2: opened ONCE - the hash is replaced at once (no hashchange), so a redraw never opens it again
+    if (/\/staged$/.test(arg || '') && history.replaceState) history.replaceState(null, '', '#tagtest/' + ot);
+    if (/\/staged$/.test(arg || '') && isRole('Admin')) api('GET', '/api/rules?' + qs({ objectType: ot })).then(function (r) { openTestRun(ot, r.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; }), { staged: true }); }).catch(function () { /* the page still shows */ });
+    return api('GET', '/api/tagging/' + ot + '/testruns').then(function (j) {
+      p.appendChild(el('div', { class: 'toolbar rx-bar' },
+        el('span', { class: 'rx-seg' }, el('a', { href: '#tagtest/User', class: ot === 'User' ? 'on' : null, text: 'User tagging' }), el('a', { href: '#tagtest/Device', class: ot === 'Device' ? 'on' : null, text: 'Device tagging' })),
+        isRole('Admin') ? el('button', { type: 'button', text: 'New test run', onclick: function () { api('GET', '/api/rules?' + qs({ objectType: ot })).then(function (r) { openTestRun(ot, r.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; })); }); } }) : null,
+        el('a', { href: '#rules/' + ot, text: 'The rules' })));
+      p.appendChild(el('div', { class: 'guide', text: 'A test run tries the rules on the people you pick: Test writes nothing, Apply writes only their tags. Open one to see per person every tag and why. From a finished test of all tag types, Go live runs the same rules once on everyone. The scheduled tagging runs go on as they are.' }));
+      if (!j.featureEnabled) p.appendChild(el('div', { class: 'bar bar-warn', text: (ot === 'User' ? 'User' : 'Device') + ' tagging is switched off (Settings): a test run is refused.' }));
+      if (j.waiting.length) {
+        p.appendChild(el('h3', { text: 'Waiting for the engine (its next check, every 5 minutes)' }));
+        p.appendChild(table(j.waiting, [{ key: 'kind', label: 'What', type: 'cat' }, { key: 'who', label: 'Who', wrap: true }, { key: 'status', label: 'Status', type: 'cat' }, { key: 'requestedBy', label: 'By' }, { key: 'requestedAtUtc', label: 'Asked', type: 'date' }], { sort: null }));
+      }
+      p.appendChild(el('h3', { text: 'Test runs and go lives' }));
+      p.appendChild(table(j.rows, [
+        { key: 'startedAtUtc', label: 'Started', type: 'date', render: function (r) { return el('a', { href: '#tagtest/run/' + r.runId }, timeEl(r.startedAtUtc)); } },
+        { key: 'kind', label: 'What', type: 'cat' }, { key: 'who', label: 'Who', wrap: true }, { key: 'status', label: 'Status', type: 'cat', cls: stCell('status') },
+        { key: 'objects', label: 'In scope', type: 'num' }, { key: 'planned', label: 'Changes', type: 'num' }, { key: 'applied', label: 'Written', type: 'num' }, { key: 'failed', label: 'Failed', type: 'num' },
+        { key: 'rulesSame', label: 'Rules', type: 'cat', render: function (r) { return el('span', { class: r.rulesSame ? 'c-good' : null, text: r.rulesSame ? 'as now' : 'changed since' }); } }],
+        { sort: 'startedAtUtc', dir: -1, empty: 'No test run yet - start one from the rules (Test run).' }));
+    });
+  }
+  function drawTagTestRun(p, runId) {
+    var page = 1, q = '';
+    var host = el('div'); p.appendChild(host);
+    var load = function () {
+      return api('GET', '/api/tagging/testruns/' + encodeURIComponent(runId) + '?' + qs({ page: page, q: q })).then(function (j) {
+        clear(host);
+        var r = j.run, ot = r.objectType;
+        host.appendChild(el('p', null, el('a', { href: '#tagtest/' + ot, text: 'Test runs' }), ' > ' + j.kind));
+        host.appendChild(el('h2', { text: j.kind + ' - ' + j.who + ' - ' + r.status }));
+        host.appendChild(el('p', null, 'Started ', timeEl(r.startedAtUtc), r.endedAtUtc ? ', ended ' : '', r.endedAtUtc ? timeEl(r.endedAtUtc) : null, '. ', el('a', { href: '#run/' + r.runId, text: 'Its log' }),
+          j.goLiveOf ? el('span', null, ' - the go live of ', el('a', { href: '#tagtest/run/' + j.goLiveOf, text: 'this test run' })) : null));
+        if (r.heldReason) host.appendChild(el('div', { class: 'bar bar-warn', text: (r.status === 'Held' ? 'HELD: ' : '') + r.heldReason }));
+        // ADMIN-WALK: which rules this test ran on - as committed, or with the commit queue's waiting changes
+        if (j.ruleSet === 'staged') {
+          var sg = j.staged || {};
+          host.appendChild(el('div', { class: 'bar bar-info' }, el('strong', { text: 'Tested the STAGED rules' }), ': the rules with ' + fmtNum((sg.applied || []).length) + ' of ' + fmtNum(sg.waiting || 0) + ' change(s) waiting in the commit queue, applied in memory - nothing was committed. ',
+            (sg.skipped || []).length ? el('span', { class: 'c-warning', text: 'Left out (a commit would refuse them): ' + sg.skipped.map(function (x) { return '#' + x.id + ' ' + x.why; }).join('; ') + '. ' }) : null,
+            // ADMIN-WALK-3 M2: a commit already starts one run on everyone in the job's own mode - say so, so Go live is not
+            // taken for the step that makes it live (it is for a job left in Preview)
+            j.rulesSame ? 'These are now the committed rules.' : el('span', null, 'Commit them in the ', el('a', { href: '#queue', text: 'commit queue' }), ' - the commit itself starts one run on everyone in the job\'s mode (in Apply that run IS going live). Go live is only needed when the job is in Preview.'),
+            el('span', { class: 'smeta', text: ' Rule set ' + textOf(j.ruleSetHash).substring(0, 12) })));
+        } else host.appendChild(el('div', { class: 'smeta', text: 'Tested the rules as committed (rule set ' + textOf(j.ruleSetHash).substring(0, 12) + ').' }));
+        var c = j.counts;
+        host.appendChild(el('div', { class: 'cards' }, card(c.objects, 'in scope'), card(c.changes, r.mode === 'Apply' ? 'changes' : 'would change'), card(c.objectsChanged, 'of them changed'), card(c.unchanged, 'tags already right'), card(c.overwrites, 'overwrite a value'), card(c.applied, 'written'), card(c.failed, 'failed', c.failed > 0)));
+        // the next step: Go live (SuperAdmin), or why not; repeat the test, or apply it to the same people
+        var acts = el('div', { class: 'toolbar' });
+        if (j.kind !== 'Go live') {
+          if (isRole('SuperAdmin')) acts.appendChild(el('button', { type: 'button', text: 'Go live - run these rules on everyone', disabled: !j.canGoLive, title: j.canGoLive ? null : j.goLiveWhy, onclick: function () {
+            withReason('Go live: ' + (ot === 'User' ? 'user' : 'device') + ' tagging on everyone', 'ONE Apply run on everyone with exactly the rules this test proved, at the engine\'s next check. It writes tags. The mass-change guard holds it if it changes too much. The scheduled runs go on as they are.', function (reason) { return api('POST', '/api/tagging/testruns/' + encodeURIComponent(runId) + '/golive', { reason: reason }); });
+          } }));
+          if (isRole('Admin')) {
+            acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Test again', onclick: function () { withReason('Test again on the same people', 'A new test run: nothing is written.', function (reason) { return api('POST', '/api/tagging/' + ot + '/testrun', { fromRun: runId, how: 'Test', reason: reason }); }, { readOnly: true }); } }));
+            if (r.mode !== 'Apply' && j.ruleSet !== 'staged') acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Apply to these people', disabled: !j.rulesSame, title: j.rulesSame ? null : 'the rules changed since this test - test again first', onclick: function () { withReason('Apply to the people of this test run', 'Writes the tags of exactly the people this test ran on, with the rules it tested.', function (reason) { return api('POST', '/api/tagging/' + ot + '/testrun', { fromRun: runId, how: 'Apply', reason: reason }); }); } }));
+          }
+          if (!j.canGoLive && j.goLiveWhy) acts.appendChild(el('span', { class: 'smeta', text: 'Go live: ' + j.goLiveWhy }));
+        }
+        host.appendChild(acts);
+        if (j.unavailable.length) host.appendChild(el('div', { class: 'bar bar-warn', text: 'Not available in this run (those conditions could not be checked): ' + j.unavailable.map(function (u) { return u.what + ' (' + fmtNum(u.checks) + ')'; }).join('; ') }));
+        host.appendChild(el('h3', { text: 'Per tag value' }));
+        host.appendChild(table(j.byValue, [{ key: 'tagType', label: 'Tag type', type: 'cat' }, { key: 'value', label: 'Value' }, { key: 'changes', label: 'Changes', type: 'num' }], { sort: 'changes', dir: -1, empty: 'No change.' }));
+        host.appendChild(el('h3', { text: 'Per rule' }));
+        host.appendChild(table(j.byRule, [{ key: 'rule', label: 'Rule', wrap: true }, { key: 'changes', label: 'Changes', type: 'num' }, { key: 'decided', label: 'Decided (changed or already right)', type: 'num' }], { sort: null, empty: 'No rule decided anything.' }));
+        host.appendChild(el('h3', { text: 'Per ' + (ot === 'User' ? 'person' : 'device') + ' (' + fmtNum(j.total) + ')' }));
+        host.appendChild(el('p', { class: 'smeta', text: 'Every tag: now -> what the rules want, and the rule that decided it. The first ' + fmtNum(j.tracedMax || 200) + ' of a test run show every tag type (also the ones already right); the others their changes. Open one for the full decision.' }));
+        var sb = el('input', { type: 'search', placeholder: 'name contains ...', 'aria-label': 'Search people' }); sb.value = q;
+        sb.addEventListener('change', function () { q = sb.value.trim(); page = 1; load(); });
+        host.appendChild(el('div', { class: 'toolbar' }, sb, el('span', { class: 'count', text: 'page ' + page + ' of ' + Math.max(1, Math.ceil(j.total / j.pageSize)) }),
+          el('button', { type: 'button', class: 'secondary', text: 'Previous', disabled: page <= 1, onclick: function () { page--; load(); } }),
+          el('button', { type: 'button', class: 'secondary', text: 'Next', disabled: page * j.pageSize >= j.total, onclick: function () { page++; load(); } })));
+        var list = el('div', { class: 'rules' });
+        j.people.forEach(function (pp) {
+          var box = el('div', { class: 'rule' });
+          box.appendChild(el('div', { class: 'rhead' }, el('button', { type: 'button', class: 'link', text: pp.name || pp.objectId, onclick: function () { ttPerson(runId, pp); } }), pp.synced ? el('span', { class: 'badge', text: 'AD-synced' }) : null, pp.traced ? null : el('span', { class: 'smeta', text: 'changes only' })));
+          var ul = el('ul', { class: 'rx-dec' });
+          pp.tags.forEach(function (t) { ul.appendChild(el('li', null, el('strong', { text: t.tagType + ': ' }), el('code', { text: t.now || '(empty)' }), ' -> ', el('code', { text: t.next || '(empty)' }), ' - ' + (TT_STATUS[t.status] || t.status) + (t.persona ? ' (rule for ' + t.persona + ')' : t.reason && t.reason !== 'Rule' ? ' (' + t.reason + ')' : '') + (t.error ? ': ' + t.error : ''))); });
+          box.appendChild(ul); list.appendChild(box);
+        });
+        if (!j.people.length) list.appendChild(el('div', { class: 'empty', text: q ? 'Nobody matches.' : 'Nobody in this run - the scope found no one, or nothing would change.' }));
+        host.appendChild(list);
+      }).catch(function (e) { clear(host).appendChild(el('p', { class: 'c-danger', text: 'Could not load: ' + e.message })); });
+    };
+    return load();
   }
 
   // ---- tag types and their values (DESIGN §5.6a) -------------------------------------------------------------------
@@ -1394,8 +1893,17 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var slot = el('div');
       var vals = el('div', { class: 'values' });
       (t.Values || []).forEach(function (v) {
+        // ADMIN-WALK: who uses a value is shown on it; Remove only where no rule sets it, and it always asks
+        var used = v.UsedByRules || [];
+        // ADMIN-WALK-2 N5: the tag type's fallback values are what most objects carry - in use, never removable here
+        var lc = function (x) { return textOf(x).toLowerCase(); };
+        var fbk = [lc(t.FallbackAD) === lc(v.Value) ? 'AD-synced' : null, lc(t.FallbackCloud) === lc(v.Value) ? 'cloud' : null].filter(Boolean);
+        var ruleLinks = used.slice(0, 5).map(function (id) { return el('a', { href: '#rules/' + t.ObjectType + '/' + id, text: '#' + id }); });
         vals.appendChild(el('span', { class: 'val' }, el('span', { text: v.Value + (v.IsPattern ? ' (pattern)' : '') }), v.Description ? el('span', { class: 'skey', text: ' ' + v.Description }) : null,
-          admin ? el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { withReason('Remove the value ' + v.Value, 'A rule that sets it keeps it from being removed. Dynamic groups and policies that read it are not checked here.', function (reason) { return api('DELETE', '/api/tagtypes/' + t.ObjectType + '/' + encodeURIComponent(t.Name) + '/values', { value: v.Value, reason: reason }); }); } }) : null));
+          fbk.length ? el('span', { class: 'skey', text: ' · the ' + fbk.join(' and ') + ' fallback' }) : null,
+          used.length ? el('span', { class: 'skey' }, ' · set by rule ', ruleLinks.reduce(function (a, x, i) { if (i) a.push(', '); a.push(x); return a; }, []), used.length > 5 ? ' +' + (used.length - 5) : '')
+            : (fbk.length ? null : el('span', { class: 'skey', text: ' · no rule sets it' })),
+          admin && !used.length && !fbk.length ? el('button', { type: 'button', class: 'link', text: 'Remove', onclick: function () { withReason('Remove the value ' + v.Value + ' from ' + t.Name, 'No rule sets it. Objects that carry it keep it until a rule or the fallback changes it. Look at the dynamic groups and Conditional Access policies that read the value before you remove it.', function (reason) { return api('DELETE', '/api/tagtypes/' + t.ObjectType + '/' + encodeURIComponent(t.Name) + '/values', { value: v.Value, reason: reason }); }); } }) : null));
       });
       if (!(t.Values || []).length) vals.appendChild(el('span', { class: 'skey', text: 'no list: any value (free text)' }));
       var acts = el('div', { class: 'sacts' });
@@ -1448,8 +1956,20 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var objs = el('textarea', { rows: 3, 'aria-label': 'Objects', placeholder: 'one per line: UPN, display name or object id' });
     var prop = el('input', { type: 'text', 'aria-label': 'Property', placeholder: 'property, e.g. userPrincipalName' }), pat = el('input', { type: 'text', 'aria-label': 'Pattern', placeholder: 'pattern, e.g. *@pilot.contoso.com' });
     var fil = el('span', { hidden: true }, prop, ' like ', pat);
-    kind.addEventListener('change', function () { objs.hidden = kind.value !== 'Objects'; fil.hidden = kind.value !== 'Filter'; });
-    return { node: el('span', { class: 'scope' }, kind, ' ', objs, fil), read: function () {
+    // ADMIN-WALK-2: people are picked from the directory (their UPN goes into the list); the list stays for a paste
+    var objLines = function () { return objs.value.split('\n').map(function (x) { return x.trim(); }).filter(function (x) { return x; }); };
+    var pickHost = el('div', { class: 'cap-pick', hidden: true });
+    var pickBtn = el('button', { type: 'button', class: 'secondary', text: 'Pick people' });
+    pickBtn.addEventListener('click', function () {
+      pickHost.hidden = !pickHost.hidden;
+      if (!pickHost.hidden && !pickHost.firstChild) capPicker(pickHost, 'user', [], { known: {} }, function (v, nm, detail) {
+        var u = String([detail, nm, v].filter(function (x) { return x && String(x).indexOf('@') > 0; })[0] || nm || v).toLowerCase();
+        if (objLines().map(function (x) { return x.toLowerCase(); }).indexOf(u) < 0) objs.value = objLines().concat([u]).join('\n');
+      }, objLines);
+    });
+    var objBox = el('span', null, objs, pickBtn, pickHost);
+    kind.addEventListener('change', function () { objBox.hidden = kind.value !== 'Objects'; fil.hidden = kind.value !== 'Filter'; });
+    return { node: el('span', { class: 'scope' }, kind, ' ', objBox, fil), read: function () {
       return kind.value === 'Objects' ? { kind: 'Objects', values: objs.value.split('\n').map(function (x) { return x.trim(); }).filter(function (x) { return x; }) } : { kind: 'Filter', property: prop.value, pattern: pat.value }; } };
   }
   function describeScope(def) { try { var d = JSON.parse(def); return d.Kind === 'Objects' ? fmtNum(d.Values.length) + ' object(s): ' + d.Values.slice(0, 5).join(', ') + (d.Values.length > 5 ? ' ...' : '') : d.Property + ' like ' + d.Pattern; } catch (e) { return textOf(def); } }
@@ -1493,6 +2013,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     if (others.length) groups[CA_OTHER] = others;
     var gnames = Object.keys(groups).sort(personaSort);
     var st = { mon: '', picked: {}, personas: {}, excluded: {}, open: {}, series: { prefixes: [], patterns: [], names: [] }, dropSeries: false };
+    // ADMIN-WALK: #ca/policy:<id> (from a policy's page) opens the Analyzer with that policy ticked and its group open
+    if (data.preset) {
+      var pid = String(data.preset).toLowerCase(); st.picked[pid] = true;
+      gnames.forEach(function (g) { if (groups[g].some(function (x) { return String(x.PolicyId).toLowerCase() === pid; })) st.open[g] = true; });
+    }
 
     // the Monitor chooser: a new monitor, or an existing one (its selection loads into the tree)
     var chooser = el('select', { 'aria-label': 'Monitor' }, el('option', { value: '', text: 'New ...' }), monitors.map(function (m) { return el('option', { value: m.Name, text: m.Name + (m.Enabled ? '' : ' (off)') }); }));
@@ -1581,18 +2106,29 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var noneBtn = el('button', { type: 'button', class: 'link', text: 'Clear', onclick: function () { st.picked = {}; st.personas = {}; st.excluded = {}; drawList(); } });
     var manageBtn = el('button', { type: 'button', class: 'secondary', text: 'Manage personas', onclick: function () { personaManager(data); } });
     filter.addEventListener('input', drawList);
-    var refresh = el('button', { type: 'button', class: 'link', text: 'Refresh the list', onclick: function () { withReason('Refresh the policy list', 'Read only: the engine reads the Conditional Access policies again.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }); } });
+    var refresh = el('button', { type: 'button', class: 'link', text: 'Refresh the list', onclick: function () { withReason('Refresh the policy list', 'Read only: the engine reads the Conditional Access policies again.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }, { readOnly: true }); } });
     var listInfo = el('span', { class: 'count' }, fmtNum(policies.length) + ' policies' + (policies.length ? ', read ' : ''), policies.length ? timeEl(policies[0].SeenAtUtc) : null, ' ', refresh);
 
     // 2. Which sign-ins: a period; the rest under More options (closed)
     var period = el('select', { 'aria-label': 'Period' }, CA_PERIODS.map(function (x) { return el('option', { value: String(x[0]), text: x[1] }); }));
     var nonInt = el('input', { type: 'checkbox' }), guests = el('input', { type: 'checkbox' }), disabled = el('input', { type: 'checkbox' });
     var slice = el('input', { type: 'text', inputmode: 'numeric', 'aria-label': 'Hours per part', maxlength: 3, size: 3 }); slice.value = '0';
+    // V1-PARITY P13 (v1's CAPolicyEvaluator / Test-Policies-by-SigninLogs.ps1): policy numbers and ranges, a state filter,
+    // a fixed window (one analysis only - a monitor reads the last hours) and a sign-in cap
+    var nums = el('input', { type: 'text', 'aria-label': 'Policy numbers', placeholder: 'e.g. 6,200-249', maxlength: 500 });
+    var stSel = el('select', { 'aria-label': 'Only policies that are' }, [['', 'any state'], ['enabled', 'on'], ['enabledForReportingButNotEnforced', 'report-only'], ['disabled', 'off']].map(function (x) { return el('option', { value: x[0], text: x[1] }); }));
+    var wFrom = el('input', { type: 'datetime-local', 'aria-label': 'Window from (UTC)' }), wTo = el('input', { type: 'datetime-local', 'aria-label': 'Window to (UTC)' });
+    var cap = el('input', { type: 'text', inputmode: 'numeric', 'aria-label': 'At most this many sign-ins', placeholder: 'no cap', maxlength: 7, size: 8 });
+    var isoUtc = function (v) { return v ? v + (v.length === 16 ? ':00' : '') + 'Z' : ''; };
     var more = el('details', { class: 'more' }, el('summary', { text: 'More options' }),
       el('div', { class: 'form' },
         el('label', { class: 'wide' }, nonInt, ' Include non-interactive sign-ins (apps signing in for the user - a much larger log)'),
         el('label', { class: 'wide' }, guests, ' Include guests'),
         el('label', { class: 'wide' }, disabled, ' Include disabled accounts'),
+        el('label', { class: 'wide' }, 'Also the policies with the numbers ', nums, el('span', { class: 'smeta', text: ' (v1\'s list: 6 = CA006, 200-249 = CA200 to CA249)' })),
+        el('label', { class: 'wide' }, 'Only policies that are ', stSel),
+        el('label', { class: 'wide' }, 'Instead of the period, a fixed window from ', wFrom, ' to ', wTo, el('span', { class: 'smeta', text: ' (UTC, within the last 30 days; Analyse now only - a monitor reads the last hours)' })),
+        el('label', { class: 'wide' }, 'At most ', cap, ' sign-ins (empty = every sign-in of the window)'),
         // CA-ANALYZER-PARTS (owner 2026-11-03: "this is too complex for people to dcide on"): EPS decides how it reads a
         // large log - the field is gone; a window longer than a day is read a day at a time
         el('p', { class: 'smeta', text: 'A window longer than a day is read a day at a time - Entra Policy Suite decides this, there is nothing to set.' })));
@@ -1614,20 +2150,23 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       var ser = st.dropSeries ? { prefixes: [], patterns: [], names: st.series.names } : st.series;
       return { personas: Object.keys(st.personas).filter(function (k) { return st.personas[k]; }), policyIds: Object.keys(st.picked).filter(function (k) { return st.picked[k] && !st.excluded[k]; }),
         excludePolicyIds: leftOut(), policyNames: ser.names, policyPrefixes: ser.prefixes, policyPatterns: ser.patterns,
-        mode: 'SignInLogs', lookbackHours: period.value, sliceHours: slice.value.trim() || '0', includeNonInteractive: nonInt.checked, includeGuests: guests.checked, includeDisabled: disabled.checked };
+        mode: 'SignInLogs', lookbackHours: period.value, sliceHours: slice.value.trim() || '0', includeNonInteractive: nonInt.checked, includeGuests: guests.checked, includeDisabled: disabled.checked,
+        policyNumbers: nums.value.trim(), policyStates: stSel.value ? [stSel.value] : [], maxSignIns: cap.value.trim() };
     }
     function describe(b) { return [b.personas.length ? b.personas.join(', ') : '', b.policyIds.length ? fmtNum(b.policyIds.length) + ' picked' : '', b.policyPrefixes.concat(b.policyPatterns).join(', ')].filter(function (x) { return x; }).join(' + ') + (b.excludePolicyIds.length ? ' (' + fmtNum(b.excludePolicyIds.length) + ' left out)' : ''); }
     function analyse() {
       var b = read();
-      if (!selection().length && !b.personas.length) { notice('Pick a persona or a policy first (step 1).', 'warn'); return; }
-      withReason('Analyse ' + (st.mon ? 'monitor ' + st.mon + ': ' : '') + describe(b), 'Read only: the engine reads the policies and the sign-ins of ' + caPeriodText(b.lookbackHours) + ' and changes nothing.', function (reason) { b.reason = reason; return api('POST', '/api/ca/analyze', b); });
+      if (wFrom.value || wTo.value) { if (!wFrom.value || !wTo.value) { notice('A fixed window needs both a from and a to.', 'warn'); return; } b.windowStart = isoUtc(wFrom.value); b.windowEnd = isoUtc(wTo.value); }
+      if (!selection().length && !b.personas.length && !b.policyNumbers) { notice('Pick a persona or a policy first (step 1), or give policy numbers under More options.', 'warn'); return; }
+      withReason('Analyse ' + (st.mon ? 'monitor ' + st.mon + ': ' : '') + describe(b), 'Read only: the engine reads the policies and the sign-ins of ' + caPeriodText(b.lookbackHours) + ' and changes nothing.', function (reason) { b.reason = reason; return api('POST', '/api/ca/analyze', b); }, { readOnly: true });
     }
     function save() {
       var n = st.mon || name.value.trim();
       if (!CA_NAME.test(n)) { notice('A monitor name is 1-100 letters, digits, - _ or .', 'warn'); name.focus(); return; }
       if (!st.mon && monitors.some(function (m) { return m.Name.toLowerCase() === n.toLowerCase(); })) { notice('A monitor ' + n + ' exists already - pick it under Monitor to change it.', 'warn'); return; }
       var b = read(); b.alertTo = splitList(alertTo.value);
-      if (!selection().length && !b.personas.length) { notice('Pick a persona or a policy first (step 1).', 'warn'); return; }
+      if (wFrom.value || wTo.value) { notice('A monitor reads the last hours at each run - clear the fixed window to save it.', 'warn'); return; }
+      if (!selection().length && !b.personas.length && !b.policyNumbers) { notice('Pick a persona or a policy first (step 1), or give policy numbers under More options.', 'warn'); return; }
       withReason((st.mon ? 'Save monitor ' : 'Save as monitor ') + n, 'It analyses ' + describe(b) + ' (' + caPeriodText(b.lookbackHours) + ') ' + (en.checked ? sch.value : '(off)') + ', read only.', function (reason) {
         return api('PUT', '/api/ca/monitors/' + encodeURIComponent(n), { definition: b, schedule: sch.value, enabled: en.checked, reason: reason }).then(function (r) { saveBox.hidden = true; if (onSaved) onSaved(n); return r; }); });
     }
@@ -1643,6 +2182,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (!CA_PERIODS.some(function (x) { return String(x[0]) === h; })) period.appendChild(el('option', { value: h, text: 'the last ' + fmtNum(h) + ' hours' }));
       period.value = h;
       nonInt.checked = !!def.includeNonInteractive; guests.checked = !!def.includeGuests; disabled.checked = !!def.includeDisabled; slice.value = textOf(def.sliceHours || 0);
+      nums.value = textOf(def.policyNumbers); stSel.value = (def.policyStates || [])[0] || ''; cap.value = def.maxSignIns ? textOf(def.maxSignIns) : ''; wFrom.value = ''; wTo.value = '';
       more.open = false;
       name.value = st.mon; name.disabled = !!st.mon; sch.value = m ? textOf(m.Schedule) : 'daily 07:00'; en.checked = m ? !!m.Enabled : true; alertTo.value = (def.alertTo || []).join(', ');
       saveBtn.textContent = st.mon ? 'Save monitor' : 'Save as monitor'; saveBox.hidden = true;
@@ -1740,11 +2280,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     d.showModal();
   }
 
-  function drawCa(p) {
+  function drawCa(p, preset) {
     var admin = isRole('Admin');
     p.appendChild(el('div', { class: 'guide', text: 'Before you move a policy to pilot or production: put it in report-only (or on for the pilot), then analyse the sign-in logs - who it would have blocked or challenged, and why. Analyse once, or save the same choice as a monitor that runs on a schedule. The analyzer only READS: it never changes a Conditional Access policy.' }));
     return Promise.all([api('GET', '/api/ca/policies'), api('GET', '/api/ca/monitors'), api('GET', '/api/ca/personas')]).then(function (all) {
-      var data = { policies: all[0].rows || [], monitors: all[1].rows || [], personas: all[2].rows || [], seeded: !!all[2].seeded };
+      var data = { policies: all[0].rows || [], monitors: all[1].rows || [], personas: all[2].rows || [], seeded: !!all[2].seeded, preset: preset || '' };
       var form = null;
       if (admin) { form = caOneForm(data); p.appendChild(form.node); }
       p.appendChild(el('h3', { text: 'Analyses' }));
@@ -1850,7 +2390,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         var notes = [].concat(JSON.parse(a.WarningsJson || '[]'), JSON.parse(a.UnresolvedJson || '[]').map(function (x) { return 'not simulated: ' + x; }));
         if (notes.length) host.appendChild(el('ul', { class: 'hints' }, notes.map(function (n) { return el('li', { text: n }); })));
         var toggle = el('button', { type: 'button', class: 'secondary', text: all ? 'Only impacted users' : 'All in-scope users', onclick: function () { all = !all; load(); } });
-        host.appendChild(el('div', { class: 'toolbar' }, toggle, el('a', { href: '/api/ca/analyses/' + encodeURIComponent(id) + '/export', text: 'Export CSV (every user)' })));
+        host.appendChild(el('div', { class: 'toolbar' }, toggle, el('a', { href: '/api/ca/analyses/' + encodeURIComponent(id) + '/export', text: 'Export CSV (every user)' }), ' ',
+      el('a', { href: '/api/ca/analyses/' + encodeURIComponent(id) + '/export?format=xlsx', text: 'Excel' }), ' ',
+      el('a', { href: '/api/ca/analyses/' + encodeURIComponent(id) + '/export?format=html', text: 'HTML' })));
         host.appendChild(pagedTable('/api/ca/analyses/' + encodeURIComponent(id), [{ key: 'q', label: 'Search user or classification' }, { key: 'all', hidden: true, value: all ? '1' : '' }], [
           { key: 'DisplayName', label: 'User' }, { key: 'UserPrincipalName', label: 'UPN' }, { key: 'Classification', label: 'Result', type: 'cat', cls: function (r) { return r.Impacted ? 'c-danger' : ''; } },
           { key: 'Reason', label: 'Why', wrap: true }, { key: 'GrantControls', label: 'Controls' }, { key: 'LastSignInUtc', label: 'Last sign-in', type: 'date' }, { key: 'Country', label: 'Country', type: 'cat' },
@@ -1899,6 +2441,77 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     document.body.appendChild(d); d.showModal();
   }
+  // ADMIN-WALK (2026-11-05): the identity report's columns by readable names, not their internal property names
+  var ID_COL_LABELS = { Id: 'Object id', UserPrincipalName: 'UPN', IsMfaRegistered: 'MFA registered', ActionWho: 'Action by', ActionStatus: 'Action status', UserAuthMethodType: 'Authentication tag', UserClassification: 'Classification tag', MfaStrength: 'MFA strength',
+    OnPremisesSyncEnabled: 'Synced from AD', AccountEnabled: 'Account on', LastSignInUtc: 'Last sign-in', CreatedDateTime: 'Created', DisplayName: 'Name' };
+  function idColLabel(c) {
+    if (ID_COL_LABELS[c]) return ID_COL_LABELS[c];
+    var s = String(c).replace(/_/g, ' ').replace(/^Is(?=[A-Z])/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/\bUtc\b/, '').trim();
+    return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase().replace(/\b(mfa|ad|upn|id|ou|sspr|fido2?|tap|whfb|ca|pim|os|ext\d*)\b/g, function (w) { return w.toUpperCase(); });
+  }
+  // ADMIN-WALK-2: the audit trail in words - the action's area, then what was done; a target "Entity|key" as "Entity key";
+  // the change as before -> after per field (never two raw JSON blobs)
+  var AUDIT_AREA = { '': 'Area: any', access: 'Access', setting: 'Settings', rule: 'Tagging rules', rules: 'Tagging rules', tagtype: 'Tag types', tagvalue: 'Tag values', condition: 'Condition types', scope: 'Saved scopes',
+    queue: 'Commit queue', job: 'Jobs', tamper: 'Tamper', mail: 'Mail', audit: 'Audit', changes: 'Tag changes', runs: 'Runs', auth: 'Sign-in', web: 'Web requests', guard: 'Guards', identity: 'Identity report',
+    ca: 'Conditional Access', setup: 'Setup', update: 'Update', support: 'Invardia support', backup: 'Backups', v1import: 'Import v1', worker: 'Hybrid worker', onboarding: 'Get started', config: 'Configuration',
+    view: 'Saved views', breakglass: 'Break-glass list' };
+  var AUDIT_TEXT = { 'auth.signin': 'Signed in', 'auth.request.refused': 'Sign-in refused', 'web.request.refused': 'Request refused', 'guard.trip': 'A guard stopped a change', 'identity.view': 'Looked at the identity report',
+    'ca.analysis.view': 'Looked at an analysis', 'queue.stage': 'Staged a change', 'queue.commit': 'Committed changes', 'queue.discard': 'Discarded changes', 'queue.discard-all': 'Discarded every waiting change',
+    'job.run.request': 'Asked for a job run', 'job.test.request': 'Started a test run', 'job.golive.request': 'Went live', 'job.run.undo': 'Undid a tagging run', 'config.request': 'Saved a change (applied by the engine)',
+    'tamper.event.accept': 'Accepted a foreign change', 'tamper.event.restore.request': 'Asked to restore a value', 'tamper.event.restore': 'Restored a value' };
+  function auditActionText(a) {
+    var s = textOf(a); if (AUDIT_TEXT[s]) return AUDIT_TEXT[s];
+    var parts = s.split('.'), area = AUDIT_AREA[parts[0]] || parts[0];
+    return area + ': ' + parts.slice(1).join(' ').replace(/-/g, ' ');
+  }
+  function auditTargetText(t) { var s = textOf(t), i = s.indexOf('|'); return i > 0 ? s.substring(0, i).replace(/([a-z])([A-Z])/g, '$1 $2') + ' ' + s.substring(i + 1) : s; }
+  function auditChange(r) {
+    var pj = function (s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return undefined; } };
+    var b = pj(r.BeforeJson), a = pj(r.AfterJson);
+    if (b === undefined || a === undefined) return textOf((r.BeforeJson ? r.BeforeJson + ' -> ' : '') + (r.AfterJson || ''));
+    if (!b && !a) return '';
+    var isObj = function (x) { return x && typeof x === 'object' && !Array.isArray(x); };
+    if (!isObj(b) && !isObj(a)) return (b !== null ? qdVal(b) + ' -> ' : '') + qdVal(a);
+    var keys = {}; [b, a].forEach(function (o) { if (isObj(o)) Object.keys(o).forEach(function (k) { if (!QD_SKIP[k]) keys[k] = 1; }); });
+    var rows = Object.keys(keys).filter(function (k) { return !b || !a || qdVal(isObj(b) ? b[k] : undefined) !== qdVal(isObj(a) ? a[k] : undefined); });
+    if (!rows.length) return el('span', { class: 'smeta', text: 'no field changed' });
+    return el('table', { class: 'qd' }, el('tbody', null, rows.slice(0, 12).map(function (k) {
+      return el('tr', { class: 'qd-changed' }, el('th', { text: k }), el('td', { class: 'qd-before', text: b ? qdVal(isObj(b) ? b[k] : undefined) : '' }), el('td', { class: 'qd-after', text: a ? qdVal(isObj(a) ? a[k] : undefined) : '' }));
+    }), rows.length > 12 ? el('tr', null, el('td', { colspan: '3', class: 'smeta', text: '+' + (rows.length - 12) + ' more field(s) - Export CSV has every value' })) : null));
+  }
+  // ADMIN-WALK-2: Graph's authentication method names in words ("microsoftAuthenticatorPush" -> "Microsoft Authenticator (push)")
+  var ID_METHOD_TEXT = { microsoftAuthenticatorPush: 'Microsoft Authenticator (push)', microsoftAuthenticatorPasswordless: 'Microsoft Authenticator (passwordless)', softwareOneTimePasscode: 'Authenticator code (software)',
+    hardwareOneTimePasscode: 'Hardware token code', mobilePhone: 'Phone (SMS / call)', alternateMobilePhone: 'Alternate phone', officePhone: 'Office phone', email: 'Email', fido2: 'FIDO2 security key',
+    passKeyDeviceBound: 'Passkey (device-bound)', passKeyDeviceBoundAuthenticator: 'Passkey in Microsoft Authenticator', passKeyDeviceBoundWindowsHello: 'Passkey (Windows Hello)', windowsHelloForBusiness: 'Windows Hello for Business',
+    temporaryAccessPass: 'Temporary Access Pass', securityQuestion: 'Security questions', appPassword: 'App password', password: 'Password', microsoftAuthenticatorOath: 'Authenticator code', macOsSecureEnclaveKey: 'macOS platform SSO key' };
+  function idValText(col, v) {
+    var s = String(v);
+    if (!/method/i.test(String(col))) return s;
+    return s.split(/\s*[,;]\s*/).map(function (x) { return ID_METHOD_TEXT[x] || x; }).join(', ');
+  }
+  function idObjectDialog(r, kind, types) {
+    // one person / device of the report: every value it has, and "Test run on this ..." (the tagging rules on just them)
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': r.DisplayName || r.UserPrincipalName || 'Object' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var ot = kind === 'Device' ? 'Device' : 'User';
+    d.appendChild(el('h3', { text: textOf(r.DisplayName || r.UserPrincipalName || r.Id) }));
+    var dl = el('dl', { class: 'info' });
+    Object.keys(r).sort(function (a, b) { return idColLabel(a).localeCompare(idColLabel(b)); }).forEach(function (k) {
+      var v = r[k]; if (v === null || v === undefined || v === '') return;
+      dl.appendChild(el('dt', { text: idColLabel(k) })); dl.appendChild(el('dd', null, (types || {})[k] === 'date' ? timeEl(v) : document.createTextNode(v === true ? 'yes' : v === false ? 'no' : idValText(k, v))));
+    });
+    d.appendChild(el('div', { class: 'rg-dlgscroll' }, dl));
+    var acts = el('div', { class: 'toolbar' });
+    var who = ot === 'User' ? (r.UserPrincipalName || r.Id) : (r.DisplayName || r.Id);
+    if (isRole('Admin') && who) acts.appendChild(el('button', { type: 'button', text: 'Test run on this ' + (ot === 'User' ? 'user' : 'device'), onclick: function () {
+      close(); api('GET', '/api/rules?' + qs({ objectType: ot })).then(function (x) { openTestRun(ot, x.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; }), { kind: 'Objects', values: [who] }); }); } }));
+    // ADMIN-WALK-2: the tag changes of THIS person / device, not all changes
+    acts.appendChild(el('a', { href: '#changes/q:' + encodeURIComponent(textOf(ot === 'User' ? (r.UserPrincipalName || r.DisplayName) : r.DisplayName) || r.Id), text: 'Tag changes of this ' + (ot === 'User' ? 'user' : 'device') }));
+    acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close }));
+    d.appendChild(acts);
+    document.body.appendChild(d); d.showModal();
+  }
   function drawIdentity(p, arg) {
     return Promise.all([api('GET', '/api/identity'), api('GET', '/api/identity/saved')]).then(function (res) {
       var j = res[0], saved = res[1].rows || [];
@@ -1908,9 +2521,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       // the header: the snapshot, what it could not see, Run now
       var head = el('div', { class: 'toolbar' });
       if (j.snapshot) head.appendChild(el('span', null, 'Snapshot ', timeEl(j.snapshot.CreatedAtUtc), ' · ' + fmtNum(j.snapshot.Users) + ' users · ' + fmtNum(j.snapshot.Devices) + ' devices'));
-      else head.appendChild(el('span', { text: j.enabled ? 'No snapshot yet - Run now, or wait for the schedule (Jobs).' : 'The identity report is off - switch it on in Settings > Identity report.' }));
+      else head.appendChild((j.enabled ? el('span', { text: 'No snapshot yet - Run now, or wait for the schedule (Jobs).' }) : el('span', null, 'The identity report is off - switch it on in ', el('a', { href: '#settings/IdentityReport', text: 'Settings > Identity report' }), '.')));
       if (j.ad) head.appendChild(el('span', { class: 'count', text: j.ad.RefreshedAtUtc ? ' · AD read ' + fmtTime(j.ad.RefreshedAtUtc) + (j.ad.Users ? ' (' + fmtNum(j.ad.Users) + ' users)' : '') : ' · AD not read yet (needs the hybrid worker)' }));
-      if (admin && j.enabled) head.appendChild(el('button', { type: 'button', text: 'Run now', onclick: function () { withReason('Run the identity report now', 'Read only: nothing in the tenant or AD is changed. The page shows the new snapshot when it is done (a few minutes).', function (reason) { return api('POST', '/api/identity/run', { reason: reason }); }); } }));
+      if (admin && j.enabled) head.appendChild(el('button', { type: 'button', text: 'Run now', onclick: function () { withReason('Run the identity report now', 'Read only: nothing in the tenant or AD is changed. The page shows the new snapshot when it is done (a few minutes).', function (reason) { return api('POST', '/api/identity/run', { reason: reason }); }, { readOnly: true }); } }));
       p.appendChild(head);
       var notes = []; try { notes = JSON.parse((j.snapshot && j.snapshot.NotesJson) || '[]'); } catch (e) { }
       if (notes.length) p.appendChild(el('ul', { class: 'hints' }, notes.map(function (n) { return el('li', { text: n }); })));
@@ -1951,10 +2564,39 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         nav.appendChild(el('h4', { text: 'Pivots' }));
         j.pivots.forEach(function (pv) { nav.appendChild(navItem(pv.Title, null, '', 0, function () { openPivot(pv); }, 'pivot:' + pv.Name)); });
       }
+      // V1-PARITY P11: v1's exposure lists (Log Analytics: the report's users + the Entra sign-in logs), read after each run
+      nav.appendChild(el('h4', { text: 'Exposure (Log Analytics)' }));
+      [['service', 'Service accounts'], ['shared', 'Shared device users']].forEach(function (s) { nav.appendChild(navItem(s[1], null, '', 0, function () { openExposure(s[0], s[1]); }, 'exposure:' + s[0])); });
+
+      function openExposure(set, label) {
+        clear(pane);
+        pane.appendChild(el('h3', { text: 'Exposure: ' + label }));
+        pane.appendChild(el('div', { class: 'guide', text: 'v1\'s exposure reports: the report\'s users go to Log Analytics (EntraUsersMetadata_CL) after each run, and these lists are read back with the Entra sign-in logs of the last 90 days - who signs in from a trusted or a non-trusted location, and who did not sign in at all.' }));
+        var box = el('div'); pane.appendChild(box);
+        api('GET', '/api/identity/exposure').then(function (x) {
+          if (!x.enabled || !x.setUp) {
+            box.appendChild(el('div', { class: 'bar bar-info', text: !x.setUp ? 'Not set up: run Initialize-EpsLogAnalytics.ps1 (it makes the table, the endpoint, the rule and the engine\'s two rights in your workspace), then switch on Settings > Identity report > Send the report to Log Analytics.' : 'Off: switch on Settings > Identity report > Send the report to Log Analytics (a SuperAdmin). The lists are read after the next report run.' }));
+            if (!x.run) return;
+          }
+          if (!x.run) { box.appendChild(el('div', { class: 'empty', text: 'Not read yet - the lists come after the next report run.' })); return; }
+          var r = x.run;
+          box.appendChild(el('p', null, 'Read ', timeEl(r.checkedAtUtc), ' · upload: ', el('span', { class: r.uploadOk ? 'c-good' : 'c-danger', text: r.uploadText || '-' })));
+          if (r.note) box.appendChild(el('div', { class: 'bar bar-info', text: r.note }));
+          box.appendChild(el('div', { class: 'toolbar' }, el('a', { href: '/api/identity/exposure/export?' + qs({ set: set }), text: 'Excel (these four lists)' })));
+          x.lists.filter(function (l) { return l.set === set; }).forEach(function (l) {
+            box.appendChild(el('h4', { text: l.title + (l.count === null ? '' : ' (' + fmtNum(l.count) + (l.truncated ? ', the first 5,000' : '') + ')') }));
+            if (l.error) { box.appendChild(el('div', { class: 'errors', text: l.error })); return; }
+            if (l.count === null) { box.appendChild(el('div', { class: 'smeta', text: 'Not read in this run.' })); return; }
+            var cols = (l.columns || []).map(function (c) { return { key: c, label: c, wrap: true }; });
+            box.appendChild(table(l.rows || [], cols, { empty: 'None.' }));
+            if (l.count > (l.rows || []).length) box.appendChild(el('div', { class: 'smeta', text: 'The page shows the first ' + fmtNum((l.rows || []).length) + '; the Excel file has all ' + fmtNum(l.count) + '.' }));
+          });
+        }).catch(function (e) { box.appendChild(el('div', { class: 'errors', text: 'Could not read the exposure lists: ' + e.message })); });
+      }
 
       function pivotTable(pv, onCell) {
         var cols = pv.columns || pv.Columns || [], rows = pv.rows || pv.Rows || [];
-        var t = el('table', { class: 'grid pivot' }), hr = el('tr', null, el('th', { text: (pv.rowKey || pv.RowKey || '') + (pv.columnKey || pv.ColumnKey ? ' \\ ' + (pv.columnKey || pv.ColumnKey) : '') }));
+        var t = el('table', { class: 'grid pivot' }), hr = el('tr', null, el('th', { text: idColLabel(pv.rowKey || pv.RowKey || '') + (pv.columnKey || pv.ColumnKey ? ' by ' + idColLabel(pv.columnKey || pv.ColumnKey) : '') }));
         cols.forEach(function (c) { hr.appendChild(el('th', { class: 'num', text: c })); }); hr.appendChild(el('th', { class: 'num', text: 'Total' }));
         var tb = el('tbody');
         rows.forEach(function (r) {
@@ -1977,7 +2619,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       function openPivot(pv) {
         clear(pane);
         pane.appendChild(el('h3', { text: pv.Title }));
-        pane.appendChild(el('div', { class: 'guide', text: 'Counts of ' + pv.Rows + ' by ' + pv.Columns + ' over ' + (byName[pv.View] ? byName[pv.View].title : pv.View) + '. Click a number to see those objects.' }));
+        pane.appendChild(el('div', { class: 'guide', text: 'Counts of ' + idColLabel(pv.Rows) + (pv.Columns ? ' by ' + idColLabel(pv.Columns) : '') + ' over ' + (byName[pv.View] ? byName[pv.View].title : pv.View) + '. Click a number to see those objects.' }));
         pane.appendChild(pivotTable(pv.Pivot, function (rv, cv) { openView(pv.View, { v: 1, base: pv.View, filters: cellFilters(pv.Rows, pv.Columns, rv, cv), pivot: null }, null); }));
       }
 
@@ -1999,24 +2641,34 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         var chips = el('div', { class: 'idchips' });
         var search = el('input', { type: 'search', placeholder: 'Search every column', 'aria-label': 'Search' }); search.value = st.q;
         search.addEventListener('change', function () { st.q = search.value; st.page = 1; reload(); });
-        var fcol = el('select', { 'aria-label': 'Column' }, allCols.map(function (c) { return el('option', { value: c, text: c }); }));
+        var fcol = el('select', { 'aria-label': 'Column' }, allCols.map(function (c) { return el('option', { value: c, text: idColLabel(c) }); }));
+        if (allCols.indexOf('DisplayName') >= 0) fcol.value = 'DisplayName';   // ADMIN-WALK: the filter starts on the name, not the id
         var fop = el('select', { 'aria-label': 'Condition' });
-        var fval = el('input', { type: 'text', placeholder: 'value (is one of: a, b, c)', 'aria-label': 'Value' });
-        var syncOps = function () { var num = types[fcol.value] === 'number'; clear(fop); ID_OPS.forEach(function (o) { if (!num && (o[0] === 'atLeast' || o[0] === 'atMost')) return; fop.appendChild(el('option', { value: o[0], text: o[1] })); }); };
+        // ADMIN-WALK-2: the value is picked from the column's values (a list); typing stays for "contains" and patterns
+        var fvList = el('datalist', { id: 'idfv-' + Math.random().toString(36).substring(2) });
+        var fval = el('input', { type: 'text', placeholder: 'pick or type a value (is one of: a, b, c)', 'aria-label': 'Value', list: fvList.id });
+        var fillVals = function () {
+          clear(fvList); var seen = {};
+          if (types[fcol.value] === 'boolean') { ['true', 'false'].forEach(function (x) { fvList.appendChild(el('option', { value: x, label: x === 'true' ? 'yes' : 'no' })); }); return; }
+          ((last && last.rows) || []).forEach(function (r) { var x = r[fcol.value]; if (x === null || x === undefined || x === '' || typeof x === 'object') return; x = String(x); if (!seen[x] && Object.keys(seen).length < 200) { seen[x] = 1; } });
+          Object.keys(seen).sort().forEach(function (x) { fvList.appendChild(el('option', { value: x, label: idValText(fcol.value, x) })); });
+        };
+        var syncOps = function () { var num = types[fcol.value] === 'number'; clear(fop); ID_OPS.forEach(function (o) { if (!num && (o[0] === 'atLeast' || o[0] === 'atMost')) return; fop.appendChild(el('option', { value: o[0], text: o[1] })); }); fillVals(); };
         fcol.addEventListener('change', syncOps); syncOps();
+        fval.addEventListener('focus', fillVals);
         var addF = el('button', { type: 'button', class: 'secondary', text: 'Add filter', onclick: function () {
           var f = { col: fcol.value, op: fop.value };
           if (f.op === 'anyOf') f.values = fval.value.split(',').map(function (x) { return x.trim(); }); else f.value = fval.value.trim();
           st.filters.push(f); fval.value = ''; st.page = 1; reload(); } });
-        pane.appendChild(el('div', { class: 'toolbar' }, search, fcol, fop, fval, addF));
+        pane.appendChild(el('div', { class: 'toolbar' }, search, fcol, fop, fval, fvList, addF));
         pane.appendChild(chips);
         // columns + pivot + export + save
         var colBox = el('details', { class: 'idcols' }, el('summary', { text: 'Columns' }));
         var colList = el('div', { class: 'idcol-list' });
-        allCols.forEach(function (c) { var cb = el('input', { type: 'checkbox' }); cb.checked = st.columns.indexOf(c) >= 0; cb.addEventListener('change', function () { if (cb.checked) st.columns.push(c); else st.columns = st.columns.filter(function (x) { return x !== c; }); drawGrid(); }); colList.appendChild(el('label', null, cb, ' ' + c)); });
+        allCols.forEach(function (c) { var cb = el('input', { type: 'checkbox' }); cb.checked = st.columns.indexOf(c) >= 0; cb.addEventListener('change', function () { if (cb.checked) st.columns.push(c); else st.columns = st.columns.filter(function (x) { return x !== c; }); drawGrid(); }); colList.appendChild(el('label', null, cb, ' ' + idColLabel(c))); });
         colBox.appendChild(colList);
-        var pr = el('select', { 'aria-label': 'Pivot rows' }, [el('option', { value: '', text: 'Pivot: rows by ...' })].concat(allCols.map(function (c) { return el('option', { value: c, text: c }); })));
-        var pc = el('select', { 'aria-label': 'Pivot columns' }, [el('option', { value: '', text: '... and columns by (optional)' })].concat(allCols.map(function (c) { return el('option', { value: c, text: c }); })));
+        var pr = el('select', { 'aria-label': 'Pivot rows' }, [el('option', { value: '', text: 'Pivot: rows by ...' })].concat(allCols.map(function (c) { return el('option', { value: c, text: idColLabel(c) }); })));
+        var pc = el('select', { 'aria-label': 'Pivot columns' }, [el('option', { value: '', text: '... and columns by (optional)' })].concat(allCols.map(function (c) { return el('option', { value: c, text: idColLabel(c) }); })));
         if (st.pivot) { pr.value = st.pivot.rows || ''; pc.value = st.pivot.columns || ''; }
         var pivotOn = function () { st.pivot = pr.value ? { rows: pr.value, columns: pc.value || null } : null; reload(); };
         pr.addEventListener('change', pivotOn); pc.addEventListener('change', pivotOn);
@@ -2030,13 +2682,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
             el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: function () { box.remove(); } }),
               el('button', { type: 'button', text: 'Save', onclick: function () {
                 api('PUT', '/api/identity/saved/' + (row ? row.ViewId : newUuid()), { name: nm.value, shared: sh.checked, isDefault: df.checked, definition: layoutOf() })
-                  .then(function (r) { status(r.text); render(); }).catch(function (e) { status('Refused: ' + e.message); }); } })));
+                  .then(function (r) { notice(r.text); render(); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); }); } })));
           tools.parentNode.insertBefore(box, tools.nextSibling); nm.focus();
         };
         var tools = el('div', { class: 'toolbar' }, colBox, pr, pc, el('span', { class: 'count', text: 'Export:' }), exp('csv'), exp('xlsx'),
           el('button', { type: 'button', class: 'secondary', text: savedRow ? 'Save as new view' : 'Save as view', onclick: function () { saveAs(null); } }),
           savedRow && (savedRow.Mine || superAdmin) ? el('button', { type: 'button', class: 'secondary', text: 'Save changes', onclick: function () { saveAs(savedRow); } }) : null,
-          savedRow && ((!savedRow.Shared && savedRow.Mine) || superAdmin) ? el('button', { type: 'button', class: 'link', text: 'Delete view', onclick: function () { api('DELETE', '/api/identity/saved/' + savedRow.ViewId, {}).then(function (r) { status(r.text); render(); }).catch(function (e) { status('Refused: ' + e.message); }); } }) : null);
+          savedRow && ((!savedRow.Shared && savedRow.Mine) || superAdmin) ? el('button', { type: 'button', class: 'link', text: 'Delete view', onclick: function () { withReason('Delete the view ' + savedRow.Name, savedRow.Shared ? 'A shared view: it goes for everyone.' : 'Your own view goes; the report itself is not touched.', function () { return api('DELETE', '/api/identity/saved/' + savedRow.ViewId, {}).then(function (r) { render(); return r; }); }); } }) : null);
         pane.appendChild(tools);
         var pivotHost = el('div'), gridHost = el('div');
         pane.appendChild(pivotHost); pane.appendChild(gridHost);
@@ -2045,14 +2697,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           clear(chips);
           st.filters.forEach(function (f, i) {
             var lab = ID_OPS.filter(function (o) { return o[0] === f.op; })[0];
-            chips.appendChild(el('span', { class: 'rx-chip' }, el('code', { text: f.col }), ' ' + (lab ? lab[1] : f.op) + ' ' + (f.op === 'anyOf' ? (f.values || []).join(', ') : (f.value === '' ? '(empty)' : f.value)) + ' ',
+            chips.appendChild(el('span', { class: 'rx-chip' }, el('strong', { text: idColLabel(f.col) }), ' ' + (lab ? lab[1] : f.op) + ' ' + (f.op === 'anyOf' ? (f.values || []).join(', ') : (f.value === '' ? '(empty)' : f.value)) + ' ',
               el('button', { type: 'button', class: 'link', 'aria-label': 'Remove filter', text: '×', onclick: function () { st.filters.splice(i, 1); st.page = 1; reload(); } })));
           });
           if (st.filters.length) chips.appendChild(el('button', { type: 'button', class: 'link', text: 'Clear filters', onclick: function () { st.filters = []; st.page = 1; reload(); } }));
         }
         function drawGrid() {
           if (!last) return;
-          var cols = st.columns.map(function (c) { var t = types[c]; return { key: c, label: c, type: t === 'number' ? 'num' : (t === 'date' ? 'date' : null) }; });
+          var cols = st.columns.map(function (c) { var t = types[c]; return { key: c, label: idColLabel(c), type: t === 'number' ? 'num' : (t === 'date' ? 'date' : null) }; });
           var t = el('table', { class: 'grid' }), hr = el('tr'), tb = el('tbody');
           var selIds = function () { return Object.keys(st.sel).filter(function (k) { return st.sel[k]; }); };
           if (canAct) {
@@ -2073,9 +2725,12 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
               var val = r[c.key], td = el('td', { class: c.type === 'num' ? 'num' : '' });
               if (c.type === 'date') td.appendChild(timeEl(val)); else if (c.type === 'num') td.textContent = fmtNum(val);
               else if (val === true || val === false) { td.textContent = val ? 'yes' : 'no'; if (!val) td.className = 'smeta'; }
-              else td.textContent = val === null || val === undefined ? '' : String(val);
+              else td.textContent = val === null || val === undefined ? '' : idValText(c.key, val);
               tr.appendChild(td);
             });
+            // ADMIN-WALK: a row opens the person / device - every value, and a test run on just them
+            tr.classList.add('idrow'); tr.title = 'Open ' + (r.DisplayName || r.UserPrincipalName || '');
+            tr.addEventListener('click', function (ev) { if (ev.target && /^(INPUT|BUTTON|A|LABEL)$/.test(ev.target.tagName)) return; idObjectDialog(r, v.kind, types); });
             tb.appendChild(tr);
           });
           t.appendChild(el('thead', null, hr)); t.appendChild(tb);
@@ -2100,7 +2755,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           drawChips();
           if (st.pivot) {
             api('GET', '/api/identity/pivot?' + qsNow({ rows: st.pivot.rows, cols: st.pivot.columns || '' })).then(function (pv) {
-              clear(pivotHost).appendChild(el('h4', { text: 'Pivot: ' + pv.rowKey + (pv.columnKey ? ' by ' + pv.columnKey : '') + (pv.truncated ? ' (first 5,000 cells)' : '') }));
+              clear(pivotHost).appendChild(el('h4', { text: 'Pivot: ' + idColLabel(pv.rowKey) + (pv.columnKey ? ' by ' + idColLabel(pv.columnKey) : '') + (pv.truncated ? ' (first 5,000 cells)' : '') }));
               pivotHost.appendChild(pivotTable(pv, function (rv, cv) { st.filters = st.filters.concat(cellFilters(pv.rowKey, pv.columnKey, rv, cv)); st.page = 1; reload(); }));
             }).catch(function (e) { clear(pivotHost).appendChild(el('div', { class: 'empty', text: e.message })); });
           } else clear(pivotHost);
@@ -2131,7 +2786,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     p.appendChild(seg);
   }
   function capReadButton() {
-    return el('button', { type: 'button', class: 'secondary', text: 'Read the policy list', onclick: function () { withReason('Read the Conditional Access policies again', 'Read only: the engine reads every policy and compares it with its template. Nothing in the tenant is changed.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }); } });
+    return el('button', { type: 'button', class: 'secondary', text: 'Read the policy list', onclick: function () { withReason('Read the Conditional Access policies again', 'Read only: the engine reads every policy and compares it with its template. Nothing in the tenant is changed.', function (reason) { return api('POST', '/api/ca/analyze', { listOnly: true, reason: reason }); }, { readOnly: true }); } });
   }
   function capAdopt(r) {
     withReason('Adopt ' + r.DisplayName, 'Entra Policy Suite RECORDS that you adopt this policy as it is now: its body becomes the baseline the monitor compares with. Nothing in the tenant changes - not now, not later.', function (reason) {
@@ -2192,10 +2847,129 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/stage', { to: to, expected: pl.expected, reason: reason.value.trim() })
           .then(function (x) { afterAction(x, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
       });
-      if (enforce) body.appendChild(el('label', null, ack, ' I have checked who this ENFORCES the policy for (the CA Policy Analyzer shows the sign-ins it would have blocked).'));
+      if (enforce) {
+        // ADMIN-WALK (H): the analysis is right here - its last result, Analyse now, and the Analyzer with this policy ticked
+        // ADMIN-WALK-2 N4: say exactly what the analysis covered and what it did not
+        var widen = (pl.changes || []).filter(function (c) { return /users\.include/i.test(textOf(c.field)); }).map(function (c) { return textOf(c.after); }).filter(Boolean).join('; ');
+        body.appendChild(el('div', { class: 'gs-fix' }, el('strong', { text: 'Before you enforce it: ' }), caAnalyseBar(r.PolicyId, r.DisplayName, pl.from)));
+        var ackText = pl.from === 'Pilot1'
+          ? ' I checked the pilot group\'s report-only results above. ' + to + ' enforces the policy' + (widen ? ' for ' + widen : '') + (to === 'Prod' || widen ? ' - users outside the pilot group were NOT in that analysis.' : '.')
+          : ' I checked the analysis above (' + caWhoText(pl.from) + ').' + (to === 'Prod' ? ' Prod widens the policy' + (widen ? ' to ' + widen : ' to its targets') + ', whose sign-ins were NOT analysed.' : '');
+        body.appendChild(el('label', null, ack, ackText));
+        if (to === 'Prod') body.appendChild(el('p', { class: 'smeta', text: 'The Analyzer reads only sign-ins where this policy already applied, so it cannot show what Prod will do to users outside its current stage. Widen step by step (Pilot2, Pilot3) to see more users before Prod.' }));
+      }
       body.appendChild(el('p', null, reason));
       body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
+  }
+  // ADMIN-WALK (H): analyse ONE policy before it is enforced - from its page and from the Move dialog. Analyse now = the
+  // sign-ins of the last 7 days for this policy (a read); "Pick more in the Analyzer" opens it with the policy ticked.
+  var CA_STATE_TEXT = { enabled: 'On', enabledForReportingButNotEnforced: 'Report-only', disabled: 'Off' };
+  function caStateText(s) { return CA_STATE_TEXT[s] || textOf(s); }
+  // ADMIN-WALK-2 N4 (honest analysis): the window starts at the policy's last stage move (else its adoption) - not 7 days
+  // blind - and every line says WHOSE sign-ins it covers. The Analyzer reads the sign-in logs' applied policies, so it
+  // only sees users the policy APPLIED to at its stage (Pilot1: the pilot group, report-only); it cannot tell what a wider
+  // stage would do to users it never applied to (that is What-If, parked by the owner).
+  function caWindowSince(detail) {
+    var mv = ((detail && detail.moves) || []).filter(function (m) { return /^applied/i.test(textOf(m.Result)); })
+      .map(function (m) { return m.MovedAtUtc; }).filter(Boolean).sort();
+    // ADMIN-WALK-3 H1 (2026-11-05): never from the ADOPTION - adopting changes nothing in the tenant, and a v1 policy
+    // adopted today has often run in its stage for weeks. With no applied EPS stage move, the window starts at the
+    // policy's last change in the tenant (modifiedDateTime as read), capped at the 30 days the sign-in log keeps.
+    var byEps = mv.length ? mv[mv.length - 1] : null;
+    var since = byEps || (detail && detail.policy && detail.policy.ModifiedAtUtc) || null;
+    if (!since) return { since: null, hours: 168, text: 'the last 7 days (the policy\'s last change is not known)' };
+    var h = Math.ceil((Date.now() - new Date(since).getTime()) / 3600000);
+    if (isNaN(h) || h < 1) h = 1;
+    var from = byEps ? 'the policy\'s last stage move by Entra Policy Suite' : 'the policy\'s last change in the tenant';
+    if (h > 720) return { since: since, hours: 720, text: 'the last 30 days (the sign-in log keeps 30; ' + from + ' was ' + fmtTime(since) + ')' };
+    return { since: since, hours: h, text: 'since ' + fmtTime(since) + ' (' + (h < 48 ? h + (h === 1 ? ' hour' : ' hours') : Math.round(h / 24) + ' days') + ') - from ' + from };
+  }
+  function caWhoText(stage) {
+    var s = textOf(stage);
+    if (s === 'Pilot1') return 'the pilot group\'s report-only sign-ins';
+    if (s === 'Pilot2' || s === 'Pilot3') return 'the ' + s + ' pilot group\'s sign-ins';
+    if (s === 'Prod') return 'the sign-ins of every user it targets';
+    if (s === 'Initial') return 'nobody\'s sign-ins (the policy is off)';
+    return 'the sign-ins of the users it applied to';
+  }
+  function caAnalyseNow(policyId, name, win, onSent) {
+    withReason('Analyse ' + name, 'Read only: the engine reads the sign-ins of ' + win.text + ' where this policy applied - who it blocked or challenged (or would have, in report-only) - and changes nothing. The answer is on the CA Policy Analyzer page and on this page in a few minutes.', function (reason) {
+      return api('POST', '/api/ca/analyze', { personas: [], policyIds: [String(policyId).toLowerCase()], excludePolicyIds: [], policyNames: [], policyPrefixes: [], policyPatterns: [], mode: 'SignInLogs', lookbackHours: String(win.hours), sliceHours: '0',
+        includeNonInteractive: false, includeGuests: false, includeDisabled: false, policyNumbers: '', policyStates: [], maxSignIns: '', reason: reason })
+        .then(function (r) { if (onSent) onSent(); return r; });
+    }, { readOnly: true });
+  }
+  function caAnalyseFor(policyId, name) {
+    // from a list row: the window read from the policy's record first (its last change), then the same read-only request
+    api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId)).then(function (d) { caAnalyseNow(policyId, name, caWindowSince(d)); })
+      .catch(function () { caAnalyseNow(policyId, name, { since: null, hours: 168, text: 'the last 7 days' }); });
+  }
+  // ADMIN-WALK-2: one row menu - a button that opens a list of actions; click, Enter / Space or ArrowDown opens it,
+  // Escape or a click elsewhere closes it, arrow keys move inside it. Nothing runs until an item is chosen.
+  function rowMenu(label, items) {
+    var wrap = el('span', { class: 'rowmenu' });
+    var btn = el('button', { type: 'button', class: 'secondary rowmenu-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': label, text: 'Actions ▾' });
+    var list = el('div', { class: 'rowmenu-list', role: 'menu', hidden: true });
+    var close = function () { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); };
+    var outside = function (e) { if (!wrap.contains(e.target)) close(); };
+    var open = function () { list.hidden = false; btn.setAttribute('aria-expanded', 'true'); document.addEventListener('click', outside, true); var f = list.querySelector('button'); if (f) f.focus(); };
+    items.forEach(function (it) {
+      var b = el('button', { type: 'button', role: 'menuitem', class: 'rowmenu-item', text: it[0] });
+      b.addEventListener('click', function (e) { e.stopPropagation(); close(); btn.focus(); it[1](); });
+      list.appendChild(b);
+    });
+    btn.addEventListener('click', function (e) { e.stopPropagation(); if (list.hidden) open(); else close(); });
+    btn.addEventListener('keydown', function (e) { if (e.key === 'ArrowDown') { e.preventDefault(); open(); } });
+    list.addEventListener('keydown', function (e) {
+      var bs = Array.prototype.slice.call(list.querySelectorAll('button')), i = bs.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); (bs[i + 1] || bs[0]).focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); (bs[i - 1] || bs[bs.length - 1]).focus(); }
+    });
+    wrap.appendChild(btn); wrap.appendChild(list);
+    return wrap;
+  }
+  function caLastAnalysisNode(policyId, stage) {
+    // the policy's last analysis: when, the window, whose sign-ins, how many in scope / IMPACTED - with a link to it.
+    // .refresh(sentAt) polls until an analysis newer than sentAt is there (the answer comes from the engine)
+    var box = el('span', { class: 'smeta', text: 'Last analysis: reading ...' });
+    var draw = function (a) {
+      clear(box);
+      if (!a) { box.appendChild(document.createTextNode('Not analysed yet.')); return; }
+      box.appendChild(document.createTextNode('Last analysis ')); box.appendChild(timeEl(a.CreatedAtUtc));
+      if (a.WindowStartUtc) { box.appendChild(document.createTextNode(' (sign-ins from ')); box.appendChild(timeEl(a.WindowStartUtc)); box.appendChild(document.createTextNode(')')); }
+      box.appendChild(document.createTextNode(': ' + caWhoText(stage) + ' - ' + fmtNum(a.InScope) + ' user(s) in scope, '));
+      box.appendChild(el('strong', { class: a.Impacted ? 'c-danger' : 'c-good', text: fmtNum(a.Impacted) + ' impacted' }));
+      box.appendChild(document.createTextNode(' (' + caStateText(a.PolicyState) + ') - '));
+      box.appendChild(el('a', { href: '#ca/' + a.AnalysisId, text: 'open it' }));
+    };
+    var read = function () { return api('GET', '/api/ca/analyses?' + qs({ policy: policyId, pageSize: 1 })).then(function (d) { return (d.rows || [])[0]; }); };
+    read().then(draw).catch(function () { box.textContent = 'Last analysis: could not be read.'; });
+    box.refresh = function (sentAt) {
+      box.textContent = 'Analysing ... the answer shows here when the engine is done (within a few minutes).';
+      var n = 0;
+      var tick = function () {
+        if (!box.isConnected || n++ > 40) return;
+        read().then(function (a) { if (a && a.CreatedAtUtc && new Date(a.CreatedAtUtc) >= sentAt) draw(a); else setTimeout(tick, 15000); }).catch(function () { setTimeout(tick, 15000); });
+      };
+      setTimeout(tick, 15000);
+    };
+    return box;
+  }
+  function caAnalyseBar(policyId, name, stage) {
+    // the window is read from the policy's own record (its last applied stage move, else its adoption)
+    var last = caLastAnalysisNode(policyId, stage);
+    var winNote = el('span', { class: 'smeta', text: '' });
+    var win = { since: null, hours: 168, text: 'the last 7 days' };
+    var btn = isRole('Admin') ? el('button', { type: 'button', class: 'secondary', text: 'Analyse this policy', disabled: true, onclick: function () {
+      var sentAt = new Date(Date.now() - 60000);
+      caAnalyseNow(policyId, name, win, function () { last.refresh(sentAt); }); } }) : null;
+    api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId)).then(function (d) {
+      win = caWindowSince(d); winNote.textContent = 'Window: ' + win.text + '. Covers ' + caWhoText(stage || (d.review && d.review.stage)) + '.';
+      if (btn) btn.disabled = false;
+    }).catch(function () { winNote.textContent = 'Window: the last 7 days (the policy record could not be read).'; if (btn) btn.disabled = false; });
+    return el('div', null, el('div', { class: 'toolbar' }, btn, el('a', { href: '#ca/policy:' + String(policyId).toLowerCase(), text: 'Pick more in the Analyzer' }), ' ', last), winNote);
   }
   function capStageBar(r) {
     // the stages as a strip (the current one marked) and a button per move from here
@@ -2212,17 +2986,39 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // changes (from the last read, nothing written); Apply sends the operator's request - the engine reads the policy
   // again, refuses when it changed since or when the break-glass accounts would not stay excluded, writes once and reads
   // it back. A copy is always created OFF and adopted.
-  var CAP_EDIT_LISTS = [
-    ['Users', [['conditions.users.includeUsers', 'includeUsers', 'Include users', 'a UPN, an id, or All / None / GuestsOrExternalUsers'], ['conditions.users.excludeUsers', 'excludeUsers', 'Exclude users', 'a UPN or an id'],
-      ['conditions.users.includeGroups', 'includeGroups', 'Include groups', 'a group\'s name or id'], ['conditions.users.excludeGroups', 'excludeGroups', 'Exclude groups', 'a group\'s name or id'],
-      ['conditions.users.includeRoles', 'includeRoles', 'Include roles', 'a directory role\'s name or id'], ['conditions.users.excludeRoles', 'excludeRoles', 'Exclude roles', 'a directory role\'s name or id']]],
-    ['Applications', [['conditions.applications.includeApplications', 'includeApplications', 'Include applications', 'an application id, or All / Office365 / MicrosoftAdminPortals / None'], ['conditions.applications.excludeApplications', 'excludeApplications', 'Exclude applications', 'an application id'],
-      ['conditions.applications.includeUserActions', 'includeUserActions', 'User actions', 'urn:user:registersecurityinfo / urn:user:registerdevice']]],
-    ['Conditions', [['conditions.clientAppTypes', 'clientAppTypes', 'Client apps', 'all, browser, mobileAppsAndDesktopClients, exchangeActiveSync, other'],
-      ['conditions.platforms.includePlatforms', 'includePlatforms', 'Include platforms', 'all, android, iOS, windows, macOS, linux'], ['conditions.platforms.excludePlatforms', 'excludePlatforms', 'Exclude platforms', 'android, iOS, windows, macOS, linux'],
-      ['conditions.locations.includeLocations', 'includeLocations', 'Include locations', 'a named location\'s name or id, or All / AllTrusted'], ['conditions.locations.excludeLocations', 'excludeLocations', 'Exclude locations', 'a named location\'s name or id, or AllTrusted'],
-      ['conditions.signInRiskLevels', 'signInRiskLevels', 'Sign-in risk', 'low, medium, high, none'], ['conditions.userRiskLevels', 'userRiskLevels', 'User risk', 'low, medium, high, none']]],
-    ['Grant', [['grantControls.builtInControls', 'builtInControls', 'Grant controls', 'block, mfa, compliantDevice, domainJoinedDevice, approvedApplication, compliantApplication, passwordChange']]]];
+  // CA-EDIT-PICKERS (owner 2026-11-05: "where are the add buttn" / "make dropdown for fx block" / "too shaky for a text
+  // field" / "talk with graph to understand the optins per field"): NO field with a known set of values is free text. A
+  // list of objects (users, groups, roles, applications, named locations) = chips + Add (a search picker); a set of
+  // values Graph defines = check boxes / a dropdown, its options from Graph (GET /api/capolicies/edit-options: the
+  // CaOptions job's monthly read of Graph v1.0, the shipped engine/ca/graph-enums.json until then); the tenant's lists
+  // (authentication strengths) a dropdown. Free text only in Advanced (JSON) and as the picker's search.
+  var CAP_OBJ_LISTS = {
+    'Users': [['conditions.users.includeUsers', 'Include users', 'user'], ['conditions.users.excludeUsers', 'Exclude users', 'user'],
+      ['conditions.users.includeGroups', 'Include groups', 'group'], ['conditions.users.excludeGroups', 'Exclude groups', 'group'],
+      ['conditions.users.includeRoles', 'Include roles', 'role'], ['conditions.users.excludeRoles', 'Exclude roles', 'role']],
+    'Applications': [['conditions.applications.includeApplications', 'Include applications', 'application'], ['conditions.applications.excludeApplications', 'Exclude applications', 'application']],
+    'Locations': [['conditions.locations.includeLocations', 'Include locations', 'location'], ['conditions.locations.excludeLocations', 'Exclude locations', 'location']] };
+  // the check-box sets (each a field of engine/ca/graph-enums.json), under the heading they belong to
+  var CAP_SET_LISTS = {
+    'Applications': ['conditions.applications.includeUserActions'],
+    'Conditions': ['conditions.clientAppTypes', 'conditions.platforms.includePlatforms', 'conditions.platforms.excludePlatforms',
+      'conditions.signInRiskLevels', 'conditions.userRiskLevels', 'conditions.servicePrincipalRiskLevels'] };
+  var CAP_KIND_TEXT = { user: 'user', group: 'group', role: 'directory role', location: 'named location', application: 'application', authStrength: 'authentication strength' };
+  var CAP_VALUE_TEXT = {   // Graph's value -> what the Entra admin center calls it
+    block: 'Block access', mfa: 'Require multifactor authentication', compliantDevice: 'Require device to be marked as compliant', domainJoinedDevice: 'Require Microsoft Entra hybrid joined device',
+    approvedApplication: 'Require approved client app', compliantApplication: 'Require app protection policy', passwordChange: 'Require password change',
+    all: 'Any', browser: 'Browser', mobileAppsAndDesktopClients: 'Mobile apps and desktop clients', exchangeActiveSync: 'Exchange ActiveSync clients', easSupported: 'Exchange ActiveSync (supported platforms)', other: 'Other clients (legacy authentication)',
+    android: 'Android', iOS: 'iOS', windows: 'Windows', windowsPhone: 'Windows Phone', macOS: 'macOS', linux: 'Linux',
+    high: 'High', medium: 'Medium', low: 'Low', none: 'No risk', 'urn:user:registersecurityinfo': 'Register security information', 'urn:user:registerdevice': 'Register or join devices',
+    deviceCodeFlow: 'Device code flow', authenticationTransfer: 'Authentication transfer', hours: 'hours', days: 'days', timeBased: 'periodic', everyTime: 'every time',
+    primaryAndSecondaryAuthentication: 'primary and secondary authentication', secondaryAuthentication: 'secondary authentication only',
+    always: 'always persistent', never: 'never persistent', mcasConfigured: 'Use custom policy', monitorOnly: 'Monitor only', blockDownloads: 'Block downloads',
+    enabled: 'On', enabledForReportingButNotEnforced: 'Report-only', disabled: 'Off', OR: 'one of the selected controls', AND: 'all the selected controls',
+    All: 'All', None: 'None', GuestsOrExternalUsers: 'All guest and external users', Office365: 'Office 365', MicrosoftAdminPortals: 'Microsoft Admin Portals', AllTrusted: 'All trusted locations' };
+  function capValText(v) { return CAP_VALUE_TEXT[v] || v; }
+
+  // CAP-BODY-BEGIN - the form's state -> the policy body (PURE: tests/Test-EpsCaEdit.ps1 runs it in node). The parts the
+  // form does not show stay exactly as they are in the base; a list or set left as it was stays as it was.
   function capGet(o, path) { return path.split('.').reduce(function (a, k) { return a === null || a === undefined ? undefined : a[k]; }, o); }
   function capSet(o, path, v) { var ks = path.split('.'), a = o; for (var i = 0; i < ks.length - 1; i++) { if (a[ks[i]] === null || a[ks[i]] === undefined || typeof a[ks[i]] !== 'object') a[ks[i]] = {}; a = a[ks[i]]; } a[ks[ks.length - 1]] = v; }
   function capEditable(body) {
@@ -2230,8 +3026,146 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     if (o.grantControls && o.grantControls.authenticationStrength) o.grantControls.authenticationStrength = o.grantControls.authenticationStrength.id ? { id: o.grantControls.authenticationStrength.id } : null;
     return o;
   }
+  // a check-box set keeps the base's order for what stays ticked, new ticks follow in the offered order
+  function capOrdered(baseVals, ticked) { var b = (baseVals || []).filter(function (v) { return ticked.indexOf(v) >= 0; }); return b.concat(ticked.filter(function (v) { return b.indexOf(v) < 0; })); }
+  function capBodyFrom(base, st, mode) {
+    var b = JSON.parse(JSON.stringify(base));
+    b.displayName = st.displayName; b.state = mode === 'Clone' ? 'disabled' : st.state;
+    if (!b.conditions) b.conditions = {};
+    Object.keys(st.lists).forEach(function (path) {
+      var v = st.lists[path], had = capGet(base, path);
+      if (v.length || (had !== null && had !== undefined)) capSet(b, path, v);
+    });
+    ['platforms', 'locations'].forEach(function (k) { var c = b.conditions[k]; if (c && !Object.keys(c).some(function (x) { return Array.isArray(c[x]) ? c[x].length : c[x] !== null && c[x] !== undefined; })) b.conditions[k] = null; });
+    if (st.flows) {   // Graph keeps the transfer methods as ONE comma separated value
+      var hadF = capGet(base, 'conditions.authenticationFlows.transferMethods') || '', fv = st.flows.join(',');
+      if (fv !== hadF.split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x; }).join(',')) b.conditions.authenticationFlows = fv ? { transferMethods: fv } : null;
+    }
+    var g = st.grant, tou = capGet(b, 'grantControls.termsOfUse') || [];
+    var bic = g.mode === 'block' ? ['block'] : (g.mode === 'grant' ? g.controls.filter(function (x) { return x !== 'block'; }) : []);
+    var asId = g.mode === 'grant' ? (g.strength || '') : '';
+    if (!bic.length && !asId && !tou.length) b.grantControls = null;
+    else { if (!b.grantControls) b.grantControls = {}; b.grantControls.operator = g.operator; b.grantControls.builtInControls = bic; b.grantControls.authenticationStrength = asId ? { id: asId } : null; }
+    var s = st.session, bs = base.sessionControls || {}, sc = b.sessionControls ? b.sessionControls : {};
+    sc.signInFrequency = s.sifOn ? (s.sifEvery ? { isEnabled: true, frequencyInterval: 'everyTime', authenticationType: s.sifAuth } : { isEnabled: true, value: parseInt(s.sifValue, 10) || 1, type: s.sifType, frequencyInterval: 'timeBased', authenticationType: s.sifAuth }) : null;
+    sc.persistentBrowser = s.pbOn ? { isEnabled: true, mode: s.pbMode } : null;
+    var aerWas = !!(bs.applicationEnforcedRestrictions && bs.applicationEnforcedRestrictions.isEnabled);
+    if (s.aer !== aerWas) sc.applicationEnforcedRestrictions = s.aer ? { isEnabled: true } : null;
+    var casB = bs.cloudAppSecurity || {}, casWas = !!casB.isEnabled;
+    if (s.casOn !== casWas || (s.casOn && s.casType !== casB.cloudAppSecurityType)) sc.cloudAppSecurity = s.casOn ? { isEnabled: true, cloudAppSecurityType: s.casType } : null;
+    if (s.drd !== !!bs.disableResilienceDefaults) sc.disableResilienceDefaults = s.drd;
+    b.sessionControls = Object.keys(sc).some(function (k) { return sc[k] !== null && sc[k] !== undefined && sc[k] !== false; }) ? sc : null;
+    return b;
+  }
+  // CAP-BODY-END
+
+  // chips + Add: one list of objects. known: id -> name (the policy page's names, then what the picker found)
+  function capChipList(path, label, kind, init, cx) {
+    var vals = (init || []).slice(), armed = {};
+    var kw = (cx.opts.keywords || {})[path] || [];
+    var box = el('div', { class: 'chips', 'data-field': path, 'aria-label': label });
+    var isBg = function (v) {
+      var lv = String(v).toLowerCase(), bg = cx.opts.breakGlass || {};
+      if (kind === 'user') return (bg.users || []).some(function (a) { return (a.id && a.id.toLowerCase() === lv) || (a.upn && a.upn.toLowerCase() === lv); });
+      if (kind === 'group') return (bg.groups || []).some(function (g) { return (g.id && g.id.toLowerCase() === lv) || (g.name && g.name.toLowerCase() === lv); });
+      return false;
+    };
+    var draw = function () {
+      clear(box);
+      if (!vals.length) box.appendChild(el('span', { class: 'smeta', text: 'none' }));
+      vals.forEach(function (v) {
+        var bg = isBg(v), kwd = kw.indexOf(v) >= 0, nm = kwd ? capValText(v) : (cx.known[v] || cx.known[String(v).toLowerCase()] || v);
+        var x = el('button', { type: 'button', class: 'chip-x', 'aria-label': 'Remove ' + nm, text: '×' });
+        x.addEventListener('click', function () {
+          if (bg && !armed[v]) { armed[v] = true; draw(); return; }   // a break-glass entry: a second click removes it
+          vals = vals.filter(function (y) { return y !== v; }); delete armed[v]; draw();
+        });
+        box.appendChild(el('span', { class: 'chip' + (bg ? ' chip-bg' : '') + (armed[v] ? ' chip-armed' : ''), title: (nm !== v ? v : '') + (bg ? ' - break-glass' : '') },
+          el('span', { text: nm }), el('span', { class: 'chip-kind', text: kwd ? 'keyword' : (bg ? 'break-glass' : CAP_KIND_TEXT[kind]) }),
+          armed[v] ? el('span', { class: 'c-danger', text: ' remove it? An ON policy without the break-glass exclusion is refused - click × again' }) : null, x));
+      });
+    };
+    var pick = el('div', { class: 'cap-pick', hidden: true });
+    var add = el('button', { type: 'button', class: 'secondary', text: 'Add', 'aria-label': 'Add to ' + label });
+    add.addEventListener('click', function () { pick.hidden = !pick.hidden; if (!pick.hidden) { if (!pick.firstChild) capPicker(pick, kind, kw, cx, function (v, name) { if (vals.indexOf(v) < 0) { vals.push(v); if (name) cx.known[v] = name; draw(); } }, function () { return vals; }); pick.querySelector('input').focus(); } });
+    draw();
+    return { node: el('div', { class: 'chip-field' }, box, el('div', { class: 'toolbar' }, add), pick), get: function () { return vals.slice(); } };
+  }
+  // the search picker: the names EPS stores at once (GET /api/capolicies/pick), the tenant on request (an Admin: the
+  // engine searches, reads only, and stores what it finds - then the list shows it)
+  function capPicker(host, kind, keywords, cx, onAdd, current) {
+    var q = el('input', { type: 'search', 'aria-label': 'Search ' + CAP_KIND_TEXT[kind], placeholder: 'type part of the ' + CAP_KIND_TEXT[kind] + '\'s name' + (kind === 'user' ? ' or UPN' : '') });
+    var list = el('div', { class: 'cap-pick-list' }), msg = el('div', { class: 'smeta' });
+    var timer = null, seq = 0;
+    var show = function (rows) {
+      clear(list);
+      var have = current();
+      if (!rows.length) list.appendChild(el('div', { class: 'smeta', text: q.value.trim() ? 'Nothing stored matches - Search the tenant finds the rest.' : 'Type to search.' }));
+      rows.forEach(function (r) {
+        var inIt = have.indexOf(r.value) >= 0;
+        list.appendChild(el('div', { class: 'cap-pick-row' }, el('button', { type: 'button', class: 'link', text: inIt ? 'added' : 'Add', disabled: inIt, onclick: function () { onAdd(r.value, r.name, r.detail); show(rows); } }),
+          el('span', { text: r.name }), r.detail ? el('span', { class: 'smeta', text: ' ' + r.detail }) : null));
+      });
+    };
+    var find = function () {
+      var my = ++seq;
+      api('GET', '/api/capolicies/pick?' + qs({ kind: kind, q: q.value.trim() })).then(function (d) { if (my === seq) show(d.rows || []); }).catch(function (e) { msg.textContent = 'Could not search: ' + e.message; });
+    };
+    q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(find, 250); });
+    host.appendChild(q);
+    if (keywords.length) host.appendChild(el('div', { class: 'toolbar' }, el('span', { class: 'smeta', text: 'Add: ' }), keywords.map(function (k) { return el('button', { type: 'button', class: 'secondary', text: capValText(k), onclick: function () { onAdd(k, capValText(k)); } }); })));
+    if (isRole('Admin')) {
+      var ten = el('button', { type: 'button', class: 'secondary', text: 'Search the tenant' });
+      ten.addEventListener('click', function () {
+        var t = q.value.trim(); if (t.length < 2) { msg.textContent = 'Type at least 2 characters of the name first.'; q.focus(); return; }
+        ten.disabled = true; msg.textContent = 'The engine searches the tenant for names starting with "' + t + '" (reads only; within 5 minutes) ...';
+        var since = new Date(Date.now() - 60000).toISOString();
+        api('POST', '/api/directory/search', { kind: kind, q: t, reason: '' }).then(function (r) {
+          var id = String(r.requestId || '').toLowerCase(), n = 0;
+          var poll = function () {
+            api('GET', '/api/requests/mine?since=' + encodeURIComponent(since)).then(function (d) {
+              var row = (d.rows || []).filter(function (x) { return String(x.RequestId).toLowerCase() === id; })[0];
+              if (row && row.Status === 'Done') { ten.disabled = false; msg.textContent = row.StatusText || 'Done.'; find(); return; }
+              if (row && (row.Status === 'Failed' || row.Status === 'Refused')) { ten.disabled = false; msg.textContent = row.Status + ': ' + (row.StatusText || ''); return; }
+              if (++n < 90) setTimeout(poll, 4000); else { ten.disabled = false; msg.textContent = 'The engine has not answered yet - search again later.'; }
+            }).catch(function () { if (++n < 90) setTimeout(poll, 4000); });
+          };
+          if (!id) { ten.disabled = false; msg.textContent = r && r.text ? r.text : 'Done.'; find(); return; }
+          setTimeout(poll, 4000);
+        }).catch(function (e) { ten.disabled = false; msg.textContent = 'Refused: ' + e.message; });
+      });
+      host.appendChild(el('div', { class: 'toolbar' }, ten, el('span', { class: 'smeta', text: 'not found above? the engine looks it up in the tenant' })));
+    }
+    host.appendChild(msg); host.appendChild(list);
+    find();
+  }
+  // check boxes for a set of values Graph defines (a value the monthly read found that this release did not ship: marked)
+  function capCheckSet(field, opt, init) {
+    var vals = (opt && opt.values) || [], box = el('div', { class: 'cap-set', 'data-field': field, role: 'group', 'aria-label': opt ? opt.label : field }), cbs = [];
+    vals.forEach(function (o) {
+      var cb = el('input', { type: 'checkbox', value: o.value }); cb.checked = (init || []).indexOf(o.value) >= 0; cbs.push(cb);
+      box.appendChild(el('label', { class: 'rf-check' }, cb, ' ' + capValText(o.value), o.isNew ? el('span', { class: 'badge', text: 'new from Graph' }) : null));
+    });
+    // a value the policy has that is not offered (an older or newer Graph value): kept, shown, can be untaken
+    (init || []).filter(function (v) { return !vals.some(function (o) { return o.value === v; }); }).forEach(function (v) {
+      var cb = el('input', { type: 'checkbox', value: v }); cb.checked = true; cbs.push(cb);
+      box.appendChild(el('label', { class: 'rf-check' }, cb, ' ' + v, el('span', { class: 'badge', text: 'not offered by Graph' })));
+    });
+    return { node: box, get: function () { return capOrdered(init, cbs.filter(function (c) { return c.checked; }).map(function (c) { return c.value; })); } };
+  }
+  function capSelect(label, values, cur) {
+    var s = el('select', { 'aria-label': label }, values.map(function (v) { return el('option', { value: v, text: capValText(v) }); }));
+    if (cur && values.indexOf(cur) < 0) s.appendChild(el('option', { value: cur, text: cur + ' (not offered by Graph)' }));
+    s.value = cur || values[0]; return s;
+  }
+  function capOptVals(opts, field, fallback) { var f = (opts.fields || {})[field]; return f && f.values && f.values.length ? f.values.map(function (o) { return o.value; }) : fallback; }
   function caPolicyEditor(j, mode) {
-    // mode: 'Edit' or 'Clone'. j = the policy page's answer (body, names, review)
+    notice('Opening the ' + (mode === 'Clone' ? 'copy' : 'editor') + ' ...');
+    api('GET', '/api/capolicies/edit-options').then(function (opts) { notice(''); caPolicyEditorOpen(j, mode, opts); })
+      .catch(function (e) { notice('Could not read the options: ' + e.message, 'warn'); });
+  }
+  function caPolicyEditorOpen(j, mode, opts) {
+    // mode: 'Edit' or 'Clone'. j = the policy page's answer (body, names, review); opts = what each field offers
     var pol = j.policy, names = j.names || {}, base = capEditable(j.body || {});
     if (mode === 'Clone') base.displayName = 'Copy of ' + textOf(pol.DisplayName);
     var title = (mode === 'Clone' ? 'Clone ' : 'Edit ') + pol.DisplayName;
@@ -2240,62 +3174,80 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
     d.addEventListener('close', close);
     d.appendChild(el('h3', { text: title }));
-    d.appendChild(el('div', { class: 'guide', text: mode === 'Clone'
-      ? 'A NEW policy, copied from this one with your changes. It is created OFF whatever this one\'s state is, and adopted - move it through the stages when it is ready. Lists: one per line; a name (group, UPN, role, named location) is looked up by the engine.'
-      : 'Change any part of this policy. Check shows what changes before anything is sent; Apply CHANGES the policy in your tenant (the engine reads it again first and refuses if it changed since, or if the break-glass accounts would not stay excluded). Lists: one per line; a name (group, UPN, role, named location) is looked up by the engine.' }));
+    d.appendChild(el('div', { class: 'guide', text: (mode === 'Clone'
+      ? 'A NEW policy, copied from this one with your changes. It is created OFF whatever this one\'s state is, and adopted - move it through the stages when it is ready.'
+      : 'Change any part of this policy. Check shows what changes before anything is sent; Apply CHANGES the policy in your tenant (the engine reads it again first and refuses if it changed since, or if the break-glass accounts would not stay excluded).')
+      + ' Add picks users, groups, roles, applications and locations by name; the options of every other field come from Microsoft Graph' + (opts.discoveredAtUtc ? ' (read ' + fmtTime(opts.discoveredAtUtc) + ')' : ' (the list shipped with this release - the monthly read has not run yet)') + '.' }));
+    var cx = { opts: opts, known: {} };
+    Object.keys(names).forEach(function (k) { cx.known[k] = names[k]; cx.known[String(k).toLowerCase()] = names[k]; });
     var form = el('div', { class: 'rf-grid' });
     var row = function (label, node) { form.appendChild(el('div', { class: 'rf-l', text: label })); form.appendChild(el('div', { class: 'rf-c' }, node)); return node; };
+    var head = function (t) { form.appendChild(el('h4', { class: 'rf-sub', text: t, style: 'grid-column:1 / -1' })); };
     var name = row('Name', el('input', { type: 'text', 'aria-label': 'Name', maxlength: 256 })); name.value = textOf(base.displayName);
-    var state = row('State', el('select', { 'aria-label': 'State' }, [['enabled', 'On'], ['enabledForReportingButNotEnforced', 'Report-only'], ['disabled', 'Off']].map(function (s) { return el('option', { value: s[0], text: s[1] }); })));
-    state.value = mode === 'Clone' ? 'disabled' : textOf(base.state); if (mode === 'Clone') state.disabled = true;
-    var lists = {};
-    var shown = function (v) { var n = names[v]; return n ? n : v; };
-    CAP_EDIT_LISTS.forEach(function (grp) {
-      form.appendChild(el('h4', { class: 'rf-sub', text: grp[0], style: 'grid-column:1 / -1' }));
-      grp[1].forEach(function (f) {
-        var vals = capGet(base, f[0]) || [];
-        var isApp = f[1] === 'includeApplications' || f[1] === 'excludeApplications';
-        var ta = row(f[2], el('textarea', { rows: Math.min(6, Math.max(2, vals.length + 1)), 'aria-label': f[2], 'data-field': f[1], placeholder: 'one per line: ' + f[3] }));
-        // an application stays its id (its name follows after #, for reading); the others show the name the engine knows
-        ta.value = vals.map(function (v) { return isApp ? (names[v] ? v + ' # ' + names[v] : v) : shown(v); }).join('\n');
-        lists[f[0]] = ta;
-      });
+    var state = row('State', capSelect('State', capOptVals(opts, 'state', ['enabled', 'enabledForReportingButNotEnforced', 'disabled']), mode === 'Clone' ? 'disabled' : textOf(base.state)));
+    if (mode === 'Clone') state.disabled = true;
+    var lists = {}, sets = {};
+    var objs = function (grp) { (CAP_OBJ_LISTS[grp] || []).forEach(function (f) { var c = capChipList(f[0], f[1], f[2], capGet(base, f[0]) || [], cx); lists[f[0]] = c; row(f[1], c.node); }); };
+    var cbs = function (grp) { (CAP_SET_LISTS[grp] || []).forEach(function (f) { var o = (opts.fields || {})[f]; var c = capCheckSet(f, o, capGet(base, f) || []); sets[f] = c; row(o ? o.label : f, c.node); }); };
+    head('Users'); objs('Users');
+    head('Applications'); objs('Applications'); cbs('Applications');
+    head('Conditions'); cbs('Conditions'); objs('Locations');
+    var flowsInit = String(capGet(base, 'conditions.authenticationFlows.transferMethods') || '').split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+    var flows = capCheckSet('conditions.authenticationFlows.transferMethods', (opts.fields || {})['conditions.authenticationFlows.transferMethods'], flowsInit);
+    row('Authentication flows', flows.node);
+    var df = capGet(base, 'conditions.devices.deviceFilter');
+    row('Filter for devices', el('span', { class: 'smeta', text: df && df.rule ? (df.mode === 'exclude' ? 'exclude' : 'include') + ' devices where: ' + df.rule + ' - an expression: edit it in Advanced (JSON).' : 'none - a device filter is an expression: set it in Advanced (JSON).' }));
+    // grant: Block access / Grant access (the controls as check boxes) / none (session controls only)
+    head('Grant');
+    var gc = base.grantControls || {}, bic0 = gc.builtInControls || [], tou0 = gc.termsOfUse || [], as0 = gc.authenticationStrength && gc.authenticationStrength.id ? gc.authenticationStrength.id : '';
+    var gm0 = bic0.indexOf('block') >= 0 ? 'block' : ((bic0.length || as0 || tou0.length) ? 'grant' : 'none');
+    var radios = {}, gName = 'capgrant' + Math.random().toString(36).substring(2);
+    var gBox = el('div', { class: 'cap-set', role: 'radiogroup', 'aria-label': 'Grant' });
+    [['block', 'Block access'], ['grant', 'Grant access'], ['none', 'No grant control (session controls only)']].forEach(function (x) {
+      var r = el('input', { type: 'radio', name: gName, value: x[0] }); r.checked = x[0] === gm0; radios[x[0]] = r; gBox.appendChild(el('label', { class: 'rf-check' }, r, ' ' + x[1]));
     });
-    var op = row('Grant: require', el('select', { 'aria-label': 'Grant operator' }, el('option', { value: 'OR', text: 'one of the controls (OR)' }), el('option', { value: 'AND', text: 'all the controls (AND)' })));
-    op.value = textOf(capGet(base, 'grantControls.operator')) || 'OR';
-    var as = row('Authentication strength', el('input', { type: 'text', 'aria-label': 'authenticationStrength', 'data-field': 'authenticationStrength', placeholder: 'its id (empty = none)' }));
-    as.value = textOf(capGet(base, 'grantControls.authenticationStrength.id'));
-    form.appendChild(el('h4', { class: 'rf-sub', text: 'Session', style: 'grid-column:1 / -1' }));
+    row('Access', gBox);
+    var ctlOpt = (opts.fields || {})['grantControls.builtInControls'];
+    var ctl = capCheckSet('grantControls.builtInControls', ctlOpt ? { label: ctlOpt.label, values: ctlOpt.values.filter(function (o) { return o.value !== 'block'; }) } : null, bic0.filter(function (x) { return x !== 'block'; }));
+    var ctlRow = row('Grant controls', ctl.node);
+    var op = row('Require', capSelect('Grant operator', capOptVals(opts, 'grantControls.operator', ['OR', 'AND']), textOf(gc.operator) || 'OR'));
+    var strengths = (opts.tenant || {}).authStrength || [];
+    var as = el('select', { 'aria-label': 'Authentication strength' }, [el('option', { value: '', text: '(none)' })].concat(strengths.map(function (s) { return el('option', { value: s.id, text: s.name + (s.detail ? ' (' + s.detail + ')' : '') }); })));
+    if (as0 && !strengths.some(function (s) { return s.id === as0; })) as.appendChild(el('option', { value: as0, text: (cx.known[as0] || as0) + ' (not in the last read)' }));
+    as.value = as0; row('Require authentication strength', as);
+    if (tou0.length) row('Terms of use', el('span', { class: 'smeta', text: tou0.map(function (t) { return cx.known[t] || t; }).join(', ') + ' - kept as they are (the engine cannot read terms of use; change them in Advanced (JSON)).' }));
+    var syncGrant = function () { var on = radios.grant.checked; ctlRow.querySelectorAll('input').forEach(function (i) { i.disabled = !on; }); op.disabled = !on; as.disabled = !on; };
+    Object.keys(radios).forEach(function (k) { radios[k].addEventListener('change', syncGrant); }); syncGrant();
+    // session
+    head('Session');
     var sif = capGet(base, 'sessionControls.signInFrequency') || {};
     var sifOn = el('input', { type: 'checkbox', 'aria-label': 'signInFrequency' }); sifOn.checked = !!sif.isEnabled;
-    var sifVal = el('input', { type: 'text', 'aria-label': 'Sign-in frequency value', inputmode: 'numeric', style: 'width:6em' }); sifVal.value = textOf(sif.value);
-    var sifType = el('select', { 'aria-label': 'Sign-in frequency unit' }, el('option', { value: 'hours', text: 'hours' }), el('option', { value: 'days', text: 'days' })); sifType.value = sif.type || 'hours';
+    var sifVal = el('input', { type: 'number', min: 1, max: 365, step: 1, 'aria-label': 'Sign-in frequency value', style: 'width:6em' }); sifVal.value = textOf(sif.value);
+    var sifType = capSelect('Sign-in frequency unit', capOptVals(opts, 'sessionControls.signInFrequency.type', ['hours', 'days']), sif.type || 'hours');
     var sifEvery = el('input', { type: 'checkbox', 'aria-label': 'Every time' }); sifEvery.checked = sif.frequencyInterval === 'everyTime';
-    row('Sign-in frequency', el('span', { class: 'rf-check' }, sifOn, ' on, every ', sifVal, ' ', sifType, ' ', el('label', { class: 'rf-check' }, sifEvery, ' or every time')));
+    var sifAuth = capSelect('Sign-in frequency applies to', capOptVals(opts, 'sessionControls.signInFrequency.authenticationType', ['primaryAndSecondaryAuthentication', 'secondaryAuthentication']), sif.authenticationType || 'primaryAndSecondaryAuthentication');
+    row('Sign-in frequency', el('span', { class: 'rf-check' }, sifOn, ' on, every ', sifVal, ' ', sifType, ' ', el('label', { class: 'rf-check' }, sifEvery, ' or every time'), ' for ', sifAuth));
     var pb = capGet(base, 'sessionControls.persistentBrowser') || {};
     var pbOn = el('input', { type: 'checkbox', 'aria-label': 'persistentBrowser' }); pbOn.checked = !!pb.isEnabled;
-    var pbMode = el('select', { 'aria-label': 'Persistent browser mode' }, el('option', { value: 'never', text: 'never persistent' }), el('option', { value: 'always', text: 'always persistent' })); pbMode.value = pb.mode || 'never';
+    var pbMode = capSelect('Persistent browser mode', capOptVals(opts, 'sessionControls.persistentBrowser.mode', ['never', 'always']), pb.mode || 'never');
     row('Persistent browser', el('span', { class: 'rf-check' }, pbOn, ' on: ', pbMode));
+    var aer = el('input', { type: 'checkbox', 'aria-label': 'applicationEnforcedRestrictions' }); aer.checked = !!(capGet(base, 'sessionControls.applicationEnforcedRestrictions') || {}).isEnabled;
+    row('App enforced restrictions', el('label', { class: 'rf-check' }, aer, ' use app enforced restrictions (Exchange Online, SharePoint Online)'));
+    var cas = capGet(base, 'sessionControls.cloudAppSecurity') || {};
+    var casOn = el('input', { type: 'checkbox', 'aria-label': 'cloudAppSecurity' }); casOn.checked = !!cas.isEnabled;
+    var casType = capSelect('Conditional Access App Control', capOptVals(opts, 'sessionControls.cloudAppSecurity.cloudAppSecurityType', ['monitorOnly', 'blockDownloads', 'mcasConfigured']), cas.cloudAppSecurityType || 'monitorOnly');
+    row('Conditional Access App Control', el('span', { class: 'rf-check' }, casOn, ' on: ', casType));
+    var drd = el('input', { type: 'checkbox', 'aria-label': 'disableResilienceDefaults' }); drd.checked = !!capGet(base, 'sessionControls.disableResilienceDefaults');
+    row('Resilience defaults', el('label', { class: 'rf-check' }, drd, ' disable resilience defaults'));
     d.appendChild(form);
-    // the form -> the policy body (the parts it does not show stay as they are in the base)
-    var lines = function (ta) { return ta.value.split('\n').map(function (x) { return x.replace(/\s+#.*$/, '').trim(); }).filter(function (x) { return x; }); };
+    // the form -> the policy body (capBodyFrom: the parts it does not show stay as they are in the base)
     var fromForm = function () {
-      var b = JSON.parse(JSON.stringify(base));
-      b.displayName = name.value.trim(); b.state = mode === 'Clone' ? 'disabled' : state.value;
-      if (!b.conditions) b.conditions = {};
-      Object.keys(lists).forEach(function (path) {
-        var v = lines(lists[path]), had = capGet(base, path);
-        if (v.length || (had !== null && had !== undefined)) capSet(b, path, v);
-      });
-      ['platforms', 'locations'].forEach(function (k) { var c = b.conditions[k]; if (c && !Object.keys(c).some(function (x) { return Array.isArray(c[x]) ? c[x].length : c[x] !== null && c[x] !== undefined; })) b.conditions[k] = null; });
-      var bic = capGet(b, 'grantControls.builtInControls') || [], asId = as.value.trim(), tou = capGet(b, 'grantControls.termsOfUse') || [];
-      if (!bic.length && !asId && !tou.length) b.grantControls = null;
-      else { if (!b.grantControls) b.grantControls = {}; b.grantControls.operator = op.value; b.grantControls.builtInControls = bic; b.grantControls.authenticationStrength = asId ? { id: asId } : null; }
-      var sc = b.sessionControls ? b.sessionControls : {};
-      sc.signInFrequency = sifOn.checked ? (sifEvery.checked ? { isEnabled: true, frequencyInterval: 'everyTime', authenticationType: (sif.authenticationType || 'primaryAndSecondaryAuthentication') } : { isEnabled: true, value: parseInt(sifVal.value, 10) || 1, type: sifType.value, frequencyInterval: 'timeBased', authenticationType: (sif.authenticationType || 'primaryAndSecondaryAuthentication') }) : null;
-      sc.persistentBrowser = pbOn.checked ? { isEnabled: true, mode: pbMode.value } : null;
-      b.sessionControls = Object.keys(sc).some(function (k) { return sc[k] !== null && sc[k] !== undefined && sc[k] !== false; }) ? sc : null;
-      return b;
+      var st = { displayName: name.value.trim(), state: state.value, lists: {}, flows: flows.get(),
+        grant: { mode: radios.block.checked ? 'block' : (radios.grant.checked ? 'grant' : 'none'), controls: ctl.get(), operator: op.value, strength: as.value },
+        session: { sifOn: sifOn.checked, sifEvery: sifEvery.checked, sifValue: sifVal.value, sifType: sifType.value, sifAuth: sifAuth.value, pbOn: pbOn.checked, pbMode: pbMode.value, aer: aer.checked, casOn: casOn.checked, casType: casType.value, drd: drd.checked } };
+      Object.keys(lists).forEach(function (p) { st.lists[p] = lists[p].get(); });
+      Object.keys(sets).forEach(function (p) { st.lists[p] = sets[p].get(); });
+      return capBodyFrom(base, st, mode);
     };
     // Advanced (JSON): the whole body as it will be sent - for any part the form does not show
     var adv = el('textarea', { rows: 14, 'aria-label': 'Advanced (JSON)', style: 'width:100%;font-family:ui-monospace,Consolas,monospace;font-size:11.5px' });
@@ -2523,6 +3475,37 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       send: function (pl, reason) { var todo = (pl.items || []).filter(function (r) { return r.ok && r.action !== 'none'; }), exp = {}; todo.forEach(function (r) { exp[r.policyId] = r.expected; });
         return api('POST', '/api/backups/ca/' + backupId + '/restore', { policyIds: todo.map(function (r) { return r.policyId; }), expected: exp, reason: reason }); } });
   }
+  function configImport() {
+    // CONFIG-IO-1: pick an exported file; the server checks it and answers the plan; the operator unticks what to keep
+    var f = el('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Configuration file' });
+    f.addEventListener('change', function () {
+      var file = f.files && f.files[0]; if (!file) return;
+      if (file.size > 900 * 1024) { notice('The file is larger than 900 KB.', 'warn'); return; }
+      var rd = new FileReader();
+      rd.onload = function () {
+        var text = String(rd.result || '');
+        configRestoreDialog('Import the configuration from ' + file.name,
+          'Each change goes through its own page\'s checks, journal and audit - with the commit queue on, the rules and tag types are STAGED for a commit. Rules not in the file are deleted; tag types, personas and monitors not in the file stay. Secrets, approvals and records are never imported. Untick what you want to keep as it is.',
+          function () { return api('POST', '/api/config/import-plan', { text: text }).then(function (pl) { if (pl.from) pl.summary = textOf(pl.summary) + ' (exported ' + textOf(pl.from.exportedAtUtc) + ' by ' + textOf(pl.from.exportedBy) + ', version ' + textOf(pl.from.productVersion) + ')'; return pl; }); });
+      };
+      rd.readAsText(file);
+    });
+    f.click();
+  }
+  function caObjectRestoreDialog(backupId, ids) {
+    // UNDO-BACKUP left-over: named locations and authentication strengths put back (made again / their definition back)
+    capPlanDialog({ title: 'Put back named locations and strengths from backup ' + backupId,
+      guide: 'Each one goes back as it is in the backup: one that is no longer in your tenant is made again, one that changed gets the backup\'s definition back. Nothing is deleted - one made after the backup stays. A built-in strength (Microsoft\'s) is never changed. The engine reads the tenant again first and takes a backup of what it changes. This CHANGES your tenant.',
+      load: function () { return api('POST', '/api/backups/ca/' + backupId + '/restore-other-plan', { objectIds: ids }).then(function (pl) { if (!pl.ok) pl.reason = 'nothing to put back: ' + ((pl.items || []).map(function (r) { return r.displayName + ' (' + textOf(r.reason || 'as in the backup already') + ')'; }).join('; ') || 'none picked'); return pl; }); },
+      show: function (pl, box) {
+        var s = pl.summary || {};
+        box.appendChild(el('p', { text: fmtNum(s.create) + ' made again, ' + fmtNum(s.patch) + ' put back as in the backup, ' + fmtNum(s.same) + ' as in the backup already, ' + fmtNum(s.refused) + ' refused. Compared with ' + textOf(pl.comparedWith) + '.' }));
+        box.appendChild(table(pl.items || [], [{ key: 'kind', label: 'Kind', type: 'cat' }, { key: 'displayName', label: 'Name', wrap: true }, { key: 'action', label: 'Does', type: 'cat', render: function (r) { return !r.ok ? 'refused' : { create: 'made again', patch: 'put back', none: 'nothing' }[r.action] || r.action; } },
+          { key: 'changes', label: 'What changes', wrap: true, render: function (r) { return (r.changes || []).join('\n') || textOf(r.reason); } }], { empty: 'None picked.' }));
+      },
+      go: 'Put them back',
+      send: function (pl, reason) { return api('POST', '/api/backups/ca/' + backupId + '/restore-other', { objectIds: (pl.items || []).filter(function (r) { return r.ok && r.action !== 'none'; }).map(function (r) { return r.objectId; }), reason: reason }); } });
+  }
   function caUndoDialog(policyId, m) {
     capPlanDialog({ title: 'Undo: ' + textOf(m.DisplayName) + ' (' + textOf(m.FromStage) + ' -> ' + textOf(m.ToStage) + ', ' + fmtTime(m.MovedAtUtc) + ')',
       guide: 'Puts the policy back as it was before this change - a NEW change, made like any other (a copy or a deploy is turned OFF, never deleted). The engine reads the policy again first, takes a backup of it as it is now, and refuses if it changed since this view or if the result would no longer exclude the break-glass accounts. This CHANGES your tenant.',
@@ -2533,19 +3516,21 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
   function runUndoDialog(runId) {
     capPlanDialog({ title: 'Undo this tagging run',
-      guide: 'A NEW run writes every tag this run applied back to the value it had before - only where the object still has the value this run wrote (a later change is never overwritten). The mass-change guard measures it like a run; AD-synced users are written by the hybrid worker. This CHANGES your directory.',
+      guide: 'To undo a RULE change: Undo this commit first and commit it - that commit\'s run puts the tags back on everyone. Use Undo this run only when these tags must be back NOW. ' +
+        'A NEW run writes every tag this run applied back to the value it had before - only where the object still has the value this run wrote (a later change is never overwritten). The mass-change guard measures it like a run; AD-synced users are written by the hybrid worker. This CHANGES your directory. It puts the TAGS back only - the rules that made them stay; to put the rules back too, use Undo this commit (Backups / Undo > Commits of the tagging rules), or the next run writes the same tags again.',
       load: function () { return api('GET', '/api/runs/' + encodeURIComponent(runId) + '/undo-plan'); },
       show: function (pl, box) {
         box.appendChild(el('p', { text: fmtNum(pl.applied) + ' tag(s) this run applied' + (pl.applied > (pl.changes || []).length ? ' (the first ' + fmtNum((pl.changes || []).length) + ' shown)' : '') + '.' }));
         box.appendChild(table(pl.changes || [], [{ key: 'object', label: 'Object' }, { key: 'tagType', label: 'Tag type', type: 'cat' }, { key: 'directory', label: 'Directory', type: 'cat' }, { key: 'now', label: 'Now (as the run wrote it)', wrap: true }, { key: 'back', label: 'Put back', wrap: true }], { empty: 'Nothing.' }));
         var ap = el('input', { type: 'checkbox' }); ap.addEventListener('change', function () { pl.approve = ap.checked; });
         box.appendChild(el('label', null, ap, ' Approve it if the mass-change guard holds it (I have checked the numbers).'));
+        box.appendChild(el('p', { class: 'smeta' }, 'The rules stay as they are. ', el('a', { href: '#backups', text: 'Undo the commit of the rules too (Backups / Undo)' })));
       },
       go: 'Undo this run',
       send: function (pl, reason) { return api('POST', '/api/runs/' + encodeURIComponent(runId) + '/undo', { approve: !!pl.approve, reason: reason }); } });
   }
   function backNow() {
-    withReason('Back up now', 'The Backup job stores every Conditional Access policy, named location and authentication strength, and the tagging configuration, now (it only reads the tenant). Kept 30 days.', function (reason) { return api('POST', '/api/jobs/Backup/run', { mode: 'Apply', reason: reason }); });
+    withReason('Back up now', 'The Backup job stores every Conditional Access policy, named location and authentication strength, and the tagging configuration, now (it only reads the tenant). Kept 30 days.', function (reason) { return api('POST', '/api/jobs/Backup/run', { mode: 'Apply', reason: reason }); }, { readOnly: true });
   }
   function drawBackupCa(p, id) {
     var owner = isRole('SuperAdmin');
@@ -2555,12 +3540,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(el('h2', { text: 'Conditional Access backup ' + b.BackupId + ' - ' + fmtTime(b.TakenAtUtc) }));
       p.appendChild(el('p', { text: b.Kind + ' · ' + fmtNum(b.Policies) + ' policies, ' + fmtNum(b.NamedLocations) + ' named locations, ' + fmtNum(b.AuthStrengths) + ' authentication strengths · ' + textOf(b.TakenBy) + (b.Cause ? ' · ' + b.Cause : '') }));
       if (isRole('Admin')) p.appendChild(el('div', { class: 'toolbar' }, el('a', { href: '/api/backups/ca/' + b.BackupId + '/export', text: 'Download as JSON files (v1\'s export)' })));
-      p.appendChild(el('div', { class: 'guide', text: 'Pick the policies to put back' + (owner ? '' : ' (a SuperAdmin puts them back)') + '. Each one is shown first with what changes; a policy that is no longer in your tenant is created again, OFF. Named locations and authentication strengths are kept in the backup and in the download; they are put back by hand.' }));
+      p.appendChild(el('div', { class: 'guide', text: 'Pick the policies to put back' + (owner ? '' : ' (a SuperAdmin puts them back)') + '. Each one is shown first with what changes; a policy that is no longer in your tenant is created again, OFF. Named locations and authentication strengths (below) are put back the same way: made again when gone, their definition back when changed - nothing is ever deleted.' }));
       var pol = (j.items || []).filter(function (r) { return r.ItemType === 'policy'; });
       p.appendChild(table(pol, [{ key: 'DisplayName', label: 'Policy', wrap: true }, { key: 'State', label: 'State in the backup', type: 'cat' }, { key: 'Now', label: 'Now', type: 'cat', cls: function (r) { return r.Now === 'not in the tenant' ? 'c-warning' : ''; } }, { key: 'ObjectId', label: 'Id' }],
         { sort: 'DisplayName', dir: 1, empty: 'No policy in this backup.', bulk: owner ? [{ label: 'Put back...', run: function (sel) { caRestoreDialog(b.BackupId, sel.map(function (r) { return r.ObjectId; })); } }] : [] }));
       var other = (j.items || []).filter(function (r) { return r.ItemType !== 'policy'; });
-      if (other.length) { p.appendChild(el('h3', { text: 'Named locations and authentication strengths' })); p.appendChild(table(other, [{ key: 'ItemType', label: 'Kind', type: 'cat' }, { key: 'DisplayName', label: 'Name', wrap: true }, { key: 'ObjectId', label: 'Id' }], { sort: 'DisplayName', dir: 1 })); }
+      if (other.length) { p.appendChild(el('h3', { text: 'Named locations and authentication strengths' })); p.appendChild(table(other, [{ key: 'ItemType', label: 'Kind', type: 'cat' }, { key: 'DisplayName', label: 'Name', wrap: true }, { key: 'ObjectId', label: 'Id' }],
+        { sort: 'DisplayName', dir: 1, bulk: owner ? [{ label: 'Put back...', run: function (sel) { caObjectRestoreDialog(b.BackupId, sel.map(function (r) { return r.ObjectId; })); } }] : [] })); }
     });
   }
   function drawBackups(p, arg) {
@@ -2587,25 +3573,36 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         { key: '_u', label: '', render: function (r) { return admin && !r.UndoneBy ? el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } }) : null; } }], { sort: 'StartedAtUtc', dir: -1, empty: 'No tagging run wrote anything yet.' }));
       p.appendChild(el('h4', { text: 'Commits of the tagging rules' }));
       p.appendChild(table(j.commits || [], [{ key: 'CommittedAtUtc', label: 'Committed', type: 'date' }, { key: 'CommittedBy', label: 'By', type: 'cat' }, { key: 'Changes', label: 'Changes', type: 'num' }, { key: 'FirstChange', label: 'First change', wrap: true },
-        { key: '_u', label: '', render: function (c) { return admin && c.BackupId ? el('button', { type: 'button', class: 'secondary', text: 'Undo this commit...', onclick: function () { configRestoreDialog('Undo the commit of ' + fmtTime(c.CommittedAtUtc), 'What this commit changed goes back as it was just before it (the backup taken before the commit), as the changes the pages make - with the commit queue on, they are STAGED for a commit. A later change to the same rules is undone with it: check the list.', function () { return api('GET', '/api/commits/' + c.CommitId + '/undo-plan'); }); } }) : (c.BackupId ? null : el('span', { class: 'smeta', text: 'no backup before it' })); } }], { sort: 'CommittedAtUtc', dir: -1, empty: 'No commit yet.' }));
+        { key: '_u', label: '', render: function (c) { return admin && c.BackupId ? el('button', { type: 'button', class: 'secondary', text: 'Undo this commit...', onclick: function () { configRestoreDialog('Undo the commit of ' + fmtTime(c.CommittedAtUtc), 'What this commit changed goes back as it was just before it (the backup taken before the commit), as the changes the pages make - with the commit queue on, they are STAGED for a commit. A later change to the same rules is undone with it: check the list. This puts the RULES back only - the tags the runs after this commit already wrote stay until the next run, or undo those runs with Undo this run (Backups / Undo > Tagging runs).', function () { return api('GET', '/api/commits/' + c.CommitId + '/undo-plan'); }); } }) : (c.BackupId ? null : el('span', { class: 'smeta', text: 'no backup before it' })); } }], { sort: 'CommittedAtUtc', dir: -1, empty: 'No commit yet.' }));
     });
   }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
-    p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy to another stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'Your Conditional Access policies, each compared with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt RECORDS that you manage a policy from here (nothing in the tenant changes). An adopted policy is then managed from its row or its page (a SuperAdmin): move it to another stage, Edit or Clone it, analyse who it hits, undo a change; Templates deploys a new one and tests a new version next to the old one (Promote / Roll back); Remove deletes policies that are off. Every change shows what changes first and is your own action - nothing changes a policy by itself.' }));
     capSubnav(p, '');
     return api('GET', '/api/capolicies').then(function (j) {
       var rows = j.rows || [];
-      rows.forEach(function (r) { r.Compared = r.InLibrary ? (r.Matches ? 'as the template' : 'differs (' + fmtNum(r.DiffCount) + ')') : (r.TemplateId ? 'not in the library' : 'no CA number'); r.StageShown = r.Stage + (r.StageMismatch ? ' (name says ' + r.NameStage + ')' : ''); });
-      p.appendChild(el('div', { class: 'cards' },
-        card(rows.length, 'policies'), card(rows.filter(function (r) { return r.InLibrary; }).length, 'matched to a template'),
-        card(rows.filter(function (r) { return r.InLibrary && !r.Matches; }).length, 'differ from their template'),
-        card(rows.filter(function (r) { return r.BreakGlass === 'MISSING'; }).length, 'without the break-glass exclusion', rows.some(function (r) { return r.BreakGlass === 'MISSING'; })),
-        card(rows.filter(function (r) { return r.Adoption === 'Adopted'; }).length, 'adopted'),
-        card((j.findings || []).filter(function (f) { return f.Status === 'Open'; }).length, 'open monitor findings', (j.findings || []).some(function (f) { return f.Status === 'Open'; }))));
+      rows.forEach(function (r) { r.StateShown = caStateText(r.State); r.Compared = r.InLibrary ? (r.Matches ? 'as the template' : 'differs (' + fmtNum(r.DiffCount) + ')') : (r.TemplateId ? 'not in the library' : 'no CA number'); r.StageShown = r.Stage + (r.StageMismatch ? ' (name says ' + r.NameStage + ')' : ''); });
+      // ADMIN-WALK: a card is a filter of the table below (click it; click again or "show all" to clear)
+      var QUICK = { all: ['policies', function () { return true; }], library: ['matched to a template', function (r) { return r.InLibrary; }],
+        differ: ['differ from their template', function (r) { return r.InLibrary && !r.Matches; }], nobg: ['without the break-glass exclusion', function (r) { return r.BreakGlass === 'MISSING'; }],
+        adopted: ['adopted', function (r) { return r.Adoption === 'Adopted'; }], notadopted: ['not adopted', function (r) { return r.Adoption !== 'Adopted'; }] };
+      // ADMIN-WALK-2: the "open monitor findings" card filters too - the policies with an open finding
+      var openFind = {}; (j.findings || []).forEach(function (f) { if (f.Status === 'Open') openFind[String(f.PolicyId).toLowerCase()] = 1; });
+      QUICK.findings = ['with an open monitor finding', function (r) { return !!openFind[String(r.PolicyId).toLowerCase()]; }];
+      var quick = 'all', tblHost = el('div'), quickLine = el('div', { class: 'smeta' });
+      var cardsBox = el('div', { class: 'cards' });
+      Object.keys(QUICK).forEach(function (k) {
+        var n = rows.filter(QUICK[k][1]).length, c = card(n, QUICK[k][0], (k === 'nobg' || k === 'findings') && n > 0);
+        c.classList.add('card-link'); c.setAttribute('role', 'button'); c.tabIndex = 0; c.title = 'Show only these in the table';
+        var pickIt = function () { quick = quick === k ? 'all' : k; drawTbl(); };
+        c.addEventListener('click', pickIt); c.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickIt(); } });
+        cardsBox.appendChild(c);
+      });
+      p.appendChild(cardsBox);
       p.appendChild(el('div', { class: 'toolbar' }, admin ? capReadButton() : null,
         el('span', { class: 'count', text: j.readAtUtc ? 'Read ' : 'Not read yet - the CA Policy Analyzer reads the list on every run.' }), j.readAtUtc ? timeEl(j.readAtUtc) : null,
-        el('span', { class: 'count', text: ' · monitor ' + (j.monitoring ? 'ON (adopted policies: drift, break-glass)' : 'off (Settings > Conditional Access)') + ' · ' + fmtNum(j.templates) + ' templates (' + textOf(j.library) + ')' + (j.method ? ' · targeting ' + j.method : '') })));
+        el('span', { class: 'count', text: ' · monitor ' + (j.monitoring ? 'ON (adopted policies: drift, break-glass)' : 'off (switch it on: Settings > Conditional Access)') + ' · ' + fmtNum(j.templates) + ' templates (' + textOf(j.library) + ')' + (j.method ? ' · targeting ' + j.method : '') })));
       if ((j.findings || []).length) {
         p.appendChild(el('h3', { text: 'Monitor findings' }));
         p.appendChild(el('div', { class: 'guide', text: 'Shown and alerted only: Entra Policy Suite never acts on a finding. What happens next is your decision and your own action in the tenant. A change you made yourself: adopt the policy again.' }));
@@ -2613,25 +3610,32 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           { key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } }, { key: 'Detail', label: 'What', wrap: true }, { key: 'AlertedAtUtc', label: 'Alerted', type: 'date' }], { sort: 'LastSeenUtc', dir: -1 }));
       }
       p.appendChild(el('h3', { text: 'Policies' }));
-      var cols = [{ key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } },
+      if (owner) p.appendChild(el('div', { class: 'toolbar' }, el('a', { href: '#capolicies/templates', class: 'btn-link', text: 'Deploy a new policy from a template' }),
+        el('span', { class: 'smeta', text: ' - or Clone an adopted one from its row.' })));
+      // ADMIN-WALK: the row's actions come FIRST (visible at 1366 px): one menu - Open, Edit, Clone, Analyse, Move to, Adopt / Release
+      var cols = [{ key: '_act', label: 'Actions', render: function (r) {
+          var ad = r.Adoption === 'Adopted', opts = [['', 'Actions ...'], ['open', 'Open']];
+          if (owner && ad) opts.push(['edit', 'Edit ...'], ['clone', 'Clone ...']);
+          if (admin) opts.push(['analyse', 'Analyse who it hits ...']);
+          if (owner && ad) capMoves(r.Stage).forEach(function (to) { opts.push(['move:' + to, to === 'Disabled' ? 'Disable (off) ...' : capMoveLabel(r.Stage, to) + ' (' + CAP_STAGE_TEXT[to] + ') ...']); });
+          if (owner) opts.push(ad ? ['release', 'Release (stop managing it here) ...'] : ['adopt', 'Adopt as it is ...']);
+          // ADMIN-WALK-2: a real menu button (a <select> fired on keyboard arrows and had a width per row)
+          return rowMenu('Actions for ' + r.DisplayName, opts.slice(1).map(function (o) { return [o[1], function () {
+            var v = o[0];
+            if (v === 'open') location.hash = '#capolicies/' + r.PolicyId;
+            else if (v === 'edit' || v === 'clone') { capAutoOpen = { id: String(r.PolicyId).toLowerCase(), what: v === 'edit' ? 'Edit' : 'Clone' }; location.hash = '#capolicies/' + r.PolicyId; }
+            else if (v === 'analyse') caAnalyseFor(r.PolicyId, r.DisplayName);
+            else if (v.indexOf('move:') === 0) capStage(r, v.substring(5));
+            else if (v === 'release') capRelease(r);
+            else if (v === 'adopt') capAdopt(r);
+          }]; })); } },
+        { key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } },
         { key: 'TemplateId', label: 'Template', type: 'cat' }, { key: 'Persona', label: 'Persona', type: 'cat', multi: ', ' }, { key: 'StageShown', label: 'Stage', type: 'cat', cls: function (r) { return r.StageMismatch ? 'c-danger' : ''; } },
-        { key: 'State', label: 'State', type: 'cat' }, { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
+        { key: 'StateShown', label: 'State', type: 'cat' }, { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
         { key: 'BreakGlass', label: 'Break-glass', type: 'cat', cls: function (r) { return CAP_BG_CLS[r.BreakGlass] || ''; } }, { key: 'Adoption', label: 'Adopted', type: 'cat' },
         { key: 'Findings', label: 'Findings', type: 'cat' }, { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];
-      if (owner) cols.push({ key: '_s', label: 'Move stage', render: function (r) {
-        if (r.Adoption !== 'Adopted') return null;
-        // owner 2026-11-03 ("move to any lifecycle phase"): one picker per row - every stage it can go to, and Disable.
-        // Picking one only opens the move dialog (what changes, the confirmation); the picker goes back to its label.
-        var mv = capMoves(r.Stage);
-        if (!mv.length) return null;
-        var sel = el('select', { 'aria-label': 'Move ' + r.DisplayName + ' to another stage' }, [el('option', { value: '', text: 'Move to ...' })].concat(mv.map(function (to) {
-          return el('option', { value: to, text: to === 'Disabled' ? 'Disable (off)' : capMoveLabel(r.Stage, to) + ' (' + CAP_STAGE_TEXT[to] + ')' }); })));
-        sel.addEventListener('click', function (e) { e.stopPropagation(); });   // never the row's own click
-        sel.addEventListener('change', function () { var to = sel.value; sel.value = ''; if (to) capStage(r, to); });
-        return sel; } });
-      if (owner) cols.push({ key: '_a', label: '', render: function (r) {
-        if (r.Adoption === 'Adopted') return el('button', { type: 'button', class: 'link', text: 'Release', onclick: function () { capRelease(r); } });
-        return el('button', { type: 'button', class: 'secondary', text: 'Adopt', onclick: function () { capAdopt(r); } }); } });
+      // owner 2026-11-03 ("move to any lifecycle phase"): every stage it can go to is in the row's Actions menu; picking
+      // one only opens the move dialog (what changes, the confirmation)
       var capBulk = owner ? [
         { label: 'Adopt', run: function (sel) { var todo = sel.filter(function (r) { return r.Adoption !== 'Adopted'; }); if (!todo.length) { notice('All selected policies are adopted already.'); return; }
           bulkAction('Adopt policies', 'Entra Policy Suite RECORDS that you adopt these policies as they are now: each body becomes the baseline the monitor compares with. Nothing in the tenant changes.', todo, function (r, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(r.PolicyId) + '/adopt', { expected: r.Hash, reason: reason }); }); } },
@@ -2640,8 +3644,48 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       // CA-MONADD (owner 2026-11-02: "need an easy way to add/remove ca policy to existing/new monitor"): an analyzer monitor
       // is Admin - it only reads the tenant
       if (admin) capBulk = capBulk.concat([{ label: 'Add to monitor...', run: function (sel) { caMonitorPick('add', sel); } }, { label: 'Remove from monitor...', run: function (sel) { caMonitorPick('remove', sel); } }]);
-      p.appendChild(table(rows, cols, { sort: 'DisplayName', dir: 1, empty: 'No policy read yet. Read the policy list (read only).', bulk: capBulk }));
+      // CA-TEMPLATES left-over = v1's "REMOVE CA POLICIES": delete policies that are OFF - picked here, or by a name pattern
+      if (owner) {
+        capBulk = capBulk.concat([{ label: 'Remove from the tenant (off only)...', run: function (sel) { capRemove({ policyIds: sel.map(function (r) { return r.PolicyId; }) }); } }]);
+        p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Remove policies by name...', onclick: function () { capRemoveByName(); } })));
+      }
+      p.appendChild(quickLine); p.appendChild(tblHost);
+      function drawTbl() {
+        Array.prototype.forEach.call(cardsBox.children, function (c, i) { c.classList.toggle('on', Object.keys(QUICK)[i] === quick && quick !== 'all'); });
+        clear(quickLine);
+        if (quick !== 'all') { quickLine.appendChild(document.createTextNode('Showing only: ' + QUICK[quick][0] + ' - ')); quickLine.appendChild(el('button', { type: 'button', class: 'link', text: 'show all', onclick: function () { quick = 'all'; drawTbl(); } })); }
+        clear(tblHost).appendChild(table(rows.filter(QUICK[quick][1]), cols, { sort: 'DisplayName', dir: 1, empty: rows.length ? 'No policy of this kind.' : 'No policy read yet. Read the policy list (read only).', bulk: capBulk }));
+      }
+      drawTbl();
     });
+  }
+  // a row's Edit / Clone opens the policy's page, which then opens the editor at once
+  var capAutoOpen = null;
+  function capRemove(pick) {
+    // the plan (which policies, each OFF only), the count typed to confirm, a reason - the engine takes a backup and deletes
+    capPlanDialog({ title: 'Remove policies from the tenant' + (pick.pattern ? ': name like ' + pick.pattern : ''),
+      guide: 'DELETES the policies below from your tenant - only policies that are OFF (a policy that is on or report-only is refused: Disable it first). The engine reads each again first, takes a backup of every one before the first delete (Backups / Undo can create one again, OFF), and refuses one that changed since this view. This CHANGES your tenant.',
+      load: function () { return api('POST', '/api/capolicies/remove-plan', pick); },
+      show: function (pl, box) {
+        box.appendChild(el('p', { text: fmtNum(pl.count) + ' polic' + (pl.count === 1 ? 'y' : 'ies') + ' will be deleted' + ((pl.items || []).length > pl.count ? '; ' + fmtNum(pl.items.length - pl.count) + ' refused (below)' : '') + '.' }));
+        box.appendChild(table(pl.items || [], [{ key: 'displayName', label: 'Policy', wrap: true }, { key: 'state', label: 'State', type: 'cat' }, { key: 'adopted', label: 'Adopted', render: function (r) { return r.adopted ? 'yes (released)' : ''; } },
+          { key: 'ok', label: 'Does', render: function (r) { return r.ok ? 'DELETED' : 'refused: ' + textOf(r.reason); } }], { sort: 'displayName', dir: 1, empty: 'No policy.' }));
+      },
+      go: 'Delete them',
+      confirmName: function (pl) { return pl.confirm; },
+      send: function (pl, reason, stage, typed) { var exp = {}; (pl.items || []).forEach(function (r) { if (r.ok) exp[r.policyId] = r.expected; });
+        var b = { expected: exp, confirm: typed, reason: reason }; if (pl.pattern) b.pattern = pl.pattern; else b.policyIds = (pl.items || []).filter(function (r) { return r.ok; }).map(function (r) { return r.policyId; });
+        return api('POST', '/api/capolicies/remove', b); } });
+  }
+  function capRemoveByName() {
+    var inp = el('input', { type: 'text', placeholder: '*-Initial-*', 'aria-label': 'Name pattern', style: 'width:100%' });
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Remove policies by name' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.appendChild(el('h3', { text: 'Remove policies by name' }));
+    d.appendChild(el('div', { class: 'guide', text: 'v1\'s "remove CA policies": every policy whose name is like the pattern (* = anything, ? = one character), e.g. *-Initial-* for the policies deployed off. Only policies that are OFF are deleted. The next step shows the exact list first.' }));
+    d.appendChild(el('p', null, inp));
+    d.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Show the list', onclick: function () { var v = inp.value.trim(); if (!v) { inp.focus(); return; } close(); capRemove({ pattern: v }); } }), el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal(); inp.focus();
   }
   function drawCaPolicy(p, id) {
     var owner = isRole('SuperAdmin');
@@ -2651,7 +3695,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(el('h2', { text: pol.DisplayName }));
       var row = { PolicyId: pol.PolicyId, DisplayName: pol.DisplayName, Hash: rv.hash, Stage: rv.stage };
       p.appendChild(el('dl', { class: 'info' },
-        el('dt', { text: 'State' }), el('dd', { text: textOf(pol.State) }),
+        el('dt', { text: 'State' }), el('dd', { text: caStateText(pol.State) }),
         el('dt', { text: 'Stage (from the real state)' }), el('dd', { text: textOf(rv.stage) + (rv.stageNote ? ' - ' + rv.stageNote : '') + (rv.stageMismatch ? ' - its name says ' + rv.nameStage : '') }),
         el('dt', { text: 'Template' }), el('dd', { text: rv.templateId ? (rv.templateId + ' ' + textOf(rv.templateVersion) + ' ' + textOf(rv.templateName) + (rv.inLibrary ? '' : ' (not in the library)')) : 'none (no CA number in the name)' }),
         el('dt', { text: 'Break-glass' }), el('dd', { class: bg.ok === false ? 'c-danger' : null, text: textOf(bg.text) }),
@@ -2665,6 +3709,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         el('button', { type: 'button', class: 'secondary', text: 'Clone', onclick: function () { caPolicyEditor(j, 'Clone'); } }),
         el('span', { class: 'count', text: 'Edit changes this policy in your tenant; Clone creates a new one, off. Each shows what changes before you approve it.' })));
       else if (owner) p.appendChild(el('p', { class: 'smeta', text: 'Adopt it first to edit or clone it from here.' }));
+      if (capAutoOpen && capAutoOpen.id === String(pol.PolicyId).toLowerCase()) { var ao = capAutoOpen.what; capAutoOpen = null; if (isRole('SuperAdmin') && ad && ad.Status === 'Adopted') setTimeout(function () { if (ao === 'newversion') capNewVersion(j); else caPolicyEditor(j, ao); }, 0); }
+      // ADMIN-WALK (H): who this policy hits - analyse it from here, before any move
+      p.appendChild(el('h3', { text: 'Who it hits' }));
+      p.appendChild(caAnalyseBar(pol.PolicyId, pol.DisplayName, rv.stage));
       // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
       p.appendChild(el('h3', { text: 'Stage' }));
       if (owner && ad && ad.Status === 'Adopted') {
@@ -2703,13 +3751,66 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     p.appendChild(el('div', { class: 'guide', text: 'The Conditional Access documentation (v1: Entra-CA-Policies-Documentation): one row per policy, every id resolved to a name where the engine could read it with its read-only rights; an id it could not read stays an id.' }));
     var tg = el('input', { type: 'checkbox' }); tg.checked = ids;
     tg.addEventListener('change', function () { store.set('eps.capDocIds', tg.checked ? '1' : ''); render(); });
-    p.appendChild(el('div', { class: 'toolbar' }, el('label', null, tg, ' keep the ids next to the names'),
+    // ADMIN-WALK-2: readable labels and states, the main columns by default (fits 1366), every column on a toggle
+    var all = store.get('eps.capDocAll', '') === '1';
+    var ta = el('input', { type: 'checkbox' }); ta.checked = all;
+    ta.addEventListener('change', function () { store.set('eps.capDocAll', ta.checked ? '1' : ''); render(); });
+    p.appendChild(el('div', { class: 'toolbar' }, el('label', null, tg, ' keep the ids next to the names'), el('label', null, ta, ' all columns'),
       el('a', { href: '/api/capolicies/documentation/export?format=xlsx' + (ids ? '&ids=1' : ''), text: 'Export Excel' }), ' ',
-      el('a', { href: '/api/capolicies/documentation/export?format=csv' + (ids ? '&ids=1' : ''), text: 'Export CSV' })));
+      el('a', { href: '/api/capolicies/documentation/export?format=csv' + (ids ? '&ids=1' : ''), text: 'Export CSV' }),
+      el('span', { class: 'smeta', text: ' (the exports always hold every column)' })));
+    var MAIN = ['Template', 'Stage', 'DisplayName', 'State', 'IncludeUsers', 'ExcludeUsers', 'IncludeGroups', 'ExcludeGroups', 'IncludeApplications', 'GrantControls', 'AuthenticationStrength'];
+    var LABEL = { DisplayName: 'Policy', GrantOperator: 'Grant: require', GrantControls: 'Grant', ClientAppTypes: 'Client apps', SignInRiskLevels: 'Sign-in risk', UserRiskLevels: 'User risk', InsiderRiskLevels: 'Insider risk', PolicyId: 'Policy id', AuthenticationContexts: 'Authentication contexts', IncludeServicePrincipals: 'Include workload identities', ExcludeServicePrincipals: 'Exclude workload identities' };
+    var words = function (c) { return LABEL[c] || c.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^(\w)(.*)$/, function (m, a, b) { return a + b.toLowerCase(); }); };
     return api('GET', '/api/capolicies/documentation?' + qs({ ids: ids ? '1' : '' })).then(function (j) {
-      var cols = (j.columns || []).map(function (c) { return { key: c, label: c, type: c === 'Template' || c === 'Stage' || c === 'State' ? 'cat' : null, wrap: /Users|Groups|Roles|Applications|Locations|Controls|Session/.test(c) }; });
-      p.appendChild(table(j.rows || [], cols, { sort: 'DisplayName', dir: 1, empty: 'No policy read yet.' }));
+      var rows = (j.rows || []).map(function (r) { var x = Object.assign({}, r); if (x.State) x.State = caStateText(x.State); return x; });
+      var cols = (j.columns || []).filter(function (c) { return all || MAIN.indexOf(c) >= 0; })
+        .map(function (c) { return { key: c, label: words(c), type: c === 'Template' || c === 'Stage' || c === 'State' ? 'cat' : null, wrap: c === 'DisplayName' || /Users|Groups|Roles|Applications|Locations|Controls|Session|Grant|Strength/.test(c) }; });
+      p.appendChild(table(rows, cols, { sort: 'DisplayName', dir: 1, empty: 'No policy read yet.' }));
     });
+  }
+  // ADMIN-WALK: a template in words - who, which apps, the conditions, what it grants or blocks; the JSON stays behind a
+  // toggle. A {placeholder} is a role your settings fill in (shown as words).
+  var TPL_ROLE = { '{policyPilotGroup}': 'the pilot group', '{policyExcludeGroup}': 'its exclude group', '{breakGlassGroup}': 'the break-glass group', '{breakGlassAccounts}': 'the break-glass accounts' };
+  function tplWords(v) {
+    return (Array.isArray(v) ? v : [v]).filter(function (x) { return x !== null && x !== undefined && x !== ''; }).map(function (x) {
+      x = String(x); if (TPL_ROLE[x]) return TPL_ROLE[x];
+      var g = /^\{group:([^}]+)\}$/.exec(x); if (g) return 'the group ' + g[1];
+      // ADMIN-WALK-2: a strength by its name, never an id / placeholder; Graph's values in the admin center's words
+      var s = /^\{authStrength:([^}]+)\}$/.exec(x); if (s) return TPL_STRENGTH[s[1]] || ('your ' + s[1] + ' strength');
+      if (TPL_BUILTIN_STRENGTH[x.toLowerCase()]) return TPL_BUILTIN_STRENGTH[x.toLowerCase()];
+      return x === 'All' ? 'everyone / all' : capValText(x); }).join(', ');
+  }
+  var TPL_STRENGTH = { FIDO: 'your FIDO2 security key + TAP strength (Settings > Conditional Access)', WHfB: 'your Windows Hello for Business + TAP strength (Settings > Conditional Access)' };
+  var TPL_BUILTIN_STRENGTH = { '00000000-0000-0000-0000-000000000002': 'Multifactor authentication (built in)', '00000000-0000-0000-0000-000000000003': 'Passwordless MFA (built in)', '00000000-0000-0000-0000-000000000004': 'Phishing-resistant MFA (built in)' };
+  function tplSummary(t) {
+    var b = t.body || {}, c = b.conditions || {}, u = c.users || {}, a = c.applications || {}, g = b.grantControls || {}, s = b.sessionControls || {};
+    var rows = [];
+    var add = function (k, v) { if (v) rows.push(el('dt', { text: k }), el('dd', { text: v })); };
+    add('Applies to', [tplWords(u.includeUsers), tplWords(u.includeGroups), tplWords(u.includeRoles)].filter(function (x) { return x; }).join('; ') || 'nobody yet');
+    add('Except', [tplWords(u.excludeUsers), tplWords(u.excludeGroups), tplWords(u.excludeRoles)].filter(function (x) { return x; }).join('; '));
+    add('Apps', [tplWords(a.includeApplications), tplWords(a.includeUserActions)].filter(function (x) { return x; }).join('; ') + (a.excludeApplications && a.excludeApplications.length ? ' (not: ' + tplWords(a.excludeApplications) + ')' : ''));
+    add('Client apps', tplWords(c.clientAppTypes));
+    add('Platforms', c.platforms ? tplWords(c.platforms.includePlatforms) + (c.platforms.excludePlatforms && c.platforms.excludePlatforms.length ? ' (not: ' + tplWords(c.platforms.excludePlatforms) + ')' : '') : '');
+    add('Locations', c.locations ? tplWords(c.locations.includeLocations) + (c.locations.excludeLocations && c.locations.excludeLocations.length ? ' (not: ' + tplWords(c.locations.excludeLocations) + ')' : '') : '');
+    add('Sign-in risk', tplWords(c.signInRiskLevels)); add('User risk', tplWords(c.userRiskLevels));
+    add('Authentication flows', c.authenticationFlows ? tplWords(c.authenticationFlows.transferMethods) : '');
+    var ctl = (g.builtInControls || []);
+    add('Then', ctl.indexOf('block') >= 0 ? 'BLOCK access' : (ctl.length || g.authenticationStrength ? 'grant access, requiring ' + [tplWords(ctl), g.authenticationStrength ? 'the authentication strength ' + tplWords(g.authenticationStrength.displayName || g.authenticationStrength.id || g.authenticationStrength) : ''].filter(function (x) { return x; }).join(g.operator === 'AND' ? ' AND ' : ' OR ') : ''));
+    var SESS = { signInFrequency: 'sign-in frequency', persistentBrowser: 'persistent browser session', cloudAppSecurity: 'Conditional Access App Control', applicationEnforcedRestrictions: 'app enforced restrictions', disableResilienceDefaults: 'resilience defaults off', continuousAccessEvaluation: 'continuous access evaluation' };
+    add('Session', Object.keys(s).filter(function (k) { return s[k] && s[k].isEnabled !== false; }).map(function (k) { return SESS[k] || k; }).join(', '));
+    if (t.prod) add('At Prod', Object.keys(t.prod).map(function (k) { return k.split('.').pop() + ' = ' + (tplWords(t.prod[k]) || 'none'); }).join('; '));
+    if ((t.gaps || []).length) add('Needs from you', t.gaps.join('; '));
+    return el('dl', { class: 'info' }, rows);
+  }
+  function capDeployStagePick(n, cb) {
+    var d = el('dialog', { 'aria-label': 'Deploy at which stage' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    var st = el('select', { 'aria-label': 'Stage' }, el('option', { value: 'Initial', text: 'Initial - off' }), el('option', { value: 'Pilot1', text: 'Pilot1 - report-only for the pilot group' }));
+    d.appendChild(el('h3', { text: 'Deploy ' + n + ' template' + (n === 1 ? '' : 's') }));
+    d.appendChild(el('p', null, 'Create them at the stage ', st));
+    d.appendChild(el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'link', text: 'Cancel', onclick: close }), el('button', { type: 'button', text: 'Next', onclick: function () { var v = st.value; close(); cb(v); } })));
+    document.body.appendChild(d); d.showModal();
   }
   function drawCaTemplates(p) {
     capSubnav(p, 'templates');
@@ -2717,17 +3818,21 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     p.appendChild(el('div', { class: 'guide', text: 'The template library of this release (v1\'s CA000-CA800, converted to data). A template names groups, accounts and names by their role ({breakGlassGroup}, {group:Admins_All}, ...): the values are your settings, never part of the template. A SuperAdmin deploys a template as a NEW policy (Deploy: off or report-only, the groups it needs created first, adopted at once - v1\'s Initial_Setup). A template already in your tenant is not deployed again: a newer version is TESTED next to its policy (Test a new version, on the policy\'s page), then promoted. Nothing is deployed by itself.' }));
     var slot = el('div');
     return api('GET', '/api/capolicies/templates').then(function (j) {
-      if (owner && !j.method) p.appendChild(el('p', { class: 'c-warning', text: 'The group-targeting method is not set (Settings > Conditional Access > CA.GroupTargetingMethod): set it before you deploy.' }));
+      if (owner && !j.method) p.appendChild(el('p', { class: 'c-warning' }, 'The group targeting method is not set: set it before you deploy - ', el('a', { href: '#start', text: 'Get started, step 4' }), ' (or ', el('a', { href: '#settings/CA', text: 'Settings > Conditional Access' }), ').'));
       var cols = [{ key: 'id', label: 'Template', render: function (t) { return el('button', { type: 'button', class: 'link', text: t.id, onclick: function () {
-          api('GET', '/api/capolicies/templates?' + qs({ id: t.id })).then(function (x) { clear(slot).appendChild(el('h3', { text: x.template.id + ' ' + x.template.version + ' ' + x.template.name })); slot.appendChild(el('pre', { class: 'log', text: JSON.stringify(x.template, null, 2) })); slot.scrollIntoView(); }).catch(function (e) { status(e.message); }); } }); } },
-        { key: 'version', label: 'Version', type: 'cat' }, { key: 'name', label: 'Name' }, { key: 'persona', label: 'Persona', type: 'cat' }, { key: 'inTenant', label: 'In the tenant', wrap: true },
-        { key: 'breakGlassPolicy', label: 'Break-glass policy', type: 'cat' }, { key: 'incomplete', label: 'Incomplete', type: 'cat' }, { key: 'notes', label: 'Notes', wrap: true }];
+          api('GET', '/api/capolicies/templates?' + qs({ id: t.id })).then(function (x) { clear(slot).appendChild(el('h3', { text: x.template.id + ' ' + x.template.version + ' ' + x.template.name })); slot.appendChild(tplSummary(x.template)); var raw = el('details', null, el('summary', { text: 'The template as data (JSON)' }), el('pre', { class: 'log', text: JSON.stringify(x.template, null, 2) })); slot.appendChild(raw); slot.scrollIntoView(); }).catch(function (e) { notice(e.message, 'warn'); }); } }); } },
+        { key: 'version', label: 'Version', type: 'cat' }, { key: 'name', label: 'Name' }, { key: 'persona', label: 'Persona', type: 'cat' },
+        { key: 'inTenant', label: 'In the tenant', wrap: true, render: function (t) { var ps = t.inTenantPolicies || []; if (!ps.length) return el('span', { class: 'smeta', text: 'not yet' }); return el('span', null, ps.map(function (x, i) { return el('span', null, i ? ', ' : '', el('a', { href: '#capolicies/' + x.id, text: x.name })); })); } },
+        { key: 'BreakGlassShown', label: 'Break-glass policy', type: 'cat' }, { key: 'IncompleteShown', label: 'Needs an input', type: 'cat' }, { key: 'notes', label: 'Notes', wrap: true }];
+      (j.rows || []).forEach(function (t) { t.BreakGlassShown = t.breakGlassPolicy ? 'Yes' : 'No'; t.IncompleteShown = t.incomplete ? 'Yes' : 'No'; });
       if (owner) cols.push({ key: '_d', label: '', render: function (t) { if (t.inTenant || t.incomplete) return null; return el('button', { type: 'button', class: 'secondary', text: 'Deploy', onclick: function (e) { e.stopPropagation(); capDeploy(t); } }); } });
-      var bulk = owner ? [{ label: 'Deploy (off)', run: function (sel) {
+      var bulk = owner ? [{ label: 'Deploy (pick the stage) ...', run: function (sel) {
         var todo = sel.filter(function (t) { return !t.inTenant && !t.incomplete; });
         if (!todo.length) { notice('Every selected template is in the tenant already (or incomplete in v1).'); return; }
-        bulkAction('Deploy templates (off)', 'Each template becomes a NEW policy in your tenant, OFF (v1\'s Initial_Setup), adopted at once; the groups each needs are created first when missing. The engine checks each again first and refuses one that is already there or would not exclude the break-glass accounts. Open one with its Deploy button first to see what it creates.', todo,
-          function (t, reason) { return api('POST', '/api/catemplates/' + encodeURIComponent(t.id) + '/deploy', { stage: 'Initial', reason: reason }); }); } }] : [];
+        // ADMIN-WALK: the stage for the whole selection - Initial (off) or Pilot1 (report-only for the pilot group)
+        capDeployStagePick(todo.length, function (stage) {
+          bulkAction('Deploy templates (' + (stage === 'Pilot1' ? 'Pilot1, report-only' : 'off') + ')', 'Each template becomes a NEW policy in your tenant, ' + (stage === 'Pilot1' ? 'REPORT-ONLY for its pilot group (Pilot1)' : 'OFF (v1\'s Initial_Setup)') + ', adopted at once; the groups each needs are created first when missing. The engine checks each again first and refuses one that is already there or would not exclude the break-glass accounts. Open one with its Deploy button first to see what it creates.', todo,
+            function (t, reason) { return api('POST', '/api/catemplates/' + encodeURIComponent(t.id) + '/deploy', { stage: stage, reason: reason }); }); }); } }] : [];
       p.appendChild(table(j.rows || [], cols, { sort: 'id', dir: 1, bulk: bulk }));
       p.appendChild(slot);
     });
@@ -2750,7 +3855,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   function tuSeen(rows) {
     var ids = rows.map(function (r) { return r.id; });
     tuTake('Mark as seen' + (ids.length > 1 ? ' (' + ids.length + ')' : ': ' + ids[0]),
-      'Records that you have seen the change to ' + (ids.length > 5 ? ids.slice(0, 5).join(', ') + ' ...' : ids.join(', ')) + ': the next update compares from this version. Nothing else changes - your policies stay as they are; change them yourself in the tenant if you want the new template.',
+      'Records that you have seen the change to ' + (ids.length > 5 ? ids.slice(0, 5).join(', ') + ' ...' : ids.join(', ')) + ': the next update compares from this version. Nothing else changes - your policies stay as they are; to try the new template, use "Test the new version next to it" on a policy.',
       { templates: ids });
   }
   function tuDetail(slot, t) {
@@ -2773,15 +3878,16 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (!x.diff || !x.diff.length) rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: t.kind === 'removed' ? '' : 'as the template', template: '', tenant: '' });
       else x.diff.forEach(function (d) { rows.push({ policyId: x.policyId, displayName: x.displayName, stage: x.stage, setting: d.setting, template: d.template, tenant: d.tenant }); });
     });
-    slot.appendChild(el('div', { class: 'guide', text: 'Shown only. A template update never changes a Conditional Access policy: if you want what the new template does, make the change yourself in the tenant (export the template for reference), then read the policy list again.' }));
-    slot.appendChild(table(rows, [{ key: 'displayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.policyId, text: r.displayName }); } }, { key: 'stage', label: 'Stage', type: 'cat' },
+    slot.appendChild(el('div', { class: 'guide', text: 'Marking a change as seen never changes a Conditional Access policy. To get what the new template does: "Test the new version next to it" on a policy (below, a SuperAdmin) creates the new version as a SECOND policy (report-only for the pilot group) next to the one you have - then Promote or Roll back on that policy\'s page. Or change your policy yourself with Edit.' }));
+    slot.appendChild(table(rows, [{ key: '_nv', label: '', render: function (r) { return isRole('SuperAdmin') && t.kind === 'changed' ? el('button', { type: 'button', class: 'secondary', text: 'Test the new version next to it', onclick: function () { capAutoOpen = { id: String(r.policyId).toLowerCase(), what: 'newversion' }; location.hash = '#capolicies/' + r.policyId; } }) : null; } },
+      { key: 'displayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.policyId, text: r.displayName }); } }, { key: 'stage', label: 'Stage', type: 'cat' },
       { key: 'setting', label: 'Setting', type: 'cat' }, { key: 'template', label: 'Template wants', wrap: true }, { key: 'tenant', label: 'Your policy has', wrap: true }], { sort: 'displayName', dir: 1 }));
     slot.scrollIntoView();
   }
   function drawCaTemplateUpdates(p) {
     capSubnav(p, 'updates');
     var admin = isRole('Admin');
-    p.appendChild(el('div', { class: 'guide', text: 'A new release can bring a newer template library. Nothing changes by itself: this page shows what is new or changed since the library this install took, and you decide. A persona change is applied to your persona (or skipped). A template change is only shown - with your policies against the new template and an export - and marked as seen. No Conditional Access policy is ever changed from here.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'A new release can bring a newer template library. Nothing changes by itself: this page shows what is new or changed since the library this install took, and you decide. A persona change is applied to your persona (or skipped). A template change is shown - with your policies against the new template and an export - and marked as seen; open it and press "Test the new version next to it" on a policy to try the new version as a second policy (report-only), then Promote or Roll back on the policy\'s page. Nothing here changes a policy by itself.' }));
     var slot = el('div');
     return api('GET', '/api/ca/template-updates').then(function (j) {
       var tpl = j.templates || [], per = j.personas || [];
@@ -2844,8 +3950,14 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     d.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     document.body.appendChild(d); d.showModal(); (a ? dn : upn).focus();
   }
+  // ADMIN-WALK-2: v1's three group targeting methods, said in words (the stored value stays v1's name)
+  var GS_METHOD_TEXT = {
+    Dynamic_Using_Tags: 'Dynamic groups from the tags - one pilot group per policy whose rule follows the stage (v1\'s default)',
+    Manual_Assignment_Advanced: 'Assigned groups per policy - Pilot1 / Pilot2 / Pilot3 groups for every policy, members added by hand',
+    Manual_Assignment_Simple: 'Assigned groups per persona - one set of Pilot1 / Pilot2 / Pilot3 groups shared by a persona\'s policies'
+  };
   function gsMethodPicker(j) {
-    var sel = el('select', null, [''].concat(j.methods || []).map(function (v) { var o = el('option', { value: v, text: v || '(choose)' }); if (v === j.method) o.selected = true; return o; }));
+    var sel = el('select', null, [''].concat(j.methods || []).map(function (v) { var o = el('option', { value: v, text: v ? (GS_METHOD_TEXT[v] || v) : '(choose)' }); if (v === j.method) o.selected = true; return o; }));
     var go = el('button', { type: 'button', class: 'secondary', text: 'Save the method', onclick: function () {
       if (!sel.value || sel.value === j.method) return;
       withReason('Group targeting method: ' + sel.value, 'Which pilot and target group names the templates expect (v1\'s Group_Targeting_Method). Changes no group and no policy.', function (reason) {
@@ -2856,8 +3968,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // reads them and shows the plan (POST /api/v1import/check - nothing saved), a SuperAdmin approves (POST /api/v1import)
   // and the engine writes it from the signed request
   function drawV1Import(p) {
-    p.appendChild(el('div', { class: 'guide', text: 'Brings a v1 install over in one go: the tagging rules, the tag types and their values, the settings, the break-glass accounts, the administrative units, the target groups and the service tags. Choose the files from v1\'s DATA folder (and Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1 for the attribute per tag type). Reading them saves nothing; you see what is added and what changes first. A new import replaces the rules an earlier v1 import made; rules made in this app are never touched. v1\'s files are only read. A demo file is never read.' }));
-    var file = el('input', { type: 'file', multiple: true, accept: '.csv,.config,.ps1', 'aria-label': 'v1 files' });
+    p.appendChild(el('div', { class: 'guide', text: 'Brings a v1 install over in one go: the tagging rules, the tag types and their values, the settings, the break-glass accounts, the administrative units, the target groups and the service tags. Choose the files from v1\'s DATA folder (and Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1 for the attribute per tag type; FUNCTIONS\\Automation-DefaultVariables.psm1 for the identity report\'s mail and OUs and the mail relay - only those values are read from it). Reading them saves nothing; you see what is added and what changes first. A new import replaces the rules an earlier v1 import made; rules made in this app are never touched. v1\'s files are only read. A demo file is never read.' }));
+    var file = el('input', { type: 'file', multiple: true, accept: '.csv,.config,.ps1,.psm1', 'aria-label': 'v1 files' });
     var errs = el('div', { class: 'errors', hidden: true });
     var out = el('div');
     var read = el('button', { type: 'button', text: 'Read the files', onclick: function () {
@@ -2899,8 +4011,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // is shown first (the plan), needs a SuperAdmin, and is applied by the engine - read back, journaled, audited.
   var GRP_KIND = { breakglass: 'break-glass', sspr: 'registration', target: 'target', pilot: 'pilot', exclude: 'exclude' };
   // the five change routes, written out (tests/Test-EpsApiReference.ps1 matches every page call to a route)
-  var GRP_PATH = { create: '/api/groups/create', rule: '/api/groups/rule', members: '/api/groups/members', forceupdate: '/api/groups/forceupdate', au: '/api/groups/au' };
-  var GRP_DO = { create: 'create', rule: 'set the rule', update: 'update', add: 'add member', remove: 'remove member', place: 'place in unit', skip: 'no change', refused: 'refused' };
+  var GRP_PATH = { create: '/api/groups/create', rule: '/api/groups/rule', editrule: '/api/groups/editrule', members: '/api/groups/members', forceupdate: '/api/groups/forceupdate', au: '/api/groups/au' };
+  var GRP_DO = { create: 'create', rule: 'set the rule', editrule: 'set the rule', update: 'update', add: 'add member', remove: 'remove member', place: 'place in unit', skip: 'no change', refused: 'refused' };
   function grpQuery(payload) {
     var q = {}; Object.keys(payload).forEach(function (k) { var v = payload[k]; q[k] = Array.isArray(v) ? v.join(',') : v; }); return q;
   }
@@ -2935,12 +4047,45 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
   }
+  // ADMIN-WALK (2026-11-05): people are PICKED, never typed - chips of user principal names + "Add a person" (the CA
+  // editor's search picker over the stored names, and the tenant on request). opts.single: one person only.
+  function peoplePicker(label, opts) {
+    opts = opts || {};
+    var vals = [], cx = { known: {} };
+    var box = el('div', { class: 'chips' }), pick = el('div', { class: 'cap-pick', hidden: true });
+    var draw = function () {
+      clear(box);
+      // ADMIN-WALK-2: no floating "nobody picked" next to an empty one-person picker - its button says what to do
+      if (!vals.length && !opts.single) box.appendChild(el('span', { class: 'smeta', text: 'nobody picked yet' }));
+      box.hidden = !vals.length && !!opts.single;
+      vals.forEach(function (v) {
+        var x = el('button', { type: 'button', class: 'chip-x', 'aria-label': 'Remove ' + v, text: '×' });
+        x.addEventListener('click', function () { vals = vals.filter(function (y) { return y !== v; }); draw(); if (opts.onChange) opts.onChange(vals); });
+        box.appendChild(el('span', { class: 'chip' }, el('span', { text: v }), el('span', { class: 'chip-kind', text: 'user' }), x));
+      });
+    };
+    var add = el('button', { type: 'button', class: 'secondary', text: opts.single ? 'Pick a person' : 'Add a person', 'aria-label': 'Add to ' + label });
+    add.addEventListener('click', function () {
+      pick.hidden = !pick.hidden;
+      if (!pick.hidden) {
+        if (!pick.firstChild) capPicker(pick, 'user', [], cx, function (v, name, detail) {
+          // the user principal name (the routes want it): the detail of a found user, else the stored name
+          var u = String([detail, name, v].filter(function (x) { return x && String(x).indexOf('@') > 0; })[0] || name || v).toLowerCase();
+          if (vals.indexOf(u) < 0) { if (opts.single) vals = []; vals.push(u); draw(); if (opts.onChange) opts.onChange(vals); }
+          if (opts.single) pick.hidden = true;
+        }, function () { return vals; });
+        pick.querySelector('input').focus();
+      }
+    });
+    draw();
+    return { node: el('div', { class: 'chip-field' }, box, el('div', { class: 'toolbar' }, add), pick), get: function () { return vals.slice(); } };
+  }
   function grpMembers(r) {
     var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Members of ' + r.name });
     var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
-    var add = el('textarea', { rows: 4, style: 'width:100%', placeholder: 'user@contoso.com - one per line' });
-    var rem = el('textarea', { rows: 4, style: 'width:100%', placeholder: 'user@contoso.com - one per line' });
-    var lines = function (t) { return t.value.split(/[\n,;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x; }); };
+    var addP = peoplePicker('Add'), remP = peoplePicker('Remove');
+    var add = addP.node, rem = remP.node;
+    var lines = function (t) { return t === add ? addP.get() : remP.get(); };
     d.appendChild(el('h3', { text: 'Members of ' + r.name }));
     d.appendChild(el('p', { class: 'smeta', text: r.members === null || r.members === undefined ? 'Members: not read yet.' : 'Members now: ' + r.members + (r.kind === 'pilot' ? '. v1\'s advice: Pilot1 1-2 users, Pilot2 5-10, Pilot3 30-50.' : '.') }));
     d.appendChild(el('div', { class: 'rf-grid' }, el('div', { class: 'rf-l', text: 'Add' }), el('div', { class: 'rf-c' }, add), el('div', { class: 'rf-l', text: 'Remove' }), el('div', { class: 'rf-c' }, rem)));
@@ -2950,38 +4095,110 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     } }), el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     document.body.appendChild(d); d.showModal();
   }
+  // GROUPS-ACTIONS (owner 2026-11-05: "should i see buttn here like edit so i can modify a group dynamic membership or
+  // create or validate etc"): Edit rule - the tenant's rule and v1's side by side, your own rule in an editor, Validate
+  // (Microsoft Entra checks it before anything is saved), then Save (SuperAdmin, a reason, the engine writes it and reads
+  // it back; it is kept as this install's rule for the group) - or back to v1's rule
+  function grpRule(r) {
+    var owner = isRole('SuperAdmin'), admin = isRole('Admin');
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'Membership rule of ' + r.name });
+    var closed = false, vreq = null;
+    var close = function () { if (closed) return; closed = true; vreq = null; try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var mono = 'width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px';
+    var ed = el('textarea', { rows: 6, style: mono, maxlength: 3072, 'aria-label': 'Your rule' });
+    ed.value = textOf(r.customBase || r.ruleInTenant || r.v1Rule);
+    var user = el('input', { type: 'text', placeholder: 'test user (optional) - user@contoso.com', style: 'width:100%' });
+    var vout = el('div', { class: 'smeta', text: 'Validate asks Microsoft Entra whether it can read the rule (and whether the test user would be a member). Nothing is created or changed.' });
+    d.appendChild(el('h3', { text: 'Membership rule of ' + r.name }));
+    var grid = el('div', { class: 'rf-grid' });
+    var row = function (label, node) { grid.appendChild(el('div', { class: 'rf-l', text: label })); grid.appendChild(el('div', { class: 'rf-c' }, node)); };
+    row('In the tenant', el('code', { class: 'rconds', text: r.ruleInTenant === null || r.ruleInTenant === undefined ? 'not read yet' : (textOf(r.ruleInTenant) || '(empty)') + (r.processingInTenant ? '  (' + r.processingInTenant + ')' : '') }));
+    row('v1\'s rule', el('code', { class: 'rconds', text: textOf(r.v1Rule) || 'v1 has no rule for this group' }));
+    if (r.custom) row('Your rule', el('div', null, el('code', { class: 'rconds', text: textOf(r.customBase) }), el('div', { class: 'smeta', text: 'set by ' + textOf(r.customBy) + (r.customAt ? ' ' + fmtTime(r.customAt) : '') + ' - kept by "Set rule", force update and stage moves' })));
+    if (r.kind === 'pilot') row('Pilot group', el('div', { class: 'smeta', text: 'Your rule is the Pilot1 base. A stage widens every (user.<attribute> -contains "_pilot1") in it to _pilot2 / _pilot3, as v1 does, and Prod pauses it. Without a "_pilot1" clause the rule stays as it is at every stage. The policy is at ' + textOf(r.stage || 'Initial') + '.' }));
+    row('Edit', ed);
+    row('Test user', user);
+    d.appendChild(grid);
+    d.appendChild(vout);
+    var showV = function (q) {
+      if (closed) return;
+      if (!q || ['Done', 'Failed', 'Refused'].indexOf(q.Status) < 0) { vout.className = 'smeta'; vout.textContent = 'Waiting for the engine (within 5 minutes) - nothing is changed.'; return false; }
+      var t = textOf(q.StatusText);
+      vout.className = /refuses|NOT valid|could not/i.test(t) || q.Status !== 'Done' ? 'errors' : 'guide';
+      vout.textContent = (q.Status !== 'Done' ? q.Status + ': ' : '') + t; return true;
+    };
+    var poll = function (id, n) { if (closed || vreq !== id) return; api('GET', '/api/requests/' + encodeURIComponent(id)).then(function (q) { if (!showV(q) && n < 60) setTimeout(function () { poll(id, n + 1); }, 5000); }).catch(function (e) { vout.className = 'errors'; vout.textContent = 'Could not read the answer: ' + e.message; }); };
+    var btns = el('div', { class: 'toolbar' });
+    if (admin) btns.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Validate', onclick: function () {
+      if (!ed.value.trim()) { ed.focus(); return; }
+      vout.className = 'smeta'; vout.textContent = 'Sending the rule to the engine to check ...';
+      api('POST', '/api/groups/validate', { rule: ed.value.trim(), user: user.value.trim(), reason: 'validate a membership rule for ' + r.name + ' (nothing changes)' })
+        .then(function (x) { if (x && x.requestId) { vreq = x.requestId; showV(null); setTimeout(function () { poll(x.requestId, 0); }, 4000); } else { vout.textContent = textOf(x && x.text); } })
+        .catch(function (e) { vout.className = 'errors'; vout.textContent = 'Refused: ' + e.message; });
+    } }));
+    if (owner) {
+      btns.appendChild(el('button', { type: 'button', text: 'Save this rule', onclick: function () {
+        if (!ed.value.trim()) { ed.focus(); return; }
+        var rule = ed.value.trim(); close(); grpDialog('editrule', { name: r.name, rule: rule }, 'Your rule for ' + r.name);
+      } }));
+      if (r.custom && r.v1Rule) btns.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Back to v1\'s rule', onclick: function () { close(); grpDialog('editrule', { name: r.name, back: true }, 'v1\'s rule again for ' + r.name); } }));
+    }
+    btns.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close }));
+    d.appendChild(btns);
+    if (!owner) d.appendChild(el('p', { class: 'smeta', text: 'Saving a rule needs a SuperAdmin.' }));
+    document.body.appendChild(d); d.showModal(); ed.focus();
+  }
+  function grpCheck(names, label) {
+    // GROUPS-ACTIONS "Check": the engine reads these groups now (reads only); the page redraws when it is done
+    notice('Sending: ' + label + ' ...');
+    api('POST', '/api/groups/check', { names: names, reason: label + ' (read only)' }).then(function (x) { afterAction(x, label); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+  }
   function drawCaGroups(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
-    p.appendChild(el('div', { class: 'guide', text: 'The groups your Conditional Access policies use, as v1 makes them: the target groups of your group targeting method, the break-glass group, the registration group, and for each adopted policy its exclude group and pilot group(s). "Read the groups" reads the tenant (it changes nothing). A SuperAdmin can create a missing group, set a dynamic group\'s rule back to Entra Policy Suite\'s, change the members of an assigned pilot, exclude or break-glass group, run v1\'s group force update for one policy, and make the administrative units - always after seeing the change. A stage move sets the dynamic pilot group\'s rule for the stage, as v1 does.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'The groups your Conditional Access policies use, as v1 makes them: the target groups of your group targeting method, the break-glass group, the registration group, and for each adopted policy its exclude group and pilot group(s). Each row has its actions first: Check reads that group now (it changes nothing); a SuperAdmin can Create a missing group, Edit a dynamic group\'s rule (validated by Microsoft Entra first), change the Members of an assigned pilot, exclude or break-glass group, and run v1\'s group force update - always after seeing the change. A stage move sets the dynamic pilot group\'s rule for the stage, as v1 does.' }));
     capSubnav(p, 'groups');
     return api('GET', '/api/groups').then(function (j) {
       var rows = j.rows || [];
-      var missing = rows.filter(function (r) { return r.canCreate; }), ruleOff = rows.filter(function (r) { return r.canRule; });
+      var missing = rows.filter(function (r) { return r.inTenant === 'missing' && r.canCreate; }), ruleOff = rows.filter(function (r) { return r.canRule; });
+      var readAll = function () { withReason('Read the groups', 'The engine reads the managed groups and administrative units in the tenant. Read only: nothing changes. The page shows the result when the engine is done.', function (reason) { return api('POST', '/api/groups/check', { reason: reason }); }, { readOnly: true }); };
       p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), card(missing.length, 'missing', missing.length > 0),
         card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
+      // not read yet: every row is 'unknown' - say so where it is seen, with the button next to it
+      if (!j.checkedAtUtc && rows.length) p.appendChild(el('div', { class: 'bar bar-warn' }, el('span', { text: 'The groups have not been read from the tenant yet, so their state, members and rules show as unknown. ' }), admin ? el('button', { type: 'button', text: 'Read the groups now', onclick: readAll }) : el('span', { text: 'An Admin can read them.' })));
       p.appendChild(el('div', { class: 'toolbar' },
-        admin ? el('button', { type: 'button', class: 'secondary', text: 'Read the groups', onclick: function () { withReason('Read the groups', 'The engine reads the managed groups and administrative units in the tenant. Read only: nothing changes.', function (reason) { return api('POST', '/api/groups/check', { reason: reason }); }); } }) : null,
+        admin ? el('button', { type: 'button', class: 'secondary', text: 'Read the groups', onclick: readAll }) : null,
         owner && missing.length ? el('button', { type: 'button', text: 'Create all missing (' + missing.length + ')', onclick: function () { grpDialog('create', { names: missing.map(function (r) { return r.name; }) }, 'Create the missing groups'); } }) : null,
         owner && ruleOff.length ? el('button', { type: 'button', class: 'secondary', text: 'Set every rule (' + ruleOff.length + ')', onclick: function () { grpDialog('rule', { names: ruleOff.map(function (r) { return r.name; }) }, 'Set the dynamic rules'); } }) : null,
         owner ? el('button', { type: 'button', class: 'secondary', text: 'Administrative units', onclick: function () { grpDialog('au', {}, 'Administrative units: create and place'); } }) : null,
         el('span', { class: 'count', text: 'Targeting method: ' + (j.method || 'not set (Get started, step 4)') + '. ' + (j.checkedAtUtc ? 'Last read ' : 'Not read yet.') }), j.checkedAtUtc ? timeEl(j.checkedAtUtc) : null));
       p.appendChild(el('h3', { text: 'Administrative units' }));
       p.appendChild(table(j.adminUnits || [], [{ key: 'purpose', label: 'For', type: 'cat' }, { key: 'name', label: 'Administrative unit' }, { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (r) { return r.inTenant === 'missing' ? 'c-danger' : (r.inTenant === 'unknown' ? 'smeta' : ''); } }, { key: 'error', label: 'Note', wrap: true }], { sort: null }));
-      p.appendChild(el('h3', { text: 'Groups' }));
-      var cols = [{ key: 'name', label: 'Group', wrap: true }, { key: 'kind', label: 'Kind', type: 'cat', render: function (r) { return GRP_KIND[r.kind] || r.kind; } }, { key: 'assignment', label: 'Type', type: 'cat' },
-        { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (r) { return r.inTenant === 'missing' ? 'c-danger' : (r.inTenant === 'unknown' ? 'smeta' : ''); } },
+      // GROUPS-ACTIONS: the actions are the FIRST column and on every row (owner: "should i see buttn here like edit ...");
+      // on a laptop the administrative unit and "Used by" columns are behind "More columns" (remembered per browser)
+      var more = store.get('eps.groups.morecols') === '1';
+      p.appendChild(el('div', { class: 'toolbar' }, el('h3', { text: 'Groups', style: 'margin:0' }),
+        el('label', { class: 'rf-check' }, (function () { var cb = el('input', { type: 'checkbox' }); cb.checked = more; cb.addEventListener('change', function () { store.set('eps.groups.morecols', cb.checked ? '1' : '0'); render(); }); return cb; })(), ' More columns (administrative unit, used by)')));
+      var cols = [{ key: '_act', label: 'Actions', render: function (r) {
+          var b = [];
+          if (admin) b.push(el('button', { type: 'button', class: 'link', text: 'Check', title: 'Read this group in the tenant now (changes nothing)', onclick: function () { grpCheck([r.name], 'Check ' + r.name); } }));
+          if (owner && r.canCreate) b.push(el('button', { type: 'button', text: 'Create', title: r.inTenant === 'unknown' ? 'Not read yet: the engine checks first and skips it when it is there' : 'Create it as v1 does', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
+          if (r.canEditRule) b.push(el('button', { type: 'button', class: 'secondary', text: owner ? 'Edit rule' : 'Rule', onclick: function () { grpRule(r); } }));
+          if (owner && r.canRule) b.push(el('button', { type: 'button', class: 'secondary', text: 'Set rule', title: 'Set it back to Entra Policy Suite\'s rule' + (r.custom ? ' (yours)' : ' (v1\'s)'), onclick: function () { grpDialog('rule', { names: [r.name] }, 'Set the rule of ' + r.name); } }));
+          if (owner && r.canMembers) b.push(el('button', { type: 'button', class: 'secondary', text: 'Members', onclick: function () { grpMembers(r); } }));
+          if (owner && r.kind === 'exclude' && (r.templates || []).length) b.push(el('button', { type: 'button', class: 'link', text: 'Force update ' + r.templates[0], onclick: function () { grpDialog('forceupdate', { template: r.templates[0] }, 'Group force update for ' + r.templates[0]); } }));
+          // the page names no other origin (the front's CSP, tests/Test-EpsWeb.ps1): the group's object id to copy instead of
+          // a link - paste it into the Microsoft Entra admin center (Groups > All groups)
+          if (r.objectId) b.push(el('button', { type: 'button', class: 'link', text: 'Copy id', title: 'Object id ' + r.objectId + ' - paste it into the Microsoft Entra admin center (Groups > All groups)', onclick: function () { try { navigator.clipboard.writeText(r.objectId).then(function () { notice('Copied the object id of ' + r.name + ': ' + r.objectId); }); } catch (e) { notice(r.name + ': ' + r.objectId); } } }));
+          return el('span', { class: 'grp-acts' }, b);
+        } },
+        { key: 'name', label: 'Group', wrap: true, render: function (r) { return el('span', null, el('span', { text: r.name }), r.custom ? el('span', { class: 'badge', title: 'a rule you set', text: 'your rule' }) : null, r.error ? el('div', { class: 'smeta c-warning', text: r.error }) : null); } },
+        { key: 'kind', label: 'Kind', type: 'cat', render: function (r) { return GRP_KIND[r.kind] || r.kind; } }, { key: 'assignment', label: 'Type', type: 'cat' },
+        { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (r) { return r.inTenant === 'missing' ? 'c-danger' : (r.inTenant === 'unknown' ? 'smeta' : ''); }, render: function (r) { return r.inTenant === 'unknown' ? 'not read yet' : r.inTenant; } },
         { key: 'members', label: 'Members', type: 'num' },
-        { key: 'ruleOk', label: 'Rule', type: 'cat', render: function (r) { return el('span', { class: r.ruleOk === false ? 'c-warning' : null, title: r.ruleOk === false ? 'now: ' + textOf(r.ruleInTenant) + ' (' + textOf(r.processingInTenant) + ')\nshould be: ' + textOf(r.rule) + ' (' + textOf(r.processing) + ')' : textOf(r.rule), text: r.assignment !== 'Dynamic' ? '-' : (r.ruleOk === null ? 'not read' : (r.ruleOk ? 'as it should be' + (r.processing === 'Paused' ? ' (paused)' : '') : 'differs')) }); } },
-        { key: 'adminUnit', label: 'Administrative unit', wrap: true, render: function (r) { return el('span', { class: r.inAdminUnit === false ? 'c-warning' : null, text: r.adminUnit + (r.inAdminUnit === false ? ' (not in it)' : (r.inAdminUnit === null ? ' (not read)' : '')) }); } },
-        { key: 'templates', label: 'Used by', wrap: true, render: function (r) { return (r.templates || []).join(', '); } }];
-      if (owner) cols.push({ key: '_act', label: '', render: function (r) {
-        var b = [];
-        if (r.canCreate) b.push(el('button', { type: 'button', text: 'Create', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
-        if (r.canRule) b.push(el('button', { type: 'button', class: 'secondary', text: 'Set rule', onclick: function () { grpDialog('rule', { names: [r.name] }, 'Set the rule of ' + r.name); } }));
-        if (r.canMembers) b.push(el('button', { type: 'button', class: 'secondary', text: 'Members', onclick: function () { grpMembers(r); } }));
-        if (r.kind === 'exclude' && (r.templates || []).length) b.push(el('button', { type: 'button', class: 'link', text: 'Force update ' + r.templates[0], onclick: function () { grpDialog('forceupdate', { template: r.templates[0] }, 'Group force update for ' + r.templates[0]); } }));
-        return el('span', null, b);
-      } });
+        { key: 'ruleOk', label: 'Rule', type: 'cat', render: function (r) { return el('span', { class: r.ruleOk === false ? 'c-warning' : null, title: r.ruleOk === false ? 'now: ' + textOf(r.ruleInTenant) + ' (' + textOf(r.processingInTenant) + ')\nshould be: ' + textOf(r.rule) + ' (' + textOf(r.processing) + ')' : textOf(r.rule), text: r.assignment !== 'Dynamic' ? '-' : (r.ruleOk === null ? 'not read' : (r.ruleOk ? 'as it should be' + (r.processing === 'Paused' ? ' (paused)' : '') : 'differs')) }); } }];
+      if (more) cols.push({ key: 'adminUnit', label: 'Administrative unit', wrap: true, render: function (r) { return el('span', { class: r.inAdminUnit === false ? 'c-warning' : null, text: r.adminUnit + (r.inAdminUnit === false ? ' (not in it)' : (r.inAdminUnit === null ? ' (not read)' : '')) }); } },
+        { key: 'templates', label: 'Used by', wrap: true, render: function (r) { return (r.templates || []).join(', '); } });
       p.appendChild(table(rows, cols, { empty: 'No group to manage yet: set the group targeting method (Get started) and adopt your policies.' }));
     });
   }
@@ -3059,9 +4276,41 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     }
     return b.length ? el('div', { class: 'toolbar' }, b) : null;
   }
+  // ADMIN-WALK (2026-11-05): every step has a way to fix what it found, and a step waits (greyed, with why) while the
+  // step it needs is not ready. The steps come in their dependency order from the engine.
+  var GS_NEEDS = { targets: ['method'], pilots: ['method', 'breakglass'], aus: ['targets'], templates: ['method', 'breakglass'] };
+  var GS_FIX = {
+    rights: { cmd: 'Grant-EpsEnginePermissions', text: 'Grant the missing rights: run this once as a Global Administrator (or run the install again).' },
+    tags: { links: [['#tagtypes', 'Tag types & conditions'], ['#rules', 'Tagging rules'], ['#v1import', 'Import v1']] },
+    mail: { links: [['#settings/Mail', 'Settings > Alert mail']], cmd: 'Initialize-EpsMailSender', text: 'The sender mailbox and its right are set by this script:' },
+    hybrid: { links: [['#worker', 'Hybrid worker - add a worker, test it']] },
+    reports: { links: [['#settings/IdentityReport', 'Settings > Identity report']] },
+    templates: { links: [['#capolicies/templates', 'Templates']] },
+    aus: { links: [['#capolicies/groups', 'Groups > Administrative units']] },
+    targets: { links: [['#capolicies/groups', 'All groups']] },
+    pilots: { links: [['#capolicies/groups', 'All groups'], ['#capolicies', 'Adopt your policies']] }
+  };
+  // ADMIN-WALK-2 N6: the steps only a SuperAdmin creates here - what an Admin asks for
+  var GS_OWNER_ONLY = { auth: 'the missing authentication strengths', locations: 'the denied-countries and trusted locations', breakglass: 'the missing break-glass accounts' };
+  function gsFix(s, j) {
+    var f = GS_FIX[s.key];
+    var ownerOnly = GS_OWNER_ONLY[s.key] && s.state !== 'ok' && !isRole('SuperAdmin');
+    if ((!f && !ownerOnly) || s.state === 'ok') return null;
+    var box = el('div', { class: 'gs-fix' }, el('strong', { text: 'Fix it: ' }));
+    ((f && f.links) || []).forEach(function (l, i) { if (i) box.appendChild(document.createTextNode(' · ')); box.appendChild(el('a', { href: l[0], text: l[1] })); });
+    // the command is RUNNABLE, with this install's values (from the server, as the Hybrid worker page) - never "-?"
+    var fc = f && f.cmd ? ((j && j.fixCommands) || {})[s.key] : null;
+    if (fc && fc.command) {
+      var cmd = fc.command;
+      box.appendChild(el('div', null, el('span', { class: 'smeta', text: (f.text || '') + ' Run as ' + textOf(fc.who) + '; a <value> in angle brackets is yours to fill in. ' }), el('code', { text: cmd }), ' ',
+        el('button', { type: 'button', class: 'link', text: 'Copy', onclick: function () { if (navigator.clipboard) navigator.clipboard.writeText(cmd).then(function () { notice('Copied: ' + fc.script + '.ps1 with this install\'s values.'); }); } })));
+    }
+    if (ownerOnly) box.appendChild(el('div', { class: 'smeta', text: 'A SuperAdmin creates ' + GS_OWNER_ONLY[s.key] + ' from this step (each after a plan and an OK). Ask one of them - they find it here, step "' + s.title + '".' }));
+    return box;
+  }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
-    p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look, and how to fix it. Work top down: a step that needs an earlier one waits until that one is ready.' }));
     // V1-IMPORT-GUIDE (owner 2026-11-03: "i am missing instructions on how to import v1 csv files for eps, where is the
     // docs for that in the gui"): the two ways in, step by step
     var v1 = el('details', { class: 'gs-step', open: true });
@@ -3075,27 +4324,36 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     // SEC-08 row 8 (2.0.69): B is the Import v1 page - no database right, no script; the engine writes it
     v1.appendChild(el('h4', { text: 'B. Everything - rules, tag types, settings, break-glass accounts, target groups, admin units, service tags (SuperAdmin)' }));
     v1.appendChild(el('ol', null,
-      el('li', null, 'Open ', el('a', { href: '#v1import', text: 'Overview > Import v1' }), ' and choose the files from v1\'s DATA folder (Identity_Tagging*.csv, Device_Tagging*.csv, EntraNamedLocations_AzureNetworkServiceTags.csv, Entra_Policy_Suite_custom.config, Entra_Policy_Suite_locked.config) and, for the attribute per tag type, Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1.'),
+      el('li', null, 'Open ', el('a', { href: '#v1import', text: 'Overview > Import v1' }), ' and choose the files from v1\'s DATA folder (Identity_Tagging*.csv, Device_Tagging*.csv, EntraNamedLocations_AzureNetworkServiceTags.csv, Entra_Policy_Suite_custom.config, Entra_Policy_Suite_locked.config) and, for the attribute per tag type, Entra-Policy-Suite\\Entra-ID-User-Tagging.ps1 - plus FUNCTIONS\\Automation-DefaultVariables.psm1 for the identity report\'s mail and OUs and the mail relay.'),
       el('li', { text: 'Read the files: the plan shows what is added and what changes, area by area, with the hints. Nothing is saved yet.' }),
       el('li', { text: 'Import: Entra Policy Suite writes it within 5 minutes. A new import replaces the rules an earlier v1 import made; rules made here are never touched.' }),
       el('li', { text: 'Then press "Check now" below: every step shows what the import filled and what is still missing.' })));
     p.appendChild(v1);
     return api('GET', '/api/onboarding').then(function (j) {
       var steps = j.steps || [];
-      var done = steps.filter(function (s) { return s.state === 'ok'; }).length;
+      var done = steps.filter(function (s) { return s.state === 'ok' || s.state === 'info'; }).length;   // the same count as the Overview bar
       p.appendChild(el('div', { class: 'cards' }, card(done + ' / ' + steps.length, 'steps ready'),
         card(steps.reduce(function (n, s) { return n + (s.counts.missing || 0); }, 0), 'items missing', steps.some(function (s) { return s.counts.missing; })),
         card(steps.reduce(function (n, s) { return n + (s.counts.check || 0); }, 0), 'items to check')));
       p.appendChild(el('div', { class: 'toolbar' },
-        admin ? el('button', { type: 'button', text: 'Check now', onclick: function () { withReason('Check the onboarding steps', 'The engine reads the tenant and compares it with what Entra Policy Suite needs. Read only: nothing in the tenant changes.', function (reason) { return api('POST', '/api/onboarding/check', { reason: reason }); }); } }) : null,
+        admin ? el('button', { type: 'button', text: 'Check now', onclick: function () { withReason('Check the onboarding steps', 'The engine reads the tenant and compares it with what Entra Policy Suite needs. Read only: nothing in the tenant changes.', function (reason) { return api('POST', '/api/onboarding/check', { reason: reason }); }, { readOnly: true }); } }) : null,
         el('span', { class: 'count', text: j.checkedAtUtc ? 'Last checked ' : 'Not checked yet.' }), j.checkedAtUtc ? timeEl(j.checkedAtUtc) : null, j.checkedBy ? el('span', { class: 'count', text: ' by ' + j.checkedBy }) : null));
+      // ONE banner before the first check (not a line per step)
+      if (!j.checkedAtUtc) p.appendChild(el('div', { class: 'bar bar-info', text: 'Not checked yet: ' + (admin ? 'press Check now - it only reads the tenant; each step then shows what is ready and how to fix the rest.' : 'an Admin presses Check now (it only reads the tenant).') }));
+      var byKey = {}; steps.forEach(function (s, i) { byKey[s.key] = { s: s, n: i + 1 }; });
       steps.forEach(function (s, i) {
         var box = el('details', { class: 'gs-step' });
+        var waits = (GS_NEEDS[s.key] || []).filter(function (k) { return byKey[k] && byKey[k].s.state !== 'ok' && byKey[k].s.state !== 'info'; }).map(function (k) { return byKey[k].n + '. ' + byKey[k].s.title; });
+        if (j.checkedAtUtc && waits.length) box.classList.add('gs-waits');
         if (s.state !== 'ok') box.open = true;
         box.appendChild(el('summary', null, el('strong', { text: (i + 1) + '. ' + s.title }), ' ', el('span', { class: GS_CLS[s.state] || null, text: '- ' + (GS_STATE[s.state] || s.state) + (s.counts.missing ? ', ' + s.counts.missing + ' missing' : '') + (s.counts.check ? ', ' + s.counts.check + ' to check' : '') })));
         box.appendChild(el('p', { class: 'smeta', text: s.what }));
+        if (j.checkedAtUtc && waits.length) box.appendChild(el('p', { class: 'c-warning', text: 'Do this first: ' + waits.join(', ') + ' - this step needs it.' }));
+        var fx = j.checkedAtUtc ? gsFix(s, j) : null; if (fx) box.appendChild(fx);
         if (s.key === 'breakglass') {
           box.appendChild(table(j.breakGlass || [], [{ key: 'UserPrincipalName', label: 'Account' }, { key: 'DisplayName', label: 'Name' }, { key: 'AuthenticationMethod', label: 'Method', type: 'cat' },
+            // V1-PARITY P15: v1's tag values per account (Entra_Policy_Suite_custom.config), imported and SHOWN - tagging does not use them (the owner confirms first)
+            { key: 'ClassificationTagValue', label: 'v1 Classification tag', type: 'cat' }, { key: 'AuthenticationTagValue', label: 'v1 Authentication tag', type: 'cat' },
             { key: 'Placement', label: 'Kept', wrap: true }, { key: 'Enabled', label: 'In use', type: 'cat' }, owner ? { key: '_e', label: '', render: function (a) { return el('button', { type: 'button', class: 'link', text: 'Edit', onclick: function () { gsBreakGlassEdit(a); } }); } } : null].filter(Boolean),
             { empty: 'No break-glass account in the list.' }));
           if (owner) box.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Add a break-glass account', onclick: function () { gsBreakGlassEdit(null); } })));
@@ -3109,7 +4367,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         if ((s.items || []).length) box.appendChild(table(s.items, [{ key: 'title', label: 'Item', wrap: true }, { key: 'state', label: 'State', type: 'cat', cls: function (r) { return GS_CLS[r.state] || ''; }, render: function (r) { return el('span', { text: GS_STATE[r.state] || r.state }); } },
           { key: 'detail', label: 'What was found', wrap: true },
           owner ? { key: '_g', label: '', render: function (r) { return /^group:/.test(r.item || '') && r.state === 'missing' ? el('button', { type: 'button', class: 'secondary', text: 'Create', onclick: function () { grpDialog('create', { names: [r.item.substring(6)] }, 'Create ' + r.item.substring(6)); } }) : null; } } : null].filter(Boolean), { sort: null }));
-        else box.appendChild(el('p', { class: 'smeta', text: 'Not checked yet - press Check now.' }));
+        // ADMIN-WALK-2: a waiting step's actions are DISABLED (not only greyed) until the step it needs is ready
+        if (j.checkedAtUtc && waits.length) Array.prototype.forEach.call(box.querySelectorAll('button'), function (b) { b.disabled = true; b.title = 'Do this first: ' + waits.join(', '); });
         p.appendChild(box);
       });
     });
@@ -3126,6 +4385,17 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     if (w.taskProblem) bits.push('its scheduled task is ' + (w.taskState || 'off'));
     if (w.behind) bits.push('version ' + w.version + ' is behind');
     return bits.join(' - ');
+  }
+  function workerTestFollow(sent, n) {
+    // the newest test asked after `sent`: when a worker answered, say it and redraw the page (if it is open)
+    setTimeout(function () {
+      api('GET', '/api/worker').then(function (j) {
+        var t = (j.tests || []).filter(function (x) { return x.queuedAtUtc && new Date(x.queuedAtUtc).toISOString() >= sent; })
+          .sort(function (a, b) { return a.queuedAtUtc < b.queuedAtUtc ? 1 : -1; })[0];
+        if (t && t.status !== 'Queued' && t.status !== 'Claimed') { notice('The hybrid worker answered: ' + (t.answer || t.status), t.status === 'Failed' ? 'warn' : null); if (current().id === 'worker') render(); return; }
+        if (n < 60) workerTestFollow(sent, n + 1); else notice('No worker has answered the connection test yet - is a worker running? (Hybrid worker page)', 'warn');
+      }).catch(function () { if (n < 60) workerTestFollow(sent, n + 1); });
+    }, 15000);
   }
   function drawWorker(p) {
     p.appendChild(el('div', { class: 'guide', text: 'The hybrid worker is a small program on a domain-joined Windows server in your network. It writes the tags of AD-synced users in Active Directory and reads AD group members for the rules. It runs as the scheduled task \'EntraPolicySuite Hybrid Worker\' every 5 minutes, as its gMSA, and talks to Entra Policy Suite only through the database - nothing comes in to it. It needs no password.' }));
@@ -3160,7 +4430,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         if (!r.canRetry) return el('span', { class: 'smeta', text: 'not retried (did not match the engine\'s record)' });
         return el('button', { type: 'button', class: 'secondary', text: 'Try again', onclick: function () {
           withReason('Try again: ' + r.upn + ' ' + r.attribute, 'A new change and a new work package for the same user, attribute and value; the failed ones stay in the history. A worker takes it on its next cycle.', function (reason) { return api('POST', '/api/worker/retry', { packageId: r.packageId, reason: reason }); }); } }); } });
-      p.appendChild(table(j.failed || [], fcols, { sort: 'doneAtUtc', dir: -1, empty: 'No AD change failed.' }));
+      // ADMIN-WALK: several at once (only those that can be tried again)
+      var retryBulk = admin ? [{ label: 'Try again', run: function (sel) {
+        var todo = sel.filter(function (r) { return r.canRetry && !r.retried; });
+        if (!todo.length) { notice('None of the selected can be tried again (tried already, or not matching the engine\'s record).', 'warn'); return; }
+        bulkAction('Try again', 'A new change and a new work package for each: the same user, attribute and value; the failed ones stay in the history. A worker takes them on its next cycle.', todo,
+          function (r, reason) { return api('POST', '/api/worker/retry', { packageId: r.packageId, reason: reason }); }); } }] : [];
+      p.appendChild(table(j.failed || [], fcols, { sort: 'doneAtUtc', dir: -1, empty: 'No AD change failed.', bulk: retryBulk }));
       p.appendChild(el('h3', { text: 'Waiting' }));
       p.appendChild(table(j.waiting || [], pkgCols.concat([{ key: 'status', label: 'State', type: 'cat' }, { key: 'claimedBy', label: 'Taken by' }]), { sort: 'queuedAtUtc', dir: 1, empty: 'Nothing waits for the worker.' }));
       // the connection test
@@ -3170,7 +4446,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         var envs = [''].concat((j.environments || []).map(function (e) { return e.environment; }).filter(function (v, i, a) { return a.indexOf(v) === i; }));
         var es = el('select', { 'aria-label': 'AD environment' }, envs.map(function (e) { return el('option', { value: e, text: e || 'any worker' }); }));
         p.appendChild(el('div', { class: 'toolbar' }, envs.length > 1 ? es : null, el('button', { type: 'button', text: 'Test connection', onclick: function () {
-          withReason('Test the hybrid worker connection', 'A read-only request; a worker' + (es.value ? ' of ' + es.value : '') + ' answers on its next cycle (every 5 minutes). Reload this page to see the answer.', function (reason) { return api('POST', '/api/worker/test', { environment: es.value, reason: reason }); }); } })));
+          // ADMIN-WALK: the page follows the test and shows the worker's answer when it comes (no reload needed)
+          withReason('Test the hybrid worker connection', 'A read-only request; a worker' + (es.value ? ' of ' + es.value : '') + ' answers on its next cycle (every 5 minutes). This page shows the answer when it comes.', function (reason) {
+            var sent = new Date(Date.now() - 60000).toISOString();
+            return api('POST', '/api/worker/test', { environment: es.value, reason: reason }).then(function (x) { workerTestFollow(sent, 0); return x; }); }, { readOnly: true }); } })));
       }
       p.appendChild(table(j.tests || [], [{ key: 'queuedAtUtc', label: 'Asked', type: 'date' }, { key: 'requestedBy', label: 'By' }, { key: 'environment', label: 'Environment', type: 'cat' }, { key: 'status', label: 'State', type: 'cat', cls: stCell('status') },
         { key: 'worker', label: 'Answered by' }, { key: 'answer', label: 'Answer', wrap: true, render: function (t) { return t.answer || (t.status === 'Queued' ? 'waiting for the next worker cycle' : ''); } }], { sort: 'queuedAtUtc', dir: -1, empty: 'No test yet.' }));
@@ -3188,21 +4467,30 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(el('h3', { text: 'AD environments' }));
       p.appendChild(el('p', null, (j.environments || []).length ? 'Changes go to the worker of their user\'s environment: ' : 'One AD: every worker takes every change. For several forests or domains, set ',
         (j.environments || []).length ? (j.environments || []).map(function (e) { return e.suffix + ' -> ' + e.environment; }).join(', ') + '. ' : null,
-        el('a', { href: '#settings', text: 'Settings > Hybrid worker' }), (j.environments || []).length ? ' changes it.' : '.'));
+        el('a', { href: '#settings/HybridWorker', text: 'Settings > Hybrid worker' }), (j.environments || []).length ? ' changes it.' : '.'));
       if ((j.environmentErrors || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'Not read (not "<upn suffix>=<environment>"): ' + j.environmentErrors.join('; ') }));
     });
   }
   var PAGES = [
     { id: 'overview', label: 'Overview', role: 'Reader', draw: function (p) {
+      // ADMIN-WALK: an install that is not set up yet says so first, with the way there (Get started)
+      var setupBar = el('div'); p.appendChild(setupBar);
+      api('GET', '/api/onboarding').then(function (g) {
+        // ADMIN-WALK-2: 'info' is fine (e.g. no hybrid worker on a cloud-only tenant), as Get started treats it - else the bar never reaches n of n
+        var steps = g.steps || [], done = steps.filter(function (s) { return s.state === 'ok' || s.state === 'info'; }).length;
+        if (!g.checkedAtUtc) setupBar.appendChild(el('div', { class: 'bar bar-warn' }, el('strong', { text: 'Not set up yet? ' }), 'Get started checks the ' + fmtNum(steps.length) + ' things Entra Policy Suite needs and creates what is missing. ', el('a', { href: '#start', text: 'Open Get started' })));
+        else if (done < steps.length) setupBar.appendChild(el('div', { class: 'bar bar-warn' }, el('strong', { text: 'Finish setup: ' + fmtNum(done) + ' of ' + fmtNum(steps.length) + ' steps ready. ' }), el('a', { href: '#start', text: 'Open Get started' })));
+      }).catch(function () { /* the overview still shows */ });
       return api('GET', '/api/overview').then(function (o) {
         p.appendChild(el('div', { class: 'cards' },
-          card(o.tamperOpen, 'open tag changes not made by the engine', o.tamperOpen > 0), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0),
-          card(o.userRules, 'user tag rules enabled'), card(o.deviceRules, 'device tag rules enabled'),
-          card(o.requestsOpen, 'job requests waiting or running'), card(o.workPackagesQueued, 'AD changes queued for the worker')));
+          card(o.tamperOpen, 'open tag changes not made by the engine', o.tamperOpen > 0, '#tamper'), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0, '#tamper'),
+          card(o.userRules, 'user tag rules enabled', false, '#rules/User'), card(o.deviceRules, 'device tag rules enabled', false, '#rules/Device'),
+          card(o.requestsOpen, 'job requests waiting or running', false, '#jobs'), card(o.workPackagesQueued, 'AD changes queued for the worker', false, '#worker')));
         p.appendChild(el('h3', { text: 'The last run of each job' }));
         p.appendChild(table(o.lastRuns, [
           { key: 'Job', label: 'Job', type: 'cat', render: function (r) { return jobName(r.Job); } }, { key: 'Mode', label: 'Mode', type: 'cat' }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') },
-          { key: 'StartedAtUtc', label: 'Started', type: 'date' }, { key: 'Objects', label: 'Objects', type: 'num' }, { key: 'Planned', label: 'Planned', type: 'num' },
+          // ADMIN-WALK-2: each row opens its run (its log and counts)
+          { key: 'StartedAtUtc', label: 'Started', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open this run', text: fmtTime(r.StartedAtUtc) }) : fmtTime(r.StartedAtUtc); } }, { key: 'Objects', label: 'Objects', type: 'num' }, { key: 'Planned', label: 'Planned', type: 'num' },
           { key: 'Applied', label: 'Applied', type: 'num' }, { key: 'Failed', label: 'Failed', type: 'num' }, { key: 'HeldReason', label: 'Held because', wrap: true }], { empty: 'No job has run yet.' }));
         // WORKER-GUI: one line per worker here; the details on Administration > Hybrid worker
         p.appendChild(el('h3', { text: 'Hybrid worker' }));
@@ -3237,10 +4525,12 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       } }), ' The break-glass accounts, the watched tag attributes and the known writers, as one file for the external Azure Monitor alarm (Deploy-EpsAzureMonitorAlerts.ps1 -InputFile). Download it again after any of them change.'));
       return api('GET', '/api/tamper').then(function (j) {
         var cols = [{ key: 'FoundAtUtc', label: 'Found', type: 'date' }, { key: 'Severity', label: 'Severity', type: 'cat', cls: function (r) { return 'sev-' + r.Severity; } },
-          { key: 'Status', label: 'Status', type: 'cat' }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' },
+          { key: 'Status', label: 'Status', type: 'cat' }, { key: 'ObjectType', label: 'Type', type: 'cat' },
+          { key: 'ObjectName', label: 'Object', render: function (r) { return el('a', { href: '#changes/q:' + encodeURIComponent(textOf(r.ObjectName)), title: 'its tag changes', text: textOf(r.ObjectName) }); } },
           { key: 'Attribute', label: 'Attribute', type: 'cat' }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
           { key: 'Initiator', label: 'Changed by' }, { key: 'Detail', label: 'What it means', wrap: true }, { key: 'ResolvedBy', label: 'Resolved by' }];
-        if (isRole('Admin')) cols.push({ key: '_act', label: '', render: function (r) {
+        // ADMIN-WALK-2 (1366 px): Accept / Restore FIRST, so they are never cut off at the right edge
+        if (isRole('Admin')) cols.unshift({ key: '_act', label: 'Action', nowrap: true, render: function (r) {
           if (r.Status !== 'Open') return null;
           return el('span', null,
             el('button', { type: 'button', class: 'secondary', text: 'Accept', onclick: function () { withReason('Accept this change', r.ObjectName + ': ' + r.Attribute + ' = ' + r.NewValue + '. It stays as it is.', function (reason) { return api('POST', '/api/tamper/' + r.EventId + '/accept', { reason: reason }); }); } }), ' ',
@@ -3252,24 +4542,33 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           { label: 'Restore', run: function (sel) { var t = openOnly(sel); if (!t.length) { notice('None of the selected changes is open.'); return; } bulkAction('Restore values', 'The engine writes its value back at the next monitor run.', t, function (r, reason) { return api('POST', '/api/tamper/' + r.EventId + '/restore', { reason: reason }); }); } }] : [] }));
       });
     } },
-    { id: 'runs', label: 'Runs', role: 'Reader', draw: function (p) {
-      p.appendChild(pagedTable('/api/runs', [{ key: 'job', label: 'Job', options: ['', 'UserTagging', 'DeviceTagging', 'TamperMonitor', 'Tick'] }, { key: 'status', label: 'Status', options: ['', 'Running', 'Succeeded', 'Failed', 'Held', 'PartlyFailed'] }], [
-        { key: 'StartedAtUtc', label: 'Started', type: 'date' }, { key: 'Job', label: 'Job', type: 'cat', render: function (r) { return jobName(r.Job); } }, { key: 'Mode', label: 'Mode', type: 'cat' },
-        { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Objects', label: 'Objects', type: 'num' }, { key: 'Planned', label: 'Planned', type: 'num' },
-        { key: 'Overwrites', label: 'Overwrites', type: 'num' }, { key: 'Applied', label: 'Applied', type: 'num' }, { key: 'Failed', label: 'Failed', type: 'num' },
-        { key: 'HeldReason', label: 'Held because', wrap: true }, { key: 'RunId', label: '', render: function (r) { return el('a', { href: '#run/' + r.RunId, text: 'details' }); } }]));
-      return Promise.resolve();
+    { id: 'runs', label: 'Runs', role: 'Reader', draw: function (p, arg) {
+      // ADMIN-WALK: the job filter lists EVERY job (from /api/jobs), not four; #runs/<Job> opens it filtered
+      return api('GET', '/api/jobs').then(function (j) { return ['Tick'].concat(j.rows.map(function (r) { return r.Job; })); }).catch(function () { return Object.keys(JOB_NAMES); }).then(function (jobs) {
+        p.appendChild(pagedTable('/api/runs', [{ key: 'job', label: 'Job', options: [''].concat(jobs), value: arg || '' }, { key: 'status', label: 'Status', options: ['', 'Running', 'Succeeded', 'Failed', 'Held', 'PartlyFailed'] }], [
+          { key: 'StartedAtUtc', label: 'Started', type: 'date' }, { key: 'Job', label: 'Job', type: 'cat', render: function (r) { return jobName(r.Job); } }, { key: 'Mode', label: 'Mode', type: 'cat' },
+          { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Objects', label: 'Objects', type: 'num' }, { key: 'Planned', label: 'Planned', type: 'num' },
+          { key: 'Overwrites', label: 'Overwrites', type: 'num' }, { key: 'Applied', label: 'Applied', type: 'num' }, { key: 'Failed', label: 'Failed', type: 'num' },
+          { key: 'HeldReason', label: 'Held because', wrap: true }, { key: '_RunId', label: '', render: function (r) { return el('a', { href: '#run/' + r.RunId, text: 'details' }); } }]));
+      });
     } },
     { id: 'changes', label: 'Tag changes', role: 'Reader', draw: function (p, arg) {
-      p.appendChild(pagedTable('/api/changes', [{ key: 'q', label: 'Search object, value, persona' }, { key: 'status', label: 'Status', options: ['', 'Planned', 'Applied', 'Failed', 'Skipped', 'Queued'] }, { key: 'runId', label: 'Run id', value: arg || '' }], [
-        { key: 'AtUtc', label: 'When', type: 'date' }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Dir', type: 'cat' },
+      // ADMIN-WALK: no free-text run id box - a run's page links here (#changes/<runId>), the Tamper page per object
+      // (#changes/q:<name>); with a run picked it says so and offers all changes
+      var a0 = arg || '', runPick = /^[0-9a-fA-F-]{36}$/.test(a0) ? a0 : '', qPick = a0.indexOf('q:') === 0 ? a0.substring(2) : '';
+      if (runPick) p.appendChild(el('div', { class: 'bar bar-info' }, 'The changes of one run. ', el('a', { href: '#run/' + runPick, text: 'The run' }), ' · ', el('a', { href: '#changes', text: 'All changes' })));
+      p.appendChild(pagedTable('/api/changes', [{ key: 'q', label: 'Search object, value, persona', value: qPick }, { key: 'status', label: 'Status', options: ['', 'Planned', 'Applied', 'Failed', 'Skipped', 'Queued'] }].concat(runPick ? [{ key: 'runId', hidden: true, value: runPick }] : []), [
+        // ADMIN-WALK-2: the date on one line and linked to its run; a device row shows no "persona" (personas are users')
+        { key: 'AtUtc', label: 'When', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open the run that made this change', text: fmtTime(r.AtUtc) }) : fmtTime(r.AtUtc); } }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Dir', type: 'cat' },
         { key: 'TagType', label: 'Tag type', type: 'cat' }, { key: 'Attribute', label: 'Attribute', type: 'cat' }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
-        { key: 'Reason', label: 'Why', type: 'cat' }, { key: 'Persona', label: 'Persona' }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Via', label: 'Via', type: 'cat' }, { key: 'Error', label: 'Error', wrap: true }],
+        { key: 'Reason', label: 'Why', type: 'cat' }, { key: 'Persona', label: 'Persona (users)', render: function (r) { return r.ObjectType === 'Device' ? '' : textOf(r.Persona); } }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Via', label: 'Via', type: 'cat' }, { key: 'Error', label: 'Error', wrap: true }],
         { exportPath: '/api/changes/export' }));
       return Promise.resolve();
     } },
     { id: 'rules', label: 'Tagging Rules', role: 'Reader', draw: function (p, arg) {
-      var ot = arg === 'Device' ? 'Device' : 'User';
+      // ADMIN-WALK-2: #rules/<User|Device>/<ruleId> opens that rule (the "set by rule #n" links)
+      var parts = String(arg || '').split('/'), ot = parts[0] === 'Device' ? 'Device' : 'User';
+      if (/^\d+$/.test(parts[1] || '')) RULES.sel = { id: Number(parts[1]) };
       return api('GET', '/api/rules?objectType=' + ot).then(function (j) { drawRules(p, ot, j); });
     } },
     { id: 'identity', label: 'Identity', role: 'Reader', draw: function (p, arg) { return drawIdentity(p, arg); } },
@@ -3292,26 +4591,46 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       if (arg === 'groups') return drawCaGroups(p);
       if (arg) { p.removeChild(p.lastChild); return drawCaPolicy(p, arg); }
       return drawCaPolicies(p); } },
-    { id: 'ca', label: 'CA Policy Analyzer', role: 'Reader', draw: function (p, arg) { if (arg) { p.removeChild(p.lastChild); return drawCaAnalysis(p, arg); } return drawCa(p); } },
+    { id: 'ca', label: 'CA Policy Analyzer', role: 'Reader', draw: function (p, arg) { if (arg && /^policy:/.test(arg)) return drawCa(p, arg.substring(7)); if (arg) { p.removeChild(p.lastChild); return drawCaAnalysis(p, arg); } return drawCa(p); } },
     { id: 'jobs', label: 'Jobs', role: 'Reader', draw: function (p) {
-      p.appendChild(el('div', { class: 'guide', text: 'A schedule is daily HH:mm, weekly sun HH:mm, every 3h, every 15m or manual, in the install\'s time zone. Run now writes a request; the engine starts the job within 5 minutes. Preview shows what would change and changes nothing. Apply changes the directory: it is recorded with your name and reason, and the engine checks your role before it runs it. A new or changed rule set: preview it on everyone, apply it on a test scope (one user or a few), check them, then let the schedule run it on everyone.' }));
+      p.appendChild(el('div', { class: 'guide', text: 'When each job runs, in the install\'s time zone, and Run now. Run now writes a request; the engine starts the job within 5 minutes. For tagging, Preview shows what would change and writes nothing; Apply writes tags (recorded with your name; the engine checks your role first). To try new rules on a few people first, use Tagging > Test runs.' }));
       return Promise.all([api('GET', '/api/jobs'), api('GET', '/api/scopes')]).then(function (both) {
         var j = both[0], scopes = both[1].rows;
         var otOf = { UserTagging: 'User', DeviceTagging: 'Device' };
-        var cols = [{ key: 'Job', label: 'Job', render: function (r) { return jobName(r.Job); } }, { key: 'Schedule', label: 'Schedule' }, { key: 'Enabled', label: 'Enabled', type: 'cat' }, { key: 'LastRunUtc', label: 'Last run', type: 'date' },
-          { key: 'LastStatus', label: 'Last status', type: 'cat', cls: stCell('LastStatus') }, { key: 'LastStartResult', label: 'Last start', wrap: true }];
-        // the schedule and on / off per job (owner 2026-10-31: "i must be able to configure this in the patform")
+        // ADMIN-WALK: internal jobs are not offered here (Config applies the web app's saves; PolicyDeploy is not built)
+        var rows = j.rows.filter(function (r) { return r.Job !== 'Config' && r.Job !== 'PolicyDeploy'; });
+        // ADMIN-WALK-2 N3: the schedule and the next run in ONE zone - the install's (Platform.TimeZone), named in the headers
+        var tz = j.timeZone || 'UTC';
+        var cols = [{ key: 'Job', label: 'Job', render: function (r) { return jobName(r.Job); } }, { key: 'Schedule', label: 'Schedule (' + tz + ')', render: function (r) { return schedText(r.Schedule); } },
+          { key: 'Enabled', label: 'On', type: 'cat', render: function (r) { return r.Enabled ? 'On' : 'Off'; } },
+          { key: 'NextRunLocal', label: 'Next run (' + tz + ')', render: function (r) { return r.NextRunLocal ? el('span', { title: 'UTC ' + textOf(r.NextRunUtc), text: r.NextRunLocal }) : (r.Enabled ? '-' : 'off'); } },
+          { key: 'LastRunUtc', label: 'Last run', type: 'date' },
+          { key: 'LastStatus', label: 'Last status', type: 'cat', cls: stCell('LastStatus') }, { key: 'LastStartResult', label: 'Last start', wrap: true, render: function (r) { return lastStartText(r.LastStartResult); } }];
+        p.appendChild(el('p', { class: 'smeta', text: 'Times in the schedule and Next run are in the install\'s time zone, ' + tz + ' (Settings > General). Last run is shown in your browser\'s time.' }));
+        // the schedule and on / off per job (owner 2026-10-31: "i must be able to configure this in the patform") - a picker,
+        // never free text (owner 2026-11-05 "too shaky for a text field")
         if (isRole('Admin')) cols.push({ key: '_sched', label: 'Change schedule', render: function (r) {
           if (!r.Implemented || r.Job === 'CAPolicyAnalyzer') return null;
-          var inp = el('input', { type: 'text', 'aria-label': 'Schedule for ' + r.Job, value: r.Schedule, maxlength: 40, size: 14, title: "daily 01:00 · weekly sun 19:00 · every 3h · every 15m · manual" });
-          var on = el('input', { type: 'checkbox', 'aria-label': r.Job + ' on' }); on.checked = !!r.Enabled;
-          return el('span', null, inp, ' ', el('label', null, on, ' on'), ' ', el('button', { type: 'button', class: 'secondary', text: 'Save', onclick: function () {
-            withReason('Schedule ' + r.Job + ': ' + inp.value + (on.checked ? '' : ' (off)'), on.checked ? 'The engine starts ' + r.Job + ' on this schedule from its next check (within 5 minutes).' : 'The schedule no longer starts ' + r.Job + '. Run now still works.', function (reason) {
-              return api('PUT', '/api/jobs/' + r.Job + '/schedule', { schedule: inp.value.trim(), enabled: on.checked, reason: reason }); }); } }));
+          var sp = schedPicker(r.Schedule, r.Job);
+          var on = el('select', { 'aria-label': jobName(r.Job) + ' on or off' }, el('option', { value: 'true', text: 'On' }), el('option', { value: 'false', text: 'Off' })); on.value = r.Enabled ? 'true' : 'false';
+          return el('span', { class: 'schedpick' }, sp.node, ' ', on, ' ', el('button', { type: 'button', class: 'secondary', text: 'Save', onclick: function () {
+            var s = sp.read(), en = on.value === 'true';
+            withReason(jobName(r.Job) + ': ' + schedText(s) + (en ? '' : ' (off)'), en ? 'The engine starts it on this schedule from its next check (within 5 minutes).' : 'The schedule no longer starts it. Run now still works.', function (reason) {
+              return api('PUT', '/api/jobs/' + r.Job + '/schedule', { schedule: s, enabled: en, reason: reason }); }); } }));
         } });
-        if (isRole('Admin')) cols.push({ key: '_run', label: '', render: function (r) {
+        // Run now per kind of job (ADMIN-WALK: scope + Preview / Apply only where they mean something - tagging)
+        var RUN_ONLY = { Backup: { text: 'Back up now', what: 'Stores every Conditional Access policy, named location and authentication strength, and the tagging configuration, now. It only reads the tenant.', ro: true },
+          CaOptions: { text: 'Read the options now', what: 'Reads which values Graph offers per Conditional Access setting, and the tenant\'s strengths, locations and roles. It only reads.', ro: true },
+          IdentityReport: { text: 'Run the report now', what: 'Builds a new identity report snapshot. It only reads the tenant and AD.', ro: true },
+          NamedLocations: { text: 'Run now', what: 'Reads the Azure service tags and updates the Azure.Network.ServiceTag.* named locations whose ranges changed (as on its schedule).', ro: false },
+          Uplink: { text: 'Send now', what: 'Sends the status report to Invardia now.', ro: false },
+          Update: { text: 'Check for an update now', what: 'Checks which release is approved for this install\'s ring, and installs it if it is newer (between runs, as on its schedule).', ro: false } };
+        if (isRole('Admin')) cols.push({ key: '_run', label: 'Run now', render: function (r) {
           if (!r.Implemented || r.Job === 'TamperMonitor') return null;
           if (r.Job === 'CAPolicyAnalyzer') return el('a', { href: '#ca', text: 'Analyse on its page' });
+          var ro = RUN_ONLY[r.Job];
+          if (ro) return el('button', { type: 'button', class: 'secondary', text: ro.text, onclick: function () { withReason(ro.text + ': ' + jobName(r.Job), ro.what, function (reason) { return api('POST', '/api/jobs/' + r.Job + '/run', { mode: 'Apply', reason: reason }); }, { readOnly: ro.ro }); } });
+          if (!otOf[r.Job]) return null;
           var pick = el('select', { 'aria-label': 'Scope for ' + r.Job }, el('option', { value: '', text: 'everyone' }),
             scopes.filter(function (s) { return s.ObjectType === otOf[r.Job]; }).map(function (s) { return el('option', { value: 'saved:' + s.Name, text: 'scope ' + s.Name }); }), el('option', { value: 'adhoc', text: 'named now ...' }));
           var adhoc = scopeFields(); adhoc.node.hidden = true;
@@ -3320,10 +4639,10 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
             var body = { mode: mode };
             if (pick.value.indexOf('saved:') === 0) body.scopeName = pick.value.substring(6); else if (pick.value === 'adhoc') body.scope = adhoc.read();
             var who = pick.value ? 'the objects in the scope' : 'EVERYONE';
-            withReason(mode + ': ' + r.Job + (pick.value ? ' (scoped)' : ''), mode === 'Apply' ? 'The job CHANGES the directory for ' + who + ' (the mass-change guard still applies).' : 'The job computes every change for ' + who + ' and writes none.', function (reason) { body.reason = reason; return api('POST', '/api/jobs/' + r.Job + '/run', body); }); }; };
-          return el('span', null, pick, ' ', el('button', { type: 'button', class: 'secondary', text: 'Preview', onclick: run('Preview') }), ' ', el('button', { type: 'button', text: 'Apply', onclick: run('Apply') }), adhoc.node);
+            withReason((mode === 'Apply' ? 'Apply' : 'Preview') + ': ' + jobName(r.Job) + (pick.value ? ' (scoped)' : ''), mode === 'Apply' ? 'The job CHANGES the directory for ' + who + ' (the mass-change guard still applies).' : 'The job computes every change for ' + who + ' and writes none.', function (reason) { body.reason = reason; return api('POST', '/api/jobs/' + r.Job + '/run', body); }, { readOnly: mode !== 'Apply' }); }; };
+          return el('span', null, pick, ' ', el('button', { type: 'button', class: 'secondary', text: 'Preview', onclick: run('Preview') }), ' ', el('button', { type: 'button', text: 'Apply', onclick: run('Apply') }), ' ', el('a', { href: '#tagtest/' + otOf[r.Job], text: 'Test runs' }), adhoc.node);
         } });
-        p.appendChild(table(j.rows, cols));
+        p.appendChild(table(rows, cols));
         p.appendChild(el('h3', { text: 'Saved scopes' }));
         var sp = el('div');
         if (isRole('Admin')) {
@@ -3344,16 +4663,37 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       });
     } },
     { id: 'worker', label: 'Hybrid worker', role: 'Reader', draw: drawWorker },
-    { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p) {
+    { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p, arg) {
       p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
+      // CONFIG-IO-1: the whole configuration as one file, and an import of one (SuperAdmin) - the import shows every change
+      // first (new / changed / the same / refused) and sends each through its own page's route, as a restore does
+      if (isRole('SuperAdmin')) p.appendChild(el('div', { class: 'toolbar' },
+        el('a', { href: '/api/config/export', text: 'Export the configuration (JSON)' }), ' ',
+        el('button', { type: 'button', class: 'secondary', text: 'Import a configuration...', onclick: configImport }),
+        el('span', { class: 'smeta', text: 'Rules, tag types and values, condition types, saved scopes, settings (never a secret), the CA Policy Analyzer\'s personas and monitors.' })));
       return api('GET', '/api/settings').then(function (j) {
+        // ADMIN-WALK: 70+ settings - a search box and an index of the groups; each group has its own address
+        // (#settings/<group>), so a "Settings > X" link elsewhere lands on its group
+        var shown = j.groups.filter(function (g) { return j.rows.some(function (r) { return r.group === g.id; }); });
+        var search = el('input', { type: 'search', placeholder: 'Find a setting - its name, key or what it does', 'aria-label': 'Find a setting', style: 'flex:1 1 360px' });
+        var nores = el('p', { class: 'smeta', hidden: true, text: 'No setting matches.' });
+        p.appendChild(el('div', { class: 'toolbar settings-find' }, search));
+        p.appendChild(el('div', { class: 'settings-index' }, el('span', { class: 'smeta', text: 'Go to: ' }), shown.map(function (g) { return el('a', { href: '#settings/' + g.id, text: g.label }); })));
+        p.appendChild(nores);
+        var blocks = [];
         j.groups.forEach(function (g) {
           var rows = j.rows.filter(function (r) { return r.group === g.id; });
           if (!rows.length) return;
-          p.appendChild(el('h3', { text: g.label }));
+          var h = el('h3', { id: 'set-' + g.id, text: g.label });
+          p.appendChild(h);
           var list = el('div', { class: 'settings' });
-          rows.forEach(function (r) { list.appendChild(settingRow(r)); });
+          rows.forEach(function (r) {
+            var row = settingRow(r);
+            row.setAttribute('data-find', [r.label, r.key, g.label, r.info ? [r.info.what, r.info.enabled, r.info.disabled].join(' ') : ''].join(' ').toLowerCase());
+            list.appendChild(row);
+          });
           p.appendChild(list);
+          blocks.push({ h: h, list: list });
           if (g.id === 'Mail' && isRole('Admin')) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Send a test mail', onclick: function () {
             withReason('Send a test mail', 'The engine sends one mail from the sender mailbox to the alert recipients, as its own identity - the way every alert goes.', function (reason) { return api('POST', '/api/mail/test', { reason: reason }); }); } })));
         });
@@ -3362,29 +4702,58 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           p.appendChild(el('div', { class: 'guide', text: 'Stored in the database but not in this version\'s settings catalog: nothing reads them. Shown so that nothing is hidden.' }));
           p.appendChild(table(j.unknown, [{ key: 'key', label: 'Setting' }, { key: 'value', label: 'Value', wrap: true }, { key: 'updatedAtUtc', label: 'Changed', type: 'date' }, { key: 'updatedBy', label: 'By' }], { sort: 'key', dir: 1 }));
         }
+        search.addEventListener('input', function () {
+          var q = search.value.trim().toLowerCase(), any = false;
+          blocks.forEach(function (b) {
+            var n = 0;
+            Array.prototype.forEach.call(b.list.children, function (row) { var hit = !q || (row.getAttribute('data-find') || '').indexOf(q) >= 0; row.hidden = !hit; if (hit) n++; });
+            b.h.hidden = b.list.hidden = !n; if (n) any = true;
+          });
+          nores.hidden = any;
+        });
+        if (arg) { var tgt = document.getElementById('set-' + arg); if (tgt) setTimeout(function () { tgt.scrollIntoView({ block: 'start' }); }, 0); }
       });
     } },
     { id: 'access', label: 'Access', role: 'Admin', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'Who may use this app. Reader sees everything except the audit trail and this list; Admin runs jobs and resolves tamper events; SuperAdmin manages this list. Anyone else who signs in is a Reader. The last SuperAdmin cannot be removed.' }));
       return api('GET', '/api/access').then(function (j) {
+        var ROLES = ['Reader', 'Admin', 'SuperAdmin'];
         if (isRole('SuperAdmin')) {
-          var who = el('input', { type: 'text', placeholder: 'user@contoso.com', 'aria-label': 'User principal name' });
-          var role = el('select', { 'aria-label': 'Role' }, ['Reader', 'Admin', 'SuperAdmin'].map(function (r) { return el('option', { value: r, text: r }); }));
-          p.appendChild(el('div', { class: 'toolbar' }, who, role, el('button', { type: 'button', text: 'Grant', onclick: function () {
-            withReason('Grant ' + role.value, who.value + ' becomes ' + role.value + '.', function (reason) { return api('PUT', '/api/access', { principal: who.value, role: role.value, reason: reason }); }); } })));
+          // ADMIN-WALK: the person is picked (the search picker), never typed
+          var whoP = peoplePicker('Grant access', { single: true });
+          var role = el('select', { 'aria-label': 'Role' }, ROLES.map(function (r) { return el('option', { value: r, text: r }); }));
+          p.appendChild(el('div', { class: 'toolbar access-grant' }, el('span', { text: 'Give ' }), whoP.node, el('span', { text: ' the role ' }), role, el('button', { type: 'button', text: 'Grant', onclick: function () {
+            var who = whoP.get()[0]; if (!who) { notice('Pick a person first.', 'warn'); return; }
+            withReason('Grant ' + role.value, who + ' becomes ' + role.value + '.', function (reason) { return api('PUT', '/api/access', { principal: who, role: role.value, reason: reason }); }); } })));
         }
-        var cols = [{ key: 'Principal', label: 'Person' }, { key: 'Role', label: 'Role', type: 'cat' }, { key: 'GrantedBy', label: 'Granted by' }, { key: 'GrantedAtUtc', label: 'When', type: 'date' }, { key: 'ObjectId', label: 'Object id' }];
-        if (isRole('SuperAdmin')) cols.push({ key: '_rm', label: '', render: function (r) { return el('button', { type: 'button', class: 'secondary', text: 'Remove', onclick: function () { withReason('Remove access', r.Principal + ' becomes a Reader (as anyone who is not named).', function (reason) { return api('DELETE', '/api/access/' + encodeURIComponent(r.Principal), { reason: reason }); }); } }); } });
+        // ADMIN-WALK-2: the LAST SuperAdmin is not offered Remove or a lower role (the server refuses both anyway)
+        var supers = (j.rows || []).filter(function (r) { return r.Role === 'SuperAdmin'; }).length;
+        var isLast = function (r) { return r.Role === 'SuperAdmin' && supers <= 1; };
+        var cols = [{ key: 'Principal', label: 'Person' },
+          // ADMIN-WALK: the role changes in place (a dropdown per row; the same audited grant route)
+          { key: 'Role', label: 'Role', type: 'cat', render: function (r) {
+            if (!isRole('SuperAdmin') || isLast(r)) return el('span', { text: r.Role + (isLast(r) ? ' (the last one - make someone else SuperAdmin first)' : ''), title: isLast(r) ? 'The last SuperAdmin keeps the role' : null });
+            var s = el('select', { 'aria-label': 'Role of ' + r.Principal }, ROLES.map(function (x) { return el('option', { value: x, text: x }); })); s.value = r.Role;
+            s.addEventListener('change', function () {
+              var to = s.value; s.value = r.Role;   // shown as changed only once the server took it
+              withReason('Change the role of ' + r.Principal, r.Principal + ': ' + r.Role + ' -> ' + to + '.', function (reason) { return api('PUT', '/api/access', { principal: r.Principal, role: to, reason: reason }); });
+            });
+            return s; } },
+          { key: 'GrantedBy', label: 'Granted by' }, { key: 'GrantedAtUtc', label: 'When', type: 'date' }];
+        if (isRole('SuperAdmin')) cols.push({ key: '_rm', label: '', render: function (r) { if (isLast(r)) return null; return el('button', { type: 'button', class: 'secondary', text: 'Remove', onclick: function () { withReason('Remove access', r.Principal + ' becomes a Reader (as anyone who is not named).', function (reason) { return api('DELETE', '/api/access/' + encodeURIComponent(r.Principal), { reason: reason }); }); } }); } });
         p.appendChild(table(j.rows, cols, { bulk: isRole('SuperAdmin') ? [{ label: 'Remove access', run: function (sel) { bulkAction('Remove access', 'They become Readers (as anyone who is not named).', sel, function (r, reason) { return api('DELETE', '/api/access/' + encodeURIComponent(r.Principal), { reason: reason }); }); } }] : [] }));
       });
     } },
     { id: 'audit', label: 'Audit', role: 'Admin', draw: function (p) {
-      p.appendChild(pagedTable('/api/audit', [{ key: 'q', label: 'Search actor, action, target, change' },
-        { key: 'category', label: 'Category', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard', 'identity', 'ca', 'setup', 'update', 'support', 'backup', 'v1import', 'worker'] }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
+      // ADMIN-WALK-2: readable actions, the changes by default (reads - views, exports, checks, sign-ins - one choice
+      // away), the change as before -> after per field, a what-if said in words
+      p.appendChild(pagedTable('/api/audit', [{ key: 'kind', label: 'Show', options: ['changes', 'reads', ''], optionText: { changes: 'Changes only', reads: 'Reads only (views, exports, checks, sign-ins)', '': 'Changes and reads' }, value: 'changes' },
+        { key: 'q', label: 'Search actor, action, target, change' },
+        { key: 'category', label: 'Area', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard', 'identity', 'ca', 'setup', 'update', 'support', 'backup', 'v1import', 'worker', 'onboarding', 'config', 'view', 'breakglass'], optionText: AUDIT_AREA }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
         { key: 'from', label: 'From', type: 'date' }, { key: 'to', label: 'To', type: 'date' }], [
-        { key: 'TsUtc', label: 'When', type: 'date' }, { key: 'Action', label: 'Action', type: 'cat' }, { key: 'Actor', label: 'Who' }, { key: 'ActorSource', label: 'From', type: 'cat' },
-        { key: 'Target', label: 'Target', wrap: true }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Outcome', label: 'Outcome', type: 'cat', cls: stCell('Outcome') }, { key: 'OutcomeText', label: 'Detail', wrap: true },
-        { key: 'AfterJson', label: 'Change', wrap: true, render: function (r) { return (r.BeforeJson ? r.BeforeJson + ' → ' : '') + (r.AfterJson || ''); } }, { key: 'WhatIf', label: 'Plan', type: 'cat' }],
+        { key: 'TsUtc', label: 'When', type: 'date' }, { key: 'Action', label: 'Action', type: 'cat', render: function (r) { return el('span', { title: textOf(r.Action), text: auditActionText(r.Action) + (r.WhatIf ? ' (a plan only)' : '') }); } }, { key: 'Actor', label: 'Who' }, { key: 'ActorSource', label: 'From', type: 'cat' },
+        { key: 'Target', label: 'Target', wrap: true, render: function (r) { return auditTargetText(r.Target); } }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Outcome', label: 'Outcome', type: 'cat', cls: stCell('Outcome') }, { key: 'OutcomeText', label: 'Detail', wrap: true },
+        { key: 'AfterJson', label: 'Change', wrap: true, render: auditChange }],
         { exportPath: '/api/audit/export' }));
       return Promise.resolve();
     } },
@@ -3432,6 +4801,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         draw();
       });
     } },
+    { id: 'tagtest', label: 'Test runs', role: 'Reader', draw: function (p, arg) { return drawTagTests(p, arg); } },
     { id: 'backups', label: 'Backups / Undo', role: 'Reader', draw: function (p, arg) { return drawBackups(p, arg); } },
     { id: 'run', label: null, role: 'Reader', draw: function (p, id) {
       return api('GET', '/api/runs/' + encodeURIComponent(id || '')).then(function (j) {
@@ -3441,7 +4811,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         p.appendChild(el('p', null, 'Started ', timeEl(r.StartedAtUtc), r.EndedAtUtc ? ', ended ' : '', r.EndedAtUtc ? timeEl(r.EndedAtUtc) : null, '. ', el('a', { href: '#changes/' + r.RunId, text: 'Its tag changes' })));
         if (r.HeldReason) p.appendChild(el('div', { class: 'guide', text: 'HELD: ' + r.HeldReason }));
         // UNDO-BACKUP: a tagging run that wrote tags can be undone (a new run puts the old values back)
-        if (isRole('Admin') && /^(User|Device)Tagging$/.test(r.Job) && r.Mode === 'Apply' && r.Applied > 0) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } })));
+        if (isRole('Admin') && /^(User|Device)Tagging$/.test(r.Job) && r.Mode === 'Apply' && r.Applied > 0 && !r.UndoneBy) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } })));
         if (r.UndoOfRunId) p.appendChild(el('p', null, 'The undo of ', el('a', { href: '#run/' + r.UndoOfRunId, text: 'this run' }), '.'));
         p.appendChild(el('h3', { text: 'Log' }));
         p.appendChild(el('pre', { class: 'log', text: j.log.map(function (l) { return fmtTime(l.AtUtc) + '  ' + l.Level + '  ' + l.Message; }).join('\n') || '(no log lines)' }));
@@ -3449,7 +4819,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     } }
   ];
   // the tab order (owner 2026-10-31: "rules is core so it must be left in view. tamper is less importantant")
-  var NAV_ORDER = ['overview', 'rules', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'changes', 'capolicies', 'ca', 'backups', 'settings', 'worker', 'access', 'audit', 'tamper', 'apiref'];
+  var NAV_ORDER = ['overview', 'rules', 'tagtest', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'changes', 'capolicies', 'ca', 'backups', 'settings', 'worker', 'access', 'audit', 'tamper', 'apiref'];
   PAGES.sort(function (a, b) { var x = NAV_ORDER.indexOf(a.id), y = NAV_ORDER.indexOf(b.id); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
 
   // ---- navigation ------------------------------------------------------------------------------------------------
@@ -3463,7 +4833,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       { hash: 'v1import', label: 'Import v1', desc: 'Bring a v1 install over: upload its files, see the plan, approve.' }] },
     { label: 'Tagging', items: [
       { hash: 'rules', label: 'Tagging Rules', desc: 'The rules that set the tags on users and devices.' },
-      { hash: 'troubleshoot', label: 'Troubleshoot tagging', desc: 'Pick accounts and see why each tag was or was not set.' },
+      { hash: 'tagtest', label: 'Test runs', desc: 'Test the rules on the people you pick, see per person why, then go live.' },
       { hash: 'tagtypes', label: 'Tag types', desc: 'The tags Entra Policy Suite writes, each in its own attribute, with its values.' },
       { hash: 'conditions', label: 'Condition types', desc: 'What a rule can test.' },
       { hash: 'queue', label: 'Commit queue', desc: 'Rule changes waiting for an admin to commit them.' },
@@ -3537,7 +4907,19 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     document.getElementById('versionReload').addEventListener('click', function () { location.reload(); });
     document.getElementById('versionLater').addEventListener('click', function () { dismissed = document.getElementById('versionBarText').textContent.match(/v([^;]+);/)[1]; document.getElementById('versionBar').hidden = true; });
     document.getElementById('sessionReload').addEventListener('click', function () { location.reload(); });
-    window.addEventListener('hashchange', render);
+    // ADMIN-WALK: unstaged edits in the rules grid are not dropped by leaving the page without a question
+    var gridDirty = function () { var G = GRID; return !!(G.ot && (Object.keys(G.edits).length || G.added.length || Object.keys(G.dels).some(function (k) { return G.dels[k]; }))); };
+    var lastHash = location.hash, skipGuard = false;
+    window.addEventListener('hashchange', function () {
+      if (skipGuard) { skipGuard = false; return; }
+      var to = location.hash || '';
+      if (gridDirty() && to.indexOf('#rules/' + GRID.ot) !== 0 && !(GRID.ot === 'User' && to === '#rules') && !window.confirm('The rules grid has edits that are not staged yet. Leave and drop them?')) {
+        skipGuard = true; location.hash = lastHash; return;
+      }
+      if (gridDirty() && to.indexOf('#rules/' + GRID.ot) !== 0) { GRID.edits = {}; GRID.added = []; GRID.dels = {}; GRID.undo = []; GRID.redo = []; }
+      lastHash = to; render();
+    });
+    window.addEventListener('beforeunload', function (ev) { if (gridDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
     window.addEventListener('focus', pollVersion);
     setInterval(pollVersion, 5 * 60 * 1000);
     api('GET', '/api/me').then(function (m) {

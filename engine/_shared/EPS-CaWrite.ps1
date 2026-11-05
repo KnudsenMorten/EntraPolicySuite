@@ -486,7 +486,8 @@ function Invoke-EpsCaPairPatch {
 }
 
 function Remove-EpsCaPolicyById {
-    # the DELETE of ONE policy - an old version that was promoted away and is off; its only caller is Invoke-EpsCaRemoveOldVersion
+    # the DELETE of ONE policy that is off - an old version that was promoted away (Invoke-EpsCaRemoveOldVersion) or one
+    # picked for Remove policies (Invoke-EpsCaRemovePolicies); those two are its only callers
     param([Parameter(Mandatory)][string]$PolicyId)
     [void](Invoke-EpsGraph -Method 'DELETE' -Path "v1.0/identity/conditionalAccess/policies/$PolicyId")
 }
@@ -546,6 +547,14 @@ function Invoke-EpsCaVersionPair {
     if ("$($onAfter.state)" -ne 'disabled' -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: $($onAfter.displayName) $($bg.Text)"; Plan = $plan } }
     $bk = Backup-EpsCaBeforeWrite -ConnectionString $ConnectionString -Policies @($old, $new) -Cause "before the $($Action.ToLower()) of $($pair.TemplateId) ($($pair.OldVersion) / $($pair.NewVersion))" -Actor $Actor
     if (-not $bk.Ok) { return @{ Result = 'refused'; Reason = "$($bk.Reason) - nothing was changed"; Plan = $plan } }
+    # CA-TEMPLATES left-over (V1-PARITY, CAnnn.ps1 Dynamic_Using_Tags): both versions share the template's dynamic pilot
+    # group - it takes the rule of the stage the one turned ON ends in (a promote = Prod: the rule paused; a roll back =
+    # the old version's stage again) FIRST, as a stage move does; refused, both policies untouched, when it cannot
+    if (Get-Command Set-EpsPilotGroupForStage -ErrorAction SilentlyContinue) {
+        $pgTo = if ($Action -eq 'Promote') { 'Prod' } else { "$((Get-EpsCaReview -Policy $onAfter -Names $onX.Names -Ctx $onX.Ctx -Catalog $onX.Catalog).stage)" }
+        $pg = Set-EpsPilotGroupForStage -ConnectionString $ConnectionString -TemplateId "$($pair.TemplateId)" -To $pgTo -Actor $Actor -Reason $Reason -Log $Log
+        if ($pg.Result -in 'refused', 'failed') { return @{ Result = 'refused'; Reason = "the pilot group: $($pg.Reason) - nothing was changed"; Plan = $plan } }
+    }
     & $Log 'Info' "CA version $($Action.ToLower()) $($pair.TemplateId) ($($pair.OldVersion) / $($pair.NewVersion)): on $($onPatch.displayName), off $($offPatch.displayName), requested by $Actor"
     $fail = { param($e) "the tenant refused it: $($e.Exception.Message)$(if ("$e" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })" }
     try { Invoke-EpsCaPairPatch -PolicyId $onId -Patch $onPatch } catch { return @{ Result = 'failed'; Reason = "$(& $fail $_) - nothing was changed"; Plan = $plan } }
@@ -614,6 +623,60 @@ COMMIT;
 "@)
     if (-not $gone) { & $Log 'Warning' "  deleted, but $($old.displayName) is still read in the tenant" }
     @{ Result = 'ok'; Plan = $plan; Before = $before; After = $after; Verified = $gone }
+}
+
+function Invoke-EpsCaRemovePolicies {
+    <#
+      "Remove policies" (CA-TEMPLATES left-over = v1's optional "REMOVE CA POLICIES" block, E-CM L984-1003): DELETES the
+      picked policies, or those whose name is like a pattern - ONLY policies that are OFF (the operator's request, applied by
+      the engine; SuperAdmin, a reason):
+        1. the plan made again from the last read (Get-EpsCaRemovePlanFromStore); -Confirm must be exactly its "DELETE <n>"
+        2. each policy read LIVE: gone = skipped; not the one he looked at (-Expected hash) or not OFF any more = refused
+        3. ONE backup of every policy about to go, BEFORE any delete (none = nothing deleted)
+        4. ONE DELETE per policy (Remove-EpsCaPolicyById, the pinned write), read back (gone), its record removed, an adopted
+           one released, its history ('Disabled -> Removed') and the journal written
+      Returns @{ Result = ok | partial | refused; Reason; Items; Text }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string[]]$PolicyIds = @(), [string]$Pattern, [hashtable]$Expected = @{}, [string]$Confirm,
+          [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
+    $plan = Get-EpsCaRemovePlanFromStore -ConnectionString $ConnectionString -PolicyIds $PolicyIds -Pattern $Pattern
+    if (-not $plan.ok) { return @{ Result = 'refused'; Reason = $plan.reason; Items = @($plan.items) } }
+    if ("$Confirm".Trim() -cne $plan.confirm) { return @{ Result = 'refused'; Reason = "type $($plan.confirm) exactly to confirm (the number of policies the plan removes now)"; Items = @($plan.items) } }
+    $out = [System.Collections.Generic.List[object]]::new(); $go = [System.Collections.Generic.List[object]]::new()
+    foreach ($it in @($plan.items | Where-Object { $_.ok })) {
+        $res = [ordered]@{ policyId = $it.policyId; displayName = $it.displayName; result = 'refused'; text = $null }; $out.Add($res)
+        $live = Get-EpsCaLivePolicy -PolicyId $it.policyId
+        if (-not $live) { $res.result = 'gone'; $res.text = 'no longer in the tenant'; continue }
+        $exp = "$($Expected[$it.policyId])"; if (-not $exp) { $exp = "$($Expected[$it.policyId.ToLowerInvariant()])" }
+        if (-not $exp -or $exp -ne (Get-EpsCaBodyHash $live)) { $res.text = 'the policy in the tenant is not the one you looked at (it changed since the last read) - read the list again'; continue }
+        if ("$($live.state)" -ne 'disabled') { $res.text = "it is $($live.state) now - only a policy that is OFF is removed"; continue }
+        $go.Add(@{ Res = $res; Live = $live; Item = $it })
+    }
+    if ($go.Count) {
+        $bk = Backup-EpsCaBeforeWrite -ConnectionString $ConnectionString -Policies @($go | ForEach-Object { $_.Live }) -Cause "before Remove policies ($($go.Count)$(if ($plan.pattern) { ", name like '$($plan.pattern)'" }))" -Actor $Actor
+        if (-not $bk.Ok) { foreach ($g in $go) { $g.Res.text = "$($bk.Reason) - nothing was deleted" }; $go.Clear() }
+    }
+    foreach ($g in $go) {
+        $id = "$($g.Item.policyId)"; $live = $g.Live; $res = $g.Res
+        & $Log 'Info' "CA remove: $($live.displayName) (off), requested by $Actor"
+        try { Remove-EpsCaPolicyById -PolicyId $id } catch { $res.result = 'failed'; $res.text = "the tenant refused the delete: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; continue }
+        $gone = $null -eq (Get-EpsCaLivePolicy -PolicyId $id)
+        $p = @{ p = [guid]$id; n = "$($live.displayName)"; bj = ($live | ConvertTo-Json -Compress -Depth 30); res = $(if ($gone) { 'applied' } else { 'applied, differs' }); rt = $(if ($gone) { 'deleted (Remove policies)' } else { 'deleted, but it is still read in the tenant' }); by = $Actor; rs = $Reason
+                rr = "deleted from the tenant (Remove policies)$(if ($Reason) { " - $Reason" })" } +
+             (New-EpsJournalParameters -Actor $Actor -Entity 'CaPolicy' -Key $id -Action 'Delete' -Before ([ordered]@{ policyId = $id; displayName = "$($live.displayName)"; state = "$($live.state)" } | ConvertTo-Json -Compress) -After ([ordered]@{ deleted = $gone; pattern = $plan.pattern } | ConvertTo-Json -Compress))
+        [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $p -Query @"
+SET XACT_ABORT ON; BEGIN TRAN;
+DELETE FROM eps.CaPolicy WHERE PolicyId = @p;
+UPDATE eps.CaAdoption SET Status = 'Released', ReleasedBy = @by, ReleasedAtUtc = SYSUTCDATETIME(), ReleaseReason = LEFT(@rr, 1000) WHERE PolicyId = @p AND Status = 'Adopted';
+INSERT INTO eps.CaStageMove (PolicyId, DisplayName, FromStage, ToStage, BeforeJson, AfterJson, Result, ResultText, RequestedBy, Reason) VALUES (@p, @n, 'Disabled', 'Removed', @bj, '{}', @res, LEFT(@rt, 2000), @by, @rs);
+$(Get-EpsJournalSql)
+COMMIT;
+"@)
+        $res.result = $(if ($gone) { 'deleted' } else { 'deleted, differs' }); $res.text = $(if ($gone) { 'deleted' } else { 'deleted, but it is still read in the tenant' })
+    }
+    $done = @($out | Where-Object { "$($_.result)" -like 'deleted*' }).Count; $bad = @($out | Where-Object { $_.result -in 'refused', 'failed' }).Count
+    @{ Result = $(if ($bad -and $done) { 'partial' } elseif ($bad) { 'refused' } else { 'ok' }); Reason = (@($out | Where-Object { $_.result -in 'refused', 'failed' } | ForEach-Object { "$($_.displayName): $($_.text)" }) -join '; '); Items = @($out)
+       Text = "$done deleted$(if (@($out | Where-Object result -eq 'gone').Count) { ", $(@($out | Where-Object result -eq 'gone').Count) already gone" })$(if ($bad) { ", $bad not deleted: " + (@($out | Where-Object { $_.result -in 'refused', 'failed' } | ForEach-Object { "$($_.displayName) ($($_.text))" }) -join '; ') })" }
 }
 
 # ---- UNDO-BACKUP (owner 2026-11-05: "i need to have both a new feature Undo + another new feature backup/restore. look at

@@ -38,12 +38,19 @@ WHERE r.RuleSet = @s ORDER BY r.[Order], r.RuleId, c.Seq
     @($cards.Values)
 }
 
+if (-not $script:EpsTagTestTraceMax) { $script:EpsTagTestTraceMax = 200 }   # TAG-TEST (set in EPS-Rules.ps1; here for a caller that loads only the job)
+
 function Get-EpsScopedObjects {
-    # The scope (DESIGN §5.8): everyone, or a list of ids / UPNs / names, or a filter on the collected objects.
+    # The scope (DESIGN §5.8): everyone, or a list of ids / UPNs / names, or a filter on the collected objects, or (TAG-TEST)
+    # the users in an OU (their onPremisesDistinguishedName). A group scope is turned into ids by Invoke-EpsTagJob first.
     # A scoped run says so in its record.
     param([object[]]$Objects, $Scope)
     if (-not $Scope -or $Scope.Kind -eq 'Everyone') { return $Objects }
     switch ($Scope.Kind) {
+        'OU' {
+            $ous = @($Scope.Values | Where-Object { $_ } | ForEach-Object { "$_" })
+            @($Objects | Where-Object { $dn = [string](Get-EpsValue $_ 'onPremisesDistinguishedName'); $dn -and @($ous | Where-Object { $dn.EndsWith(",$_", [StringComparison]::OrdinalIgnoreCase) -or $dn.Equals($_, [StringComparison]::OrdinalIgnoreCase) }).Count })
+        }
         'Objects' {
             $set = [System.Collections.Generic.HashSet[string]]::new([string[]]@($Scope.Values), [StringComparer]::OrdinalIgnoreCase)
             # SEC-AUDIT-1 S13: a display name is not unique - it counts only when it names exactly one object (ids / UPNs always)
@@ -54,7 +61,7 @@ function Get-EpsScopedObjects {
             $w = Get-EpsWildcard ([string]$Scope.Pattern)
             @($Objects | Where-Object { $w.IsMatch([string](Get-EpsValue $_ $Scope.Property)) })
         }
-        default { throw "scope kind '$($Scope.Kind)' is not supported here (Group / OU scopes are resolved to Objects first)" }
+        default { throw "scope kind '$($Scope.Kind)' is not supported here (a Group scope is resolved to Objects first)" }
     }
 }
 
@@ -95,6 +102,54 @@ function Write-EpsTagChanges {
         $bc.WriteToServer($dt)
     } finally { $conn.Dispose() }
     $Changes.Count
+}
+
+$script:EpsRuleHitMax = 10000    # RULES-MATCHED: who each rule decided, kept per rule and run up to this many
+$script:EpsRuleHitRunsKept = 5   # the hit lists of the newest runs of a job are kept (+ always its newest run on everyone)
+
+function Write-EpsRuleHits {
+    <#
+      RULES-MATCHED (owner 2026-11-03: "maybe give more context here which users are in scope like a list" / "a button with
+      more context"): the plan's Hits (rule id -> the objects that rule decided, at most $script:EpsRuleHitMax each) ->
+      eps.TagRuleHit in one bulk copy; then the lists of older runs of the same job are dropped (the newest
+      $script:EpsRuleHitRunsKept runs and the newest run on everyone stay). Returns the rows written.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [Parameter(Mandatory)][string]$Job,
+          [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, [hashtable]$Hits = @{})
+    $dt = [System.Data.DataTable]::new()
+    foreach ($c in 'RunId', 'ObjectType', 'RuleId', 'ObjectId', 'ObjectName', 'TagType', 'Value', 'CurrentValue', 'Changed') {
+        $col = $dt.Columns.Add($c)
+        if ($c -in 'RunId', 'ObjectId') { $col.DataType = [guid] } elseif ($c -eq 'RuleId') { $col.DataType = [int] } elseif ($c -eq 'Changed') { $col.DataType = [bool] }
+    }
+    foreach ($rid in $Hits.Keys) {
+        $ri = 0; if (-not [int]::TryParse("$rid", [ref]$ri)) { continue }
+        foreach ($h in $Hits[$rid]) {
+            $g = [guid]::Empty; if (-not [guid]::TryParse("$($h[0])", [ref]$g)) { continue }
+            $row = $dt.NewRow()
+            $row.RunId = $RunId; $row.ObjectType = $ObjectType; $row.RuleId = $ri; $row.ObjectId = $g
+            $row.ObjectName = if ($h[1]) { "$($h[1])" } else { [DBNull]::Value }; $row.TagType = "$($h[2])"
+            $row.Value = if ([string]::IsNullOrEmpty($h[3])) { [DBNull]::Value } else { "$($h[3])" }
+            $row.CurrentValue = if ([string]::IsNullOrEmpty($h[4])) { [DBNull]::Value } else { "$($h[4])" }
+            $row.Changed = [bool]$h[5]
+            $dt.Rows.Add($row)
+        }
+    }
+    if ($dt.Rows.Count) {
+        $conn = New-EpsSqlConnection -ConnectionString $ConnectionString
+        try {
+            Open-EpsSqlConnection $conn
+            $bcType = ($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type]
+            $bc = $bcType::new($conn); $bc.DestinationTableName = 'eps.TagRuleHit'; $bc.BatchSize = 5000; $bc.BulkCopyTimeout = 600
+            foreach ($col in $dt.Columns) { [void]$bc.ColumnMappings.Add($col.ColumnName, $col.ColumnName) }
+            $bc.WriteToServer($dt)
+        } finally { $conn.Dispose() }
+    }
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $Job; k = $script:EpsRuleHitRunsKept } -Query @'
+DELETE FROM eps.TagRuleHit WHERE RunId IN (SELECT r.RunId FROM eps.Run r WHERE r.Job = @j
+  AND r.RunId NOT IN (SELECT TOP (@k) RunId FROM eps.Run WHERE Job = @j ORDER BY StartedAtUtc DESC)
+  AND r.RunId NOT IN (SELECT TOP (1) RunId FROM eps.Run WHERE Job = @j AND Scope IS NULL AND Status IN ('Succeeded', 'PartlyFailed', 'Held') ORDER BY StartedAtUtc DESC))
+'@ | Out-Null
+    $dt.Rows.Count
 }
 
 function Invoke-EpsApplyChanges {
@@ -153,21 +208,65 @@ function Invoke-EpsTagJob {
     )
     $job = "${ObjectType}Tagging"
     $runId = $RunId
+    # TAG-TEST (owner 2026-11-05): a test run and a go live carry their meta in the scope - Test (a test run: the whole
+    # decision of its first objects is recorded, the rule set hash with it), TagTypes (only those tag types), GoLive +
+    # TestRunId + ExpectHash (ONE Apply on everyone with exactly the rules the test proved; refused when they changed).
+    # Go live never touches the Mode setting or the schedule: scheduled tagging goes on as before.
+    $sv = { param($k) if ($null -eq $Scope) { $null } elseif ($Scope -is [System.Collections.IDictionary]) { $Scope[$k] } else { $Scope.$k } }
+    $isTest = [bool](& $sv 'Test'); $goLive = [bool](& $sv 'GoLive')
+    # ADMIN-WALK: "Test these staged changes" - a TEST (never an Apply) on the rules as the commit queue would make them
+    $staged = $isTest -and [bool](& $sv 'Staged') -and $Mode -eq 'Preview'
+    $pickTypes = @(& $sv 'TagTypes' | Where-Object { $_ } | ForEach-Object { "$_" })
+    $expectHash = [string](& $sv 'ExpectHash'); $testRunId = [string](& $sv 'TestRunId')
+    if ($goLive) { $Scope = $null; $pickTypes = @() }   # everyone, every tag type: measured by the mass-change guard as any run on everyone
     $scopeJson = if ($Scope) { $Scope | ConvertTo-Json -Compress -Depth 5 }
     Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; j = $job; m = $Mode; s = $scopeJson; a = $ApprovedBy } -Query 'INSERT INTO eps.Run (RunId, Job, Mode, Scope, ApprovedBy) VALUES (@id, @j, @m, @s, @a)' | Out-Null
-    $log = { param($level, $msg) $script:__seq++; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
+    # V1-PARITY P16: Log.Level.<Job> - Off keeps warnings and errors, Verbose adds a line per planned change
+    $__epsLogLevel = if (Get-Command Get-EpsLogLevel -ErrorAction SilentlyContinue) { Get-EpsLogLevel -ConnectionString $ConnectionString -Feature $job } else { 'Normal' }
+    $log = { param($level, $msg) if ((Get-Command Test-EpsLogLine -ErrorAction SilentlyContinue) -and -not (Test-EpsLogLine -Level $__epsLogLevel -Line $level)) { return }; $script:__seq++; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
     $script:__seq = 0
     try {
         $catalog = Import-EpsConditionCatalog -CustomConditions @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Id AS id, ObjectType AS objectType, Property AS property, Operator AS operator, Guard AS guard, Description AS description, CAST(1 AS bit) AS custom FROM eps.ConditionType WHERE Enabled = 1")
         $types = Read-EpsTagTypes -ConnectionString $ConnectionString
         $rules = Read-EpsTagRules -ConnectionString $ConnectionString -ObjectType $ObjectType
-        & $log 'Info' "$job ${Mode}: $($rules.Count) rule(s), $(@($types.Values | Where-Object { $_.ObjectType -eq $ObjectType -and $_.Enabled }).Count) enabled tag type(s)$(if ($Scope) { ", SCOPED: $scopeJson" })"
+        $stagedInfo = $null
+        if ($staged) {
+            $st = Get-EpsStagedRuleCards -ConnectionString $ConnectionString -ObjectType $ObjectType
+            $rules = @(ConvertTo-EpsTagJobCards -ObjectType $ObjectType -Cards $st.Cards)
+            $stagedInfo = [ordered]@{ Waiting = $st.Count; Applied = @($st.Applied); Skipped = @($st.Skipped) }
+            & $log 'Info' "the STAGED rules: $($st.Applied.Count) of $($st.Count) waiting change(s) applied in memory (nothing committed, nothing written)"
+            foreach ($x in $st.Skipped) { & $log 'Warning' "  waiting change #$($x.id) left out - a commit would refuse it: $($x.why)" }
+        }
+        & $log 'Info' "$job ${Mode}: $($rules.Count) rule(s), $(@($types.Values | Where-Object { $_.ObjectType -eq $ObjectType -and $_.Enabled }).Count) enabled tag type(s)$(if ($Scope) { ", SCOPED: $scopeJson" })$(if ($isTest) { ' - a TEST RUN' })$(if ($goLive) { " - GO LIVE of test run $testRunId" })"
+        # the rule set as it is now (TAG-TEST): recorded with every run; a go live runs only on the rules its test proved
+        $ruleHash = if ($staged) { $st.Hash } elseif (Get-Command Get-EpsTagRuleSetHash -ErrorAction SilentlyContinue) { Get-EpsTagRuleSetHash -ConnectionString $ConnectionString -ObjectType $ObjectType } else { $null }
+        if ($expectHash -and $ruleHash -ne $expectHash) { throw "the rules changed after the test run $testRunId (the rule set is no longer the one it tested) - nothing was written; test again, then go live" }
+        if ($pickTypes.Count) {
+            # a test run limited to some tag types: the rules of the others are left out, the others switched off for this run
+            $rules = @($rules | Where-Object { $pickTypes -contains $_.TagType })
+            foreach ($k in @($types.Keys)) { $tt0 = $types[$k]; if ($tt0.ObjectType -eq $ObjectType -and $pickTypes -notcontains $tt0.Name) { $cp = $tt0.Clone(); $cp.Enabled = $false; $types[$k] = $cp } }
+            & $log 'Info' "only the tag type(s) $($pickTypes -join ', '): $($rules.Count) rule(s)"
+        }
+        # a group scope (TAG-TEST): the direct members of the named groups (v1's MemberOfGroup reads direct members too)
+        $evalScope = $Scope; $noneInScope = $false
+        if ("$(& $sv 'Kind')" -eq 'Group') {
+            $gNotes = [System.Collections.Generic.List[string]]::new()
+            $gm = Get-EpsEntraGroupMembers -GroupNames @(& $sv 'Values') -ConnectionString $ConnectionString -Notes $gNotes
+            foreach ($n in $gNotes) { & $log 'Warning' $n }
+            foreach ($n in @(& $sv 'Values')) { if (-not $gm.ContainsKey("$n")) { & $log 'Warning' "group '$n' is not in the tenant - no members from it" } }
+            $ids = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($set in $gm.Values) { foreach ($i in $set) { [void]$ids.Add([string]$i) } }
+            & $log 'Info' "group scope: $($ids.Count) direct member(s) of $(@(& $sv 'Values') -join ', ')"
+            $evalScope = @{ Kind = 'Objects'; Values = @($ids); ById = $true }
+            if (-not $ids.Count) { $noneInScope = $true; $Objects = @() }
+        }
 
-        if (-not $Objects) {
+        if (-not $Objects -and -not $noneInScope) {
             $select = Get-EpsConditionSelect -Catalog $catalog -ObjectType $ObjectType -Rules $rules -Base (Get-EpsTagBaseSelect -ObjectType $ObjectType)
-            if ($Scope -and $Scope.ById) {
+            if ("$(& $sv 'Kind')" -eq 'OU') { $select = @(@($select) + 'onPremisesDistinguishedName' | Select-Object -Unique) }
+            if ($evalScope -and $evalScope.ById) {
                 # the directory trigger names the changed objects by id: read only those (15 ids per filter, Graph's limit)
-                $ids = @($Scope.Values); $byId = [System.Collections.Generic.List[object]]::new()
+                $ids = @($evalScope.Values); $byId = [System.Collections.Generic.List[object]]::new()
                 for ($i = 0; $i -lt $ids.Count; $i += 15) {
                     $f = "id in ($((@($ids[$i..([math]::Min($i + 14, $ids.Count - 1))]) | ForEach-Object { "'$([guid]$_)'" }) -join ','))"
                     $page = if ($ObjectType -eq 'User') { Get-EpsUsers -Select $select -Filter $f } else { Get-EpsDevices -Select $select -Filter $f }
@@ -203,7 +302,8 @@ function Invoke-EpsTagJob {
                 } else { & $log 'Warning' 'no hybrid worker heartbeat in 30 min: AD group membership not available' }
             }
         }
-        $scoped = @(Get-EpsScopedObjects -Objects $Objects -Scope $Scope)
+        $scoped = @(Get-EpsScopedObjects -Objects $Objects -Scope $evalScope)
+        if ($evalScope) { & $log 'Info' "in scope: $($scoped.Count) object(s)" }
         # objects the customer never wants tagged (owner 2026-10-30: "skip the sync account") - left out before the plan
         $exRaw = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = "$job.ExcludeObjects" } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'
         $ex = @(if ($exRaw) { try { @($exRaw | ConvertFrom-Json) } catch { & $log 'Warning' "$job.ExcludeObjects is not a JSON list - ignored" } })
@@ -211,12 +311,22 @@ function Invoke-EpsTagJob {
             $before = $scoped.Count; $scoped = @(Get-EpsNotExcludedObjects -Objects $scoped -Patterns $ex)
             & $log 'Info' "excluded $($before - $scoped.Count) object(s) by $job.ExcludeObjects ($($ex -join ', '))"
         }
-        # "Try on a user" (RULES-UX): a scoped preview that records the whole decision of each object (a few at most)
-        $traceIds = if ($Scope -and $Scope.Trace -and $scoped.Count -le 5) { @($scoped | ForEach-Object { [string]$_.id }) } else { @() }
+        # the whole decision per object (the test run's per-person trace, TAG-TEST): a test run records it for its first
+        # $script:EpsTagTestTraceMax objects; a scope with Trace (a few objects at most) for each of them
+        $traceIds = if ($isTest) { @($scoped | Select-Object -First $script:EpsTagTestTraceMax | ForEach-Object { [string]$_.id }) }
+                    elseif ($Scope -and (& $sv 'Trace') -and $scoped.Count -le 5) { @($scoped | ForEach-Object { [string]$_.id }) } else { @() }
         $plan = Invoke-EpsTagPlan -ObjectType $ObjectType -Objects $scoped -Rules $rules -TagTypes $types -Catalog $catalog -Context $Context -Trace $traceIds
         $sum = Get-EpsPlanSummary $plan
         foreach ($k in $plan.Unavailable.Keys) { & $log 'Warning' "unavailable: $k ($($plan.Unavailable[$k]) condition check(s) skipped)" }
         & $log 'Info' "plan: $($sum.Changes) change(s) on $($sum.ObjectsChanged) object(s), $($sum.Overwrites) overwrite(s), $($sum.Unchanged) already right, $($sum.Skipped) skipped"
+        if ($__epsLogLevel -eq 'Verbose') {
+            # v1's verbose output: one line per planned change (the first 2,000; every change is also on the run's changes page)
+            $vn = 0
+            foreach ($c in @($plan.Changes)) {
+                if (++$vn -gt 2000) { & $log 'Verbose' "... and $(@($plan.Changes).Count - 2000) more change(s) - see the run's changes"; break }
+                & $log 'Verbose' "$($c.ObjectName): $($c.TagType) '$($c.OldValue)' -> '$($c.NewValue)'$(if ($c.Reason) { " - $($c.Reason)" })"
+            }
+        }
 
         $status = 'Succeeded'; $held = $null; $applied = 0; $failed = 0; $queuedAd = 0
         if ($Mode -eq 'Apply') {
@@ -235,6 +345,11 @@ function Invoke-EpsTagJob {
             if ($g.Record) { $script:EpsLastGuardRecord = $g.Record }   # the job's caller sends it (mail, uplink: GUARD-1.2)
         }
         [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes))
+        # RULES-MATCHED: who each rule decided (the Rules page's Matched button); a failure here never fails the run
+        $hitsCapped = @(foreach ($k in @($plan.Hits.Keys)) { if ([int]$plan.Matched[$k] -gt $plan.Hits[$k].Count) { "$k" } })
+        # (not for a test of the STAGED rules: their rules are not the committed ones, so their lists would mislead)
+        if (-not $staged) { try { [void](Write-EpsRuleHits -ConnectionString $ConnectionString -RunId $runId -Job $job -ObjectType $ObjectType -Hits $plan.Hits) }
+        catch { & $log 'Warning' "the list of who each rule decided was not stored: $($_.Exception.Message)" } }
         if ($queuedAd) {
             # V1-PARITY P14: each AD change goes to the worker of its user's AD environment (HybridWorker.EnvironmentByUpnSuffix)
             # (EPS-WorkerPage.ps1 + EPS-Scheduler.ps1, both loaded by the engine; a test that loads neither queues without one)
@@ -247,9 +362,12 @@ function Invoke-EpsTagJob {
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{
             id = $runId; st = $status; h = $held; o = $sum.Objects; p = $sum.Changes; ow = $sum.Overwrites; a = $applied; f = $failed; sk = $sum.Skipped
             js = ([ordered]@{ ByValue = $sum.ByValue; ByRule = $sum.ByRule; Matched = $sum.Matched; Unavailable = $sum.Unavailable; Unchanged = $sum.Unchanged; ObjectsChanged = $sum.ObjectsChanged
+                    RuleSetHash = $ruleHash; Test = $isTest; TagTypes = @($pickTypes); TracedMax = $(if ($isTest) { $script:EpsTagTestTraceMax })
+                    HitMax = $script:EpsRuleHitMax; HitsCapped = @($hitsCapped)
+                    GoLive = $(if ($goLive) { [ordered]@{ TestRunId = $testRunId } }); Staged = $stagedInfo
                     Traces = $(if ($traceIds.Count) { @($plan.Traces.Values) }) } | ConvertTo-Json -Compress -Depth 8)
         } -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @st, HeldReason = @h, Objects = @o, Planned = @p, Overwrites = @ow, Applied = @a, Failed = @f, Skipped = @sk, SummaryJson = @js WHERE RunId = @id' | Out-Null
-        [pscustomobject]@{ RunId = $runId; Job = $job; Mode = $Mode; Status = $status; HeldReason = $held; Summary = $sum; Applied = $applied; Failed = $failed; Queued = $queuedAd; Plan = $plan }
+        [pscustomobject]@{ RunId = $runId; Job = $job; Mode = $Mode; Status = $status; HeldReason = $held; Summary = $sum; Applied = $applied; Failed = $failed; Queued = $queuedAd; Plan = $plan; RuleSetHash = $ruleHash }
     } catch {
         $err = "$($_.Exception.Message)"
         try { & $log 'Error' $err } catch { }

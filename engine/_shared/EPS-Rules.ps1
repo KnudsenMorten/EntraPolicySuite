@@ -523,7 +523,7 @@ function Test-EpsRuleBatch {
     foreach ($it in $items) { if ($it.op -in 'delete', 'addvalue') { continue }; foreach ($rid in @("$($it.ruleId)" -split ',')) { if ($hb -and $rid -and $hb[$rid]) { $it.hints = @($it.hints) + @($hb[$rid] | ForEach-Object { "rule $rid`: $($_.Text)" }) } } }
     $parts = @(); if ($counts.update) { $parts += "$($counts.update) changed" }; if ($counts.create) { $parts += "$($counts.create) new" }; if ($counts.delete) { $parts += "$($counts.delete) deleted" }
     if ($counts.move) { $parts += "$($counts.move) move$(if ($counts.move -gt 1) { 's' })" }; if ($counts.value) { $parts += "$($counts.value) tag value$(if ($counts.value -gt 1) { 's' }) added" }; if ($counts.unchanged) { $parts += "$($counts.unchanged) unchanged (left out)" }
-    @{ Ok = -not $errs.Count; Errors = @($errs); Items = @($items); Counts = $counts; Summary = $(if ($parts) { $parts -join ', ' } else { 'nothing changes' }); Before = @($before); Valid = $valid }
+    @{ Ok = -not $errs.Count; Errors = @($errs); Items = @($items); Counts = $counts; Summary = $(if ($parts) { $parts -join ', ' } else { 'nothing changes' }); Before = @($before); Valid = $valid; Final = @($final) }
 }
 
 function ConvertTo-EpsRuleBatchView {
@@ -858,6 +858,10 @@ function Remove-EpsTagValue {
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, [Parameter(Mandatory)][string]$TagType, [Parameter(Mandatory)][string]$Value, [Parameter(Mandatory)][string]$Actor)
     $cur = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ o = $ObjectType; t = $TagType; v = $Value } -Query 'SELECT Value, IsPattern, Description FROM eps.TagValue WHERE ObjectType = @o AND TagType = @t AND Value = @v')[0]
     if (-not $cur) { return @{ Result = 'missing' } }
+    # ADMIN-WALK-2 N5: a value the tag type sets as its FALLBACK (what most objects carry) is in use - never removable
+    $tt = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ o = $ObjectType; t = $TagType } -Query 'SELECT FallbackAD, FallbackCloud FROM eps.TagType WHERE ObjectType = @o AND Name = @t')[0]
+    $fb = @(foreach ($k in 'FallbackAD', 'FallbackCloud') { if ($tt -and [string]::Equals("$($tt.$k)", $Value, 'OrdinalIgnoreCase')) { $(if ($k -eq 'FallbackAD') { 'AD-synced' } else { 'cloud' }) } })
+    if ($fb.Count) { return @{ Result = 'fallback'; Text = "'$Value' is the $($fb -join ' and ') fallback of $TagType - every object no rule decides gets it. Change the fallback (Edit the tag type) first." } }
     $use = @(Get-EpsTagTypeUse -ConnectionString $ConnectionString -ObjectType $ObjectType -TagType $TagType | Where-Object { [string]::Equals("$($_.TagValueAD)", $Value, 'OrdinalIgnoreCase') -or [string]::Equals("$($_.TagValueCloud)", $Value, 'OrdinalIgnoreCase') })
     if ($use.Count) { return @{ Result = 'refused'; Text = "$($use.Count) rule(s) set '$Value' (rule $(@($use | Select-Object -First 5 | ForEach-Object RuleId) -join ', ')) - change them first. Dynamic groups and Conditional Access policies that read this value are not checked here: look before you remove it." } }
     $p = @{ o = $ObjectType; t = $TagType; v = $Value } + (New-EpsJournalParameters -Actor $Actor -Entity 'TagValue' -Key "${ObjectType}:${TagType}:$Value" -Action 'Delete' -Before (@{ value = $cur.Value; isPattern = [bool]$cur.IsPattern; description = $cur.Description } | ConvertTo-Json -Compress) -After $null)
@@ -910,8 +914,9 @@ function Remove-EpsConditionType {
 
 # ---- scopes (DESIGN §5.8): test on one user or a subset -------------------------------------------------------------
 function ConvertTo-EpsScope {
-    # the scopes the engine runs today (Get-EpsScopedObjects): Objects (ids / UPNs / names) and Filter (a property
-    # pattern). Group / OU scopes need the worker's resolution first - not offered yet.
+    # the scopes the engine runs (Get-EpsScopedObjects): Objects (ids / UPNs / names), Filter (a property pattern), and
+    # since TAG-TEST (2.0.82) Group (the direct members of up to 5 Entra groups, by name - the engine reads them) and OU
+    # (users whose on-premises distinguished name is in one of up to 5 OUs - AD-synced users carry it in Entra)
     param([Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, $Body)
     if ($null -eq $Body) { return @{ Ok = $true; Scope = $null } }
     $kind = "$($Body.kind)"
@@ -930,7 +935,213 @@ function ConvertTo-EpsScope {
         if ($pat -match '^\*+$') { return @{ Ok = $false; Error = 'a filter of only * is everyone - run it without a scope' } }
         return @{ Ok = $true; Scope = [ordered]@{ Kind = 'Filter'; Property = $prop; Pattern = $pat } }
     }
-    @{ Ok = $false; Error = "scope kind '$kind': Objects or Filter (a group / OU scope is not in this release)" }
+    if ($kind -in 'Group', 'OU') {
+        if ($kind -eq 'OU' -and $ObjectType -ne 'User') { return @{ Ok = $false; Error = 'an OU scope is for users (an AD-synced user carries its OU); for devices use a list, a filter or a group' } }
+        $vals = [System.Collections.Generic.List[string]]::new(); $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($v in @($Body.values)) {
+            $x = "$v".Trim(); if (-not $x) { continue }
+            if (Test-EpsPlainText -Text $x -Max $(if ($kind -eq 'OU') { 1024 } else { 256 }) -What 'x') { return @{ Ok = $false; Error = "a $(if ($kind -eq 'OU') { 'OU' } else { 'group name' }) has a control character or is too long" } }
+            if ($kind -eq 'OU' -and $x -notmatch '^(OU|CN)=[^,]+(,(OU|CN)=[^,]+)*,DC=[^,]+(,DC=[^,]+)*$') { return @{ Ok = $false; Error = "'$x' is not an OU's distinguished name, e.g. OU=Pilot,OU=Users,DC=contoso,DC=com" } }
+            if ($seen.Add($x)) { $vals.Add($x) }
+        }
+        if (-not $vals.Count) { return @{ Ok = $false; Error = $(if ($kind -eq 'OU') { 'name at least one OU (its distinguished name)' } else { 'name at least one group (its display name)' }) } }
+        if ($vals.Count -gt 5) { return @{ Ok = $false; Error = "at most 5 $(if ($kind -eq 'OU') { 'OUs' } else { 'groups' }) in a scope" } }
+        return @{ Ok = $true; Scope = [ordered]@{ Kind = $kind; Values = @($vals) } }
+    }
+    @{ Ok = $false; Error = "scope kind '$kind': Objects, Filter, Group or OU" }
+}
+
+$script:EpsTagTestTraceMax = 200   # TAG-TEST: a test run records the whole decision of its first 200 objects
+
+function Get-EpsRuleCardsHash {
+    # TAG-TEST (owner 2026-11-05): ONE hash of everything that decides a tag of this object type - the rule cards in run
+    # order (their POSITION, tag type, on / off, persona, values, each condition in order) and the tag types (attribute,
+    # value mode, fallbacks, on / off). By content and position, never by rule id (ADMIN-WALK 2026-11-05): a test of the
+    # STAGED rules and the same rules once committed (new rules get their ids only then) have the same hash.
+    param([Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, $Cards, $TagTypeRows)
+    $s = { param($v) if ($null -eq $v -or $v -is [DBNull]) { '' } else { "$v" } }
+    $lines = [System.Collections.Generic.List[string]]::new(); $k = 0
+    foreach ($c in @($Cards | Where-Object { $_ })) {
+        $k++
+        $vals = if ($ObjectType -eq 'User') { "$(& $s $c.TagValueAD)|$(& $s $c.TagValueCloud)" } else { "$(& $s $(if ($c.Contains('TagValue') -and $null -ne $c.TagValue) { $c.TagValue } else { $c.TagValueAD }))|" }
+        $per = if ($ObjectType -eq 'User') { & $s $c.Persona } else { '' }
+        $lines.Add("R|$k|$(& $s $c.TagType)|$([int][bool]$c.Enabled)|$per|$vals")
+        $q = 0; foreach ($x in @($c.Conditions)) { if ($x -and $x.ConditionType) { $q++; $lines.Add("C|$q|$(& $s $x.ConditionType)|$(& $s $x.Target)") } }
+    }
+    foreach ($y in @($TagTypeRows)) {
+        $lines.Add("T|$(& $s $y.Name)|$(& $s $y.Attribute)|$(& $s $y.ValueMode)|$([int][bool]$y.AllowMultiple)|$(& $s $y.FallbackAD)|$(& $s $y.FallbackCloud)|$(& $s $y.FallbackFromProperty)|$([int][bool]$y.Enabled)")
+    }
+    $h = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+    (-join ($h | ForEach-Object { $_.ToString('x2') }))
+}
+
+function Get-EpsTagTypeRowsForHash {
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType)
+    @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ o = $ObjectType } -Query 'SELECT * FROM eps.TagType WHERE ObjectType = @o ORDER BY Name')
+}
+
+function Get-EpsTagRuleSetHash {
+    # the hash of the rules as COMMITTED (see Get-EpsRuleCardsHash). A test run records it; Go live is refused when the
+    # rules are no longer the ones the test proved.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, [string]$RuleSet = 'default')
+    $cards = @(Read-EpsRuleCardsForEdit -ConnectionString $ConnectionString -ObjectType $ObjectType | Where-Object { "$($_.RuleSet)" -eq $RuleSet })
+    Get-EpsRuleCardsHash -ObjectType $ObjectType -Cards $cards -TagTypeRows (Get-EpsTagTypeRowsForHash -ConnectionString $ConnectionString -ObjectType $ObjectType)
+}
+
+function Get-EpsStagedRuleCards {
+    <#
+      ADMIN-WALK (owner 2026-11-05 "think as an it admin"): "Test these staged changes" - the rules as they WOULD be once the
+      commit queue's waiting rule changes of this object type are committed, oldest first, computed in memory (nothing is
+      written): each waiting POST / PUT / DELETE / move / batch is turned into batch ops and simulated by Test-EpsRuleBatch on
+      the result of the ones before it, as the commit replays them. A change the commit would refuse is left out and named.
+      Returns @{ Cards (the edit-shaped cards of the rule set, in run order); Hash; Applied (pending ids); Skipped (id + why);
+      Count (waiting changes of this object type) }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, [string]$RuleSet = 'default')
+    $ctx = Get-EpsEditContext -ConnectionString $ConnectionString
+    $cur = @(Read-EpsRuleCardsForEdit -ConnectionString $ConnectionString -ObjectType $ObjectType | Where-Object { "$($_.RuleSet)" -eq $RuleSet })
+    $stamp = [datetime]::new(2000, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $pend = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ e = "${ObjectType}TagRule" } -Query "SELECT Id, Method, Path, BodyJson FROM eps.PendingChange WHERE Status = 'Pending' AND Entity = @e ORDER BY Id")
+    $applied = [System.Collections.Generic.List[long]]::new(); $skipped = [System.Collections.Generic.List[object]]::new(); $gen = 0
+    foreach ($p in $pend) {
+        $b = if ($p.BodyJson) { $p.BodyJson | ConvertFrom-Json } else { [pscustomobject]@{} }
+        $exp = { param($id) $c0 = @($cur | Where-Object { "$($_.RuleId)" -eq "$id" })[0]; if ($c0) { ConvertTo-EpsWebTime $c0.UpdatedAtUtc } }
+        $ops = switch -Regex ("$($p.Method) $($p.Path)") {
+            "^POST /api/rules/$ObjectType$" { @(@{ op = 'create'; rule = $b; insertAfter = $(if ("$($b.insertAfter)" -match '^\d+$') { "$($b.insertAfter)" } else { '0' }) }) }
+            "^PUT /api/rules/$ObjectType/(\d+)$" { $id = $Matches[1]; @(@{ op = 'update'; id = $id; expected = (& $exp $id); rule = $b }) }
+            "^DELETE /api/rules/$ObjectType/(\d+)$" { $id = $Matches[1]; @(@{ op = 'delete'; id = $id; expected = (& $exp $id) }) }
+            "^POST /api/rules/$ObjectType/(\d+)/move$" {
+                $id = $Matches[1]; $ix = -1; for ($i = 0; $i -lt $cur.Count; $i++) { if ("$($cur[$i].RuleId)" -eq $id) { $ix = $i } }
+                $nb = if ("$($b.direction)" -eq 'up') { $ix - 1 } else { $ix + 1 }
+                if ($ix -ge 0 -and $nb -ge 0 -and $nb -lt $cur.Count) { @(@{ op = 'move'; ids = @($id); to = $(if ("$($b.direction)" -eq 'up') { 'before' } else { 'after' }); ref = "$($cur[$nb].RuleId)" }) } else { @() } }
+            "^POST /api/rules/$ObjectType/batch$" {
+                @(foreach ($o in @($b.ops)) { if (-not $o) { continue }
+                    $h = @{}; foreach ($pp in $o.PSObject.Properties) { $h[$pp.Name] = $pp.Value }
+                    if ("$($h.op)" -in 'update', 'delete') { $h.expected = (& $exp $h.id) }
+                    $h }) }
+            default { $null }
+        }
+        if ($null -eq $ops) { continue }
+        if (-not @($ops).Count) { $skipped.Add(@{ id = [long]$p.Id; why = 'the move has no rule to pass' }); continue }
+        foreach ($c0 in $cur) { if (-not $c0.UpdatedAtUtc) { $c0.UpdatedAtUtc = $stamp } }
+        $chk = Test-EpsRuleBatch -ConnectionString $ConnectionString -ObjectType $ObjectType -Ops @($ops) -Context $ctx -Current $cur
+        if (-not $chk.Ok -and -not ($chk.Errors.Count -eq 1 -and "$($chk.Errors[0])" -like 'nothing changes*')) { $skipped.Add(@{ id = [long]$p.Id; why = (@($chk.Errors) -join '; ') }); continue }
+        $gen++
+        # the simulated set becomes the base of the next change; a new rule gets a staged id (never a number: a later
+        # staged change cannot name it, as a commit could not)
+        $cur = @(foreach ($c1 in @($chk.Final)) { if ("$($c1.RuleId)" -notmatch '^\d+$' -and "$($c1.RuleId)" -notlike 'staged*') { $c1.RuleId = "staged$gen-$($c1.RuleId)" }; if (-not $c1.UpdatedAtUtc) { $c1.UpdatedAtUtc = $stamp }; $c1 })
+        $applied.Add([long]$p.Id)
+    }
+    @{ Cards = @($cur); Hash = (Get-EpsRuleCardsHash -ObjectType $ObjectType -Cards $cur -TagTypeRows (Get-EpsTagTypeRowsForHash -ConnectionString $ConnectionString -ObjectType $ObjectType))
+       Applied = @($applied); Skipped = @($skipped); Count = $pend.Count }
+}
+
+function ConvertTo-EpsTagJobCards {
+    # the edit-shaped cards (Read-EpsRuleCardsForEdit / a simulation) -> the shape the tag engine plans with (Read-EpsTagRules)
+    param([Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, $Cards)
+    $k = 0
+    @(foreach ($c in @($Cards | Where-Object { $_ })) {
+        $k++
+        $v = if ($ObjectType -eq 'Device') { $(if ($c.Contains('TagValue') -and $null -ne $c.TagValue) { $c.TagValue } else { $c.TagValueAD }) }
+        $conds = [System.Collections.Generic.List[object]]::new(); foreach ($x in @($c.Conditions)) { if ($x -and $x.ConditionType) { $conds.Add(@{ ConditionType = $x.ConditionType; Target = $x.Target }) } }
+        @{ RuleId = [string]$c.RuleId; Order = $k; Persona = $(if ($ObjectType -eq 'User') { $c.Persona } else { $c.TagType }); TagType = $c.TagType
+           TagValueAD = $(if ($ObjectType -eq 'User') { $c.TagValueAD } else { $v }); TagValueCloud = $(if ($ObjectType -eq 'User') { $c.TagValueCloud } else { $v })
+           Enabled = [bool]$c.Enabled; Conditions = $conds }
+    })
+}
+
+function Get-EpsRuleMatched {
+    <#
+      RULES-MATCHED (owner 2026-11-03: "what is this matched. maybe give more context here which users are in scope like a
+      list" / "i like the matched" / "but a button with more context"): for ONE rule, the run its Matched count comes from
+      (the newest run on everyone, or -RunId), WHO it decided in that run (eps.TagRuleHit, paged and searchable), and -
+      when it decided nobody - why: off, its tag type off, changed after the run, never wins (an earlier rule takes every
+      match), or no object met all its conditions, with the closest misses from the newest test run that traced them.
+      Read only. Returns $null when the rule does not exist.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType,
+          [Parameter(Mandatory)][int]$RuleId, [string]$RunId, [string]$Search, [int]$Page = 1, [int]$PageSize = 100, [switch]$All)
+    $cs = $ConnectionString; $job = "${ObjectType}Tagging"
+    $t = if ($ObjectType -eq 'User') { 'UserTagRule' } else { 'DeviceTagRule' }
+    $rule = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ id = $RuleId } -Query "SELECT RuleId, TagType, Enabled, UpdatedAtUtc FROM eps.$t WHERE RuleId = @id")[0]
+    if (-not $rule) { return $null }
+    $runSql = "SELECT TOP 1 RunId, Mode, Status, Scope, StartedAtUtc, SummaryJson FROM eps.Run WHERE Job = @j"
+    $run = if ($RunId) { @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job; r = [guid]$RunId } -Query "$runSql AND RunId = @r")[0] }
+           else { @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job } -Query "$runSql AND Scope IS NULL AND Status IN ('Succeeded', 'PartlyFailed', 'Held') AND SummaryJson LIKE '%`"Matched`"%' ORDER BY StartedAtUtc DESC")[0] }
+    $sum = if ($run -and $run.SummaryJson -is [string]) { try { $run.SummaryJson | ConvertFrom-Json } catch { $null } }
+    $total = if ($sum -and $sum.Matched) { [int]($sum.Matched."$RuleId") } else { 0 }
+    $traced = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($x in @($sum.Traces | Where-Object { $_ })) { [void]$traced.Add("$($x.ObjectId)") }
+    $rows = @(); $stored = 0
+    if ($run) {
+        $p = @{ r = [guid]$run.RunId; id = $RuleId; q = $(if ($Search) { "%$($Search.Replace('[', '[[]').Replace('%', '[%]').Replace('_', '[_]'))%" } else { '' }) }
+        $where = 'WHERE RunId = @r AND RuleId = @id AND (@q = N'''' OR ObjectName LIKE @q OR Value LIKE @q)'
+        $stored = [int](Invoke-EpsSql -ConnectionString $cs -Scalar -Parameters $p -Query "SELECT COUNT(*) FROM eps.TagRuleHit $where")
+        $page0 = [math]::Max(1, $Page); $size = if ($All) { 100000 } else { [math]::Min(500, [math]::Max(1, $PageSize)) }
+        $p.o = ($page0 - 1) * $size; $p.n = $size
+        $rows = @(foreach ($h in @(Invoke-EpsSql -ConnectionString $cs -Parameters $p -Query "SELECT ObjectId, ObjectName, TagType, Value, CurrentValue, Changed FROM eps.TagRuleHit $where ORDER BY ObjectName, ObjectId OFFSET @o ROWS FETCH NEXT @n ROWS ONLY")) {
+            [ordered]@{ objectId = "$($h.ObjectId)"; name = $(if ($h.ObjectName -is [string]) { $h.ObjectName } else { '' }); tagType = "$($h.TagType)"
+                value = $(if ($h.Value -is [string]) { $h.Value } else { '' }); current = $(if ($h.CurrentValue -is [string]) { $h.CurrentValue } else { '' })
+                changed = [bool]$h.Changed; traced = $traced.Contains("$($h.ObjectId)") } })
+    }
+    # nobody decided: why
+    $why = [System.Collections.Generic.List[string]]::new()
+    $tt = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ o = $ObjectType; n = "$($rule.TagType)" } -Query 'SELECT Enabled FROM eps.TagType WHERE ObjectType = @o AND Name = @n')[0]
+    if (-not $run) { $why.Add("no run on everyone has finished yet - the count comes with the next scheduled run (or Jobs > Run now)") }
+    if (-not [bool]$rule.Enabled) { $why.Add('the rule is switched off') }
+    if (-not $tt) { $why.Add("its tag type '$($rule.TagType)' does not exist") } elseif (-not [bool]$tt.Enabled) { $why.Add("its tag type '$($rule.TagType)' is switched off") }
+    if ($run -and $rule.UpdatedAtUtc -is [datetime] -and $run.StartedAtUtc -is [datetime] -and $rule.UpdatedAtUtc -gt $run.StartedAtUtc) { $why.Add('the rule was changed after that run - the next run counts it as it is now') }
+    if (-not $total) {
+        $ctx = Get-EpsEditContext -ConnectionString $cs
+        $cards = @(Read-EpsRuleCardsForEdit -ConnectionString $cs -ObjectType $ObjectType)
+        foreach ($h in @(Get-EpsRuleShadowHints -Cards $cards -TagTypes $ctx.TagTypes | Where-Object { "$($_.RuleId)" -eq "$RuleId" })) { $why.Add("it never wins: $($h.Text -replace '^never wins: ', '')") }
+        if ($run -and -not $why.Count) { $why.Add("in that run no $($ObjectType.ToLowerInvariant()) met all of its conditions") }
+    }
+    # the closest misses: the newest test run that traced this rule - the traced objects with the most conditions met
+    $misses = @(); $missRun = $null
+    if (-not $total) {
+        foreach ($tr in @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job } -Query "SELECT TOP (5) RunId, StartedAtUtc, SummaryJson FROM eps.Run WHERE Job = @j AND ISJSON(Scope) = 1 AND JSON_VALUE(Scope, '$.Test') = 'true' AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC")) {
+            $ts = try { $tr.SummaryJson | ConvertFrom-Json } catch { $null }
+            $cand = @(foreach ($o in @($ts.Traces | Where-Object { $_ })) {
+                $rr = @(@($o.Rules) | Where-Object { $_ -and "$($_.RuleId)" -eq "$RuleId" -and "$($_.Result)" -eq 'NotMatched' })[0]
+                if (-not $rr) { continue }
+                $cs0 = @($rr.Conditions | Where-Object { $_ })
+                [ordered]@{ objectId = "$($o.ObjectId)"; name = "$($o.Name)"; met = @($cs0 | Where-Object { $_.Met }).Count; of = $cs0.Count
+                    failed = @($cs0 | Where-Object { -not $_.Met } | ForEach-Object { "$($_.ConditionType) wants $($_.Target)$(if ($_.Unavailable) { " - not available: $($_.Unavailable)" } else { " - is $(if ("$($_.Actual)") { "$($_.Actual)" } else { '(empty)' })" })" }) } })
+            if ($cand.Count) { $misses = @($cand | Sort-Object { - $_.met }, { $_.name } | Select-Object -First 5); $missRun = [ordered]@{ runId = "$($tr.RunId)"; startedAtUtc = (ConvertTo-EpsWebTime $tr.StartedAtUtc) }; break }
+        }
+    }
+    # the runs that kept a list, for the run picker (newest first)
+    $runs = @(foreach ($x in @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job } -Query "SELECT TOP (10) r.RunId, r.Mode, r.Status, r.Scope, r.StartedAtUtc FROM eps.Run r WHERE r.Job = @j AND EXISTS (SELECT 1 FROM eps.TagRuleHit h WHERE h.RunId = r.RunId) ORDER BY r.StartedAtUtc DESC")) {
+        [ordered]@{ runId = "$($x.RunId)"; mode = "$($x.Mode)"; status = "$($x.Status)"; everyone = -not ($x.Scope -is [string]); test = ($x.Scope -is [string] -and $x.Scope -match '"Test"\s*:\s*true'); startedAtUtc = (ConvertTo-EpsWebTime $x.StartedAtUtc) } })
+    [ordered]@{
+        ruleId = $RuleId; tagType = "$($rule.TagType)"; objectType = $ObjectType
+        run = $(if ($run) { [ordered]@{ runId = "$($run.RunId)"; mode = "$($run.Mode)"; status = "$($run.Status)"; everyone = -not ($run.Scope -is [string]); test = [bool]$sum.Test; startedAtUtc = (ConvertTo-EpsWebTime $run.StartedAtUtc) } })
+        total = $total; stored = $stored; hitMax = $(if ($sum -and $sum.HitMax) { [int]$sum.HitMax } else { $null })
+        capped = [bool]@($sum.HitsCapped | Where-Object { "$_" -eq "$RuleId" }).Count
+        kept = [bool]($stored -or -not $total -or $Search)   # a count without a list = a run from before the list was kept, or an older one
+        page = [math]::Max(1, $Page); pageSize = $(if ($All) { $stored } else { [math]::Min(500, [math]::Max(1, $PageSize)) })
+        rows = @($rows); why = @($why); misses = @($misses); missRun = $missRun; runs = @($runs)
+    }
+}
+
+function Format-EpsScopeText {
+    # a scope in words, for the test run pages: "3 named: a, b, c", "userPrincipalName like *@pilot.*", "members of G",
+    # "users in OU=..."; the tag types a test run was limited to after it
+    param($Scope)
+    if (-not $Scope) { return 'everyone' }
+    $g = { param($k) if ($Scope -is [System.Collections.IDictionary]) { $Scope[$k] } else { $Scope.$k } }
+    $v = @(& $g 'Values' | Where-Object { $_ })
+    $txt = switch ("$(& $g 'Kind')") {
+        'Objects' { "$($v.Count) named: $(($v | Select-Object -First 5) -join ', ')$(if ($v.Count -gt 5) { ', ...' })" }
+        'Filter' { "$(& $g 'Property') like $(& $g 'Pattern')" }
+        'Group' { "members of $($v -join ', ')" }
+        'OU' { "users in $($v -join '; ')" }
+        default { 'everyone' }
+    }
+    $tt = @(& $g 'TagTypes' | Where-Object { $_ })
+    if ($tt.Count) { $txt += " - only $($tt -join ', ')" }
+    $txt
 }
 
 function Save-EpsScope {

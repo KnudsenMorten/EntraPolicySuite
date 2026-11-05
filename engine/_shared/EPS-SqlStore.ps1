@@ -114,6 +114,74 @@ function Invoke-EpsSql {
     } finally { if ($own) { $conn.Dispose() } }
 }
 
+# ---- V1-PARITY P16: the log level per feature (Off / Normal / Verbose) and how long run logs are kept -----------------
+# v1 had a Verbose / Debug switch in every script and a transcript per run; EPS keeps every run's log in SQL. Per feature
+# (setting Log.Level.<Feature>): Off keeps only warnings and errors, Normal (the default) also the information lines,
+# Verbose also the detail lines (level 'Verbose'). The run record itself is always kept. Log.KeepDays: older log lines
+# are removed (the engine, at most once an hour). The audit trail is not a run log and is never removed.
+$script:EpsLogLevelSettings = [ordered]@{ UserTagging = 'Log.Level.UserTagging'; DeviceTagging = 'Log.Level.DeviceTagging'; IdentityReport = 'Log.Level.IdentityReport'
+    CAPolicyAnalyzer = 'Log.Level.CAPolicyAnalyzer'; NamedLocations = 'Log.Level.NamedLocations'; Uplink = 'Log.Level.Uplink'; Update = 'Log.Level.Update'; Backup = 'Log.Level.Backup' }
+$script:EpsLogFeatures = @($script:EpsLogLevelSettings.Keys)
+
+function Test-EpsLogLine {
+    # pure: is a line of -Line level ('Info', 'Warning', 'Error', 'Verbose', ...) kept at log level -Level?
+    param([string]$Level = 'Normal', [string]$Line = 'Info')
+    if ($Line -match '^(?i)(Error|Warn|Warning)$') { return $true }
+    switch -Regex ($Level) {
+        '^(?i)Off$' { return $false }
+        '^(?i)Verbose$' { return $true }
+        default { return $Line -notmatch '^(?i)(Verbose|Debug)$' }
+    }
+}
+
+function Get-EpsLogLevel {
+    # the log level of one feature (Log.Level.<Feature>); Normal when unset or unreadable. Never throws.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Feature)
+    $name = $script:EpsLogLevelSettings[$Feature]; if (-not $name) { return 'Normal' }
+    try {
+        $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $name } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'
+        if ("$v" -in 'Off', 'Normal', 'Verbose') { return "$v" }
+    } catch { }
+    'Normal'
+}
+
+function Remove-EpsExpiredRunLogs {
+    # run log lines older than Log.KeepDays (default 90, at least 7) - at most 20,000 lines per call (a bounded batch: the
+    # next hour takes the rest). The run records (eps.Run) stay. Returns the number of lines removed; never throws (-1 =
+    # it could not).
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $d = 90; $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = 'Log.KeepDays'"
+        if ("$v" -match '^\d{1,4}$') { $d = [math]::Max(7, [int]"$v") }
+        [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ c = $NowUtc.AddDays(-$d) } -Query 'DELETE TOP (20000) FROM eps.RunLog WHERE AtUtc < @c')
+    } catch { -1 }
+}
+
+function Invoke-EpsStatsRefresh {
+    <#
+      framework §12.27 SQL-STATS: after a bulk write the ENGINE refreshes the statistics that write made stale, so the
+      next page read does not rebuild them inside a person's request. Calls eps.RefreshChangedStats (EXECUTE AS OWNER:
+      the engine holds EXECUTE on it, never ALTER on a table; sampled, bounded, no data changed). Warn-only: it never
+      throws and never fails the job. Logs ONE line through -Log. Returns @{ Ok; Updated; Failed; Text }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [scriptblock]$Log = { param($m) Write-Host $m }, [int]$MaxStats = 40, [int]$MaxSeconds = 120)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Timeout ($MaxSeconds + 60) -Parameters @{ n = $MaxStats; s = $MaxSeconds } -Query 'EXEC eps.RefreshChangedStats @MaxStats = @n, @MaxSeconds = @s')
+        $ok = @($rows | Where-Object { "$($_.Result)" -eq 'updated' })
+        $bad = @($rows | Where-Object { "$($_.Result)" -ne 'updated' })
+        $text = if (-not $rows.Count) { 'statistics: none stale' } else {
+            "statistics: refreshed $($ok.Count) of $($rows.Count) stale ($(@($ok | ForEach-Object { "$($_.TableName)" } | Select-Object -Unique) -join ', ')) in $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s" +
+            $(if ($bad.Count) { "; $($bad.Count) not refreshed: $("$($bad[0].Result)")" }) }
+        try { & $Log $text } catch { }
+        @{ Ok = -not $bad.Count; Updated = $ok.Count; Failed = $bad.Count; Text = $text }
+    } catch {
+        $text = "statistics: not refreshed (warning only, the run is not affected): $((("$($_.Exception.Message)") -split "`n")[0])"
+        try { & $Log $text } catch { }
+        @{ Ok = $false; Updated = 0; Failed = 0; Text = $text }
+    }
+}
+
 function Install-EpsSchema {
     # Applies sql/eps-schema.sql (idempotent, additive). Batches are split on GO lines, should the file ever get them.
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$SchemaPath = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'sql\eps-schema.sql'))

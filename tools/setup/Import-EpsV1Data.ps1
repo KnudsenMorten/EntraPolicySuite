@@ -86,7 +86,8 @@ if (-not $Apply) {
     if (-not $Quiet) { Write-Host "`nNothing written. To import: Overview > Import v1 in the web app (run with -Apply to see the files to upload)." -ForegroundColor Cyan }
     return $model
 }
-$up = @(foreach ($f in $model.Files.Keys) { if ($model.Files[$f]) { Join-Path $model.Source $f } })
+# Automation-DefaultVariables.psm1 lives in v1's FUNCTIONS folder, next to DATA (V1-PARITY P15)
+$up = @(foreach ($f in $model.Files.Keys) { if ($model.Files[$f]) { if ($f -like '*.psm1') { Join-Path (Split-Path -Parent $model.Source) "FUNCTIONS\$f" } else { Join-Path $model.Source $f } } })
 $scr = if ($UserTaggingScript) { $UserTaggingScript } else { Join-Path (Split-Path -Parent $model.Source) 'Entra-Policy-Suite\Entra-ID-User-Tagging.ps1' }
 if (Test-Path -LiteralPath $scr) { $up += $scr }
 if (-not $Quiet) {

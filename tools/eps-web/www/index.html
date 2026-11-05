@@ -26,7 +26,7 @@
   </header>
   <div id="versionBar" class="bar bar-info" hidden><span id="versionBarText"></span> <button id="versionReload" type="button">Reload</button> <button id="versionLater" type="button" class="link">Later</button></div>
   <div id="sessionBar" class="bar bar-warn" hidden>Your session has ended. <button id="sessionReload" type="button">Sign in again</button></div>
-  <div id="noSuperAdmin" class="bar bar-warn" hidden>Nobody is SuperAdmin yet, so nobody can grant access in this app. A SQL administrator runs <code>Set-EpsWebAccess.ps1</code> once to name the first SuperAdmin.</div>
+  <div id="noSuperAdmin" class="bar bar-warn" hidden>Nobody is SuperAdmin yet, so nobody can grant access in this app. Someone allowed to start jobs in the install's resource group runs <code>Set-EpsWebAccess.ps1 -UserPrincipalName &lt;you&gt; -Role SuperAdmin</code> once: it starts the database setup job, which names the first SuperAdmin (no database right is needed).</div>
   <div id="noticeBar" class="bar bar-info" hidden role="status" aria-live="polite"><span id="noticeText"></span> <button id="noticeClose" type="button" class="link">Close</button></div>
   <nav id="tabs" role="tablist" aria-label="Pages"></nav>
   <main id="page" tabindex="-1"></main>

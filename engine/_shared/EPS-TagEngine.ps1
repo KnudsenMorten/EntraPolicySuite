@@ -98,16 +98,27 @@ function Invoke-EpsTagPlan {
         Skipped = [System.Collections.Generic.List[object]]::new()
         Unavailable = @{}; Traces = @{}
         Matched = @{}   # rule id -> objects the rule DECIDED (changed or already right): the Rules page's "Matched"
+        # RULES-MATCHED (owner 2026-11-03: "maybe give more context here which users are in scope like a list" / "a button
+        # with more context"): rule id -> WHO it decided - at most $script:EpsRuleHitMax per rule and run (the count above
+        # stays exact; a 200,000-user tenant keeps a bounded list); written to eps.TagRuleHit by the tagging job
+        Hits = @{}
     }
+    $hitMax = if ($script:EpsRuleHitMax) { [int]$script:EpsRuleHitMax } else { 10000 }
 
     # one change proposal - defined ONCE; it reads $obj / $id / $tr / $ext of the object being planned at call time
     $propose = {
         param($tt, [string]$value, [string]$reason, [string]$persona, $ruleIds)
-        foreach ($rid in @($ruleIds)) { if ($null -ne $rid -and "$rid" -ne '') { $plan.Matched["$rid"] = 1 + [int]$plan.Matched["$rid"] } }
         $attr = $tt.Attribute
         $old = Get-EpsValue $ext $attr
         $oldS = [string]$old
         $same = [string]::Equals($oldS, $value, [StringComparison]::OrdinalIgnoreCase)
+        foreach ($rid in @($ruleIds)) {
+            if ($null -eq $rid -or "$rid" -eq '') { continue }
+            $plan.Matched["$rid"] = 1 + [int]$plan.Matched["$rid"]
+            $hl = $plan.Hits["$rid"]
+            if ($null -eq $hl) { $hl = [System.Collections.Generic.List[object]]::new(); $plan.Hits["$rid"] = $hl }
+            if ($hl.Count -lt $hitMax) { $hl.Add(@($id, $name, $tt.Name, $value, $oldS, (-not $same))) }
+        }
         if ($tr) { $tr.Decisions.Add(@{ TagType = $tt.Name; Attribute = $attr; Current = $oldS; Wanted = $value; Reason = $reason; Persona = $persona; Action = $(if ($same) { 'NoChange' } else { 'Change' }) }) }
         if ($same) { $plan.Unchanged++; return }
         $plan.Changes.Add([pscustomobject]@{

@@ -42,7 +42,8 @@ function Invoke-EpsGraph {
         One Graph call (or every page of a collection with -All). Returns the parsed body, or with -All the items.
         Retries 429 / 503 / 504 after Retry-After (at most -MaxRetry times); any other error throws with Graph's message.
     #>
-    param([string]$Method = 'GET', [Parameter(Mandatory)][string]$Path, $Body, [switch]$All, [switch]$Eventual, [int]$MaxRetry = 6)
+    # -MaxItems (with -All): stop reading pages once that many items are in (0 = every page) - the analyzer's sign-in cap
+    param([string]$Method = 'GET', [Parameter(Mandatory)][string]$Path, $Body, [switch]$All, [switch]$Eventual, [int]$MaxRetry = 6, [int]$MaxItems = 0)
     $uri = if ($Path -match '^https://') { $Path } else { "$script:EpsGraphRoot/$($Path.TrimStart('/'))" }
     $items = [System.Collections.Generic.List[object]]::new()
     $json = if ($null -ne $Body -and $Body -isnot [string]) { $Body | ConvertTo-Json -Depth 10 -Compress } else { $Body }
@@ -69,6 +70,7 @@ function Invoke-EpsGraph {
         if (-not $All) { return $obj }
         foreach ($v in @($obj.value)) { if ($null -ne $v) { $items.Add($v) } }
         $uri = $obj.'@odata.nextLink'
+        if ($MaxItems -gt 0 -and $items.Count -ge $MaxItems) { $uri = $null }
         # SEC-AUDIT-1 S10: the bearer token goes to Graph only - a next page elsewhere is refused
         if ($uri -and ([uri]$uri).Host -ne ([uri]$script:EpsGraphRoot).Host) { throw "Graph returned a next page on another host ($(([uri]$uri).Host)) - refused" }
     }

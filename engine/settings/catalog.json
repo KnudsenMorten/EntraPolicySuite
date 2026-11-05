@@ -12,12 +12,14 @@
     { "id": "TamperMonitor", "label": "Tamper monitor" },
     { "id": "CAPolicyAnalyzer", "label": "CA Policy Analyzer" },
     { "id": "Mail", "label": "Alert mail" },
+    { "id": "Log", "label": "Logging" },
     { "id": "CA", "label": "Conditional Access" },
     { "id": "NamedLocations", "label": "Named locations" },
     { "id": "IdentityReport", "label": "Identity report" },
     { "id": "Uplink", "label": "Invardia telemetry" },
     { "id": "Update", "label": "Updates" },
     { "id": "Backup", "label": "Backups" },
+    { "id": "CaOptions", "label": "Conditional Access options from Graph" },
     { "id": "HybridWorker", "label": "Hybrid worker" }
   ],
   "settings": [
@@ -68,6 +70,18 @@
         "requires": "SuperAdmin.",
         "recommended": "On. Switch it off only for a planned stop, and switch it on again afterwards.",
         "docUrl": "https://invardia.com/docs/eps/settings/Platform.JobsEnabled/"
+      }
+    },
+    {
+      "key": "Platform.AskForNote", "group": "Platform", "label": "Ask for a note on every action", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Whether the web app asks for a note (kept in the audit trail) before it sends an action. The action, who did it and when are always in the audit trail; the note is the only optional part.",
+        "enabled": "On: every action opens a small dialog with a note field before it is sent.",
+        "disabled": "Off (the default): an action that only reads (read the groups, check, test) is sent at once; an action that changes something asks only OK / Cancel, without a note field. Actions that show a plan or a before / after still show it.",
+        "risk": "None for safety: who did what and when is audited either way, and changes still ask for OK. Off only leaves the optional note out.",
+        "requires": "Admin.",
+        "recommended": "Off, unless your change process wants a note with every action.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Platform.AskForNote/"
       }
     },
     {
@@ -150,7 +164,7 @@
       }
     },
     {
-      "key": "UserTagging.ExcludeObjects", "group": "UserTagging", "label": "Never tag these users", "type": "list", "maxItems": 200, "itemMaxLength": 320, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a UPN, display name or object id; wildcards allowed (e.g. Sync_*@contoso.com)", "default": "[]", "role": "Admin",
+      "key": "UserTagging.ExcludeObjects", "group": "UserTagging", "label": "Never tag these users", "type": "list", "pick": "user", "maxItems": 200, "itemMaxLength": 320, "itemPattern": "^[^\\u0000-\\u001f]+$", "itemHint": "a UPN, display name or object id; wildcards allowed (e.g. Sync_*@contoso.com)", "default": "[]", "role": "Admin",
       "confirm": [ { "when": "widen", "title": "Stop tagging these ", "body": "They are left out of every run from now on: no tag is set, changed or cleared on them, and no fallback is given." } ],
       "info": {
         "what": "Users that the tagging job never touches - e.g. a directory sync service account. They are left out before the plan is made.",
@@ -386,15 +400,15 @@
       }
     },
     {
-      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox"], "default": "none", "role": "SuperAdmin", "dependsOn": ["Mail.Sender"], "offValue": "none",
+      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox", "smtp"], "default": "none", "role": "SuperAdmin", "dependsOnByValue": { "sharedMailbox": ["Mail.Sender"], "smtp": ["Mail.SmtpServer", "Mail.SmtpFrom"] }, "offValue": "none",
       "confirm": [ { "when": "value", "value": "none", "title": "Stop sending alert mail?", "body": "Tamper alerts are then no longer mailed. They stay on the Tamper page, and are mailed once mail is switched on again." } ],
       "info": {
-        "what": "Whether the engine mails alerts (tamper events), and how: as one mailbox of yours that the engine may send as, and as no other.",
-        "enabled": "sharedMailbox: from the next monitor run, each run with new events sends one mail to the recipients, from the sender mailbox.",
+        "what": "Whether the engine mails alerts and reports, and how: as one mailbox of yours that the engine may send as (sharedMailbox), or through your SMTP relay (smtp, as v1 sent its mail).",
+        "enabled": "sharedMailbox: mail goes from the sender mailbox through Microsoft Graph. smtp: mail goes through the SMTP relay in 'SMTP server', from 'SMTP from address'. From the next run either way.",
         "disabled": "none (the default): no mail is sent; events wait on the Tamper page and are mailed later if mail is switched on.",
-        "risk": "With mail off, nobody is told about a foreign change unless they look at the Tamper page. Switching to sharedMailbox only works after Initialize-EpsMailSender.ps1 has given the engine the right to send as the sender mailbox. Reversible.",
-        "requires": "SuperAdmin. 'Sender mailbox' set by Initialize-EpsMailSender.ps1.",
-        "recommended": "sharedMailbox, set up with Initialize-EpsMailSender.ps1.",
+        "risk": "With mail off, nobody is told about a foreign change unless they look at the Tamper page. sharedMailbox only works after Initialize-EpsMailSender.ps1 has given the engine the right to send as the sender mailbox; smtp only works when the relay accepts the engine (its outbound address, or the credential in Key Vault). Reversible.",
+        "requires": "SuperAdmin. sharedMailbox: 'Sender mailbox' set by Initialize-EpsMailSender.ps1. smtp: 'SMTP server' and 'SMTP from address'.",
+        "recommended": "sharedMailbox, set up with Initialize-EpsMailSender.ps1 (no password to keep). smtp when your mail must go through your own relay, as in v1.",
         "docUrl": "https://invardia.com/docs/eps/settings/Mail.Mode/"
       }
     },
@@ -423,6 +437,66 @@
         "docUrl": "https://invardia.com/docs/eps/settings/Mail.Recipients/"
       }
     },
+    {
+      "key": "Mail.SmtpServer", "group": "Mail", "label": "SMTP server", "type": "text", "maxLength": 253, "pattern": "^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$", "default": "", "role": "SuperAdmin",
+      "info": {
+        "what": "The SMTP relay the engine sends through when Alert mail is smtp (v1: $global:SMTPserver), e.g. smtp.contoso.com.",
+        "enabled": "Used by the next mail when Alert mail is smtp.",
+        "disabled": "Empty (the default): Alert mail cannot be smtp.",
+        "risk": "The relay sees every alert and report the product mails. It must accept mail from the engine (its outbound address, or the credential). Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "Your own relay, the one v1 used.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpServer/"
+      }
+    },
+    {
+      "key": "Mail.SmtpPort", "group": "Mail", "label": "SMTP port", "type": "int", "min": 1, "max": 65535, "default": "25", "role": "SuperAdmin",
+      "info": {
+        "what": "The port of the SMTP relay (v1: $global:SMTPPort). 587 for a relay that wants TLS and a sign-in, 25 for an internal relay.",
+        "enabled": "Used by the next mail when Alert mail is smtp.",
+        "disabled": "25 (the default).",
+        "risk": "A wrong port stops every mail until it is right; the run log says why. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "587 with TLS for a relay on the internet, 25 inside your network.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpPort/"
+      }
+    },
+    {
+      "key": "Mail.SmtpUseTls", "group": "Mail", "label": "SMTP with TLS", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "info": {
+        "what": "Whether the connection to the relay is encrypted (STARTTLS; v1: $global:SMTP_UseSSL).",
+        "enabled": "On (the default): the mail and the credential travel encrypted.",
+        "disabled": "Off: the mail travels in clear text - only for a relay inside your own network.",
+        "risk": "Off sends the alert and report content, and a credential if one is set, unencrypted. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpUseTls/"
+      }
+    },
+    {
+      "key": "Mail.SmtpFrom", "group": "Mail", "label": "SMTP from address", "type": "text", "maxLength": 320, "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "default": "", "role": "SuperAdmin",
+      "info": {
+        "what": "The address the mail comes from through the relay, and the user name the relay signs in with when a credential is set (v1: $global:SMTPUser).",
+        "enabled": "Used by the next mail when Alert mail is smtp.",
+        "disabled": "Empty (the default): Alert mail cannot be smtp.",
+        "risk": "Recipients see this as the sender. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "A service address used only for Entra Policy Suite.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpFrom/"
+      }
+    },
+    {
+      "key": "Mail.SmtpCredentialSecret", "group": "Mail", "label": "SMTP password (Key Vault secret)", "type": "text", "maxLength": 300, "pattern": "^https://[A-Za-z0-9-]{3,24}\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]{1,127}(/[0-9a-f]{32})?/?$", "default": "", "role": "SuperAdmin",
+      "info": {
+        "what": "Where the relay's password is kept: the address of a Key Vault secret (https://<vault>.vault.azure.net/secrets/<name>). The engine reads it at send time; the password itself is never stored, shown or logged by Entra Policy Suite.",
+        "enabled": "The engine signs in to the relay as the SMTP from address with the secret's value.",
+        "disabled": "Empty (the default): the mail is sent anonymously (v1: $global:Mail_SendAnonymous).",
+        "risk": "The engine identity needs 'Key Vault Secrets User' on that one secret. Whoever can change the secret can change what the engine signs in with. Reversible.",
+        "requires": "SuperAdmin; a Key Vault administrator to create the secret and give the engine read on it.",
+        "recommended": "Empty for an internal relay that accepts the engine; a secret in your own Key Vault otherwise.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpCredentialSecret/"
+      }
+    },
 
     {
       "key": "CA.Monitoring.Enabled", "group": "CA", "label": "Conditional Access monitor (adopted policies)", "type": "boolean", "default": "false", "role": "SuperAdmin",
@@ -438,7 +512,7 @@
       }
     },
     {
-      "key": "CA.GroupTargetingMethod", "group": "CA", "label": "Group targeting method", "type": "text", "maxLength": 100, "default": "", "role": "Admin",
+      "key": "CA.GroupTargetingMethod", "group": "CA", "label": "Group targeting method", "type": "enum", "values": ["", "Dynamic_Using_Tags", "Manual_Assignment_Advanced", "Manual_Assignment_Simple"], "default": "", "role": "Admin",
       "info": {
         "what": "How the Conditional Access policies target groups (v1: Dynamic_Using_Tags, Manual_Assignment_Advanced or Manual_Assignment_Simple), imported from the v1 configuration. The Conditional Access page uses it to know which pilot and target group names a template expects.",
         "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no policy or group is changed.",
@@ -450,7 +524,7 @@
       }
     },
     {
-      "key": "CA.AuthStrengthFidoName", "group": "CA", "label": "Authentication strength name (FIDO2)", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "key": "CA.AuthStrengthFidoName", "group": "CA", "label": "Authentication strength name (FIDO2)", "type": "text", "pick": "authStrength", "maxLength": 200, "default": "", "role": "Admin",
       "info": {
         "what": "The name of the authentication strength that requires FIDO2, imported from the v1 configuration. The Conditional Access page expects it in the templates that require FIDO2.",
         "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no authentication strength is changed.",
@@ -462,7 +536,7 @@
       }
     },
     {
-      "key": "CA.AuthStrengthWhfbName", "group": "CA", "label": "Authentication strength name (Windows Hello)", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "key": "CA.AuthStrengthWhfbName", "group": "CA", "label": "Authentication strength name (Windows Hello)", "type": "text", "pick": "authStrength", "maxLength": 200, "default": "", "role": "Admin",
       "info": {
         "what": "The name of the authentication strength that requires Windows Hello for Business, imported from the v1 configuration. The Conditional Access page expects it in the templates that require it.",
         "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no authentication strength is changed.",
@@ -474,7 +548,7 @@
       }
     },
     {
-      "key": "CA.DeniedCountriesLocationName", "group": "CA", "label": "Named location for denied countries", "type": "text", "maxLength": 200, "default": "", "role": "Admin",
+      "key": "CA.DeniedCountriesLocationName", "group": "CA", "label": "Named location for denied countries", "type": "text", "pick": "location", "maxLength": 200, "default": "", "role": "Admin",
       "info": {
         "what": "The name of the named location that lists the countries sign-ins are blocked from, imported from the v1 configuration. The Conditional Access page expects it in the template that blocks those countries.",
         "enabled": "Used from the engine's next read of the policy list, when it compares each policy with its template. Read only: no named location is changed.",
@@ -498,7 +572,7 @@
       }
     },
     {
-      "key": "NamedLocations.Region", "group": "NamedLocations", "label": "Azure region for the service-tag named locations", "type": "text", "maxLength": 60, "pattern": "^[a-z0-9]{2,60}$", "default": "westeurope", "role": "Admin",
+      "key": "NamedLocations.Region", "group": "NamedLocations", "label": "Azure region for the service-tag named locations", "type": "text", "pick": "azureRegion", "maxLength": 60, "pattern": "^[a-z0-9]{2,60}$", "default": "westeurope", "role": "Admin",
       "info": {
         "what": "The Azure region whose service tags become named locations (v1 used westeurope, hard-coded). Set by the v1 import.",
         "enabled": "Used from the named-locations job's next run.",
@@ -536,13 +610,51 @@
     {
       "key": "IdentityReport.MailWorkbook", "group": "IdentityReport", "label": "Mail the workbook after each run", "type": "boolean", "default": "false", "role": "Admin",
       "info": {
-        "what": "Sends the report as an Excel workbook (v1's sheets plus the gap views) to the alert mail recipients after every run, with the open High / Medium gaps in the mail.",
+        "what": "Sends the report as an Excel workbook (v1's sheets plus the gap views) after every run, with the open High / Medium gaps in the mail - to 'Who gets the workbook', or the alert recipients when that is empty.",
         "enabled": "Used from the next report run.",
         "disabled": "Off (the default): the report is on the Identity page; export a view to Excel or CSV from there (owner 2026-10-31: \"excel is optional output\").",
         "risk": "The workbook holds every user's details: it goes to the alert recipients' mailboxes. A workbook over ~3 MB is not attached (the mail says so). Reversible.",
         "requires": "Admin.",
         "recommended": "Off, unless someone needs the file every day.",
         "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.MailWorkbook/"
+      }
+    },
+    {
+      "key": "IdentityReport.MailRecipients", "group": "IdentityReport", "label": "Who gets the workbook", "type": "list", "maxItems": 20, "itemMaxLength": 320, "itemPattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "itemHint": "an e-mail address", "default": "[]", "role": "Admin",
+      "info": {
+        "what": "The addresses the identity report workbook goes to (v1: $global:Mail_Identity_Maintenance_TO), e.g. the identity team rather than the security alert list.",
+        "enabled": "With 'Mail the workbook after each run' on, the workbook goes to these addresses.",
+        "disabled": "Empty (the default): the workbook goes to the alert recipients.",
+        "risk": "The workbook holds every user's details: whoever is on the list gets them. Reversible.",
+        "requires": "Admin.",
+        "recommended": "The team that maintains the identities.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.MailRecipients/"
+      }
+    },
+    {
+      "key": "IdentityReport.LogAnalytics.Enabled", "group": "IdentityReport", "label": "Send the report to Log Analytics (and read the exposure lists)", "type": "boolean", "default": "false", "role": "SuperAdmin",
+      "confirm": [ { "when": "on", "title": "Send every user's report row to Log Analytics?", "body": "After each report run, every user's row goes to the table EntraUsersMetadata_CL in the workspace Initialize-EpsLogAnalytics.ps1 set up, and the exposure lists are read back from it with the sign-in logs. Anyone who can read that workspace can read the rows." } ],
+      "info": {
+        "what": "v1's Log Analytics integration: after every identity report run the users (v1's columns) go to the custom table EntraUsersMetadata_CL, and v1's exposure lists are read back from it with the Entra sign-in logs - service accounts and shared device users signing in from trusted / non-trusted locations, their sign-ins, and those with no sign-in in 90 days. They show on the Identity page (Exposure) and export to Excel.",
+        "enabled": "From the next report run, on its own after each run. Needs the target set up first (Initialize-EpsLogAnalytics.ps1); until then the run says 'not set up yet'.",
+        "disabled": "Off (the default): nothing leaves Entra Policy Suite; the exposure lists are not built.",
+        "risk": "Every user's report row (names, tags, MFA and sign-in state, licences) is stored in the workspace: who can read the workspace can read them. The engine holds only 'Monitoring Metrics Publisher' on the one rule and 'Log Analytics Reader' on the one workspace. Reversible: switching off stops sending; rows already sent stay until the workspace's retention removes them.",
+        "requires": "A SuperAdmin, a Log Analytics workspace and, for the exposure lists, the Entra sign-in logs sent to that workspace. Initialize-EpsLogAnalytics.ps1 run once by someone with rights on the workspace.",
+        "recommended": "On, if v1 sent the report to Log Analytics (v1: EPSIntegration) or you want the exposure lists.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.LogAnalytics.Enabled/"
+      }
+    },
+    {
+      "key": "IdentityReport.LogAnalytics.Target", "group": "IdentityReport", "label": "Log Analytics target (workspace, endpoint, rule)", "type": "text", "maxLength": 8000, "default": "", "role": "SuperAdmin",
+      "editable": false, "setBy": "tools/setup/Initialize-EpsLogAnalytics.ps1",
+      "info": {
+        "what": "Where the report rows go: the workspace, its Logs Ingestion endpoint, the data collection rule and the columns its stream declares. Written by Initialize-EpsLogAnalytics.ps1 together with the table, the endpoint, the rule and the engine's two role assignments.",
+        "enabled": "Set by Initialize-EpsLogAnalytics.ps1.",
+        "disabled": "Empty: nothing can be sent; the run says 'not set up yet'.",
+        "risk": "It is not editable here: a target without the rule and the engine's right on it would stop every upload. Run Initialize-EpsLogAnalytics.ps1 again instead (also after adding a tag type, so the table gets its column).",
+        "requires": "Someone with rights to create resources and role assignments on the workspace's resource group, to run Initialize-EpsLogAnalytics.ps1.",
+        "recommended": "Set it up in the workspace that holds the Entra sign-in logs, so the exposure lists can be built.",
+        "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.LogAnalytics.Target/"
       }
     },
     {
@@ -755,6 +867,114 @@
       }
     },
     {
+      "key": "Log.Level.UserTagging", "group": "Log", "label": "Log level: user tagging", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of user tagging keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.UserTagging/"
+      }
+    },
+    {
+      "key": "Log.Level.DeviceTagging", "group": "Log", "label": "Log level: device tagging", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of device tagging keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.DeviceTagging/"
+      }
+    },
+    {
+      "key": "Log.Level.IdentityReport", "group": "Log", "label": "Log level: the identity report", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the identity report keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.IdentityReport/"
+      }
+    },
+    {
+      "key": "Log.Level.CAPolicyAnalyzer", "group": "Log", "label": "Log level: the CA Policy Analyzer", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the CA Policy Analyzer keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.CAPolicyAnalyzer/"
+      }
+    },
+    {
+      "key": "Log.Level.NamedLocations", "group": "Log", "label": "Log level: the named locations job", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the named locations job keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.NamedLocations/"
+      }
+    },
+    {
+      "key": "Log.Level.Uplink", "group": "Log", "label": "Log level: the Invardia telemetry", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the Invardia telemetry keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.Uplink/"
+      }
+    },
+    {
+      "key": "Log.Level.Update", "group": "Log", "label": "Log level: the update job", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the update job keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.Update/"
+      }
+    },
+    {
+      "key": "Log.Level.Backup", "group": "Log", "label": "Log level: the backup job", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "info": {
+        "what": "How much the run log of the backup job keeps (v1: each script's Verbose / Debug switch).",
+        "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
+        "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
+        "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",
+        "requires": "Admin.",
+        "recommended": "Normal; Verbose for a while when troubleshooting.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.Level.Backup/"
+      }
+    },
+    {
+      "key": "Log.KeepDays", "group": "Log", "label": "Keep run logs (days)", "type": "int", "min": 7, "max": 3650, "default": "90", "role": "Admin",
+      "info": {
+        "what": "How long the lines of every run log are kept. The run records (what ran, when, its counts) and the audit trail are not removed.",
+        "enabled": "Older lines are removed by the engine once an hour.",
+        "disabled": "90 days (the default).",
+        "risk": "A removed log line cannot be brought back. Reversible for the lines still there.",
+        "requires": "Admin.",
+        "recommended": "90 days; longer only if you must keep run details.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Log.KeepDays/"
+      }
+    },
+    {
       "key": "Backup.Enabled", "group": "Backup", "label": "Back up every night", "type": "boolean", "default": "true", "role": "SuperAdmin",
       "confirm": [ { "when": "off", "title": "Stop the nightly backup?", "body": "No new backup is taken at night: a policy or a rule changed by mistake can then only be put back from an older backup, or from the backup taken just before a change made here." } ],
       "info": {
@@ -765,6 +985,18 @@
         "requires": "SuperAdmin.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Backup.Enabled/"
+      }
+    },
+    {
+      "key": "CaOptions.Enabled", "group": "CaOptions", "label": "Read the policy options from Microsoft Graph every month", "type": "boolean", "default": "true", "role": "Admin",
+      "info": {
+        "what": "Once a month the CaOptions job reads Microsoft Graph: the values every Conditional Access field allows (Graph v1.0's published schema) and your tenant's authentication strengths, named locations, terms of use and directory roles. The policy Edit form offers exactly these as dropdowns, check boxes and pickers; a value Graph added since this release is offered too, marked 'new from Graph', and listed on the job's run.",
+        "enabled": "On (the default): the job runs on the 1st of every month at 04:00 (Platform.TimeZone). It only reads. Run now on the Jobs page reads at once.",
+        "disabled": "Off: no monthly read. The form keeps the last values read, or the list shipped with this release, and Run now still works.",
+        "risk": "Nothing changes in the tenant. Off, a value Microsoft adds later is not offered in the form until this release's list has it (it stays editable in Advanced (JSON)). Reversible.",
+        "requires": "Admin. No permission beyond the engine's own read rights.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/CaOptions.Enabled/"
       }
     }
   ]

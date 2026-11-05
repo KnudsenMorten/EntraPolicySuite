@@ -100,6 +100,10 @@ function Get-EpsMailConfig {
     $rcpt = & $g 'Mail.Recipients' '[]'
     [pscustomobject]@{
         Mode = & $g 'Mail.Mode' 'none'; Sender = & $g 'Mail.Sender' ''
+        # V1-PARITY P12: v1's SMTP relay (its $global:SMTPserver / SMTPPort / SMTP_UseSSL / SMTPUser); the password, when
+        # the relay needs one, is a Key Vault secret the engine reads at send time - never a value in SQL
+        SmtpServer = & $g 'Mail.SmtpServer' ''; SmtpPort = [int](& $g 'Mail.SmtpPort' '25'); SmtpUseTls = ((& $g 'Mail.SmtpUseTls' 'true') -eq 'true')
+        SmtpFrom = & $g 'Mail.SmtpFrom' ''; SmtpCredentialSecret = & $g 'Mail.SmtpCredentialSecret' ''
         Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
         Environment = (Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'Entra Policy Suite' }))
         TenantId = $env:EPS_TENANT_ID; TenantName = & $g 'Platform.TenantName' ''
@@ -112,6 +116,7 @@ function Send-EpsMail {
     # -Attachments: @{ Name; Bytes; ContentType } - inline (Graph sendMail takes ~3 MB in all); a larger one is left out
     # and the mail says so (the GUI has the export).
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Html, [string]$Importance = 'normal', [object[]]$Attachments = @(), [int]$MaxAttachmentBytes = 3000000)
+    if ($Config.Mode -eq 'smtp') { return (Send-EpsSmtpMail -Config $Config -Subject $Subject -Html $Html -Importance $Importance -Attachments $Attachments -MaxAttachmentBytes $MaxAttachmentBytes) }
     if ($Config.Mode -ne 'sharedMailbox') { return @{ Sent = $false; Reason = "Mail.Mode is '$($Config.Mode)' - no mail is sent (set it up: Initialize-EpsMailSender.ps1)" } }
     if (-not $Config.Sender) { return @{ Sent = $false; Reason = 'Mail.Sender is not set' } }
     if (-not @($Config.Recipients).Count) { return @{ Sent = $false; Reason = 'Mail.Recipients is empty' } }
@@ -130,13 +135,73 @@ function Send-EpsMail {
     } catch { @{ Sent = $false; Reason = "sendMail failed: $($_.Exception.Message)" } }
 }
 
+function Get-EpsSmtpSecret {
+    # the SMTP relay's password from a Key Vault secret (Mail.SmtpCredentialSecret = its https://<vault>.vault.azure.net/
+    # secrets/<name> address), read as the engine's identity at send time - it needs 'Key Vault Secrets User' on that
+    # secret. Never stored, logged or returned in a reason. @{ Ok; Value; Reason }.
+    param([Parameter(Mandatory)][string]$SecretUri)
+    if ($SecretUri -notmatch $script:EpsSmtpSecretPattern) { return @{ Ok = $false; Reason = 'Mail.SmtpCredentialSecret is not a Key Vault secret address (https://<vault>.vault.azure.net/secrets/<name>)' } }
+    try {
+        $r = & $script:EpsHttp 'GET' ("$($SecretUri.TrimEnd('/'))?api-version=7.4") @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://vault.azure.net')" } $null
+        if ($r.Status -ne 200) { return @{ Ok = $false; Reason = "the Key Vault secret could not be read ($($r.Status)) - the engine identity needs 'Key Vault Secrets User' on it" } }
+        $v = "$((($r.Body | ConvertFrom-Json).value))"
+        if (-not $v) { return @{ Ok = $false; Reason = 'the Key Vault secret is empty' } }
+        @{ Ok = $true; Value = $v }
+    } catch { @{ Ok = $false; Reason = 'the Key Vault secret could not be read (the engine identity needs ''Key Vault Secrets User'' on it)' } }
+}
+$script:EpsSmtpSecretPattern = '^https://[A-Za-z0-9-]{3,24}\.vault\.azure\.net/secrets/[A-Za-z0-9-]{1,127}(/[0-9a-f]{32})?/?$'
+
+# a test replaces the sender: @{ Server; Port; Tls; From; User; Password; To; Subject; Html; Importance; Attachments }
+$script:EpsSmtpSend = {
+    param($m)
+    $msg = [System.Net.Mail.MailMessage]::new()
+    try {
+        $msg.From = [System.Net.Mail.MailAddress]::new($m.From)
+        foreach ($t in $m.To) { $msg.To.Add([System.Net.Mail.MailAddress]::new([string]$t)) }
+        $msg.Subject = $m.Subject; $msg.Body = $m.Html; $msg.IsBodyHtml = $true; $msg.BodyEncoding = [Text.Encoding]::UTF8; $msg.SubjectEncoding = [Text.Encoding]::UTF8
+        $msg.Priority = if ($m.Importance -eq 'high') { [System.Net.Mail.MailPriority]::High } else { [System.Net.Mail.MailPriority]::Normal }
+        foreach ($a in $m.Attachments) { $msg.Attachments.Add([System.Net.Mail.Attachment]::new([IO.MemoryStream]::new([byte[]]$a.Bytes), [string]$a.Name, [string]$a.ContentType)) }
+        $c = [System.Net.Mail.SmtpClient]::new($m.Server, [int]$m.Port)
+        try {
+            $c.EnableSsl = [bool]$m.Tls; $c.Timeout = 60000
+            if ($m.Password) { $c.UseDefaultCredentials = $false; $c.Credentials = [System.Net.NetworkCredential]::new($m.User, $m.Password) }
+            $c.Send($msg)
+        } finally { $c.Dispose() }
+    } finally { $msg.Dispose() }
+}
+
+function Send-EpsSmtpMail {
+    # V1-PARITY P12 (v1's Send-MailMessage through its relay): Mail.Mode = smtp. Anonymous when no credential secret is
+    # set (v1's Mail_SendAnonymous), else Mail.SmtpFrom + the Key Vault secret's password. TLS (STARTTLS) by
+    # Mail.SmtpUseTls. NEVER throws; the password never appears in a reason. @{ Sent; Reason }.
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Html, [string]$Importance = 'normal', [object[]]$Attachments = @(), [int]$MaxAttachmentBytes = 3000000)
+    if (-not $Config.SmtpServer) { return @{ Sent = $false; Reason = 'Mail.SmtpServer is not set' } }
+    if (-not $Config.SmtpFrom) { return @{ Sent = $false; Reason = 'Mail.SmtpFrom is not set' } }
+    if (-not @($Config.Recipients).Count) { return @{ Sent = $false; Reason = 'Mail.Recipients is empty' } }
+    $pw = $null
+    if ($Config.SmtpCredentialSecret) { $s = Get-EpsSmtpSecret -SecretUri $Config.SmtpCredentialSecret; if (-not $s.Ok) { return @{ Sent = $false; Reason = $s.Reason } }; $pw = $s.Value }
+    $att = @(); $left = @()
+    foreach ($a in $Attachments) { if (@($a.Bytes).Count -gt $MaxAttachmentBytes) { $left += $a.Name } else { $att += $a } }
+    if ($left) { $Html += "<p><i>$([System.Net.WebUtility]::HtmlEncode(($left -join ', '))) is too large to attach - export it from the web app.</i></p>" }
+    try {
+        & $script:EpsSmtpSend @{ Server = $Config.SmtpServer; Port = $(if ($Config.SmtpPort) { $Config.SmtpPort } else { 25 }); Tls = [bool]$Config.SmtpUseTls; From = $Config.SmtpFrom; User = $Config.SmtpFrom; Password = $pw
+                                 To = @($Config.Recipients); Subject = $Subject; Html = $Html; Importance = $Importance; Attachments = $att }
+        @{ Sent = $true; Reason = "sent to $(@($Config.Recipients).Count) recipient(s) through $($Config.SmtpServer)" }
+    } catch {
+        $e = "$($_.Exception.InnerException.Message)"; if (-not $e) { $e = "$($_.Exception.Message)" }
+        if ($pw) { $e = $e.Replace($pw, '***') }
+        @{ Sent = $false; Reason = "SMTP send through $($Config.SmtpServer) failed: $e" }
+    }
+}
+
 function Send-EpsTestMail {
     # "Send a test mail" (Settings > Alert mail): proves the sender works AS THE ENGINE'S IDENTITY - the scoped
     # Application Mail.Send - not as the person who set it up. @{ Sent; Reason }; never throws.
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$RequestedBy, [string]$Version = '2.0.0')
     $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
     # MAIL-3 subject + the MAIL-2 body like every other mail (was a hand-made '[EntraPolicySuite] <env>: test mail')
-    $html = New-EpsMailBody -Summary "This is a test mail from Entra Policy Suite $Version ($($cfg.Environment)), sent by the engine as $($cfg.Sender). Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
+    $how = if ($cfg.Mode -eq 'smtp') { "through the SMTP relay $($cfg.SmtpServer) as $($cfg.SmtpFrom)" } else { "as $($cfg.Sender)" }
+    $html = New-EpsMailBody -Summary "This is a test mail from Entra Policy Suite $Version ($($cfg.Environment)), sent by the engine $how. Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
         -ButtonText 'Open the mail settings' -ButtonPage 'settings' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
 }

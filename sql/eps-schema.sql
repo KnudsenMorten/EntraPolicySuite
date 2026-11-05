@@ -1049,3 +1049,134 @@ CREATE TABLE eps.ConfigBackupItem (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 25)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (25, '2.0.82');
+GO
+-- v26 (V1-PARITY P11, owner 2026-11-05 "solution must be min 1:1 on pair with the old eps script solution"): per identity
+-- report run, what went to Log Analytics (v1's EntraUsersMetadata_CL) and v1's exposure lists read back from it - written
+-- by the engine after the run, shown on the Identity page; it goes with its snapshot
+IF OBJECT_ID('eps.IdentityLaRun') IS NULL
+CREATE TABLE eps.IdentityLaRun (
+    RunId          UNIQUEIDENTIFIER NOT NULL PRIMARY KEY REFERENCES eps.IdentitySnapshot (RunId) ON DELETE CASCADE,
+    CheckedAtUtc   DATETIME2      NOT NULL,
+    UploadRows     INT            NOT NULL,             -- the report's users
+    UploadSent     INT            NOT NULL,             -- taken by the Logs Ingestion API
+    UploadOk       BIT            NOT NULL,
+    UploadText     NVARCHAR(2000) NULL,                 -- what happened, in words
+    TablesJson     NVARCHAR(400)  NULL,                 -- the tables with data in 90 days (the sign-in logs?)
+    ExposureJson   NVARCHAR(MAX)  NULL,                 -- the eight lists: [{ name, set, count, truncated, columns, rows, error }]
+    Note           NVARCHAR(2000) NULL                  -- why a list could not be built
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 26)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (26, '2.0.83');
+GO
+-- v30 (2.0.83, GROUPS-ACTIONS - owner 2026-11-05: "should i see buttn here like edit so i can modify a group dynamic
+-- membership or create or validate etc"): a dynamic group's rule the OPERATOR set on Conditional Access > Groups (Edit
+-- rule). It is this install's rule for that group: "Set rule", the group force update and a stage move keep it (a pilot
+-- group's custom rule is its Pilot1 base, widened per stage) until the operator picks "back to v1's rule" (the row goes).
+-- The engine writes it with the group change; the web app shows it.
+IF OBJECT_ID('eps.GroupRuleOverride') IS NULL
+CREATE TABLE eps.GroupRuleOverride (
+    Name           NVARCHAR(300)  NOT NULL CONSTRAINT PK_GroupRuleOverride PRIMARY KEY,
+    MembershipRule NVARCHAR(MAX)  NOT NULL,
+    SetBy          NVARCHAR(256)  NOT NULL,
+    Reason         NVARCHAR(1000) NULL,
+    SetAtUtc       DATETIME2      NOT NULL CONSTRAINT DF_GroupRuleOverride_At DEFAULT SYSUTCDATETIME()
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 30)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (30, '2.0.83');
+
+-- ---- version 31: CA-EDIT-PICKERS (owner 2026-11-05: "talk with graph to understand the optins per field" / "consider a
+-- discovery process monthly to get available options per field via graph"): the options per Conditional Access policy
+-- field as the monthly CaOptions job discovered them - the enum members from Graph v1.0's $metadata (Source = metadata)
+-- and the tenant's lists (Source = tenant: authentication strengths, named locations, terms of use, role definitions;
+-- Value = the object's id, Label = its name). The Edit form offers these; the shipped engine/ca/graph-enums.json is the
+-- fall-back while the table is empty. Written by the engine only; the web app reads it.
+IF OBJECT_ID('eps.CaGraphOption') IS NULL
+CREATE TABLE eps.CaGraphOption (
+    Field          NVARCHAR(200)  NOT NULL,                -- conditions.clientAppTypes | tenant.authStrength | ...
+    Value          NVARCHAR(200)  NOT NULL,
+    Label          NVARCHAR(400)  NULL,
+    Detail         NVARCHAR(400)  NULL,                    -- a strength's type (builtIn / custom), a location's kind
+    Source         NVARCHAR(20)   NOT NULL,                -- metadata | tenant
+    InCatalog      BIT            NOT NULL CONSTRAINT DF_CaGraphOption_InCat DEFAULT 0,   -- 0 = new from Graph (not in the shipped catalog)
+    FirstSeenUtc   DATETIME2      NOT NULL CONSTRAINT DF_CaGraphOption_First DEFAULT SYSUTCDATETIME(),
+    LastSeenUtc    DATETIME2      NOT NULL CONSTRAINT DF_CaGraphOption_Last DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_CaGraphOption PRIMARY KEY (Field, Value),
+    CONSTRAINT CK_CaGraphOption_Source CHECK (Source IN ('metadata', 'tenant'))
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 31)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (31, '2.0.83');
+GO
+-- v27 (2.0.83, SQL-STATS - framework §12.27; found by SI 2026-11-05: views took 1-2 min with the right indexes because
+-- statistics were stale and AUTO_UPDATE_STATISTICS_ASYNC was OFF, so the first read after a big write rebuilt them
+-- synchronously inside the user's request). (1) statistics are rebuilt in the BACKGROUND: the database setting, set once,
+-- in its own batch (ALTER DATABASE cannot run in a transaction) by the identity that applies this file (the database
+-- setup job, a member of the server's admin group - never a component).
+IF (SELECT is_auto_update_stats_async_on FROM sys.databases WHERE database_id = DB_ID()) = 0
+    ALTER DATABASE CURRENT SET AUTO_UPDATE_STATISTICS_ASYNC ON;
+GO
+-- (2) after a bulk write the engine refreshes what that write made stale: ONE procedure, EXECUTE AS OWNER, so the engine
+-- holds EXECUTE on it and never ALTER on a table. Only statistics whose modifications pass 20 % of the rows + 500,
+-- SAMPLED (the default sample, never FULLSCAN), at most @MaxStats per call and @MaxSeconds in all; it changes no data.
+-- Returns one row per statistic it looked at: TableName, StatName, RowCnt, Mods, Result ('updated' or the error).
+CREATE OR ALTER PROCEDURE eps.RefreshChangedStats @MaxStats INT = 40, @MaxSeconds INT = 120
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @t0 DATETIME2 = SYSUTCDATETIME(), @sql NVARCHAR(600), @tbl SYSNAME, @st SYSNAME, @rows BIGINT, @mods BIGINT;
+    DECLARE @out TABLE (TableName SYSNAME, StatName SYSNAME, RowCnt BIGINT, Mods BIGINT, Result NVARCHAR(400));
+    IF @MaxStats IS NULL OR @MaxStats < 1 OR @MaxStats > 200 SET @MaxStats = 40;
+    IF @MaxSeconds IS NULL OR @MaxSeconds < 5 OR @MaxSeconds > 900 SET @MaxSeconds = 120;
+    DECLARE c CURSOR LOCAL FAST_FORWARD FOR
+        SELECT TOP (@MaxStats) o.name, s.name, sp.rows, sp.modification_counter
+        FROM sys.stats s
+        JOIN sys.objects o ON o.object_id = s.object_id AND o.type = 'U' AND o.schema_id = SCHEMA_ID('eps')
+        CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+        WHERE sp.modification_counter > 0.2 * sp.rows + 500
+        ORDER BY sp.modification_counter DESC;
+    OPEN c;
+    FETCH NEXT FROM c INTO @tbl, @st, @rows, @mods;
+    WHILE @@FETCH_STATUS = 0 AND DATEDIFF(SECOND, @t0, SYSUTCDATETIME()) < @MaxSeconds
+    BEGIN
+        SET @sql = N'UPDATE STATISTICS eps.' + QUOTENAME(@tbl) + N' ' + QUOTENAME(@st) + N';';
+        BEGIN TRY
+            EXEC sys.sp_executesql @sql;
+            INSERT INTO @out VALUES (@tbl, @st, @rows, @mods, N'updated');
+        END TRY
+        BEGIN CATCH
+            INSERT INTO @out VALUES (@tbl, @st, @rows, @mods, LEFT(ERROR_MESSAGE(), 400));
+        END CATCH
+        FETCH NEXT FROM c INTO @tbl, @st, @rows, @mods;
+    END
+    CLOSE c; DEALLOCATE c;
+    SELECT TableName, StatName, RowCnt, Mods, Result FROM @out;
+END
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 27)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (27, '2.0.83');
+
+-- v32 (RULES-MATCHED, owner 2026-11-03: "maybe give more context here which users are in scope like a list" / "a button
+-- with more context"): WHO each tagging rule decided in a run (changed or already right) - at most 10,000 per rule and
+-- run (the run's Matched count stays exact), written by the tagging job, read by the Rules page's Matched button; the
+-- lists of older runs are dropped by the job (no foreign key: a run row can go without its list)
+IF OBJECT_ID('eps.TagRuleHit') IS NULL
+CREATE TABLE eps.TagRuleHit (
+    RunId         UNIQUEIDENTIFIER NOT NULL,
+    ObjectType    NVARCHAR(10)   NOT NULL,
+    RuleId        INT            NOT NULL,
+    ObjectId      UNIQUEIDENTIFIER NOT NULL,
+    ObjectName    NVARCHAR(400)  NULL,
+    TagType       NVARCHAR(60)   NOT NULL,
+    Value         NVARCHAR(1024) NULL,                   -- what the rule set
+    CurrentValue  NVARCHAR(1024) NULL,                   -- what the object had when the run read it
+    Changed       BIT            NOT NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_TagRuleHit_RunRule')
+CREATE CLUSTERED INDEX IX_TagRuleHit_RunRule ON eps.TagRuleHit (RunId, RuleId, ObjectName);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 32)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (32, '2.0.83');

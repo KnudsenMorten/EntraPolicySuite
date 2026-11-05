@@ -397,5 +397,5 @@ COMMIT;
 
 function Get-EpsBreakGlassAccounts {
     param([Parameter(Mandatory)][string]$ConnectionString)
-    @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT UserPrincipalName, DisplayName, AuthenticationMethod, Placement, Enabled, UpdatedAtUtc FROM eps.BreakGlassAccount WHERE Directory = 'Entra' ORDER BY UserPrincipalName")
+    @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT UserPrincipalName, DisplayName, AuthenticationMethod, ClassificationTagValue, AuthenticationTagValue, Placement, Enabled, UpdatedAtUtc FROM eps.BreakGlassAccount WHERE Directory = 'Entra' ORDER BY UserPrincipalName")
 }

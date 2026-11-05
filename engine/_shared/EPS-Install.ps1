@@ -560,6 +560,9 @@ function ConvertFrom-EpsGrantEntry {
     # 'UPDATE' -> @{ Permission = 'UPDATE'; Columns = @() }; 'UPDATE(Status, Error)' -> the columns; anything else $null
     param([string]$Entry)
     if ($Entry -match '^(SELECT|INSERT|UPDATE|DELETE)$') { return @{ Permission = $Matches[1]; Columns = @() } }
+    # EXECUTE on a procedure of schema eps (framework §12.27 SQL-STATS: eps.RefreshChangedStats, EXECUTE AS OWNER - the
+    # engine refreshes statistics without ALTER on any table)
+    if ($Entry -eq 'EXECUTE') { return @{ Permission = 'EXECUTE'; Columns = @() } }
     if ($Entry -match '^(SELECT|UPDATE)\(\s*([A-Za-z][A-Za-z0-9_]{0,59}(\s*,\s*[A-Za-z][A-Za-z0-9_]{0,59})*)\s*\)$') {
         return @{ Permission = $Matches[1]; Columns = @($Matches[2] -split '\s*,\s*') }
     }

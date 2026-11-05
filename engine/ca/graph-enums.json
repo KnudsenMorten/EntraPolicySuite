@@ -1,0 +1,36 @@
+{
+  "about": "CA-EDIT-PICKERS (owner 2026-11-05: \"talk with graph to understand the optins per field\" / \"consider a discovery process monthly to get available options per field via graph\"): the value set of every Conditional Access policy field the Edit form offers, as Microsoft Graph v1.0 documents it. The monthly discovery job (CaOptions) reads Graph's $metadata and adds a value Graph has and this file has not (shown as 'new from Graph'); the form falls back to this file when nothing was discovered yet. 'enumType' = the EnumType in Graph's $metadata (microsoft.graph namespace); 'values' = the documented members, unknownFutureValue left out (a sentinel, never set by an admin); 'omit' = members Graph has that an admin never sets in that field. 'keywords' = documented special values of an object list.",
+  "graphVersion": "v1.0",
+  "fields": [
+    { "field": "state", "label": "State", "enumType": "conditionalAccessPolicyState", "values": ["enabled", "enabledForReportingButNotEnforced", "disabled"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccesspolicy?view=graph-rest-1.0" },
+    { "field": "grantControls.builtInControls", "label": "Grant controls", "enumType": "conditionalAccessGrantControl", "values": ["block", "mfa", "compliantDevice", "domainJoinedDevice", "approvedApplication", "compliantApplication", "passwordChange"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessgrantcontrols?view=graph-rest-1.0" },
+    { "field": "grantControls.operator", "label": "Grant operator", "values": ["OR", "AND"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessgrantcontrols?view=graph-rest-1.0" },
+    { "field": "conditions.clientAppTypes", "label": "Client apps", "enumType": "conditionalAccessClientApp", "values": ["all", "browser", "mobileAppsAndDesktopClients", "exchangeActiveSync", "easSupported", "other"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessconditionset?view=graph-rest-1.0" },
+    { "field": "conditions.platforms.includePlatforms", "label": "Include platforms", "enumType": "conditionalAccessDevicePlatform", "values": ["all", "android", "iOS", "windows", "windowsPhone", "macOS", "linux"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessplatforms?view=graph-rest-1.0" },
+    { "field": "conditions.platforms.excludePlatforms", "label": "Exclude platforms", "enumType": "conditionalAccessDevicePlatform", "values": ["android", "iOS", "windows", "windowsPhone", "macOS", "linux"], "omit": ["all"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessplatforms?view=graph-rest-1.0" },
+    { "field": "conditions.signInRiskLevels", "label": "Sign-in risk", "enumType": "riskLevel", "values": ["high", "medium", "low", "none"], "omit": ["hidden"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessconditionset?view=graph-rest-1.0" },
+    { "field": "conditions.userRiskLevels", "label": "User risk", "enumType": "riskLevel", "values": ["high", "medium", "low", "none"], "omit": ["hidden"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessconditionset?view=graph-rest-1.0" },
+    { "field": "conditions.servicePrincipalRiskLevels", "label": "Service principal risk", "enumType": "riskLevel", "values": ["high", "medium", "low", "none"], "omit": ["hidden"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessconditionset?view=graph-rest-1.0" },
+    { "field": "conditions.devices.deviceFilter.mode", "label": "Device filter mode", "enumType": "filterMode", "values": ["include", "exclude"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessfilter?view=graph-rest-1.0" },
+    { "field": "conditions.authenticationFlows.transferMethods", "label": "Authentication flows", "enumType": "conditionalAccessTransferMethods", "values": ["deviceCodeFlow", "authenticationTransfer"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessauthenticationflows?view=graph-rest-1.0" },
+    { "field": "conditions.applications.includeUserActions", "label": "User actions", "values": ["urn:user:registersecurityinfo", "urn:user:registerdevice"], "doc": "https://learn.microsoft.com/graph/api/resources/conditionalaccessapplications?view=graph-rest-1.0" },
+    { "field": "sessionControls.signInFrequency.type", "label": "Sign-in frequency unit", "enumType": "signinFrequencyType", "values": ["hours", "days"], "doc": "https://learn.microsoft.com/graph/api/resources/signinfrequencysessioncontrol?view=graph-rest-1.0" },
+    { "field": "sessionControls.signInFrequency.frequencyInterval", "label": "Sign-in frequency interval", "enumType": "signInFrequencyInterval", "values": ["timeBased", "everyTime"], "doc": "https://learn.microsoft.com/graph/api/resources/signinfrequencysessioncontrol?view=graph-rest-1.0" },
+    { "field": "sessionControls.signInFrequency.authenticationType", "label": "Sign-in frequency applies to", "enumType": "signInFrequencyAuthenticationType", "values": ["primaryAndSecondaryAuthentication", "secondaryAuthentication"], "doc": "https://learn.microsoft.com/graph/api/resources/signinfrequencysessioncontrol?view=graph-rest-1.0" },
+    { "field": "sessionControls.persistentBrowser.mode", "label": "Persistent browser", "enumType": "persistentBrowserSessionMode", "values": ["always", "never"], "doc": "https://learn.microsoft.com/graph/api/resources/persistentbrowsersessioncontrol?view=graph-rest-1.0" },
+    { "field": "sessionControls.cloudAppSecurity.cloudAppSecurityType", "label": "Conditional Access App Control", "enumType": "cloudAppSecuritySessionControlType", "values": ["mcasConfigured", "monitorOnly", "blockDownloads"], "doc": "https://learn.microsoft.com/graph/api/resources/cloudappsecuritysessioncontrol?view=graph-rest-1.0" }
+  ],
+  "keywords": {
+    "conditions.users.includeUsers": ["All", "None", "GuestsOrExternalUsers"],
+    "conditions.users.excludeUsers": ["GuestsOrExternalUsers"],
+    "conditions.applications.includeApplications": ["All", "Office365", "MicrosoftAdminPortals", "None"],
+    "conditions.applications.excludeApplications": ["Office365", "MicrosoftAdminPortals"],
+    "conditions.locations.includeLocations": ["All", "AllTrusted"],
+    "conditions.locations.excludeLocations": ["AllTrusted"]
+  },
+  "conditionSet": {
+    "about": "the conditionalAccessConditionSet properties EPS knows (in the form, or kept as they are and editable in Advanced (JSON)); the discovery job reports any other property Graph's $metadata has - a new condition to look at",
+    "type": "conditionalAccessConditionSet",
+    "known": ["applications", "users", "clientApplications", "clientAppTypes", "devices", "locations", "platforms", "servicePrincipalRiskLevels", "signInRiskLevels", "userRiskLevels", "authenticationFlows"]
+  }
+}

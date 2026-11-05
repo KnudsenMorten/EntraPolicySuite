@@ -36,11 +36,15 @@ function Get-EpsDefaultJobSchedule {
         # UNDO-BACKUP (owner 2026-11-05: "ok go with daily keep 30"): every CA policy, named location and authentication
         # strength, and the tagging configuration, stored once a day (the newest 30 kept); reads the tenant only
         [pscustomobject]@{ Job = 'Backup';         Schedule = 'daily 00:30'; AcaJobName = 'caj-eps-backup';    Implemented = $true; EnabledDefault = $true }
+        # CA-EDIT-PICKERS (owner 2026-11-05: "consider a discovery process monthly to get available options per field via
+        # graph"): Graph v1.0's $metadata + the tenant's lists -> the Edit form's options (EPS-CaOptions.ps1); reads only
+        [pscustomobject]@{ Job = 'CaOptions';      Schedule = 'monthly 1 04:00'; AcaJobName = 'caj-eps-caoptions'; Implemented = $true; EnabledDefault = $true }
     )
 }
 
 function ConvertFrom-EpsSchedule {
-    # 'daily 01:00' | 'weekly sun 19:00' | 'every 15m' | 'every 3h' | 'manual' -> @{ Kind; Hour; Minute; Day; Every }
+    # 'daily 01:00' | 'weekly sun 19:00' | 'monthly 1 04:00' | 'every 15m' | 'every 3h' | 'manual' -> @{ Kind; Hour; Minute;
+    # Day (weekly: the weekday; monthly: the day of the month, 1-28 so every month has it); Every }
     # (Every in minutes). Throws on anything else, so a typo is refused when the setting is saved, not discovered at 01:00.
     param([Parameter(Mandatory)][string]$Schedule)
     $s = $Schedule.Trim().ToLowerInvariant()
@@ -52,7 +56,11 @@ function ConvertFrom-EpsSchedule {
         $d = @{ sun = 0; mon = 1; tue = 2; wed = 3; thu = 4; fri = 5; sat = 6 }[$Matches[1]]
         return @{ Kind = 'weekly'; Day = [DayOfWeek]$d; Hour = [int]$Matches[2]; Minute = [int]$Matches[3] }
     }
-    throw "'$Schedule' is not a schedule: use 'daily HH:mm', 'weekly <mon..sun> HH:mm', 'every <N>m', 'every <N>h' or 'manual'"
+    if ($s -match '^monthly\s+(\d{1,2})\s+([01]\d|2[0-3]):([0-5]\d)$') {
+        $d = [int]$Matches[1]; if ($d -lt 1 -or $d -gt 28) { throw "'$Schedule': a monthly day is 1 to 28 (every month has it)" }
+        return @{ Kind = 'monthly'; Day = $d; Hour = [int]$Matches[2]; Minute = [int]$Matches[3] }
+    }
+    throw "'$Schedule' is not a schedule: use 'daily HH:mm', 'weekly <mon..sun> HH:mm', 'monthly <1-28> HH:mm', 'every <N>m', 'every <N>h' or 'manual'"
 }
 
 function Test-EpsJobDue {
@@ -79,11 +87,32 @@ function Test-EpsJobDue {
     $local = [TimeZoneInfo]::ConvertTimeFromUtc($now, $tz)
     $occ = [datetime]::new($local.Year, $local.Month, $local.Day, $p.Hour, $p.Minute, 0, [DateTimeKind]::Unspecified)
     if ($p.Kind -eq 'weekly') { while ($occ.DayOfWeek -ne $p.Day -or $occ -gt $local) { $occ = $occ.AddDays(-1) } }
+    elseif ($p.Kind -eq 'monthly') { $occ = [datetime]::new($local.Year, $local.Month, $p.Day, $p.Hour, $p.Minute, 0, [DateTimeKind]::Unspecified); if ($occ -gt $local) { $occ = $occ.AddMonths(-1) } }
     elseif ($occ -gt $local) { $occ = $occ.AddDays(-1) }
     $occUtc = [TimeZoneInfo]::ConvertTimeToUtc($occ, $tz)
     if ($last -and $last -ge $occUtc) { return @{ Due = $false; Reason = "already started for $($occ.ToString('yyyy-MM-dd HH:mm')) $TimeZone"; OccurrenceUtc = $occUtc } }
     if (($now - $occUtc).TotalHours -gt $CatchUpHours) { return @{ Due = $false; Reason = "missed $($occ.ToString('yyyy-MM-dd HH:mm')) by more than $CatchUpHours h - waits for the next"; OccurrenceUtc = $occUtc } }
     @{ Due = $true; Reason = "$Schedule ($($occ.ToString('yyyy-MM-dd HH:mm')) $TimeZone)"; OccurrenceUtc = $occUtc }
+}
+
+function Get-EpsNextRunUtc {
+    # ADMIN-WALK (2026-11-05): when the schedule starts the job next (the Jobs page's Next run). $null = manual / off / a
+    # schedule it cannot read. An every-N job: the last start + N (now when it never ran or is overdue).
+    param([string]$Schedule, [Parameter(Mandatory)][datetime]$NowUtc, $LastStartedUtc, [string]$TimeZone = 'UTC')
+    $p = try { ConvertFrom-EpsSchedule $Schedule } catch { return $null }
+    $now = [datetime]::SpecifyKind($NowUtc, 'Utc')
+    if ($p.Kind -eq 'manual') { return $null }
+    if ($p.Kind -eq 'every') {
+        if (-not $LastStartedUtc -or $LastStartedUtc -is [DBNull]) { return $now }
+        $n = ([datetime]::SpecifyKind([datetime]$LastStartedUtc, 'Utc')).AddMinutes($p.Every); if ($n -lt $now) { return $now }; return $n
+    }
+    $tz = try { [TimeZoneInfo]::FindSystemTimeZoneById($TimeZone) } catch { [TimeZoneInfo]::Utc }
+    $local = [TimeZoneInfo]::ConvertTimeFromUtc($now, $tz)
+    $occ = [datetime]::new($local.Year, $local.Month, $local.Day, $p.Hour, $p.Minute, 0, [DateTimeKind]::Unspecified)
+    if ($p.Kind -eq 'weekly') { while ($occ.DayOfWeek -ne $p.Day -or $occ -le $local) { $occ = $occ.AddDays(1) } }
+    elseif ($p.Kind -eq 'monthly') { $occ = [datetime]::new($local.Year, $local.Month, $p.Day, $p.Hour, $p.Minute, 0, [DateTimeKind]::Unspecified); if ($occ -le $local) { $occ = $occ.AddMonths(1) } }
+    elseif ($occ -le $local) { $occ = $occ.AddDays(1) }
+    [TimeZoneInfo]::ConvertTimeToUtc($occ, $tz)
 }
 
 function Sync-EpsJobSchedule {

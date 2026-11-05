@@ -10,6 +10,7 @@ $script:EpsAuditActions = @(
     'auth.request.refused'          # a request whose token did not verify (web)
     'access.grant', 'access.revoke' # eps.WebAccess (SuperAdmin)
     'job.run.request'               # Run now / Preview / Apply from the GUI (a signed JobRequest)
+    'job.test.request', 'job.golive.request'   # TAG-TEST (2.0.82): a tagging test run on the people picked (Test or Apply to that scope); Go live = ONE Apply on everyone with the tested rules (SuperAdmin)
     'config.request'                # a configuration change queued as a signed Config request (2.0.8; was missing from
                                     # this list until 2.0.10, so the queueing itself was not audited - the engine's apply was)
     'job.schedule.change'           # the schedule and on / off of a job, on the Jobs page (journaled)
@@ -30,11 +31,15 @@ $script:EpsAuditActions = @(
     'onboarding.strengths', 'onboarding.deniedcountries', 'onboarding.trusted', 'onboarding.breakglass'   # GET-STARTED phase 2 (2.0.82, V1-PARITY P7-P9): a SuperAdmin's creates, the engine writes them (EPS-OnboardWrite.ps1)
     'ca.policy.stage'               # CA-LIFECYCLE (2.0.27): a SuperAdmin moves ONE adopted policy ONE stage - the engine's one Conditional Access write
     'ca.policy.edit', 'ca.policy.clone', 'ca.policy.edit.check'   # CA-EDIT (owner 2026-11-05): a SuperAdmin edits ONE adopted policy / clones it into a new one (created off, adopted)
+    'ca.directory.search'           # CA-EDIT-PICKERS (owner 2026-11-05): the Edit form's picker searches the tenant (reads only; the finds stored as names)
     'ca.policy.deploy', 'ca.policy.newversion', 'ca.policy.promote', 'ca.policy.rollback', 'ca.policy.removeold'   # CA-TEMPLATES (owner 2026-11-05, "Side-by-side only"): a template deployed as a new policy; a newer version tested next to it, promoted, rolled back, the old one removed
-    'ca.group.check', 'ca.group.create', 'ca.group.rule', 'ca.group.members', 'ca.group.forceupdate', 'ca.group.au'   # CA-GROUPS (2.0.81): the groups the policies use - read, and a SuperAdmin's changes (the engine writes them, EPS-GroupWrite.ps1)
+    'ca.group.check', 'ca.group.create', 'ca.group.rule', 'ca.group.members', 'ca.group.forceupdate', 'ca.group.au', 'ca.group.editrule', 'ca.group.validate'   # CA-GROUPS (2.0.81): the groups the policies use - read, and a SuperAdmin's changes (the engine writes them, EPS-GroupWrite.ps1); GROUPS-ACTIONS (2.0.83): a rule of your own (editrule) and Entra's rule check (validate)
     'ca.policy.restore', 'ca.policy.restore.check', 'ca.policy.undo'   # UNDO-BACKUP (owner 2026-11-05): a SuperAdmin puts policies back from a backup / undoes one change of a policy (the engine writes it); the check of a restore (nothing written)
     'job.run.undo'                  # UNDO-BACKUP: "Undo this run" of a tagging run - the engine writes the old tags back (a new run, Mode Undo)
     'backup.ca.export'              # UNDO-BACKUP: a Conditional Access backup downloaded as v1's JSON files (a READ mark: every policy leaves the app)
+    'ca.policy.remove', 'ca.policy.remove.check'   # CA-TEMPLATES left-over (v1's "REMOVE CA POLICIES"): a SuperAdmin deletes policies that are OFF, picked or by a name pattern (the engine writes it); the check (nothing written)
+    'ca.object.restore', 'ca.object.restore.check' # UNDO-BACKUP left-over: a SuperAdmin puts named locations / authentication strengths back from a backup (the engine writes them, EPS-OnboardWrite.ps1); the check (nothing written)
+    'config.export', 'config.import.check'         # CONFIG-IO-1: the configuration exported as one file (a READ mark), an import file checked (nothing written; the changes go through their own routes)
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names
     'identity.run.request', 'identity.export', 'view.save', 'view.delete'   # the identity report (read only) and saved views (LIST-1)
     'tamper.event.accept'           # the change was legitimate (no outside change)

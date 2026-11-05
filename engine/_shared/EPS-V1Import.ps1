@@ -31,16 +31,62 @@ function Get-EpsDefaultTagTypes {
 }
 
 function Get-EpsV1AttributeMap {
-    # v1 kept the attribute per tag type in the user tagging script's globals ($global:EntraPolicySuite_Tagging_User_*).
-    param([string]$ScriptPath)
+    # v1 kept the attribute per tag type in globals ($global:EntraPolicySuite_Tagging_User_*): in the user tagging script
+    # and in Automation-DefaultVariables.psm1 (V1-PARITY P15). -ScriptPath can name both; a later file wins (the script
+    # runs after the module is imported, so its globals are the ones in force).
+    param([string[]]$ScriptPath)
     $map = @{}
-    if (-not $ScriptPath -or -not (Test-Path -LiteralPath $ScriptPath)) { return $map }
-    $src = Get-Content -LiteralPath $ScriptPath -Raw
-    foreach ($pair in @(@('AccountInfo', 'User_AccountInfo'), @('Classification', 'User_Classification'), @('Authentication', 'User_Authentication'), @('Pilot', 'User_Pilot'), @('Company', 'Company'))) {
-        $m = [regex]::Match($src, "(?im)^\s*\`$global:EntraPolicySuite_Tagging_$($pair[1])\s*=\s*[`"'](extensionAttribute\d{1,2})[`"']")
-        if ($m.Success) { $map[$pair[0]] = $m.Groups[1].Value }
+    foreach ($sp in @($ScriptPath | Where-Object { $_ })) {
+        if (-not (Test-Path -LiteralPath $sp)) { continue }
+        $src = Get-Content -LiteralPath $sp -Raw
+        foreach ($pair in @(@('AccountInfo', 'User_AccountInfo'), @('Classification', 'User_Classification'), @('Authentication', 'User_Authentication'), @('Pilot', 'User_Pilot'), @('Company', 'Company'))) {
+            $m = [regex]::Match($src, "(?im)^\s*\`$global:EntraPolicySuite_Tagging_$($pair[1])\s*=\s*[`"'](extensionAttribute\d{1,2})[`"']")
+            if ($m.Success) { $map[$pair[0]] = $m.Groups[1].Value }
+        }
     }
     $map
+}
+
+function Read-EpsV1Globals {
+    # V1-PARITY P15: the values of NAMED globals in a v1 PowerShell file ($global:Name = value), read as text - the file is
+    # never run, and no other line of it is kept (Automation-DefaultVariables.psm1 also holds other products' values).
+    # A value is $true / $false, a quoted string, a number or @("a", "b"); anything else is left out.
+    # Returns name -> [string] | [bool] | [string[]].
+    param([string]$Path, [Parameter(Mandatory)][string[]]$Names)
+    $out = @{}
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $out }
+    $src = Get-Content -LiteralPath $Path -Raw
+    foreach ($n in $Names) {
+        $ms = [regex]::Matches($src, "(?im)^[ \t]*\`$global:$([regex]::Escape($n))[ \t]*=[ \t]*(?<v>@\([^)\r\n]*\)|`"[^`"\r\n]*`"|'[^'\r\n]*'|\`$true|\`$false|\d+)")
+        if (-not $ms.Count) { continue }
+        $v = $ms[$ms.Count - 1].Groups['v'].Value   # the last assignment is the one in force
+        $out[$n] = if ($v -ieq '$true') { $true } elseif ($v -ieq '$false') { $false }
+                   elseif ($v.StartsWith('@(')) { ,@([regex]::Matches($v, "`"([^`"]*)`"|'([^']*)'") | ForEach-Object { if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } } | Where-Object { $_ }) }
+                   elseif ($v -match '^["''](.*)["'']$') { $Matches[1] } else { $v }
+    }
+    $out
+}
+
+function ConvertFrom-EpsV1DefaultVariables {
+    # V1-PARITY P15: Automation-DefaultVariables.psm1 -> the EPS settings it fills, and what is not moved (and why).
+    # Returns @{ Settings = ordered; NotMigrated = string[] }.
+    param([string]$Path)
+    $g = Read-EpsV1Globals -Path $Path -Names 'Mail_Identity_Maintenance_TO', 'Mail_Identity_Maintenance_SendMail', 'SMTPserver', 'SMTPPort', 'SMTP_UseSSL', 'SMTPUser', 'Mail_SendAnonymous',
+        'IdentityReporter_AD_Searchbase', 'IdentityReporter_UserADSynced_AD_OU_Match', 'IdentityReporter_ServiceAccountADSynced_AD_OU_Match', 'IdentityReporter_SharedUserADSynced_AD_OU_Match', 'IdentityReporter_SharedMailboxADSynced_AD_OU_Match'
+    $s = [ordered]@{}; $nm = [System.Collections.Generic.List[string]]::new()
+    if ($g.ContainsKey('Mail_Identity_Maintenance_TO')) { $to = @(@($g['Mail_Identity_Maintenance_TO']) | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^[^@\s]+@[^@\s]+\.[^@\s]+$' }); if ($to.Count) { $s['IdentityReport.MailRecipients'] = ConvertTo-Json -InputObject @($to) -Compress } }
+    if ($g['Mail_Identity_Maintenance_SendMail'] -is [bool]) { $s['IdentityReport.MailWorkbook'] = $(if ($g['Mail_Identity_Maintenance_SendMail']) { 'true' } else { 'false' }) }
+    if ("$($g['SMTPserver'])" -match '^[A-Za-z0-9][A-Za-z0-9.-]{0,251}$') { $s['Mail.SmtpServer'] = "$($g['SMTPserver'])" }
+    if ("$($g['SMTPPort'])" -match '^\d{1,5}$' -and [int]"$($g['SMTPPort'])" -in 1..65535) { $s['Mail.SmtpPort'] = "$([int]"$($g['SMTPPort'])")" }
+    if ($g['SMTP_UseSSL'] -is [bool]) { $s['Mail.SmtpUseTls'] = $(if ($g['SMTP_UseSSL']) { 'true' } else { 'false' }) }
+    if ("$($g['SMTPUser'])" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { $s['Mail.SmtpFrom'] = "$($g['SMTPUser'])" }
+    foreach ($p in @(@('IdentityReporter_UserADSynced_AD_OU_Match', 'User'), @('IdentityReporter_ServiceAccountADSynced_AD_OU_Match', 'ServiceAccount'), @('IdentityReporter_SharedUserADSynced_AD_OU_Match', 'SharedUser'), @('IdentityReporter_SharedMailboxADSynced_AD_OU_Match', 'SharedMailbox'))) {
+        if ("$($g[$p[0]])".Trim()) { $s["IdentityReport.AdOu.$($p[1])"] = "$($g[$p[0]])".Trim() }
+    }
+    if ($s.Contains('Mail.SmtpServer')) { $nm.Add("v1's mail relay $($s['Mail.SmtpServer']) is imported as the SMTP settings; Alert mail is not switched to smtp - choose it in Settings > Alert mail") }
+    if ($g['Mail_SendAnonymous'] -eq $false) { $nm.Add("v1 signed in to its mail relay with its stored credential (`$global:SecureCredentials): a password is never imported - put it in a Key Vault secret and set 'SMTP password (Key Vault secret)'") }
+    if ("$($g['IdentityReporter_AD_Searchbase'])".Trim()) { $nm.Add("IdentityReporter_AD_Searchbase ($($g['IdentityReporter_AD_Searchbase'])): the hybrid worker reads its own domain - no setting needed") }
+    @{ Settings = $s; NotMigrated = @($nm) }
 }
 
 function Read-EpsV1Csv {
@@ -71,18 +117,22 @@ function Read-EpsV1Data {
     .PARAMETER UserTaggingScript
         v1's Entra-ID-User-Tagging.ps1, for the attribute per tag type. Default: <root>\Entra-Policy-Suite\.
     #>
-    param([Parameter(Mandatory)][string]$Path, [string]$UserTaggingScript, [hashtable]$Catalog)
+    param([Parameter(Mandatory)][string]$Path, [string]$UserTaggingScript, [string]$DefaultVariablesPath, [hashtable]$Catalog)
     $data = if (Test-Path -LiteralPath (Join-Path $Path 'DATA') -PathType Container) { Join-Path $Path 'DATA' } else { $Path }
     if (-not (Test-Path -LiteralPath $data -PathType Container)) { throw "v1 folder not found: $Path" }
     $root = Split-Path -Parent $data
     if (-not $UserTaggingScript) { $UserTaggingScript = Join-Path $root 'Entra-Policy-Suite\Entra-ID-User-Tagging.ps1' }
+    # V1-PARITY P15: v1's shared variables module (C:\SCRIPTS\FUNCTIONS) - the report mail, the mail relay, the identity
+    # report's OUs and the tag attributes; only those named values are read
+    if (-not $DefaultVariablesPath) { $DefaultVariablesPath = Join-Path $root 'FUNCTIONS\Automation-DefaultVariables.psm1' }
     if (-not $Catalog) { $Catalog = Import-EpsConditionCatalog }
 
     $files = [ordered]@{}
     foreach ($f in 'Identity_Tagging.csv', 'Identity_Tagging_AccountInfo.csv', 'Device_Tagging.csv', 'Device_Tagging_AccountInfo.csv', 'EntraNamedLocations_AzureNetworkServiceTags.csv', 'Entra_Policy_Suite_custom.config', 'Entra_Policy_Suite_locked.config') {
         $files[$f] = Test-Path -LiteralPath (Join-Path $data $f)
     }
-    $attrMap = Get-EpsV1AttributeMap -ScriptPath $UserTaggingScript
+    $files['Automation-DefaultVariables.psm1'] = Test-Path -LiteralPath $DefaultVariablesPath
+    $attrMap = Get-EpsV1AttributeMap -ScriptPath @($DefaultVariablesPath, $UserTaggingScript)
     $tagTypes = Get-EpsDefaultTagTypes -Attributes $attrMap
     $hints = [System.Collections.Generic.List[object]]::new()
 
@@ -138,6 +188,11 @@ function Read-EpsV1Data {
             foreach ($g in @($lk.Target_Groups_Manual_Assignment)) { if ($g.DisplayName) { @{ DisplayName = [string]$g.DisplayName; VariableName = [string]$g.VariableName; Assignment = 'Assigned'; Description = [string]$g.Description; GroupQuery = $null } } }
         )
     }
+    if ($files['Automation-DefaultVariables.psm1']) {
+        $dv = ConvertFrom-EpsV1DefaultVariables -Path $DefaultVariablesPath
+        foreach ($k in $dv.Settings.Keys) { $settings[$k] = $dv.Settings[$k] }
+        $notMigrated += @($dv.NotMigrated)
+    }
     $serviceTags = @(Read-EpsV1Csv (Join-Path $data 'EntraNamedLocations_AzureNetworkServiceTags.csv') 'Tag' | ForEach-Object { @{ Tag = ([string]$_.Tag).Trim() } })
     if ($serviceTags.Count) { $settings['NamedLocations.Region'] = 'westeurope' }   # v1 hard-coded it (D4: today's value is the default)
 
@@ -155,7 +210,9 @@ function Read-EpsV1Data {
 # the closed list of files the page takes: v1's DATA files + the user tagging script (for the attribute per tag type).
 # Demo material is never read (owner 2026-10-29).
 $script:EpsV1UploadNames = @('Identity_Tagging.csv', 'Identity_Tagging_AccountInfo.csv', 'Device_Tagging.csv', 'Device_Tagging_AccountInfo.csv',
-    'EntraNamedLocations_AzureNetworkServiceTags.csv', 'Entra_Policy_Suite_custom.config', 'Entra_Policy_Suite_locked.config', 'Entra-ID-User-Tagging.ps1')
+    'EntraNamedLocations_AzureNetworkServiceTags.csv', 'Entra_Policy_Suite_custom.config', 'Entra_Policy_Suite_locked.config', 'Entra-ID-User-Tagging.ps1',
+    # V1-PARITY P15: v1's shared variables (C:\SCRIPTS\FUNCTIONS) - only the named values are read, the rest is dropped
+    'Automation-DefaultVariables.psm1')
 
 function Get-EpsV1UploadNames { $script:EpsV1UploadNames }
 
@@ -180,15 +237,15 @@ function Read-EpsV1Upload {
         $seen[$known] = "$($f.text)"; $total += "$($f.text)".Length
     }
     if ($total -gt 900000) { return @{ Error = 'the files are larger than 900 KB together' } }
-    if (-not @($seen.Keys | Where-Object { $_ -ne 'Entra-ID-User-Tagging.ps1' }).Count) { return @{ Error = 'choose at least one file from v1''s DATA folder' } }
+    if (-not @($seen.Keys | Where-Object { $_ -notin 'Entra-ID-User-Tagging.ps1', 'Automation-DefaultVariables.psm1' }).Count) { return @{ Error = 'choose at least one file from v1''s DATA folder' } }
     $root = Join-Path ([IO.Path]::GetTempPath()) "eps-v1-$([guid]::NewGuid().ToString('N'))"
     $out = $null
     try {
-        $data = Join-Path $root 'DATA'; $scr = Join-Path $root 'Entra-Policy-Suite'
-        [void](New-Item -ItemType Directory -Path $data -Force); [void](New-Item -ItemType Directory -Path $scr -Force)
-        foreach ($k in $seen.Keys) { [IO.File]::WriteAllText((Join-Path $(if ($k -like '*.ps1') { $scr } else { $data }) $k), $seen[$k], [Text.UTF8Encoding]::new($false)) }
+        $data = Join-Path $root 'DATA'; $scr = Join-Path $root 'Entra-Policy-Suite'; $fn = Join-Path $root 'FUNCTIONS'
+        foreach ($d in $data, $scr, $fn) { [void](New-Item -ItemType Directory -Path $d -Force) }
+        foreach ($k in $seen.Keys) { [IO.File]::WriteAllText((Join-Path $(if ($k -like '*.ps1') { $scr } elseif ($k -like '*.psm1') { $fn } else { $data }) $k), $seen[$k], [Text.UTF8Encoding]::new($false)) }
         try {
-            $m = Read-EpsV1Data -Path $root -UserTaggingScript (Join-Path $scr 'Entra-ID-User-Tagging.ps1')
+            $m = Read-EpsV1Data -Path $root -UserTaggingScript (Join-Path $scr 'Entra-ID-User-Tagging.ps1') -DefaultVariablesPath (Join-Path $fn 'Automation-DefaultVariables.psm1')
             $m.Source = 'upload: ' + (@($seen.Keys) -join ', ')
             $out = @{ Model = $m; Files = @($seen.Keys) }
         } catch { $out = @{ Error = "the files could not be read: $($_.Exception.Message.Replace($root, 'upload'))" } }

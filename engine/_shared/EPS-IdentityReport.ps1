@@ -628,10 +628,16 @@ function Invoke-EpsIdentityReportJob {
     $w = Write-EpsIdentitySnapshot -ConnectionString $ConnectionString -RunId $RunId -Report $rep -Views $views -Pivots @($pivots) -Config $cfg -Keep $keep
     $gaps = @(Get-EpsIdentityViewCatalog | Where-Object { $_.Severity -in 'High', 'Medium' -and $w.Counts[$_.Name] -gt 0 })
     & $Log 'Info' "snapshot: $(@($rep.Users).Count) user(s), $(@($rep.Devices).Count) device(s), $($gaps.Count) open High / Medium gap view(s)"
+    # V1-PARITY P11: the users to Log Analytics (EntraUsersMetadata_CL) + v1's exposure lists - when switched on; never
+    # fails the run (the engine loads EPS-LogAnalytics.ps1; nothing else runs this)
+    $la = if (Get-Command Invoke-EpsIdentityLogAnalytics -ErrorAction SilentlyContinue) { Invoke-EpsIdentityLogAnalytics -ConnectionString $ConnectionString -RunId $RunId -Users @($rep.Users) -Config $cfg -NowUtc $NowUtc -Log $Log }
     $mail = $null
     if ("$($settings['IdentityReport.MailWorkbook'])" -eq 'true') {
         $bytes = New-EpsIdentityWorkbook -Views $views -Config $cfg
         $mc = Get-EpsMailConfig -ConnectionString $ConnectionString
+        # V1-PARITY P12: the report's own recipients (v1's Mail_Identity_Maintenance_TO); none = the alert recipients
+        $own = @(try { @("$($settings['IdentityReport.MailRecipients'])" | ConvertFrom-Json) } catch { @() }) | Where-Object { "$_".Trim() }
+        if (@($own).Count) { $mc.Recipients = @($own) }
         # MAIL-3 subject + the MAIL-2 body (BRAND-2 header, the button to the Identity page, the footer) - was hand-made HTML
         $rows = @($gaps | ForEach-Object { [pscustomobject]@{ Severity = $_.Severity; 'Open gap' = $_.Title; Count = $w.Counts[$_.Name] } })
         $html = New-EpsMailBody -Summary "The identity report of $($mc.Environment), $($NowUtc.ToString('yyyy-MM-dd HH:mm')) UTC: $(@($rep.Users).Count) users, $(@($rep.Devices).Count) devices, $($gaps.Count) open High / Medium gap view(s). The workbook is attached." `
@@ -640,7 +646,7 @@ function Invoke-EpsIdentityReportJob {
         $mail = Send-EpsMail -Config $mc -Subject (New-EpsMailSubject -Environment $mc.Environment -What 'Identity report') -Html $html -Attachments @(@{ Name = "Users-$($NowUtc.ToString('yyyyMMdd')).xlsx"; Bytes = $bytes; ContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
         & $Log $(if ($mail.Sent) { 'Info' } else { 'Warn' }) "workbook mail: $($mail.Reason)"
     }
-    [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes }
+    [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes; LogAnalytics = $la }
 }
 
 # ---- ID-ACTIONS: an action per user (owner 2026-11-03: "we need a way to add 4 fields per user: notes + action
@@ -709,4 +715,176 @@ $(Get-EpsJournalSql)
 COMMIT;
 "@)
     @{ Count = $known.Count; Unknown = $unknown }
+}
+
+# ---- V1-PARITY P11: the identity report in Log Analytics + v1's two exposure reports (owner 2026-11-05: "solution must
+# be min 1:1 on pair with the old eps script solution"). v1: IdentityReporter.ps1 L858-913 uploads EVERY user row to the
+# custom table EntraUsersMetadata_CL through a data collection endpoint + rule ($global:EPSIntegration); the exposure
+# reports (CAPolicyEvaluator\ExposureSigninReports-ServiceAccounts.ps1 / -SharedDeviceUsers.ps1, Kusto-Queries.ps1) read
+# that table with SigninLogs + AADNonInteractiveUserSignInLogs. The PURE parts live here (every component loads this
+# file: the web app reads the stored results); the calls (upload, query, setup) are in EPS-LogAnalytics.ps1 (engine and
+# the setup script only).
+$script:EpsLaTable = 'EntraUsersMetadata_CL'          # v1's table (v1: $TableName 'EntraUsersMetadata' + _CL)
+$script:EpsLaStream = 'Custom-EntraUsersMetadata_CL'  # the DCR's input stream
+$script:EpsLaDcrName = 'dcr-entra-EntraUsersMetadata_CL'   # v1's name: "dcr-" + $AzDcrPrefix ("entra") + "-" + table
+$script:EpsLaMaxBatchBytes = 900000                   # the Logs Ingestion API takes at most 1 MB per call
+$script:EpsLaMaxBatchRecords = 2000
+
+function Get-EpsLaColumns {
+    <#
+      PURE. v1's columns of EntraUsersMetadata_CL, in v1's order (IdentityReporter.ps1's $Object, then its extra tag
+      columns, then Add-CollectionTimeToAllEntriesInArray + Add-ColumnDataToAllEntriesInArray Computer / ComputerFqdn),
+      each with its type. -Tags: the report config's tag columns (Company only when its tag type exists, as v1 removed
+      it when EntraPolicySuite_Tagging_Company was not set; any other tag type is v1's extra column). Returns an ordered
+      name -> type (string | boolean | int | datetime).
+    #>
+    param([object[]]$Tags = @())
+    $c = [ordered]@{}
+    foreach ($n in 'Id', 'GivenName', 'SurName', 'UserPrincipalName', 'DisplayName', 'Description_AD') { $c[$n] = 'string' }
+    $c.AccountEnabled = 'boolean'
+    $tagCols = @($Tags | ForEach-Object { "$($_.Column)" })
+    foreach ($n in 'UserClassification', 'UserAuthMethodType', 'UserPilotInfo', 'UserAccountInfo') { $c[$n] = 'string' }   # v1 always had these four
+    if ($tagCols -contains 'Company') { $c.Company = 'string' }
+    foreach ($n in 'CompanyName', 'Mail') { $c[$n] = 'string' }
+    $c.IsAdmin = 'boolean'
+    foreach ($n in 'MailType', 'DefaultMfaMethod', 'MethodsRegistered') { $c[$n] = 'string' }
+    foreach ($n in 'IsMfaCapable', 'IsMfaRegistered', 'IsPasswordlessCapable', 'IsSsprCapable', 'IsSsprEnabled', 'IsSsprRegistered', 'IsSystemPreferredAuthenticationMethodEnabled') { $c[$n] = 'boolean' }
+    $c.AuthMethodsLastUpdatedDateTime = 'datetime'
+    $c.extensionAttribute2 = 'string'
+    foreach ($n in 'Cloud_LastSignInDateTime', 'Cloud_LastNonInteractiveSignInDateTime', 'AD_LastSignInDateTime') { $c[$n] = 'datetime' }
+    $c.AD_CannotChangePassword = 'boolean'; $c.AD_AccountExpirationDate = 'datetime'; $c.AD_OnPremisesSyncEnabled = 'boolean'
+    $c.Cloud_PasswordPolicies = 'string'; $c.AD_PasswordNeverExpires = 'boolean'
+    foreach ($n in 'UserIsADValidated', 'ServiceAccountIsADValidated', 'SharedUserIsADValidated', 'SharedMailboxIsADValidated', 'IsLicenseOverProvisioned', 'HasMinimumNeededLicense') { $c[$n] = 'boolean' }
+    foreach ($n in 'MinimumPlanNeeded', 'ADDN', 'UserLicenseList') { $c[$n] = 'string' }
+    foreach ($p in $script:EpsIdPlatforms) { foreach ($o in 'Corp', 'Personal') { $c["DeviceCount_${p}_$o"] = 'int' } }
+    $c.Device_SmartPhoneActive = 'boolean'; $c.Device_SmartPhoneActive_CorpOnly = 'boolean'
+    foreach ($n in $tagCols) { if (-not $c.Contains($n)) { $c[$n] = 'string' } }   # v1's extra EntraPolicySuite_Tagging_* columns
+    $c.CollectionTime = 'datetime'; $c.Computer = 'string'; $c.ComputerFqdn = 'string'
+    $c
+}
+
+function ConvertTo-EpsLaValue($v, [string]$Type) {
+    # PURE. One cell in the type the table has for it (a table v1 made earlier may hold a column as string: then text)
+    if ($null -eq $v -or $v -is [DBNull] -or ("$v" -eq '' -and $Type -ne 'string')) { return $null }
+    switch ($Type) {
+        'boolean' { if ($v -is [bool]) { return $v }; $s = "$v".Trim(); if ($s -in 'True', 'true', '1') { return $true }; if ($s -in 'False', 'false', '0') { return $false }; return $null }
+        'int' { $n = 0; if ([long]::TryParse("$v", [ref]$n)) { return $n }; return $null }
+        'datetime' {
+            $d = if ($v -is [datetime]) { $v } else { ConvertFrom-EpsGraphDate $v }
+            if (-not $d) { return $null }
+            return ([datetime]$d).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        }
+        default {
+            if ($v -is [datetime]) { return ([datetime]$v).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+            if ($v -is [bool]) { return $(if ($v) { 'True' } else { 'False' }) }
+            return "$v"
+        }
+    }
+}
+
+function ConvertTo-EpsLaRecords {
+    <#
+      PURE. The report's user rows -> v1's EntraUsersMetadata_CL records: only v1's columns, each in the table's type
+      (-Columns: name -> type, Get-EpsLaColumns or the existing table's), plus CollectionTime / Computer / ComputerFqdn.
+      extensionAttribute2 is v1's raw attribute: the report keeps it as HireDate when the hire-date attribute is
+      extensionAttribute2 (v1's default), else it is empty (the row does not carry it).
+    #>
+    param([object[]]$Rows = @(), [Parameter(Mandatory)][System.Collections.IDictionary]$Columns, [Parameter(Mandatory)][datetime]$CollectionTime,
+          [string]$Computer = [Environment]::MachineName, [string]$ComputerFqdn = [Environment]::MachineName, [string]$HireDateAttribute = 'extensionAttribute2')
+    $ct = $CollectionTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    @(foreach ($r in @($Rows)) {
+        if (-not $r) { continue }
+        $o = [ordered]@{}
+        foreach ($k in $Columns.Keys) {
+            $v = switch ($k) {
+                'CollectionTime' { $ct }
+                'Computer' { $Computer }
+                'ComputerFqdn' { $ComputerFqdn }
+                'extensionAttribute2' { if ($HireDateAttribute -eq 'extensionAttribute2') { $r.HireDate } else { $null } }
+                default { $r.$k }
+            }
+            $o[$k] = if ($k -eq 'CollectionTime') { $ct } else { ConvertTo-EpsLaValue $v $Columns[$k] }
+        }
+        $o
+    })
+}
+
+function Split-EpsLaBatches {
+    # PURE. The records in calls the Logs Ingestion API takes: each call's JSON below -MaxBytes and at most -MaxRecords.
+    # A single record over the limit is returned in .TooLarge (never sent - the API would refuse the whole call).
+    # Each batch: @{ Json; Count }.
+    param([object[]]$Records = @(), [int]$MaxBytes = $script:EpsLaMaxBatchBytes, [int]$MaxRecords = $script:EpsLaMaxBatchRecords)
+    $batches = [System.Collections.Generic.List[object]]::new(); $big = [System.Collections.Generic.List[object]]::new()
+    $cur = [System.Collections.Generic.List[string]]::new(); $size = 2
+    foreach ($r in @($Records)) {
+        $j = $r | ConvertTo-Json -Compress -Depth 4
+        $n = [Text.Encoding]::UTF8.GetByteCount($j) + 1
+        if ($n + 2 -gt $MaxBytes) { $big.Add($r); continue }
+        if ($cur.Count -and ($size + $n -gt $MaxBytes -or $cur.Count -ge $MaxRecords)) { $batches.Add(@{ Json = '[' + ($cur -join ',') + ']'; Count = $cur.Count }); $cur = [System.Collections.Generic.List[string]]::new(); $size = 2 }
+        $cur.Add($j); $size += $n
+    }
+    if ($cur.Count) { $batches.Add(@{ Json = '[' + ($cur -join ',') + ']'; Count = $cur.Count }) }
+    @{ Batches = $batches.ToArray(); TooLarge = $big.ToArray() }
+}
+
+function Get-EpsExposureQueryCatalog {
+    <#
+      PURE. v1's exposure queries (Kusto-Queries.ps1; ExposureSigninReports-ServiceAccounts.ps1 / -SharedDeviceUsers.ps1),
+      one per sheet, v1's sheet names. The classification values are v1's ("Service_Account", "Shared_Device_Users").
+      Changed from v1, each on purpose:
+        - v1 compared the LOWER-cased sign-in UPN with the account list as stored (mixed case) - an account with a capital
+          letter in its UPN was never found; both sides are lower-cased here (the NoSignins queries already did that);
+        - the "Show" queries return the sign-in columns a person reads (v1 returned every column of the log tables);
+        - every query returns at most 5,000 rows (the page and the workbook say when a list was cut).
+    #>
+    $mk = { param($cls) @"
+let Accounts = EntraUsersMetadata_CL
+| summarize CollectionTime = arg_max(CollectionTime, *) by UserPrincipalName
+| where tostring(UserClassification) =~ "$cls"
+| project UPN = tolower(UserPrincipalName);
+union isfuzzy=true SigninLogs, AADNonInteractiveUserSignInLogs
+| where TimeGenerated >= ago(90d)
+| extend UPN = tolower(UserPrincipalName)
+| where UPN in (Accounts)
+| extend Result = iff(tolong(ResultType) == 0, "Success", "Failure")
+| extend IP = IPAddress
+| extend NetworkLocationDetails = todynamic(NetworkLocationDetails)
+| mv-expand NetworkLocationDetails
+| extend TrustedLocation = tostring(NetworkLocationDetails.networkType)
+| extend NamesArray = todynamic(pack_array(NetworkLocationDetails.networkNames))
+| mv-expand NamesArray
+| extend TrustedName = tostring(NamesArray)
+| extend IsTrusted = iif(TrustedLocation == "trustedNamedLocation", 1, 0)
+"@ }
+    $none = { param($cls) @"
+let Accounts = EntraUsersMetadata_CL
+| summarize arg_max(CollectionTime, *) by UserPrincipalName
+| where tostring(UserClassification) =~ "$cls"
+| project UPN = tolower(UserPrincipalName);
+let Signins = union isfuzzy=true SigninLogs, AADNonInteractiveUserSignInLogs
+| where TimeGenerated >= ago(90d)
+| project UPN = tolower(UserPrincipalName);
+Accounts
+| join kind=leftanti (Signins) on UPN
+| order by UPN
+| take 5000
+"@ }
+    $show = '| project TimeGenerated, UserDisplayName, UserPrincipalName, AppDisplayName, ResourceDisplayName, IP, Location, ClientAppUsed, ConditionalAccessStatus, TrustedLocation, TrustedName, Category' + "`n| order by TimeGenerated desc`n| take 5000"
+    $list = "| distinct UserDisplayName, UserPrincipalName`n| take 5000"
+    foreach ($s in @(@{ Set = 'service'; Prefix = 'Svc'; Class = 'Service_Account'; Who = 'Service accounts' }, @{ Set = 'shared'; Prefix = 'Shared'; Class = 'Shared_Device_Users'; Who = 'Shared device users' })) {
+        $base = & $mk $s.Class
+        [pscustomobject]@{ Name = "$($s.Prefix)_Trusted"; Set = $s.Set; Who = $s.Who; Title = "$($s.Who) signing in from a trusted location (90 days)"; Kql = "$base| where IsTrusted == 1`n| where Result == `"Success`"`n$list" }
+        [pscustomobject]@{ Name = "$($s.Prefix)_NonTrusted"; Set = $s.Set; Who = $s.Who; Title = "$($s.Who) signing in from a NON-trusted location (90 days)"; Kql = "$base| where IsTrusted == 0`n| where Result == `"Success`"`n$list" }
+        [pscustomobject]@{ Name = "$($s.Prefix)_NonTrusted_Show"; Set = $s.Set; Who = $s.Who; Title = "$($s.Who): their sign-ins from a NON-trusted location (90 days)"; Kql = "$base| where IsTrusted == 0`n| where Result == `"Success`"`n$show" }
+        [pscustomobject]@{ Name = "$($s.Prefix)_NoSignins"; Set = $s.Set; Who = $s.Who; Title = "$($s.Who) with NO sign-in in 90 days"; Kql = (& $none $s.Class) }
+    }
+}
+
+function Read-EpsIdentityExposure {
+    # the latest stored Log Analytics result (upload + the exposure lists) of a report run (or the newest that has one)
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$RunId = '')
+    $q = if ($RunId -match '^[0-9a-fA-F-]{36}$') { 'SELECT TOP 1 l.RunId, l.CheckedAtUtc, l.UploadRows, l.UploadSent, l.UploadOk, l.UploadText, l.TablesJson, l.ExposureJson, l.Note FROM eps.IdentityLaRun l WHERE l.RunId = @r' }
+         else { 'SELECT TOP 1 l.RunId, l.CheckedAtUtc, l.UploadRows, l.UploadSent, l.UploadOk, l.UploadText, l.TablesJson, l.ExposureJson, l.Note FROM eps.IdentityLaRun l JOIN eps.IdentitySnapshot s ON s.RunId = l.RunId ORDER BY l.CheckedAtUtc DESC, s.CreatedAtUtc DESC' }   # two runs with the same "now": the later snapshot
+    $p = if ($RunId -match '^[0-9a-fA-F-]{36}$') { @{ r = [guid]$RunId } } else { @{} }
+    @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters $p -Query $q)[0]
 }

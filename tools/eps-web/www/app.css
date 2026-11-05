@@ -107,15 +107,17 @@ dialog textarea { width:100%; box-sizing:border-box; margin-top:4px; }
 /* SETTINGS-LAYOUT (owner 2026-11-05: "settins view looks crappy"): three columns - name, control, buttons - so every
    control starts at the same place and Save / More info stay on screen. No fixed width cap (WIDTH-1): the columns share
    the window; text fields fill theirs, an On/Off or choice list is as wide as its longest choice */
-.srow { display:grid; grid-template-columns:minmax(220px, 1fr) minmax(0, 1.5fr) max-content; gap:6px 16px; align-items:start; }
+/* 2026-11-05 owner "still all over the place": each row is its own grid, so a max-content button column (Use default or
+   not) moved the control column per row - the button column is now ONE fixed width for every row, buttons left in it */
+.srow { display:grid; grid-template-columns:minmax(220px, 1fr) minmax(0, 1.5fr) 300px; gap:6px 16px; align-items:start; }
 .sname { min-width:0; }
 .slabel { font-weight:600; color:var(--text-heading); }
 .skey { font-size:11px; color:var(--text-muted); word-break:break-all; }
 .sctl { min-width:0; }
 .sctl input, .sctl textarea { width:100%; box-sizing:border-box; }
-.sctl select { width:auto; min-width:140px; max-width:100%; box-sizing:border-box; }
+.sctl select { width:260px; max-width:100%; box-sizing:border-box; }
 .sval { white-space:pre-wrap; word-break:break-word; }
-.sacts { display:flex; gap:4px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.sacts { display:flex; gap:4px; align-items:center; flex-wrap:wrap; justify-content:flex-start; }
 @media (max-width: 760px) { .srow { grid-template-columns:minmax(0, 1fr); } .sacts { justify-content:flex-start; } }
 .smeta { font-size:11px; color:var(--text-muted); margin-top:3px; }
 .spanel { margin-top:6px; }
@@ -154,6 +156,22 @@ dialog.dlg-wide .editor h3 { margin:0 0 12px; overflow-wrap:anywhere; }
 .rf-val > span:last-child { display:block; min-width:0; }
 .rf-check { display:inline-flex; align-items:center; gap:6px; }
 .rf-sub { margin:14px 0 2px; font-size:14px; }
+/* CA-EDIT-PICKERS (owner 2026-11-05 "where are the add buttn" / "too shaky for a text field"): a list of objects as chips
+   + Add (a search picker); a set of values as check boxes; break-glass entries marked */
+.chip-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.chips { display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center; min-height:24px; }
+.chip { display:inline-flex; align-items:center; gap:6px; max-width:100%; border:1px solid var(--border); border-radius:12px; padding:1px 4px 1px 10px; background:var(--surface-card); overflow-wrap:anywhere; }
+.chip-kind { font-size:10.5px; color:var(--text-muted); }
+.chip-bg { border-color:var(--warning); }
+.chip-bg .chip-kind { color:var(--warning); font-weight:600; }
+.chip-armed { border-color:var(--danger); background:var(--danger-bg); }
+button.chip-x { background:none; border:0; color:var(--text-muted); padding:0 4px; font-size:14px; line-height:1; }
+button.chip-x:hover { color:var(--danger); }
+.cap-pick { border:1px solid var(--border); border-radius:6px; padding:8px; background:var(--surface-alt); display:flex; flex-direction:column; gap:6px; }
+.cap-pick > input[type=search] { width:100%; box-sizing:border-box; }
+.cap-pick-list { max-height:240px; overflow:auto; }
+.cap-pick-row { display:flex; gap:8px; align-items:baseline; padding:2px 0; }
+.cap-set { display:flex; flex-wrap:wrap; gap:4px 16px; }
 .conds { display:flex; flex-direction:column; gap:8px; margin:8px 0; }
 .conds .cond { display:grid; grid-template-columns:minmax(180px, 280px) minmax(0, 1fr) auto; gap:4px 8px; align-items:center; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--surface-card); }
 .conds .cond select, .conds .cond input { width:100%; box-sizing:border-box; }
@@ -173,6 +191,9 @@ dialog.dlg-wide .editor h3 { margin:0 0 12px; overflow-wrap:anywhere; }
 /* the CA Policy Analyzer's policy picker */
 .plist { max-height:420px; overflow:auto; border:1px solid var(--border); border-radius:4px; padding:4px 8px; margin-top:4px; background:var(--surface-card); }
 .pitem { display:block; padding:1px 0; }
+
+/* GROUPS-ACTIONS (owner 2026-11-05): the row actions are the first column of Conditional Access > Groups, wrapped in one cell */
+.grp-acts { display:flex; flex-wrap:wrap; gap:2px 6px; align-items:center; min-width:150px; max-width:260px; }
 
 /* BRAND-2.12 - white inputs, last in the sheet */
 input[type="text"], input[type="search"], input[type="date"], input:not([type]), select, textarea {
@@ -235,9 +256,6 @@ input:focus, select:focus, textarea:focus { outline:none; border-color:#0969da; 
 .rx-dl { display:grid; grid-template-columns:90px minmax(0,1fr); gap:4px 8px; margin:0; }
 .rx-dl dt { color:var(--text-muted); } .rx-dl dd { margin:0; word-break:break-word; }
 .rx-acts { display:flex; flex-wrap:wrap; gap:6px; }
-.rx-try { border-top:1px solid var(--border); padding-top:10px; }
-.rx-try h3 { margin:0 0 6px; }
-.rx-tryrow { display:flex; gap:6px; } .rx-tryrow input { flex:1; min-width:0; }
 .rx-dec { margin:4px 0 6px; padding-left:18px; }
 
 /* the identity report (DESIGN §5.4): the views on the left, the open one on the right; one column on a narrow screen */
@@ -338,3 +356,46 @@ details.more .form .wide { flex:1 1 100%; }
    and a group opens on hover too (click / keyboard as before) */
 #tabs { overflow:visible; flex-wrap:wrap; }
 @media (hover:hover) and (min-width:701px) { .nav-grp:hover > .nav-grp-menu, .nav-grp:focus-within > .nav-grp-menu { display:block; } }
+
+/* ADMIN-WALK 2026-11-05: the commit queue's inline before / after (a link that acts as a button = round B's a.btn-link) */
+/* ADMIN-WALK-2: the commit queue's field diff - only the changed fields, before -> after; the rest folded */
+.qdiff { min-width:320px; }
+.qdiff pre { max-height:160px; overflow:auto; margin:2px 0 0; font-size:11px; white-space:pre-wrap; word-break:break-word; background:var(--code-bg); border:1px solid var(--border); padding:4px; }
+table.qd { border-collapse:collapse; font-size:11.5px; width:100%; }
+table.qd th, table.qd td { border:1px solid var(--border); padding:2px 6px; text-align:left; vertical-align:top; white-space:pre-wrap; word-break:break-word; }
+table.qd tr.qd-changed td.qd-before { background:var(--danger-bg); text-decoration:line-through; text-decoration-color:var(--text-muted); }
+table.qd tr.qd-changed td.qd-after { background:var(--surface-alt); font-weight:600; }
+.qdiff details summary { font-size:11px; color:var(--text-muted); cursor:pointer; }
+/* ADMIN-WALK-2: the rule panel folded in the grid view; a staged rule marked on its grid row */
+.rx-side[hidden] { display:none; }
+.rg tr.rg-staged td:first-child { box-shadow:inset 3px 0 0 var(--warning); }
+/* ADMIN-WALK-2: a date never wraps over three lines; the Tamper actions first */
+td.nowrap, th.nowrap { white-space:nowrap; }
+a.card.card-link { display:block; text-decoration:none; color:inherit; }   /* an Overview card that links (round B's .card-link look) */
+.schedpick select, .schedpick input[type="time"] { margin-right:4px; }
+.conds .cond .cond-target { display:flex; gap:6px; min-width:0; }
+.conds .cond .cond-target input { flex:1 1 auto; min-width:0; }
+.conds .cond .cap-pick { grid-column:1 / -1; }
+.rf-c > span > input[list] { width:100%; box-sizing:border-box; }
+/* ADMIN-WALK (1366 px): the grid's wide cells (the conditions) wrap instead of being cut off */
+.rg td.rg-wide { white-space:normal; overflow-wrap:anywhere; text-overflow:clip; }
+.rx-filters[hidden] { display:none; }
+table.grid tr.idrow { cursor:pointer; }
+/* RULES-MATCHED (owner 2026-11-03 "but a button with more context"): the "who?" button next to a Matched count */
+.rx-who { margin-left:6px; padding:0 2px; font-size:11px; }
+.rg-who { margin-left:4px; padding:0 3px; font-size:11px; line-height:1; background:none; border:0; color:var(--link); cursor:pointer; }
+/* ADMIN-WALK (2026-11-05): Get started - a step waiting for an earlier one; the fix of a step; the settings index */
+.gs-step.gs-waits { opacity:.7; border-style:dashed; }
+.gs-fix { background:var(--surface-alt); border-left:3px solid var(--accent); padding:6px 10px; margin:6px 0; }
+.gs-fix code, .smeta code { font-size:11px; word-break:break-all; }
+.settings-index { display:flex; flex-wrap:wrap; gap:4px 12px; margin:0 0 8px; }
+.access-grant .chip-field { display:inline-block; min-width:260px; vertical-align:middle; }
+.card.card-link { cursor:pointer; } .card.card-link:hover, .card.on { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent) inset; }
+a.btn-link { display:inline-block; padding:4px 10px; border-radius:5px; background:var(--accent-fill); color:#fff; text-decoration:none; font-size:12px; }
+/* ADMIN-WALK-2: the row menu (Policies) - one fixed width, a list that opens under the button */
+.rowmenu { position:relative; display:inline-block; }
+.rowmenu-btn { width:96px; white-space:nowrap; }
+.rowmenu-list { position:absolute; z-index:40; left:0; top:100%; min-width:240px; background:var(--surface-card); border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,.18); padding:4px 0; }
+.rowmenu-list[hidden] { display:none; }
+.rowmenu-item { display:block; width:100%; text-align:left; background:none; border:0; border-radius:0; color:var(--text); padding:5px 12px; }
+.rowmenu-item:hover, .rowmenu-item:focus { background:var(--surface-alt); color:var(--accent); outline:none; }

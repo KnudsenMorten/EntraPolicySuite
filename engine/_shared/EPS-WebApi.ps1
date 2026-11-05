@@ -84,10 +84,10 @@ function Invoke-EpsGroupRoute {
     # (EPS-GroupWrite.ps1, loaded by the engine only); the web app never reaches here with the write loaded
     param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Action)
     $b = $Context.Body; $list = { param($v) @(@($v) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-    $names = if ($Action -eq 'members') { & $list $b.name } else { & $list $b.names }
+    $names = if ($Action -in 'members', 'editrule') { & $list $b.name } else { & $list $b.names }
     $t = "Groups|$Action$(if ($names.Count -eq 1) { "|$($names[0])" } elseif ($b.template) { "|$($b.template)" })"
     if (-not (Get-Command Invoke-EpsGroupChange -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a group' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
-    $s = Invoke-EpsGroupChange -ConnectionString $Context.Ctx.ConnectionString -Action $Action -Names $names -Add (& $list $b.add) -Remove (& $list $b.remove) -Template "$($b.template)" -Actor $Context.Caller.identity -Reason "$($b.reason)"
+    $s = Invoke-EpsGroupChange -ConnectionString $Context.Ctx.ConnectionString -Action $Action -Names $names -Add (& $list $b.add) -Remove (& $list $b.remove) -Template "$($b.template)" -Rule "$($b.rule)" -Back:($b.back -eq $true) -Actor $Context.Caller.identity -Reason "$($b.reason)"
     if ($s.Result -eq 'refused') { return New-EpsWebResponse -Status 409 -Body @{ error = "Not changed: $($s.Reason). Nothing in the tenant was changed." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "$($s.Reason)" } }
     $after = @{ items = @($s.Items | ForEach-Object { "$($_.do) $($_.name): $($_.result)$(if ($_.error) { " ($($_.error))" })" }) }
     if ($s.Result -eq 'failed') { return New-EpsWebResponse -Status 502 -Body @{ error = "Not changed: $($s.Text)" } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = "$($s.Reason)"; After = $after } }
@@ -135,6 +135,8 @@ function Get-EpsWebRoutes {
             New-EpsWebResponse -Body ([ordered]@{ identity = $c.Caller.identity; name = $c.Caller.name; role = $c.Role; version = $c.Ctx.Version; edition = 'Community'
                 environment = (Get-EpsEnvironmentName -ConnectionString $c.Ctx.ConnectionString)
                 tenantName = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.TenantName' -Default '')"; tenantId = $c.Ctx.AuthConfig.TenantId
+                # owner 2026-11-05 "i hate this, turn if off by default and make a setting to allow to turn on" (the note dialog)
+                askForNote = ("$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.AskForNote' -Default 'false')" -eq 'true')
                 noSuperAdmin = -not [int](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.WebAccess WHERE Role = 'SuperAdmin'") }) } }
         # the API reference (framework APIDOC-1): generated from THIS table, for the version that runs, filtered to the
         # caller's role; no SQL beyond the role lookup the dispatcher already did
@@ -223,8 +225,18 @@ function Get-EpsWebRoutes {
            Role = 'Reader'; Handler = { param($c, $m)
             $impl = @{}; foreach ($d in Get-EpsDefaultJobSchedule) { $impl[$d.Job] = [bool]$d.Implemented }
             $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT s.Job, s.Schedule, s.Enabled, s.LastStartedUtc, s.LastStartResult, r.Status AS LastStatus, r.StartedAtUtc AS LastRunUtc FROM eps.JobSchedule s OUTER APPLY (SELECT TOP (1) Status, StartedAtUtc FROM eps.Run WHERE Job = s.Job ORDER BY StartedAtUtc DESC) r ORDER BY s.Job'))
-            foreach ($r in $rows) { $r | Add-Member -NotePropertyName Implemented -NotePropertyValue ([bool]$impl[$r.Job]) }
-            New-EpsWebResponse -Body @{ rows = $rows
+            # ADMIN-WALK: the next start per job (an off or manual job has none), in the install's time zone
+            $tzn = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'Platform.TimeZone' -Default 'UTC')"; $now0 = [datetime]::UtcNow
+            $tzo = try { [TimeZoneInfo]::FindSystemTimeZoneById($tzn) } catch { $tzn = 'UTC'; [TimeZoneInfo]::Utc }
+            $toLocal = { param($u) [TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind([datetime]$u, 'Utc'), $tzo).ToString('yyyy-MM-dd HH:mm') }
+            foreach ($r in $rows) {
+                $r | Add-Member -NotePropertyName Implemented -NotePropertyValue ([bool]$impl[$r.Job])
+                $nx = if ($r.Enabled -and $impl[$r.Job] -and (Get-Command Get-EpsNextRunUtc -ErrorAction SilentlyContinue)) { Get-EpsNextRunUtc -Schedule "$($r.Schedule)" -NowUtc $now0 -LastStartedUtc $(if ($r.LastStartedUtc) { [datetime]$r.LastStartedUtc }) -TimeZone $tzn }
+                $r | Add-Member -NotePropertyName NextRunUtc -NotePropertyValue $(if ($nx) { ConvertTo-EpsWebTime $nx })
+                # ADMIN-WALK-2 N3: the next start ALSO in the install's time zone - the zone the schedule is written in
+                $r | Add-Member -NotePropertyName NextRunLocal -NotePropertyValue $(if ($nx) { & $toLocal $nx })
+            }
+            New-EpsWebResponse -Body @{ rows = $rows; timeZone = $tzn
                 requests = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT TOP (200) RequestId, Job, Mode, RequestedBy, RequestedAtUtc, Status, StatusText, RunId, Reason FROM eps.JobRequest ORDER BY RequestedAtUtc DESC')) } } }
         @{ Method = 'POST'; Pattern = '^/api/jobs/(?<job>[A-Za-z]{2,40})/run$'; Summary = 'Request a job run now: Preview (plan only, nothing written) or Apply. A tagging job takes an optional test scope.'; Body = 'mode: Preview or Apply; scopeName: a saved scope, or scope: a scope given now (tagging jobs only)'; Public = $true
            Role = 'Admin'; Action = 'job.run.request'; NeedsReason = $true; Handler = { param($c, $m)
@@ -291,18 +303,145 @@ function Get-EpsWebRoutes {
                     values = @($x.Values["${ot}:$($t.Name)"] | Where-Object { $_ } | ForEach-Object { [ordered]@{ value = $_.Value; isPattern = [bool]$_.IsPattern; description = $_.Description } }) } })
                 conditionTypes = @(foreach ($d in @($x.Catalog.Values | Where-Object ObjectType -eq $ot | Sort-Object Id)) { [ordered]@{ id = $d.Id; description = $d.Description; kind = $d.Kind; operator = $d.Operator; shipped = [bool]$d.Shipped; modifiesValue = [bool]$d.ModifiesValue } })
                 featureEnabled = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name "$job.Enabled" -Default 'false')" -eq 'true' } } }
-        # "Try on a user / device" (RULES-UX, owner 2026-10-31 "love it"): a PREVIEW of that one object that records the
-        # whole decision - which rule won per tag type, and why the others did not. The engine reads the object (the web
-        # app has no Graph right), so the answer comes with the next tick; nothing is written.
-        @{ Method = 'POST'; Pattern = '^/api/rules/(?<ot>User|Device)/try$'; Summary = 'Try the rules on one user or device: a preview that records the whole decision. Nothing is written.'; Body = 'object: one UPN, display name or object id'; Public = $true
-           Role = 'Admin'; Action = 'job.run.request'; Handler = { param($c, $m)
-            $who = "$($c.Body.object)".Trim()
-            if ($who -notmatch '^[^\s''"<>]{1,320}$') { return New-EpsWebResponse -Status 400 -Body @{ error = 'give one UPN, display name or object id' } -Audit @{ Target = "Try|$($m.ot)"; Outcome = 'refused'; OutcomeText = 'no object' } }
-            $job = if ($m.ot -eq 'User') { 'UserTagging' } else { 'DeviceTagging' }
-            if ("$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name "$job.Enabled" -Default 'false')" -ne 'true') { return New-EpsWebResponse -Status 400 -Body @{ error = "$job is switched off (Settings)" } -Audit @{ Target = "Try|$who"; Outcome = 'refused'; OutcomeText = 'feature off' } }
-            if (-not "$($c.Body.reason)".Trim()) { $c.Body | Add-Member -NotePropertyName reason -NotePropertyValue "try the rules on $who" -Force }
-            $rq = New-EpsSignedJobRequest -Ctx $c -Job $job -Mode 'Preview' -Scope @{ Kind = 'Objects'; Values = @($who); Trace = $true }
-            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = "Trying the rules on $who - the answer comes within 5 minutes (a preview: nothing is written)." } -Audit @{ Target = "Try|$who"; After = @{ requestId = $rq }; WhatIf = $true } } }
+        # RULES-MATCHED (owner 2026-11-03: "maybe give more context here which users are in scope like a list" / "but a button
+        # with more context"): who one rule decided in a run, and why nobody when it decided nobody
+        @{ Method = 'GET'; Pattern = '^/api/rules/(?<ot>User|Device)/(?<id>\d{1,9})/matched$'; Summary = 'Who one tagging rule decided in a run (the last on everyone, or runId), with the value set and the value before; paged, q, format=csv; why when nobody.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $rid = "$($c.Query.runId)"; if ($rid -and $rid -notmatch '^[0-9a-fA-F-]{36}$') { return New-EpsWebError 400 'runId: a run id' }
+            $page = 1; [void][int]::TryParse("$($c.Query.page)", [ref]$page)
+            $csv = "$($c.Query.format)" -eq 'csv'
+            $x = Get-EpsRuleMatched -ConnectionString $c.Ctx.ConnectionString -ObjectType $m.ot -RuleId ([int]$m.id) -RunId $rid -Search "$($c.Query.q)" -Page $page -All:$csv
+            if (-not $x) { return New-EpsWebError 404 "no $($m.ot.ToLowerInvariant()) rule $($m.id)" }
+            if ($csv) {
+                $cols = @('name', 'objectId', 'tagType', 'value', 'current', 'changed')
+                return New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows @($x.rows | ForEach-Object { [pscustomobject]$_ }) -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=`"eps-rule-$($m.id)-matched.csv`"" }
+            }
+            New-EpsWebResponse -Body $x } }
+        # TAG-TEST (owner 2026-11-05: "tagging troubeshooting mode must be a button, where i can scope the target group (who)
+        # is impacted ... test something in test mode and then move to prod"; replaces "Try on a user"): a TEST RUN of the
+        # tagging rules on the people picked - Test writes nothing, Apply writes only that scope - run by the engine as a
+        # tagging run with the rule set hash; its result page shows per person every tag and why; Go live = ONE Apply on
+        # everyone with the rules the test proved. The scheduled runs and their Mode setting are never changed by it.
+        @{ Method = 'POST'; Pattern = '^/api/tagging/(?<ot>User|Device)/testrun$'; Summary = 'Start a test run of the tagging rules on the people you pick: Test (nothing is written) or Apply to that scope only.'; Body = 'who: { kind: Objects | Filter | Group | OU | Saved, values / property + pattern / name }; tagTypes: the tag types to test (none = all); how: Test or Apply; fromRun: repeat a test run on the same people; reason (needed for Apply)'; Public = $true
+           Role = 'Admin'; Action = 'job.test.request'; Handler = { param($c, $m)
+            $ot = $m.ot; $job = if ($ot -eq 'User') { 'UserTagging' } else { 'DeviceTagging' }; $t = "TestRun|$job"; $cs = $c.Ctx.ConnectionString
+            $no = { param($s, $e) New-EpsWebResponse -Status $s -Body @{ error = $e } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $e } }
+            if ("$(Get-EpsSetting -ConnectionString $cs -Name "$job.Enabled" -Default 'false')" -ne 'true') { return & $no 400 "$job is switched off (Settings)" }
+            $how = if ("$($c.Body.how)") { "$($c.Body.how)" } else { 'Test' }
+            if ($how -notin 'Test', 'Apply') { return & $no 400 'how: Test (nothing is written) or Apply (to this scope only)' }
+            if ($how -eq 'Apply' -and -not "$($c.Body.reason)".Trim()) { return & $no 400 'Apply to this scope writes tags: give a reason' }
+            # ADMIN-WALK: "Test these staged changes" - the commit queue's waiting rule changes, in memory; a TEST only (tags are
+            # never written from rules that are not committed)
+            $stagedRules = $c.Body.staged -eq $true
+            if ($stagedRules -and $how -ne 'Test') { return & $no 400 'the staged rules can only be tested - commit them first to apply them' }
+            $who = $c.Body.who; $types = @($c.Body.tagTypes | Where-Object { "$_".Trim() } | ForEach-Object { "$_".Trim() })
+            if ($c.Body.fromRun) {
+                if ("$($c.Body.fromRun)" -notmatch '^[0-9a-fA-F-]{36}$') { return & $no 400 'fromRun: a test run id' }
+                $fr = Get-EpsTestRunRow -ConnectionString $cs -RunId "$($c.Body.fromRun)"
+                if (-not $fr -or $fr.Job -ne $job -or -not $fr.IsTest) { return & $no 404 "no $($ot.ToLowerInvariant()) test run $($c.Body.fromRun)" }
+                $who = [pscustomobject]@{ kind = $fr.Scope.Kind; values = $fr.Scope.Values; property = $fr.Scope.Property; pattern = $fr.Scope.Pattern }
+                $types = @($fr.Scope.TagTypes | Where-Object { $_ })
+                if ($fr.Scope.Staged -eq $true -and $c.Body.staged -ne $false) { $stagedRules = $true; if ($how -ne 'Test') { return & $no 400 'the staged rules can only be tested - commit them first to apply them' } }
+                if ($how -eq 'Apply' -and $fr.RuleSetHash -ne (Get-EpsTagRuleSetHash -ConnectionString $cs -ObjectType $ot)) { return & $no 409 'the rules changed after that test run - test again before you apply them' }
+            }
+            $everyone = 'a test run needs the people to test on (a list, a filter, a group, an OU or a saved scope) - a preview on everyone is Jobs > Run now'
+            if (-not $who) { return & $no 400 $everyone }
+            if ("$($who.kind)" -eq 'Saved') {
+                $sv = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ n = "$($who.name)" } -Query 'SELECT ObjectType, Definition FROM eps.Scope WHERE Name = @n')[0]
+                if (-not $sv -or $sv.ObjectType -ne $ot) { return & $no 400 "no saved $($ot.ToLowerInvariant()) scope '$($who.name)'" }
+                $d = $sv.Definition | ConvertFrom-Json; $who = [pscustomobject]@{ kind = $d.Kind; values = $d.Values; property = $d.Property; pattern = $d.Pattern }
+            }
+            if ("$($who.kind)" -in '', 'Everyone') { return & $no 400 $everyone }
+            $sc = ConvertTo-EpsScope -ObjectType $ot -Body $who
+            if (-not $sc.Ok) { return & $no 400 $sc.Error }
+            # the tag types: each one of this object type and switched on (none = all)
+            $known = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ o = $ot } -Query 'SELECT Name, Enabled FROM eps.TagType WHERE ObjectType = @o')
+            $pick = [System.Collections.Generic.List[string]]::new()
+            foreach ($x in $types) {
+                $k = @($known | Where-Object { "$($_.Name)" -eq $x })[0]
+                if (-not $k) { return & $no 400 "no $($ot.ToLowerInvariant()) tag type '$x'" }
+                if (-not [bool]$k.Enabled) { return & $no 400 "the tag type '$x' is switched off" }
+                if (-not $pick.Contains("$($k.Name)")) { $pick.Add("$($k.Name)") }
+            }
+            $scope = [ordered]@{}; foreach ($k in $sc.Scope.Keys) { $scope[$k] = $sc.Scope[$k] }
+            $scope.Test = $true; if ($pick.Count) { $scope.TagTypes = @($pick) }
+            if ($stagedRules) { $scope.Staged = $true }
+            $text = Format-EpsScopeText $scope
+            if (-not "$($c.Body.reason)".Trim()) { $c.Body | Add-Member -NotePropertyName reason -NotePropertyValue "test run on $text" -Force }
+            $rq = New-EpsSignedJobRequest -Ctx $c -Job $job -Mode $(if ($how -eq 'Test') { 'Preview' } else { 'Apply' }) -Scope $scope
+            $count = if ($scope.Kind -eq 'Objects') { @($scope.Values).Count } else { $null }
+            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; queued = $true; count = $count; who = $text
+                text = "$(if ($how -eq 'Test') { 'Test run' } else { 'Apply to this scope' }) requested on $text$(if ($null -eq $count) { ' (the engine counts them)' }) - the engine runs it at its next check (within 5 minutes)$(if ($how -eq 'Test') { '; nothing is written' }). Its result is under Tagging > Test runs." } `
+                -Audit @{ Target = $t; After = @{ requestId = $rq; how = $how; scope = $scope }; WhatIf = ($how -eq 'Test') } } }
+        @{ Method = 'GET'; Pattern = '^/api/tagging/(?<ot>User|Device)/testruns$'; Summary = 'The test runs and go lives of user or device tagging, newest first, and the ones still waiting for the engine.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $job = if ($m.ot -eq 'User') { 'UserTagging' } else { 'DeviceTagging' }; $cs = $c.Ctx.ConnectionString
+            $cur = Get-EpsTagRuleSetHash -ConnectionString $cs -ObjectType $m.ot
+            $rows = foreach ($r in @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job } -Query "SELECT TOP (100) RunId, Mode, Status, StartedAtUtc, EndedAtUtc, Objects, Planned, Overwrites, Applied, Failed, Skipped, HeldReason, Scope, JSON_VALUE(SummaryJson, '$.RuleSetHash') AS RuleSetHash, JSON_VALUE(SummaryJson, '$.GoLive.TestRunId') AS GoLiveOf FROM eps.Run WHERE Job = @j AND ((ISJSON(Scope) = 1 AND JSON_VALUE(Scope, '$.Test') = 'true') OR (ISJSON(SummaryJson) = 1 AND JSON_VALUE(SummaryJson, '$.GoLive.TestRunId') IS NOT NULL)) ORDER BY StartedAtUtc DESC")) {
+                $sc = if ($r.Scope -is [string]) { $r.Scope | ConvertFrom-Json } else { $null }
+                $isGo = $r.GoLiveOf -is [string] -and $r.GoLiveOf
+                [ordered]@{ runId = "$($r.RunId)"; kind = $(if ($isGo) { 'Go live' } elseif ($r.Mode -eq 'Apply') { 'Apply to the scope' } else { 'Test' }); who = $(if ($isGo) { 'everyone' } else { Format-EpsScopeText $sc })
+                    status = "$($r.Status)"; startedAtUtc = (ConvertTo-EpsWebTime $r.StartedAtUtc); endedAtUtc = $(if ($r.EndedAtUtc -is [datetime]) { ConvertTo-EpsWebTime $r.EndedAtUtc })
+                    objects = $r.Objects; planned = $r.Planned; overwrites = $r.Overwrites; applied = $r.Applied; failed = $r.Failed; heldReason = $(if ($r.HeldReason -is [string]) { $r.HeldReason })
+                    goLiveOf = $(if ($isGo) { "$($r.GoLiveOf)" }); rulesSame = ($r.RuleSetHash -is [string] -and $r.RuleSetHash -eq $cur) }
+            }
+            $wait = foreach ($q in @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $job } -Query "SELECT RequestId, Mode, Status, RequestedBy, RequestedAtUtc, Scope FROM eps.JobRequest WHERE Job = @j AND Status IN ('Pending', 'Dispatched', 'Running') AND ISJSON(Scope) = 1 AND (JSON_VALUE(Scope, '$.Test') = 'true' OR JSON_VALUE(Scope, '$.GoLive') = 'true') ORDER BY RequestedAtUtc")) {
+                $sc = $q.Scope | ConvertFrom-Json
+                [ordered]@{ requestId = "$($q.RequestId)"; kind = $(if ($sc.GoLive) { 'Go live' } elseif ($q.Mode -eq 'Apply') { 'Apply to the scope' } else { 'Test' }); who = $(if ($sc.GoLive) { 'everyone' } else { Format-EpsScopeText $sc }); status = "$($q.Status)"; requestedBy = "$($q.RequestedBy)"; requestedAtUtc = (ConvertTo-EpsWebTime $q.RequestedAtUtc) }
+            }
+            New-EpsWebResponse -Body @{ objectType = $m.ot; currentHash = $cur; rows = @($rows); waiting = @($wait); tracedMax = $script:EpsTagTestTraceMax
+                featureEnabled = "$(Get-EpsSetting -ConnectionString $cs -Name "$job.Enabled" -Default 'false')" -eq 'true' } } }
+        @{ Method = 'GET'; Pattern = '^/api/tagging/testruns/(?<rid>[0-9a-fA-F-]{36})$'; Summary = 'One test run (or go live): its counts per tag type and per rule, and per person every tag - now, would be or written, the rule that decided it. Paged (page, q).'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString
+            $r = Get-EpsTestRunRow -ConnectionString $cs -RunId $m.rid -Full
+            if (-not $r -or (-not $r.IsTest -and -not $r.GoLiveOf)) { return New-EpsWebError 404 'no such test run' }
+            $ot = if ($r.Job -eq 'UserTagging') { 'User' } else { 'Device' }
+            $cur = Get-EpsTagRuleSetHash -ConnectionString $cs -ObjectType $ot
+            $page = 1; [void][int]::TryParse("$($c.Query.page)", [ref]$page); if ($page -lt 1) { $page = 1 }
+            $ppl = ConvertTo-EpsTestRunPeople -ConnectionString $cs -Run $r -Search "$($c.Query.q)" -Page $page -PageSize 100
+            $finished = $r.Status -in 'Succeeded', 'PartlyFailed'
+            $why = if (-not $r.IsTest) { 'this is a go live, not a test run' } elseif (-not $finished) { "the test run is $($r.Status) - only a finished test run goes live" } elseif (@($r.Scope.TagTypes | Where-Object { $_ }).Count) { 'the test covered only some tag types - test all tag types before you go live' } elseif ($r.RuleSetHash -ne $cur) { if ($r.Scope.Staged -eq $true) { 'this test ran on the STAGED rules - commit those changes (Tagging > Commit queue), then Go live runs the same rules on everyone' } else { 'the rules changed after this test run - test again, then go live' } }
+            $stg = $r.Summary.Staged
+            New-EpsWebResponse -Body ([ordered]@{
+                ruleSet = $(if ($r.Scope.Staged -eq $true) { 'staged' } else { 'committed' }); ruleSetHash = $r.RuleSetHash
+                staged = $(if ($stg) { [ordered]@{ waiting = $stg.Waiting; applied = @($stg.Applied); skipped = @($stg.Skipped) } })
+                run = [ordered]@{ runId = "$($r.RunId)"; job = $r.Job; objectType = $ot; mode = $r.Mode; status = $r.Status; startedAtUtc = (ConvertTo-EpsWebTime $r.StartedAtUtc); endedAtUtc = $(if ($r.EndedAtUtc -is [datetime]) { ConvertTo-EpsWebTime $r.EndedAtUtc }); heldReason = $r.HeldReason; approvedBy = $r.ApprovedBy }
+                kind = $(if ($r.GoLiveOf) { 'Go live' } elseif ($r.Mode -eq 'Apply') { 'Apply to the scope' } else { 'Test' }); who = $(if ($r.GoLiveOf) { 'everyone' } else { Format-EpsScopeText $r.Scope }); goLiveOf = $r.GoLiveOf
+                tagTypes = @($r.Scope.TagTypes | Where-Object { $_ }); rulesSame = ($r.RuleSetHash -eq $cur); canGoLive = (-not $why); goLiveWhy = $why
+                counts = [ordered]@{ objects = $r.Objects; changes = $r.Planned; overwrites = $r.Overwrites; applied = $r.Applied; failed = $r.Failed; skipped = $r.Skipped; unchanged = $r.Summary.Unchanged; objectsChanged = $r.Summary.ObjectsChanged; traced = @($r.Summary.Traces | Where-Object { $_ }).Count }
+                byValue = @(foreach ($p in @($r.Summary.ByValue.PSObject.Properties | Where-Object { $_ })) { $kv = "$($p.Name)" -split '=', 2; [ordered]@{ tagType = $kv[0]; value = $(if ($kv.Count -gt 1) { $kv[1] } else { '' }); changes = [int]$p.Value } })
+                byRule = @(Get-EpsTestRunRules -ConnectionString $cs -ObjectType $ot -Summary $r.Summary)
+                unavailable = @(foreach ($p in @($r.Summary.Unavailable.PSObject.Properties | Where-Object { $_ })) { [ordered]@{ what = "$($p.Name)"; checks = [int]$p.Value } })
+                people = @($ppl.People); total = $ppl.Total; page = $page; pageSize = 100; tracedMax = $r.Summary.TracedMax }) } }
+        @{ Method = 'GET'; Pattern = '^/api/tagging/testruns/(?<rid>[0-9a-fA-F-]{36})/people/(?<oid>[A-Za-z0-9-]{1,64})$'; Summary = 'One person of a test run: the whole decision - every rule top down with each condition''s real value against its target, and the tag per tag type.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            $r = Get-EpsTestRunRow -ConnectionString $c.Ctx.ConnectionString -RunId $m.rid -Full
+            if (-not $r -or (-not $r.IsTest -and -not $r.GoLiveOf)) { return New-EpsWebError 404 'no such test run' }
+            $tr = @(@($r.Summary.Traces) | Where-Object { $_ -and "$($_.ObjectId)" -eq $m.oid })[0]
+            $ch = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ r = [guid]$m.rid; o = $m.oid } -Query 'SELECT ObjectName, Directory, TagType, Attribute, OldValue, NewValue, Reason, Persona, RuleIds, Status, Error, Via FROM eps.TagChange WHERE RunId = @r AND CAST(ObjectId AS NVARCHAR(64)) = @o'))
+            if (-not $tr -and -not $ch.Count) { return New-EpsWebError 404 'this person is not in that run''s trace or changes' }
+            New-EpsWebResponse -Body ([ordered]@{ objectId = $m.oid; traced = [bool]$tr; name = $(if ($tr) { $tr.Name } else { $ch[0].ObjectName }); synced = $(if ($tr) { [bool]$tr.Synced } else { $ch[0].Directory -eq 'AD' })
+                decisions = @(if ($tr) { $tr.Decisions }); rules = @(if ($tr) { $tr.Rules }); changes = $ch
+                note = $(if (-not $tr) { "the full decision is recorded for the first $(if ($r.Summary.TracedMax) { $r.Summary.TracedMax } else { $script:EpsTagTestTraceMax }) people of a test run - for this one only its changes" }) }) } }
+        @{ Method = 'POST'; Pattern = '^/api/tagging/testruns/(?<rid>[0-9a-fA-F-]{36})/golive$'; Summary = 'Go live: ONE Apply run on everyone with the rules this test run proved (refused when they changed since). The scheduled runs are not changed.'; Body = 'reason'; Public = $false
+           Role = 'SuperAdmin'; Action = 'job.golive.request'; NeedsReason = $true; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $t = "GoLive|$($m.rid)"
+            $no = { param($s, $e) New-EpsWebResponse -Status $s -Body @{ error = $e } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $e } }
+            $r = Get-EpsTestRunRow -ConnectionString $cs -RunId $m.rid
+            if (-not $r -or -not $r.IsTest) { return & $no 404 'no such test run' }
+            if (-not "$($c.Body.reason)".Trim()) { return & $no 400 'Go live writes tags on everyone: give a reason' }
+            $ot = if ($r.Job -eq 'UserTagging') { 'User' } else { 'Device' }
+            if ("$(Get-EpsSetting -ConnectionString $cs -Name "$($r.Job).Enabled" -Default 'false')" -ne 'true') { return & $no 400 "$($r.Job) is switched off (Settings)" }
+            if ($r.Status -notin 'Succeeded', 'PartlyFailed') { return & $no 409 "the test run is $($r.Status) - only a finished test run goes live" }
+            if (@($r.Scope.TagTypes | Where-Object { $_ }).Count) { return & $no 409 'the test covered only some tag types - test all tag types before you go live' }
+            $cur = Get-EpsTagRuleSetHash -ConnectionString $cs -ObjectType $ot
+            if (-not $r.RuleSetHash -or $r.RuleSetHash -ne $cur) { return & $no 409 'the rules changed after this test run - test again, then go live' }
+            if ([int](Invoke-EpsSql -ConnectionString $cs -Scalar -Parameters @{ j = $r.Job } -Query "SELECT COUNT(*) FROM eps.JobRequest WHERE Job = @j AND Status IN ('Pending', 'Dispatched', 'Running') AND ISJSON(Scope) = 1 AND JSON_VALUE(Scope, '$.GoLive') = 'true'")) { return & $no 409 'a go live is already waiting for the engine' }
+            $scope = [ordered]@{ Kind = 'Everyone'; GoLive = $true; TestRunId = "$($r.RunId)"; ExpectHash = $cur }
+            $rq = New-EpsSignedJobRequest -Ctx $c -Job $r.Job -Mode 'Apply' -Scope $scope
+            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; queued = $true; text = "Go live requested: ONE Apply run on everyone with the rules this test proved, at the engine's next check (within 5 minutes). The mass-change guard still holds it if it changes too much. The scheduled runs go on as before." } `
+                -Audit @{ Target = $t; After = @{ requestId = $rq; job = $r.Job; testRunId = "$($r.RunId)"; ruleSetHash = $cur } } } }
         # a request's state - the page follows a queued configuration change until the engine has applied it (SEC-AUDIT-1 S1)
         # BULK-1: the page follows a bulk change with ONE call per round (owner 2026-11-02: 234 adopts at once - one call per
         # request every 5 s was ~47 calls a second)
@@ -317,13 +456,6 @@ function Get-EpsWebRoutes {
             $q = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = [guid]$m.rid } -Query 'SELECT RequestId, Job, Status, StatusText, RequestedBy, RequestedAtUtc, UpdatedAtUtc FROM eps.JobRequest WHERE RequestId = @id'))[0]
             if (-not $q) { return New-EpsWebError 404 'no such request' }
             New-EpsWebResponse -Body $q } }
-        @{ Method = 'GET'; Pattern = '^/api/rules/try/(?<rid>[0-9a-fA-F-]{36})$'; Summary = 'The answer to a Try: the decision per tag type and the changes it would make.'; Public = $true
-           Role = 'Reader'; Handler = { param($c, $m)
-            $q = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = [guid]$m.rid } -Query 'SELECT q.Status, q.StatusText, q.RunId, r.SummaryJson FROM eps.JobRequest q LEFT JOIN eps.Run r ON r.RunId = q.RunId WHERE q.RequestId = @id')[0]
-            if (-not $q) { return New-EpsWebError 404 'no such request' }
-            $traces = if ($q.SummaryJson -is [string]) { try { @(($q.SummaryJson | ConvertFrom-Json).Traces) } catch { @() } } else { @() }
-            $changes = if ($q.RunId -isnot [DBNull] -and $q.RunId) { @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ r = $q.RunId } -Query 'SELECT ObjectName, TagType, Attribute, OldValue, NewValue, Reason, Persona FROM eps.TagChange WHERE RunId = @r')) } else { @() }
-            New-EpsWebResponse -Body @{ status = [string]$q.Status; statusText = [string]$q.StatusText; done = ([string]$q.Status -in 'Done', 'Failed', 'Refused'); traces = @($traces | Where-Object { $_ }); changes = $changes } } }
         @{ Method = 'GET'; Pattern = '^/api/rules/(?<ot>User|Device)/deleted$'; Summary = 'The latest deleted rules (to put one back).'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Get-EpsConfigHistory -ConnectionString $c.Ctx.ConnectionString -Entity (Get-EpsRuleTable $m.ot) -Top 500 | Where-Object Action -eq 'Delete' | Select-Object -First 50)) } } }
@@ -467,10 +599,14 @@ function Get-EpsWebRoutes {
            Role = 'Reader'; Handler = { param($c, $m)
             $vals = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT ObjectType, TagType, Value, IsPattern, Description FROM eps.TagValue ORDER BY ObjectType, TagType, Value') | Group-Object { "$($_.ObjectType)|$($_.TagType)" } -AsHashTable -AsString
             $use = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT 'User' AS ObjectType, TagType, COUNT(*) AS Rules FROM eps.UserTagRule GROUP BY TagType UNION ALL SELECT 'Device', TagType, COUNT(*) FROM eps.DeviceTagRule GROUP BY TagType") | Group-Object { "$($_.ObjectType)|$($_.TagType)" } -AsHashTable -AsString
+            # ADMIN-WALK: per value, the rules that set it (before an admin removes one) - a value a rule sets cannot be removed
+            $vu = @{}
+            foreach ($r in @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT 'User' AS ObjectType, TagType, TagValueAD AS V, RuleId FROM eps.UserTagRule WHERE TagValueAD IS NOT NULL UNION ALL SELECT 'User', TagType, TagValueCloud, RuleId FROM eps.UserTagRule WHERE TagValueCloud IS NOT NULL UNION ALL SELECT 'Device', TagType, TagValue, RuleId FROM eps.DeviceTagRule WHERE TagValue IS NOT NULL")) {
+                $vk = "$($r.ObjectType)|$($r.TagType)|$("$($r.V)".ToLowerInvariant())"; if (-not $vu[$vk]) { $vu[$vk] = [System.Collections.Generic.HashSet[int]]::new() }; [void]$vu[$vk].Add([int]$r.RuleId) }
             $types = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT * FROM eps.TagType ORDER BY ObjectType, Name'))
             foreach ($t in $types) {
                 $k = "$($t.ObjectType)|$($t.Name)"
-                $t | Add-Member -NotePropertyName Values -NotePropertyValue @(if ($vals -and $vals[$k]) { $vals[$k] | Select-Object Value, IsPattern, Description })
+                $t | Add-Member -NotePropertyName Values -NotePropertyValue @(if ($vals -and $vals[$k]) { foreach ($v in $vals[$k]) { $ids = $vu["$k|$("$($v.Value)".ToLowerInvariant())"]; [pscustomobject]@{ Value = $v.Value; IsPattern = $v.IsPattern; Description = $v.Description; UsedByRules = @(if ($ids) { @($ids) | Sort-Object }) } } })
                 $t | Add-Member -NotePropertyName Rules -NotePropertyValue $(if ($use -and $use[$k]) { [int]$use[$k][0].Rules } else { 0 }) }
             New-EpsWebResponse -Body @{ rows = $types } } }
         @{ Method = 'PUT'; Pattern = '^/api/tagtypes/(?<ot>User|Device)/(?<name>[A-Za-z][A-Za-z0-9_]{1,59})$'; Summary = 'Create or change a tag type.'; Body = 'attribute, valueMode, enabled, description, allowMultiple, fallbackAD, fallbackCloud; expected'; Public = $true
@@ -520,11 +656,15 @@ function Get-EpsWebRoutes {
             $val = "$($c.Body.value)"
             $cur = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ o = $m.ot; n = $m.name; v = $val } -Query 'SELECT Value, IsPattern, Description FROM eps.TagValue WHERE ObjectType = @o AND TagType = @n AND Value = @v')[0]
             if (-not $cur) { return @{ Refusal = (New-EpsWebResponse -Status 404 -Body @{ error = 'no such value' } -Audit @{ Target = "TagValue|$($m.ot):$($m.name):$val"; Outcome = 'refused'; OutcomeText = 'missing' }) } }
+            # ADMIN-WALK-2 N5: the tag type's fallback value is never staged for removal
+            $tt = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ o = $m.ot; n = $m.name } -Query 'SELECT FallbackAD, FallbackCloud FROM eps.TagType WHERE ObjectType = @o AND Name = @n')[0]
+            if ($tt -and ([string]::Equals("$($tt.FallbackAD)", $val, 'OrdinalIgnoreCase') -or [string]::Equals("$($tt.FallbackCloud)", $val, 'OrdinalIgnoreCase'))) { return @{ Refusal = (New-EpsWebResponse -Status 400 -Body @{ error = "'$val' is a fallback of $($m.name) - every object no rule decides gets it. Change the fallback (Edit the tag type) first." } -Audit @{ Target = "TagValue|$($m.ot):$($m.name):$val"; Outcome = 'refused'; OutcomeText = 'the fallback value' }) } }
             @{ ObjectType = $m.ot; Entity = 'TagValue'; Key = "$($m.ot):$($m.name):$val"; Op = 'Delete'; Before = (ConvertTo-EpsWebValue @($cur) | Select-Object -First 1); Summary = "Remove value '$val' from $($m.name)" } }
            Handler = { param($c, $m)
             $val = "$($c.Body.value)"; $t = "TagValue|$($m.ot):$($m.name):$val"
             $s = Remove-EpsTagValue -ConnectionString $c.Ctx.ConnectionString -ObjectType $m.ot -TagType $m.name -Value $val -Actor $c.Caller.identity
             if ($s.Result -eq 'missing') { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such value' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'missing' } }
+            if ($s.Result -eq 'fallback') { return New-EpsWebResponse -Status 400 -Body @{ error = $s.Text } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'the fallback value' } }
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status 409 -Body @{ error = $s.Text } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "guard: $($s.Text)"; Guard = $true } }
             New-EpsWebResponse -Body @{ ok = $true; text = "Value '$val' removed from $($m.name)." } -Audit @{ Target = $t; Before = $s.Before } } }
 
@@ -572,10 +712,12 @@ function Get-EpsWebRoutes {
             $b = [ordered]@{}; foreach ($p in $c.Body.PSObject.Properties) { if ($p.Name -notin 'reason') { $b[$p.Name] = $p.Value } }
             $rq = New-EpsSignedJobRequest -Ctx $c -Job 'CAPolicyAnalyzer' -Mode 'Preview' -Scope $b
             New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = $(if ($v.Request.ListOnly) { 'Requested: the policy list is read again within 5 minutes.' } else { "Requested: the analysis ($($v.Request.Mode)) starts within 5 minutes - read only, nothing in the tenant is changed." }) } -Audit @{ Target = 'CAPolicyAnalyzer'; After = $b; WhatIf = $true } } }
-        @{ Method = 'GET'; Pattern = '^/api/ca/analyses$'; Summary = 'The CA Policy Analyzer analyses, newest first.'; Body = 'q: search; monitor: one monitor''s analyses'; Public = $true
+        @{ Method = 'GET'; Pattern = '^/api/ca/analyses$'; Summary = 'The CA Policy Analyzer analyses, newest first.'; Body = 'q: search; monitor: one monitor''s analyses; policy: one policy''s analyses (its id)'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
-            $pg = Get-EpsWebPaging $c.Query; $p = @{ q = "$($c.Query.q)"; mo = "$($c.Query.monitor)"; k = $pg.Skip; n = $pg.Size }
-            $w = "WHERE (@q = '' OR DisplayName LIKE '%' + @q + '%') AND (@mo = '' OR Monitor = @mo)"
+            # ADMIN-WALK: policy = one policy's analyses (its page and the Move dialog show the last one's impacted count)
+            $pg = Get-EpsWebPaging $c.Query; $p = @{ q = "$($c.Query.q)"; mo = "$($c.Query.monitor)"; pid = "$($c.Query.policy)"; k = $pg.Skip; n = $pg.Size }
+            if ($p.pid -and $p.pid -notmatch '^[0-9a-fA-F-]{36}$') { return New-EpsWebError 400 'policy: a policy id' }
+            $w = "WHERE (@q = '' OR DisplayName LIKE '%' + @q + '%') AND (@mo = '' OR Monitor = @mo) AND (@pid = '' OR PolicyId = TRY_CONVERT(uniqueidentifier, @pid))"
             New-EpsWebResponse -Body @{ total = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters $p -Query "SELECT COUNT(*) FROM eps.CaAnalysis $w"
                 rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT AnalysisId, RunId, PolicyId, DisplayName, PolicyState, Mode, WindowStartUtc, WindowEndUtc, InScope, Impacted, NotImpacted, Errors, Monitor, CreatedAtUtc FROM eps.CaAnalysis $w ORDER BY CreatedAtUtc DESC OFFSET @k ROWS FETCH NEXT @n ROWS ONLY")) } } }
         @{ Method = 'GET'; Pattern = '^/api/ca/analyses/(?<aid>[0-9a-fA-F-]{36})$'; Summary = 'One analysis with its findings.'; Body = 'q: search; all: every row, not only the findings'; Public = $true
@@ -586,12 +728,23 @@ function Get-EpsWebRoutes {
             $w = "WHERE AnalysisId = @a AND (@all = 1 OR Impacted = 1) AND (@q = '' OR UserPrincipalName LIKE '%' + @q + '%' OR DisplayName LIKE '%' + @q + '%' OR Classification = @q)"
             New-EpsWebResponse -Body @{ analysis = $a; total = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters $p -Query "SELECT COUNT(*) FROM eps.CaAnalysisResult $w"
                 rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT * FROM eps.CaAnalysisResult $w ORDER BY Impacted DESC, Seq OFFSET @k ROWS FETCH NEXT @n ROWS ONLY")) } } }
-        @{ Method = 'GET'; Pattern = '^/api/ca/analyses/(?<aid>[0-9a-fA-F-]{36})/export$'; Summary = 'One analysis as a CSV file.'; Public = $true
+        @{ Method = 'GET'; Pattern = '^/api/ca/analyses/(?<aid>[0-9a-fA-F-]{36})/export$'; Summary = 'One analysis as a CSV, Excel or HTML file.'; Body = 'format: csv (default), xlsx or html'; Answer = 'file (CSV, xlsx or HTML)'; Public = $true
            Role = 'Reader'; Action = 'ca.export'; Handler = { param($c, $m)
             $cols = 'UserPrincipalName', 'DisplayName', 'IsSpn', 'Classification', 'Impacted', 'Reason', 'GrantControls', 'SessionControls', 'LastSignInUtc', 'Country', 'City', 'IPAddress', 'DeviceOS', 'Browser', 'ClientApp', 'Application', 'RiskLevel', 'RiskState', 'CAResult', 'FailureReason', 'SignInCount', 'CountriesSeen', 'DistinctIPCount', 'UserId'
+            # V1-PARITY P13 (v1's -OutputFormats CSV,Excel,HTML)
+            $fmt = "$($c.Query.format)".ToLowerInvariant(); if (-not $fmt) { $fmt = 'csv' }
+            if ($fmt -notin 'csv', 'xlsx', 'html') { return New-EpsWebResponse -Status 400 -Body @{ error = 'format is csv, xlsx or html' } -Audit @{ Target = "CaAnalysis|$($m.aid)"; Outcome = 'refused'; OutcomeText = "format '$fmt'" } }
             $rows = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ a = [guid]$m.aid } -Query "SELECT $($cols -join ', ') FROM eps.CaAnalysisResult WHERE AnalysisId = @a ORDER BY Impacted DESC, Seq")
-            New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""eps-ca-analysis-$($m.aid).csv""" } `
-                -Audit @{ Target = "CaAnalysis|$($m.aid)"; After = @{ rows = $rows.Count } } } }
+            $file = "eps-ca-analysis-$($m.aid)"; $audit = @{ Target = "CaAnalysis|$($m.aid)"; After = @{ rows = $rows.Count; format = $fmt } }
+            if ($fmt -eq 'xlsx') {
+                return New-EpsWebResponse -Body (ConvertTo-EpsXlsx -Sheets ([ordered]@{ 'Analysis' = @($rows | Select-Object $cols) })) -ContentType 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.xlsx""" } -Audit $audit
+            }
+            if ($fmt -eq 'html') {
+                $a = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ a = [guid]$m.aid } -Query 'SELECT DisplayName, PolicyState, Mode, WindowStartUtc, WindowEndUtc, InScope, Impacted, NotImpacted, Errors, CreatedAtUtc FROM eps.CaAnalysis WHERE AnalysisId = @a')[0]
+                if (-not $a) { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such analysis' } -Audit @{ Target = "CaAnalysis|$($m.aid)"; Outcome = 'refused'; OutcomeText = 'not found' } }
+                return New-EpsWebResponse -Body (ConvertTo-EpsCaAnalysisHtml -Analysis $a -Rows $rows -Columns $cols) -ContentType 'text/html; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.html""" } -Audit $audit
+            }
+            New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.csv""" } -Audit $audit } }
         @{ Method = 'GET'; Pattern = '^/api/ca/monitors$'; Summary = 'The analyzer monitors: saved analyses that run on a schedule.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             # CA-MONPEND (owner 2026-11-05: "i added a monitor, but it was not shown even though i refreshed the page"): a
@@ -603,6 +756,8 @@ function Get-EpsWebRoutes {
             $t = "CaMonitor|$($m.mn)"
             $v = ConvertTo-EpsCaRequest -Body $c.Body.definition
             if (-not $v.Ok -or $v.Request.ListOnly) { $e = if ($v.Error) { $v.Error } else { 'a monitor names policies' }; return New-EpsWebResponse -Status 400 -Body @{ error = $e } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $e } }
+            # V1-PARITY P13: a fixed window is for ONE analysis - a monitor reads the last hours at each run
+            if ($v.Request.WindowStart) { $e = 'a monitor reads the last hours at each run - a fixed window (windowStart / windowEnd) is for one analysis'; return New-EpsWebResponse -Status 400 -Body @{ error = $e } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $e } }
             $sch = "$($c.Body.schedule)".Trim()
             try { $sx = ConvertFrom-EpsSchedule -Schedule $sch; if ($sx.Kind -eq 'every' -and $sx.Every -lt 60) { throw "'$sch': a monitor runs at most every 60m (every run reads the sign-in log)" } } catch { return New-EpsWebResponse -Status 400 -Body @{ error = "$($_.Exception.Message)" } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "schedule '$sch'" } }
             $def = $c.Body.definition | ConvertTo-Json -Compress -Depth 6
@@ -801,6 +956,27 @@ function Get-EpsWebRoutes {
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not copied: $($s.Reason). Nothing was created." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
             New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; policyId = $s.NewId; text = "Created $($s.After.displayName), a copy of $($s.Before.displayName): OFF, adopted - move it through the stages when it is ready.$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
                 -Audit @{ Target = "CaPolicy|$($s.NewId) ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        # CA-EDIT-PICKERS (owner 2026-11-05: "where are the add buttn" / "make dropdown for fx block" / "too shaky for a text
+        # field" / "talk with graph to understand the optins per field"): the Edit form's options and its picker. The first
+        # two read SQL only; "Search the tenant" is an Admin's request the engine runs (reads only), its finds stored as names
+        @{ Method = 'GET'; Pattern = '^/api/capolicies/edit-options$'; Summary = 'What the policy Edit form offers per field (from Microsoft Graph), the tenant''s lists and the break-glass accounts and groups.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $o = Get-EpsCaEditOptions -ConnectionString $c.Ctx.ConnectionString
+            New-EpsWebResponse -Body ([ordered]@{ fields = $o.fields; keywords = $o.keywords; tenant = $o.tenant; breakGlass = $o.breakGlass; graphVersion = $o.graphVersion
+                discoveredAtUtc = @(ConvertTo-EpsWebValue ([pscustomobject]@{ At = $o.discoveredAtUtc }))[0].At }) } }
+        @{ Method = 'GET'; Pattern = '^/api/capolicies/pick$'; Summary = 'Find users, groups, roles, named locations, applications or authentication strengths among the names Entra Policy Suite has stored.'; Body = 'kind: user, group, role, location, application or authStrength; q: part of the name'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $k = "$($c.Query.kind)"; if ($k -notin 'user', 'group', 'role', 'location', 'application', 'authStrength') { return New-EpsWebError 400 'kind: user, group, role, location, application or authStrength' }
+            New-EpsWebResponse -Body @{ rows = @(Find-EpsCaDirectoryNames -ConnectionString $c.Ctx.ConnectionString -Kind $k -Text "$($c.Query.q)") } } }
+        @{ Method = 'POST'; Pattern = '^/api/directory/search$'; Summary = 'Search the tenant for objects whose name starts with the text (reads only); the finds are stored so the picker shows them.'; Body = 'kind; q; reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.directory.search'; NeedsReason = $true; Handler = { param($c, $m)
+            $k = "$($c.Body.kind)"; $q = "$($c.Body.q)".Trim()
+            if ($k -notin 'user', 'group', 'role', 'location', 'application', 'authStrength') { return New-EpsWebError 400 'kind: user, group, role, location, application or authStrength' }
+            if ($q.Length -lt 2 -or $q.Length -gt 100) { return New-EpsWebError 400 'type 2 to 100 characters of the name' }
+            if (-not (Get-Command Search-EpsCaTenantDirectory -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine reads the tenant' }
+            $found = Search-EpsCaTenantDirectory -Kind $k -Text $q
+            $n = Save-EpsCaPickNames -ConnectionString $c.Ctx.ConnectionString -Names $found
+            New-EpsWebResponse -Body @{ ok = $true; found = $n; text = "Found $n $k$(if ($n -ne 1) { 's' }) starting with '$q'. Nothing in the tenant was changed." } -Audit @{ Target = "Directory|$k"; After = @{ kind = $k; q = $q; found = $n } } } }
         # CA-TEMPLATES (owner 2026-11-05: Templates "Side-by-side only"; "fully manageable in the gui"; "always 100%
         # operator controlled"; V1-PARITY P5 / P6): deploy a template as a NEW policy, test a newer version next to the
         # policy it replaces, then promote it / roll it back / remove the old one. The previews read SQL only; every change
@@ -852,6 +1028,23 @@ function Get-EpsWebRoutes {
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not removed: $($s.Reason). Nothing was changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
             New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Deleted $($s.Before.displayName) ($($s.Before.version)) from the tenant: $($s.After.version) replaces it.$(if (-not $s.Verified) { ' Read back, it is still there - read the policy list again.' })" } `
                 -Audit @{ Target = "CaPolicy|$($s.Before.policyId) ($($s.Before.displayName))"; Before = $s.Before; After = $s.After } } }
+        # CA-TEMPLATES left-over = v1's optional "REMOVE CA POLICIES" (E-CM L984-1003): policies that are OFF, picked or by a
+        # name pattern - the plan (the web app, from the last read, nothing written) and the delete (the engine)
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/remove-plan$'; Summary = 'Which policies "Remove policies" would delete: the picked ones, or those whose name is like a pattern - only policies that are off. Changes nothing.'; Body = 'policyIds, or pattern (e.g. *-Initial-*)'; Public = $false
+           Role = 'SuperAdmin'; Action = 'ca.policy.remove.check'; Handler = { param($c, $m)
+            $plan = Get-EpsCaRemovePlanFromStore -ConnectionString $c.Ctx.ConnectionString -PolicyIds @(@($c.Body.policyIds) | Where-Object { $_ }) -Pattern "$($c.Body.pattern)"
+            New-EpsWebResponse -Body $plan -Audit @{ Target = "CaPolicies|$(if ($plan.pattern) { "like $($plan.pattern)" } else { 'picked' })"; After = "$($plan.count) to remove"; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/remove$'; Summary = 'Delete policies that are off from the tenant (picked, or by a name pattern), after a backup of each, with the count typed to confirm.'; Body = 'policyIds or pattern; expected: { policyId: the review hash as you saw it }; confirm: DELETE <n>; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.remove'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicies|$(if ("$($c.Body.pattern)") { "like $($c.Body.pattern)" } else { 'picked' })"
+            if (-not (Get-Command Invoke-EpsCaRemovePolicies -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $exp = @{}; $e0 = $c.Body.expected
+            if ($e0 -is [System.Collections.IDictionary]) { foreach ($k in @($e0.Keys)) { $exp["$k".ToLowerInvariant()] = "$($e0[$k])" } }
+            elseif ($e0) { foreach ($p in $e0.PSObject.Properties) { $exp["$($p.Name)".ToLowerInvariant()] = "$($p.Value)" } }
+            $s = Invoke-EpsCaRemovePolicies -ConnectionString $c.Ctx.ConnectionString -PolicyIds @(@($c.Body.policyIds) | Where-Object { $_ }) -Pattern "$($c.Body.pattern)" -Expected $exp -Confirm "$($c.Body.confirm)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'partial' { 207 } default { 409 } }
+            if ($s.Result -eq 'refused' -and -not @($s.Items | Where-Object { "$($_.result)" -like 'deleted*' }).Count) { return New-EpsWebResponse -Status 409 -Body @{ error = "Not removed: $($s.Reason). Nothing was deleted." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Status $code -Body @{ ok = ($s.Result -eq 'ok'); items = @($s.Items); text = "Remove policies: $($s.Text)." } -Audit @{ Target = $t; Outcome = $(if ($s.Result -eq 'ok') { 'ok' } else { 'error' }); OutcomeText = $s.Text; After = @{ items = @($s.Items) } } } }
         # UNDO-BACKUP (owner 2026-11-05: "i need to have both a new feature Undo + another new feature backup/restore. look
         # at how PIM does it"; "it must work for both ca policies + tagging so i can recover"; "ok go with daily keep 30"):
         # the backups (read), the plans (read, nothing written), and the restores / undos - each a request the engine applies
@@ -899,6 +1092,23 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $code = switch ($s.Result) { 'ok' { 200 } 'partial' { 207 } default { 409 } }
             New-EpsWebResponse -Status $code -Body @{ ok = ($s.Result -eq 'ok'); items = @($s.Items); text = "Restore from backup $($m.id): $($s.Text)." } `
                 -Audit @{ Target = $t; Outcome = $(if ($s.Result -eq 'ok') { 'ok' } elseif ($s.Done) { 'error' } else { 'refused' }); OutcomeText = $s.Text; After = @{ items = @($s.Items) } } } }
+        # UNDO-BACKUP left-over: the named locations and authentication strengths of a backup put back (made again when gone,
+        # their definition back when changed - never deleted); the plan (the web app, nothing written) and the write (engine)
+        @{ Method = 'POST'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})/restore-other-plan$'; Summary = 'What putting back the picked named locations and authentication strengths of one backup would change, compared with the newest backup. Changes nothing.'; Body = 'objectIds: the ones to put back (none = all)'; Public = $false
+           Role = 'SuperAdmin'; Action = 'ca.object.restore.check'; Handler = { param($c, $m)
+            $plan = Get-EpsCaObjectRestorePlanFromStore -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id) -ObjectIds @(@($c.Body.objectIds) | Where-Object { "$_" -match '^[0-9a-fA-F-]{36}$' })
+            if (-not $plan) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body $plan -Audit @{ Target = "CaBackup|$($m.id)"; After = $plan.summary; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})/restore-other$'; Summary = 'Put the picked named locations and authentication strengths of one backup back (made again when gone, their definition back when changed; nothing is deleted), after the engine reads the tenant again.'; Body = 'objectIds; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.object.restore'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaBackup|$($m.id)"
+            if (-not (Get-Command Invoke-EpsCaObjectRestore -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes named locations and authentication strengths' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $ids = @(@($c.Body.objectIds) | Where-Object { "$_" -match '^[0-9a-fA-F-]{36}$' } | Select-Object -Unique)
+            if (-not $ids.Count -or $ids.Count -gt 200) { return New-EpsWebResponse -Status 400 -Body @{ error = 'objectIds: the named locations / strengths to put back (1 to 200)' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'none named' } }
+            $s = Invoke-EpsCaObjectRestore -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id) -ObjectIds $ids -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            if ($s.Result -eq 'refused') { return New-EpsWebResponse -Status 409 -Body @{ error = "Not put back: $($s.Reason)." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "$($s.Reason)" } }
+            $code = switch ($s.Result) { 'ok' { 200 } 'partial' { 207 } default { 502 } }
+            New-EpsWebResponse -Status $code -Body @{ ok = ($s.Result -eq 'ok'); items = @($s.Items); text = "Restore from backup $($m.id): $($s.Text)." } -Audit @{ Target = $t; Outcome = $(if ($s.Result -eq 'ok') { 'ok' } else { 'error' }); OutcomeText = $s.Text; After = @{ items = @($s.Items) } } } }
         @{ Method = 'GET'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/undo-plan$'; Summary = 'What "Undo this change" would do for one change in a policy''s history (its body before it put back, or a copy / a deploy turned off), from the last read. Changes nothing.'; Body = 'move: the history row'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m)
             if ("$($c.Query.move)" -notmatch '^\d{1,18}$') { return New-EpsWebError 400 'move: the history row to undo' }
@@ -953,7 +1163,9 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $o = Get-EpsOnboardingOverview -ConnectionString $cs
             New-EpsWebResponse -Body @{ steps = @($o.Steps); checkedAtUtc = @(ConvertTo-EpsWebValue ([pscustomobject]@{ At = $o.CheckedAtUtc }))[0].At; checkedBy = $o.CheckedBy
                 breakGlass = @(ConvertTo-EpsWebValue (Get-EpsBreakGlassAccounts -ConnectionString $cs))
-                method = "$(Get-EpsSetting -ConnectionString $cs -Name 'CA.GroupTargetingMethod' -Default '')"; methods = @((Get-EpsCaTemplateCatalog).groupTargetingMethods) } } }
+                method = "$(Get-EpsSetting -ConnectionString $cs -Name 'CA.GroupTargetingMethod' -Default '')"; methods = @((Get-EpsCaTemplateCatalog).groupTargetingMethods)
+                # ADMIN-WALK-2 N6: the "Fix it" commands, runnable, with this install's values (never "-?")
+                fixCommands = (Get-EpsOnboardFixCommands -TenantId "$($c.Ctx.AuthConfig.TenantId)" -Recipients "$(Get-EpsSetting -ConnectionString $cs -Name 'Mail.Recipients' -Default '')") } } }
         @{ Method = 'POST'; Pattern = '^/api/onboarding/check$'; Summary = 'Check every onboarding step against the tenant now (reads only).'; Body = 'reason'; Public = $false
            Role = 'Admin'; Apply = 'Engine'; Action = 'onboarding.check'; NeedsReason = $true; Handler = { param($c, $m)
             if (-not (Get-Command Invoke-EpsOnboardingCheck -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine checks the tenant' }
@@ -1000,15 +1212,32 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $cs = $c.Ctx.ConnectionString; $sp = { param($v) @("$v" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
             $mg = Get-EpsManagedGroups -ConnectionString $cs
             $bg = @(Invoke-EpsSql -ConnectionString $cs -Query 'SELECT UserPrincipalName FROM eps.BreakGlassAccount' | ForEach-Object { "$($_.UserPrincipalName)" })
-            $pl = Get-EpsGroupPlan -Managed $mg -State (Get-EpsManagedGroupState -ConnectionString $cs) -Action "$($c.Query.action)" -Names (& $sp $c.Query.names) -Add (& $sp $c.Query.add) -Remove (& $sp $c.Query.remove) -Template "$($c.Query.template)" -BreakGlassUpns $bg
+            $pl = Get-EpsGroupPlan -Managed $mg -State (Get-EpsManagedGroupState -ConnectionString $cs) -Action "$($c.Query.action)" -Names (& $sp $c.Query.names) -Add (& $sp $c.Query.add) -Remove (& $sp $c.Query.remove) -Template "$($c.Query.template)" -BreakGlassUpns $bg -Rule "$($c.Query.rule)" -Back:("$($c.Query.back)" -eq 'true')
             New-EpsWebResponse -Body @{ ok = $pl.ok; reason = $pl.reason; action = $pl.action; summary = $pl.summary; items = @($pl.items | ForEach-Object { [ordered]@{ name = $_.name; do = $_.do; detail = $_.detail } }) } } }
-        @{ Method = 'POST'; Pattern = '^/api/groups/check$'; Summary = 'Read the managed groups and administrative units in the tenant now (reads only).'; Body = 'reason'; Public = $false
+        @{ Method = 'POST'; Pattern = '^/api/groups/check$'; Summary = 'Read the managed groups and administrative units in the tenant now (reads only); names = only those groups.'; Body = 'names (optional: only these groups); reason'; Public = $false
            Role = 'Admin'; Apply = 'Engine'; Action = 'ca.group.check'; NeedsReason = $true; Handler = { param($c, $m)
             if (-not (Get-Command Read-EpsManagedGroupState -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine reads the tenant' }
             $mg = Get-EpsManagedGroups -ConnectionString $c.Ctx.ConnectionString
-            $rows = @(Read-EpsManagedGroupState -Names @($mg.Groups.Keys) -AdminUnits $mg.AdminUnits)
-            Save-EpsManagedGroupState -ConnectionString $c.Ctx.ConnectionString -Replace -Rows $rows
-            New-EpsWebResponse -Body @{ ok = $true; text = "Read $(@($rows | Where-Object { "$($_.Name)" -notlike 'au:*' }).Count) group(s): $(@($rows | Where-Object { "$($_.Name)" -notlike 'au:*' -and $_.Found -eq $false }).Count) missing. Nothing in the tenant was changed." } -Audit @{ Target = 'Groups'; After = @{ groups = @($rows).Count } } } }
+            # GROUPS-ACTIONS "Check": one group (or a few) read now, the other stored rows kept
+            $only = @(@($c.Body.names) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $bad = @($only | Where-Object { -not $mg.Groups.Contains($_) })
+            if ($bad.Count) { return New-EpsWebResponse -Status 400 -Body @{ error = "not a group Entra Policy Suite manages: $($bad -join ', ')" } -Audit @{ Target = 'Groups'; Outcome = 'refused'; OutcomeText = 'not managed' } }
+            $rows = if ($only.Count) { @(Read-EpsManagedGroupState -Names $only -AdminUnits $mg.AdminUnits) } else { @(Read-EpsManagedGroupState -Names @($mg.Groups.Keys) -AdminUnits $mg.AdminUnits) }
+            if ($only.Count) { Save-EpsManagedGroupState -ConnectionString $c.Ctx.ConnectionString -Rows @($rows | Where-Object { "$($_.Name)" -notlike 'au:*' }) } else { Save-EpsManagedGroupState -ConnectionString $c.Ctx.ConnectionString -Replace -Rows $rows }
+            $gr = @($rows | Where-Object { "$($_.Name)" -notlike 'au:*' })
+            New-EpsWebResponse -Body @{ ok = $true; text = $(if ($only.Count -eq 1) { $x = $gr[0]; "Read $($only[0]): $(if ($null -eq $x.Found) { "could not be read ($($x.Error))" } elseif (-not $x.Found) { 'not in the tenant' } else { "in the tenant, $($x.Members) member(s)$(if ($x.Dynamic) { ", rule $($x.RuleInTenant) ($($x.Processing))" })" }). Nothing in the tenant was changed." } else { "Read $($gr.Count) group(s): $(@($gr | Where-Object { $_.Found -eq $false }).Count) missing. Nothing in the tenant was changed." }) } -Audit @{ Target = $(if ($only.Count -eq 1) { "Groups|check|$($only[0])" } else { 'Groups' }); After = @{ groups = $gr.Count } } } }
+        # GROUPS-ACTIONS (owner 2026-11-05: "should i see buttn here like edit so i can modify a group dynamic membership or
+        # create or validate etc"): Validate = Entra's own rule check BEFORE a save (nothing created or changed); Edit rule
+        # = the operator's own rule, written and kept as this install's rule for the group (or back to v1's)
+        @{ Method = 'POST'; Pattern = '^/api/groups/validate$'; Summary = 'Check a membership rule with Microsoft Entra before it is saved, and whether one user would be a member. Changes nothing.'; Body = 'rule; user: a user principal name to test with (optional); reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'ca.group.validate'; NeedsReason = $true; Handler = { param($c, $m)
+            if (-not (Get-Command Test-EpsGroupRule -ErrorAction SilentlyContinue)) { return New-EpsWebError 500 'only the engine checks a rule with the tenant' }
+            $u = "$($c.Body.user)".Trim()
+            if ($u -and $u -notmatch '^[^@\s]{1,200}@[A-Za-z0-9.-]{3,100}$') { return New-EpsWebResponse -Status 400 -Body @{ error = 'user: a user principal name (name@domain)' } -Audit @{ Target = 'Groups|validate'; Outcome = 'refused'; OutcomeText = 'bad user' } }
+            $v = Test-EpsGroupRule -Rule "$($c.Body.rule)" -TestUser $u
+            New-EpsWebResponse -Body @{ ok = $true; valid = $v.Valid; matches = $v.Matches; user = $v.User; text = $v.Text } -Audit @{ Target = 'Groups|validate'; After = @{ valid = $v.Valid; user = $v.User }; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/groups/editrule$'; Summary = 'Set your own membership rule on ONE dynamic group (kept as this install''s rule for it), or put v1''s rule back.'; Body = 'name; rule; back: true = v1''s rule again; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.editrule'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'editrule' } }
         @{ Method = 'POST'; Pattern = '^/api/groups/create$'; Summary = 'Create the named groups that are missing, as v1 makes them (type, rule, description, administrative unit).'; Body = 'names: the groups; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.group.create'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsGroupRoute -Context $c -Action 'create' } }
         @{ Method = 'POST'; Pattern = '^/api/groups/rule$'; Summary = 'Set the membership rule of the named dynamic groups to Entra Policy Suite''s (v1''s, or the pilot rule of the policy''s stage).'; Body = 'names; reason'; Public = $false
@@ -1024,11 +1253,11 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $cat = Get-EpsCaTemplateCatalog
             if ("$($c.Query.id)") { $t = $cat.ById["$($c.Query.id)".ToUpperInvariant()]; if (-not $t) { return New-EpsWebError 404 'no such template' }; return New-EpsWebResponse -Body @{ template = $t; refs = $cat.refs; stageState = $cat.stageState } }
             # CA-TEMPLATES: which templates are in the tenant already (a policy with its CA number, as last read)
-            $inT = @{}; foreach ($x in @(Get-EpsCaExistingPolicies -ConnectionString $c.Ctx.ConnectionString)) { if ($x.templateId) { $inT[$x.templateId] = @(@($inT[$x.templateId]) + "$($x.displayName)" | Where-Object { $_ }) } }
+            $inT = @{}; $inP = @{}; foreach ($x in @(Get-EpsCaExistingPolicies -ConnectionString $c.Ctx.ConnectionString)) { if ($x.templateId) { $inT[$x.templateId] = @(@($inT[$x.templateId]) + "$($x.displayName)" | Where-Object { $_ }); $inP[$x.templateId] = @(@($inP[$x.templateId]) + [ordered]@{ id = $x.id; name = $x.displayName } | Where-Object { $_ }) } }
             New-EpsWebResponse -Body @{ library = $cat.library; stages = @($cat.stages); refs = $cat.refs
                 method = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'CA.GroupTargetingMethod' -Default '')"
                 rows = @($cat.templates | ForEach-Object { [ordered]@{ id = $_.id; version = $_.version; name = $_.name; persona = $_.persona; breakGlassPolicy = [bool]$_.breakGlassPolicy; incomplete = [bool]$_.incomplete; notes = (@($_.gaps) -join '; ')
-                    inTenant = $(if ($inT[$_.id]) { @($inT[$_.id]) -join ', ' } else { '' }) } }) } } }
+                    inTenant = $(if ($inT[$_.id]) { @($inT[$_.id]) -join ', ' } else { '' }); inTenantPolicies = @($inP[$_.id] | Where-Object { $_ }) } }) } } }
         @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/adopt$'; Summary = 'Adopt a Conditional Access policy as it is: Entra Policy Suite records it (its body becomes the baseline). Nothing in the tenant changes.'; Body = 'expected: the review hash as you saw it; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.adopt'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"
@@ -1133,6 +1362,42 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
                 return New-EpsWebResponse -Body $bytes -ContentType 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.xlsx""" } -Audit $audit
             }
             New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns $cols) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.csv""" } -Audit $audit } }
+        # V1-PARITY P11: v1's exposure lists, read back from Log Analytics after the report run (the engine stores them)
+        # not in the public API reference (Public = $false): the lists are security findings
+        @{ Method = 'GET'; Pattern = '^/api/identity/exposure$'; Summary = 'The exposure lists from Log Analytics: service accounts and shared device users by location.'; Body = 'run: an earlier report run'; Public = $false
+           Role = 'Reader'; Mark = 'identity.view'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString
+            $on = "$(Get-EpsSetting -ConnectionString $cs -Name 'IdentityReport.LogAnalytics.Enabled' -Default 'false')" -eq 'true'
+            $set = "$(Get-EpsSetting -ConnectionString $cs -Name 'IdentityReport.LogAnalytics.Target' -Default '')" -ne ''
+            $x = Read-EpsIdentityExposure -ConnectionString $cs -RunId "$($c.Query.run)"
+            $stored = @{}; if ($x -and $x.ExposureJson -isnot [DBNull] -and "$($x.ExposureJson)") { foreach ($e in @("$($x.ExposureJson)" | ConvertFrom-Json)) { $stored["$($e.name)"] = $e } }
+            $lists = @(foreach ($q in Get-EpsExposureQueryCatalog) {
+                $e = $stored[$q.Name]
+                [ordered]@{ name = $q.Name; set = $q.Set; who = $q.Who; title = $q.Title; count = $(if ($e) { [int]$e.count } else { $null }); truncated = [bool]$e.truncated
+                    error = $(if ($e) { $e.error }); columns = @(if ($e) { @($e.columns) | Where-Object { $null -ne $_ } }); rows = @(if ($e) { @($e.rows) | Where-Object { $null -ne $_ } | Select-Object -First 500 }) }
+            })
+            $run = if ($x) { [ordered]@{ runId = "$($x.RunId)"; checkedAtUtc = $x.CheckedAtUtc; uploadRows = $x.UploadRows; uploadSent = $x.UploadSent; uploadOk = [bool]$x.UploadOk
+                uploadText = "$($x.UploadText)"; tables = @($(if ($x.TablesJson -isnot [DBNull] -and "$($x.TablesJson)") { "$($x.TablesJson)" | ConvertFrom-Json })); note = "$($x.Note)" } }
+            New-EpsWebResponse -Body @{ enabled = $on; setUp = $set; run = $run; lists = $lists } } }
+        @{ Method = 'GET'; Pattern = '^/api/identity/exposure/export$'; Summary = 'The exposure lists as an Excel workbook: a summary and one sheet per list, as v1.'; Body = 'set: service, shared or all; run'; Answer = 'file (xlsx)'; Public = $false
+           Role = 'Reader'; Action = 'identity.export'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString
+            $which = "$($c.Query.set)"; if (-not $which) { $which = 'all' }
+            if ($which -notin 'service', 'shared', 'all') { return New-EpsWebResponse -Status 400 -Body @{ error = 'set: service, shared or all' } -Audit @{ Target = 'IdentityExposure'; Outcome = 'refused'; OutcomeText = "set $which" } }
+            $x = Read-EpsIdentityExposure -ConnectionString $cs -RunId "$($c.Query.run)"
+            if (-not $x) { return New-EpsWebResponse -Status 404 -Body @{ error = 'no exposure lists yet - they are built after a report run with Log Analytics switched on' } -Audit @{ Target = 'IdentityExposure'; Outcome = 'refused'; OutcomeText = 'none yet' } }
+            $stored = @{}; if ($x.ExposureJson -isnot [DBNull] -and "$($x.ExposureJson)") { foreach ($e in @("$($x.ExposureJson)" | ConvertFrom-Json)) { $stored["$($e.name)"] = $e } }
+            $qs = @(Get-EpsExposureQueryCatalog | Where-Object { $which -eq 'all' -or $_.Set -eq $which })
+            $sheets = [ordered]@{ Summary = @([pscustomobject][ordered]@{ RunAtUTC = ([datetime]$x.CheckedAtUtc).ToString('yyyy-MM-dd HH:mm:ss'); Upload = "$($x.UploadText)"; Note = "$($x.Note)"
+                Lists = (@($qs | ForEach-Object { "$($_.Name) $(if ($stored[$_.Name]) { $stored[$_.Name].count } else { '-' })" }) -join ', ') }) }
+            foreach ($q in $qs) {
+                $e = $stored[$q.Name]
+                $sheets[$q.Name] = if (-not $e) { @([pscustomobject]@{ Info = 'Not read in this run' }) } elseif ($e.error) { @([pscustomobject]@{ Error = "$($e.error)" }) } elseif (-not @($e.rows).Count) { @([pscustomobject]@{ Info = 'No rows returned' }) } else { @($e.rows) }
+            }
+            $bytes = ConvertTo-EpsXlsx -Sheets $sheets
+            $file = "eps-exposure-$which-$(([datetime]$x.CheckedAtUtc).ToString('yyyyMMdd'))"
+            New-EpsWebResponse -Body $bytes -ContentType 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.xlsx""" } `
+                -Audit @{ Target = "IdentityExposure|$which"; After = @{ lists = @($qs | ForEach-Object Name); run = "$($x.RunId)" } } } }
         @{ Method = 'POST'; Pattern = '^/api/identity/run$'; Summary = 'Request an identity report run now.'; Public = $true
            Role = 'Admin'; Action = 'identity.run.request'; NeedsReason = $true; Handler = { param($c, $m)
             if ("$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'IdentityReport.Enabled' -Default 'false')" -ne 'true') { return New-EpsWebResponse -Status 400 -Body @{ error = 'the identity report is switched off (Settings > Identity report)' } -Audit @{ Target = 'IdentityReport'; Outcome = 'refused'; OutcomeText = 'feature off' } }
@@ -1171,15 +1436,27 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
         @{ Method = 'POST'; Pattern = '^/api/mail/test$'; Summary = 'Ask the engine to send one test mail to the alert recipients.'; Public = $true
            Role = 'Admin'; Action = 'mail.test.request'; NeedsReason = $true; Handler = { param($c, $m)
             $cfg = Get-EpsMailConfig -ConnectionString $c.Ctx.ConnectionString
-            if ($cfg.Mode -ne 'sharedMailbox' -or -not $cfg.Sender) { return New-EpsWebResponse -Status 400 -Body @{ error = 'alert mail is not set up (Mail.Mode / Mail.Sender) - run Initialize-EpsMailSender.ps1' } -Audit @{ Target = 'Mail'; Outcome = 'refused'; OutcomeText = 'mail not set up' } }
+            # V1-PARITY P12: an SMTP relay (Mail.Mode = smtp) is a set-up mail too - its server and from address must be set
+            $smtpOk = $cfg.Mode -eq 'smtp' -and $cfg.SmtpServer -and $cfg.SmtpFrom
+            if (-not $smtpOk -and ($cfg.Mode -ne 'sharedMailbox' -or -not $cfg.Sender)) { return New-EpsWebResponse -Status 400 -Body @{ error = 'alert mail is not set up (Mail.Mode / Mail.Sender) - run Initialize-EpsMailSender.ps1, or set Mail.Mode = smtp with Mail.SmtpServer and Mail.SmtpFrom' } -Audit @{ Target = 'Mail'; Outcome = 'refused'; OutcomeText = 'mail not set up' } }
+            $from = if ($smtpOk) { $cfg.SmtpFrom } else { $cfg.Sender }
             $rq = New-EpsSignedJobRequest -Ctx $c -Job 'TamperMonitor' -Mode 'Preview' -Scope @{ testMail = $true }
-            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = "Requested: the engine sends a test mail from $($cfg.Sender) to $(@($cfg.Recipients) -join ', ') within 5 minutes (Jobs > Requests shows the result)." } -Audit @{ Target = "Mail|$($cfg.Sender)"; After = @{ requestId = $rq; recipients = @($cfg.Recipients) } } } }
+            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = "Requested: the engine sends a test mail from $from to $(@($cfg.Recipients) -join ', ') within 5 minutes (Jobs > Requests shows the result)." } -Audit @{ Target = "Mail|$from"; After = @{ requestId = $rq; recipients = @($cfg.Recipients) } } } }
         # ---- the commit queue (owner 2026-10-31, PIM's setup): staged tagging-config changes, committed by hand ----
         @{ Method = 'GET'; Pattern = '^/api/queue$'; Summary = 'The commit queue: staged tagging changes and what became of them.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $cs = $c.Ctx.ConnectionString
             $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query "SELECT Id, ObjectType, Entity, EntityKey, Op, Summary, Action, BodyJson, BeforeJson, StagedBy, StagedAtUtc, StageReason, Status, CommitId, CommittedBy, CommittedAtUtc, Error, DiscardedBy, DiscardedAtUtc, DiscardReason FROM eps.PendingChange WHERE Status = 'Pending' OR Id IN (SELECT TOP (200) Id FROM eps.PendingChange WHERE Status <> 'Pending' ORDER BY Id DESC) ORDER BY Id DESC"))
-            New-EpsWebResponse -Body @{ rows = $rows; enabled = (Test-EpsCommitQueueOn -ConnectionString $cs)
+            # ADMIN-WALK: what a commit starts, per object type - the job, its mode, on / off, and how many it covered last time
+            # on everyone (the commit dialog says "UserTagging APPLY on 92 users")
+            $jobs = [ordered]@{}
+            foreach ($ot in 'User', 'Device') {
+                $jn = "${ot}Tagging"
+                $last = @(Invoke-EpsSql -ConnectionString $cs -Parameters @{ j = $jn } -Query "SELECT TOP (1) Objects FROM eps.Run WHERE Job = @j AND Scope IS NULL AND Objects IS NOT NULL ORDER BY StartedAtUtc DESC")[0]
+                $jobs[$ot] = [ordered]@{ job = $jn; enabled = ("$(Get-EpsSetting -ConnectionString $cs -Name "$jn.Enabled" -Default 'false')" -eq 'true')
+                    mode = "$(Get-EpsSetting -ConnectionString $cs -Name "$jn.Mode" -Default 'Preview')"; objects = $(if ($last -and $last.Objects -isnot [DBNull]) { [int]$last.Objects }) }
+            }
+            New-EpsWebResponse -Body @{ rows = $rows; enabled = (Test-EpsCommitQueueOn -ConnectionString $cs); jobs = $jobs
                 secondApprover = "$(Get-EpsSetting -ConnectionString $cs -Name 'CommitQueue.SecondApprover' -Default 'off')"; me = $c.Caller.identity } } }
         @{ Method = 'POST'; Pattern = '^/api/queue/commit$'; Summary = 'Commit staged changes: they are written, then one tagging run is requested.'; Body = 'ids: the staged changes'; Public = $true
            Role = 'Admin'; Apply = 'Engine'; Action = 'queue.commit'; NeedsReason = $true; Handler = { param($c, $m)
@@ -1230,6 +1507,24 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such scope' } -Audit @{ Target = "Scope|$($m.sn)"; Outcome = 'refused'; OutcomeText = 'missing' } }
             New-EpsWebResponse -Body @{ ok = $true; text = "Scope $($m.sn) deleted." } -Audit @{ Target = "Scope|$($m.sn)"; Before = ($s.Before | ConvertFrom-Json) } } }
         # the settings catalog (SETTING-INFO-1): the page renders from it, every save is validated against it
+        # CONFIG-IO-1 (DESIGN §3, framework CONFIG-IO-1): the whole configuration as one file, and the check of a file to
+        # import - an import is the restore path (Get-EpsConfigRestorePlan -Items): the page sends each change through its
+        # own route; nothing here writes. Secrets, approvals and records are never in a file and never imported.
+        @{ Method = 'GET'; Pattern = '^/api/config/export$'; Summary = 'The configuration as one JSON file: rules, tag types and values, condition types, saved scopes, the non-secret settings, the personas and monitors of the CA Policy Analyzer.'; Public = $false
+           Role = 'SuperAdmin'; Action = 'config.export'; Handler = { param($c, $m)
+            $x = Get-EpsConfigExport -ConnectionString $c.Ctx.ConnectionString -ExportedBy $c.Caller.identity -Version $c.Ctx.Version
+            $name = "eps-configuration-$([datetime]::UtcNow.ToString('yyyyMMdd-HHmm')).json"
+            New-EpsWebResponse -Body ([Text.Encoding]::UTF8.GetBytes(($x | ConvertTo-Json -Depth 30))) -ContentType 'application/json' -Headers @{ 'Content-Disposition' = "attachment; filename=""$name""" } -Audit @{ Target = 'Configuration'; After = $x.counts } } }
+        @{ Method = 'POST'; Pattern = '^/api/config/import-plan$'; Summary = 'What importing a configuration file would change, as the changes the pages make (new / changed / the same / refused per item). Changes nothing.'; Body = 'text: the file''s content'; Public = $false
+           Role = 'SuperAdmin'; Action = 'config.import.check'; Handler = { param($c, $m)
+            $f = Read-EpsConfigImportFile -File "$($c.Body.text)"
+            if (-not $f.Ok) { return New-EpsWebResponse -Status 400 -Body @{ error = $f.Error } -Audit @{ Target = 'Configuration'; Outcome = 'refused'; OutcomeText = $f.Error } }
+            $p = Get-EpsConfigRestorePlan -ConnectionString $c.Ctx.ConnectionString -Items $f.Items -Import
+            $p.counts.refused += $f.Refused; foreach ($n in $f.Notes) { $p.notes += $n }
+            $p.from = $f.From
+            $p.summary = "$(@($p.requests).Count) change(s) to make - $($p.counts.new) new, $($p.counts.changed) changed, $($p.counts.same) the same, $($p.counts.refused) refused"
+            if (-not @($p.requests).Count) { $p.ok = $false; $p.reason = 'nothing to change: the configuration is as in the file already' }
+            New-EpsWebResponse -Body $p -Audit @{ Target = 'Configuration'; After = $p.counts; WhatIf = $true } } }
         @{ Method = 'GET'; Pattern = '^/api/settings$'; Summary = 'Every setting with its value, its default and its explanation.'; Public = $false
            Role = 'Reader'; Handler = { param($c, $m) New-EpsWebResponse -Body (Get-EpsSettingsView -ConnectionString $c.Ctx.ConnectionString) } }
         @{ Method = 'GET'; Pattern = '^/api/settings/(?<key>[A-Za-z.]{3,200})/history$'; Summary = 'The change history of one setting.'; Public = $false
@@ -1245,8 +1540,11 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             if ($e.editable -eq $false) { return & $no 400 "this setting is not changed here: it is set by $($e.setBy)" }
             $v = ConvertTo-EpsSettingValue -Entry $e -Value $c.Body.value
             if (-not $v.Ok) { return & $no 400 "$($e.label): $($v.Error)" }
-            if ($e.dependsOn -and $v.Value -ne "$($e.offValue)") {
-                foreach ($d in @($e.dependsOn)) { if (-not "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name $d -Default '')".Trim()) { return & $no 400 "$($e.label) = $($v.Value) needs '$((Get-EpsSettingEntry $d).label)' to be set first" } } }
+            # dependsOnByValue (V1-PARITY P12): what each value needs - Alert mail = sharedMailbox needs the sender mailbox,
+            # = smtp the relay and its from address; dependsOn = the same for every value but the off value
+            $needs = if ($e.dependsOnByValue) { @($e.dependsOnByValue."$($v.Value)") } elseif ($e.dependsOn -and $v.Value -ne "$($e.offValue)") { @($e.dependsOn) } else { @() }
+            if (@($needs | Where-Object { $_ }).Count) {
+                foreach ($d in @($needs | Where-Object { $_ })) { if (-not "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name $d -Default '')".Trim()) { return & $no 400 "$($e.label) = $($v.Value) needs '$((Get-EpsSettingEntry $d).label)' to be set first" } } }
             $s = Save-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Entry $e -Value $v.Value -Actor $c.Caller.identity -CheckExpected:($c.Body.PSObject.Properties.Name -contains 'expected') -Expected $c.Body.expected
             if ($s.Conflict) { return & $no 409 'someone else changed this setting after you opened the page - reload and look again' }
             $before = if ($s.BeforeSet) { @{ value = $s.Before } } else { @{ value = $null; notSet = $true } }
@@ -1295,12 +1593,12 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             if ($before.Role -eq 'SuperAdmin' -and (Test-EpsLastSuperAdmin -ConnectionString $c.Ctx.ConnectionString -Principal $who)) { return New-EpsLastSuperAdminRefusal -Who $who }
             [void](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -NonQuery -Parameters @{ p = $who } -Query 'DELETE FROM eps.WebAccess WHERE Principal = @p')
             New-EpsWebResponse -Body @{ ok = $true } -Audit @{ Target = "WebAccess|$who"; Before = $before } } }
-        @{ Method = 'GET'; Pattern = '^/api/audit$'; Summary = 'The audit trail, newest first, one page at a time.'; Body = 'q; category; outcome; from, to (UTC); page; pageSize'; Public = $true
+        @{ Method = 'GET'; Pattern = '^/api/audit$'; Summary = 'The audit trail, newest first, one page at a time.'; Body = 'q; category; outcome; kind: reads or changes; from, to (UTC); page; pageSize'; Public = $true
            Role = 'Admin'; Handler = { param($c, $m)
             $pg = Get-EpsWebPaging $c.Query; $f = Get-EpsWebAuditFilter $c.Query; $f.P.k = $pg.Skip; $f.P.n = $pg.Size
             New-EpsWebResponse -Body @{ total = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters $f.P -Query "SELECT COUNT(*) FROM eps.AuditEvent $($f.Where)"
                 rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $f.P -Query "SELECT Id, TsUtc, Action, Actor, ActorSource, Target, Reason, Outcome, OutcomeText, BeforeJson, AfterJson, CorrelationId, RunId, WhatIf FROM eps.AuditEvent $($f.Where) ORDER BY Id DESC OFFSET @k ROWS FETCH NEXT @n ROWS ONLY")) } } }
-        @{ Method = 'GET'; Pattern = '^/api/audit/export$'; Summary = 'The audit rows that match the filter as a CSV file (at most 200,000 rows).'; Body = 'q; category; outcome; from; to'; Public = $true
+        @{ Method = 'GET'; Pattern = '^/api/audit/export$'; Summary = 'The audit rows that match the filter as a CSV file (at most 200,000 rows).'; Body = 'q; category; outcome; kind; from; to'; Public = $true
            Role = 'Admin'; Action = 'audit.export'; Handler = { param($c, $m)
             $f = Get-EpsWebAuditFilter $c.Query; $cols = 'Id', 'TsUtc', 'Action', 'Actor', 'ActorSource', 'Target', 'Reason', 'Outcome', 'OutcomeText', 'BeforeJson', 'AfterJson', 'CorrelationId', 'RunId', 'WhatIf'
             $rows = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $f.P -Query "SELECT TOP (200001) $($cols -join ', ') FROM eps.AuditEvent $($f.Where) ORDER BY Id DESC")
@@ -1350,9 +1648,9 @@ function Get-EpsApiReference {
       required, the answer, how it is applied, the errors and the audit action.
     #>
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
-    $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
-        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; me = 'App'; version = 'App'; reference = 'App' }
+    $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
+        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
+        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; me = 'App'; version = 'App'; reference = 'App' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {
@@ -1399,9 +1697,13 @@ function Get-EpsWebAuditFilter {
     # AUDIT-1.4: free text over actor / action / target / outcome / change, a time window (from / to, UTC ISO), a category
     param($Query)
     $d = { param($v) $x = [datetime]::MinValue; if ([datetime]::TryParse("$v", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal,AssumeUniversal', [ref]$x)) { $x } else { $null } }
-    $p = @{ q = "$($Query.q)"; cat = "$($Query.category)"; o = "$($Query.outcome)"; f = (& $d $Query.from); t = (& $d $Query.to) }
-    @{ P = $p; Echo = @{ q = $p.q; category = $p.cat; outcome = $p.o; from = "$($Query.from)"; to = "$($Query.to)" }
-       Where = "WHERE (@q = '' OR Actor LIKE '%' + @q + '%' OR Action LIKE '%' + @q + '%' OR Target LIKE '%' + @q + '%' OR Outcome LIKE '%' + @q + '%' OR AfterJson LIKE '%' + @q + '%' OR BeforeJson LIKE '%' + @q + '%') AND (@cat = '' OR Action LIKE @cat + '.%') AND (@o = '' OR Outcome = @o) AND (@f IS NULL OR TsUtc >= @f) AND (@t IS NULL OR TsUtc < @t)" }
+    # ADMIN-WALK-2: kind = reads | changes (the page shows the changes by default; reads are views, exports, checks, plans,
+    # searches, validations, sign-ins and what-ifs - they change nothing)
+    $k = "$($Query.kind)"; if ($k -notin 'reads', 'changes') { $k = '' }
+    $p = @{ q = "$($Query.q)"; cat = "$($Query.category)"; o = "$($Query.outcome)"; f = (& $d $Query.from); t = (& $d $Query.to); kind = $k }
+    $isRead = "(Action LIKE '%.view' OR Action LIKE '%.export' OR Action LIKE '%.check' OR Action LIKE '%.plan' OR Action LIKE '%.search' OR Action LIKE '%.validate' OR Action IN ('auth.signin', 'ca.analyze.request', 'identity.run.request', 'onboarding.check') OR ISNULL(WhatIf, 0) = 1)"
+    @{ P = $p; Echo = @{ q = $p.q; category = $p.cat; outcome = $p.o; from = "$($Query.from)"; to = "$($Query.to)"; kind = $k }
+       Where = "WHERE (@q = '' OR Actor LIKE '%' + @q + '%' OR Action LIKE '%' + @q + '%' OR Target LIKE '%' + @q + '%' OR Outcome LIKE '%' + @q + '%' OR AfterJson LIKE '%' + @q + '%' OR BeforeJson LIKE '%' + @q + '%') AND (@cat = '' OR Action LIKE @cat + '.%') AND (@o = '' OR Outcome = @o) AND (@f IS NULL OR TsUtc >= @f) AND (@t IS NULL OR TsUtc < @t) AND (@kind = '' OR (@kind = 'reads' AND $isRead) OR (@kind = 'changes' AND NOT $isRead))" }
 }
 
 function Test-EpsLastSuperAdmin {
@@ -1529,6 +1831,67 @@ function New-EpsSignedJobRequest {
         tok = $Ctx.Caller.token; at = $Ctx.Caller.verifiedAtUtc; c = $Ctx.Correlation; r = "$($Ctx.Body.reason)"
     } -Query 'INSERT INTO eps.JobRequest (RequestId, Job, Mode, Scope, RequestedBy, SignedToken, SignedVerifiedAtUtc, CorrelationId, Reason) VALUES (@id, @j, @m, @s, @by, @tok, @at, @c, @r)')
     "$id"
+}
+
+# ---- TAG-TEST: the test run pages (owner 2026-11-05) - READ ONLY over eps.Run / eps.TagChange ----------------------
+function Get-EpsTestRunRow {
+    # one tagging run as the test run pages read it: its scope (Test, TagTypes), the rule set hash it ran with, the test
+    # run a go live came from; -Full also the summary (counts per value / rule, the traces)
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$RunId, [switch]$Full)
+    if ($RunId -notmatch '^[0-9a-fA-F-]{36}$') { return $null }
+    $sel = if ($Full) { 'SummaryJson' } else { "JSON_VALUE(SummaryJson, '$.RuleSetHash') AS RuleSetHash, JSON_VALUE(SummaryJson, '$.GoLive.TestRunId') AS GoLiveOf" }
+    $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = [guid]$RunId } -Query "SELECT RunId, Job, Mode, Status, StartedAtUtc, EndedAtUtc, Objects, Planned, Overwrites, Applied, Failed, Skipped, HeldReason, ApprovedBy, Scope, $sel FROM eps.Run WHERE RunId = @r AND Job IN ('UserTagging', 'DeviceTagging')")[0]
+    if (-not $r) { return $null }
+    $n = { param($v) if ($v -is [DBNull]) { $null } else { $v } }
+    $sc = if ($r.Scope -is [string]) { try { $r.Scope | ConvertFrom-Json } catch { $null } }
+    $sum = $null
+    if ($Full) { $sum = if ($r.SummaryJson -is [string]) { try { $r.SummaryJson | ConvertFrom-Json } catch { $null } }; if (-not $sum) { $sum = [pscustomobject]@{} } }
+    $hash = if ($Full) { "$($sum.RuleSetHash)" } elseif ($r.RuleSetHash -is [string]) { $r.RuleSetHash } else { '' }
+    $go = if ($Full) { if ($sum.GoLive) { "$($sum.GoLive.TestRunId)" } } elseif ($r.GoLiveOf -is [string]) { $r.GoLiveOf }
+    [pscustomobject]@{ RunId = "$($r.RunId)"; Job = "$($r.Job)"; Mode = "$($r.Mode)"; Status = "$($r.Status)"; StartedAtUtc = $r.StartedAtUtc; EndedAtUtc = (& $n $r.EndedAtUtc)
+        Objects = (& $n $r.Objects); Planned = (& $n $r.Planned); Overwrites = (& $n $r.Overwrites); Applied = (& $n $r.Applied); Failed = (& $n $r.Failed); Skipped = (& $n $r.Skipped)
+        HeldReason = (& $n $r.HeldReason); ApprovedBy = (& $n $r.ApprovedBy); Scope = $sc; IsTest = [bool]($sc -and $sc.Test); RuleSetHash = $hash; GoLiveOf = $go; Summary = $sum }
+}
+
+function ConvertTo-EpsTestRunPeople {
+    # per person of a run every tag: now -> would be (or written), its status, the rule (persona) that decided it. The
+    # traced people (the first of a test run) come with EVERY tag type, also the ones already right; the others with
+    # their changes. Sorted by name, filtered by -Search (name contains), paged.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Run, [string]$Search, [int]$Page = 1, [int]$PageSize = 100)
+    $s = { param($v) if ($null -eq $v -or $v -is [DBNull]) { '' } else { "$v" } }
+    $by = [ordered]@{}
+    foreach ($t in @($Run.Summary.Traces | Where-Object { $_ })) {
+        $p = [ordered]@{ objectId = "$($t.ObjectId)"; name = "$($t.Name)"; synced = [bool]$t.Synced; traced = $true; changed = $false; tags = [System.Collections.Generic.List[object]]::new() }
+        foreach ($d in @($t.Decisions | Where-Object { $_ })) {
+            $p.tags.Add([ordered]@{ tagType = "$($d.TagType)"; now = (& $s $d.Current); next = (& $s $d.Wanted); action = "$($d.Action)"
+                status = $(if ($d.Action -eq 'Change') { 'Planned' } elseif ($d.Action -eq 'Skipped') { 'Skipped' } else { 'Already so' }); persona = (& $s $d.Persona); reason = (& $s $d.Reason); error = (& $s $d.Why) })
+        }
+        $by["$($t.ObjectId)".ToLowerInvariant()] = $p
+    }
+    foreach ($c in @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = [guid]$Run.RunId } -Query 'SELECT TOP (50000) CAST(ObjectId AS NVARCHAR(64)) AS ObjectId, ObjectName, Directory, TagType, OldValue, NewValue, Reason, Persona, Status, Error FROM eps.TagChange WHERE RunId = @r')) {
+        $k = "$($c.ObjectId)".ToLowerInvariant()
+        if (-not $by.Contains($k)) { $by[$k] = [ordered]@{ objectId = $k; name = (& $s $c.ObjectName); synced = ("$($c.Directory)" -eq 'AD'); traced = $false; changed = $true; tags = [System.Collections.Generic.List[object]]::new() } }
+        $p = $by[$k]; $p.changed = $true
+        $hit = @($p.tags | Where-Object { $_.tagType -eq "$($c.TagType)" })[0]
+        if ($hit) { $hit.status = "$($c.Status)"; $hit.error = (& $s $c.Error) }
+        else { $p.tags.Add([ordered]@{ tagType = "$($c.TagType)"; now = (& $s $c.OldValue); next = (& $s $c.NewValue); action = 'Change'; status = "$($c.Status)"; persona = (& $s $c.Persona); reason = (& $s $c.Reason); error = (& $s $c.Error) }) }
+    }
+    $all = @($by.Values | Where-Object { -not $Search -or $_.name.IndexOf($Search, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | Sort-Object { $_.name })
+    @{ People = @($all | Select-Object -Skip (($Page - 1) * $PageSize) -First $PageSize); Total = $all.Count }
+}
+
+function Get-EpsTestRunRules {
+    # a run's counts per rule, each rule in words ("persona: tag type = value"): the changes it planned and the objects it
+    # decided (changed or already right)
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('User', 'Device')][string]$ObjectType, $Summary)
+    $t = if ($ObjectType -eq 'User') { 'UserTagRule' } else { 'DeviceTagRule' }
+    $cols = if ($ObjectType -eq 'User') { 'RuleId, Persona, TagType, TagValueCloud AS Value' } else { 'RuleId, TagType AS Persona, TagType, TagValue AS Value' }
+    $names = @{}; foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT $cols FROM eps.$t")) { $names["$($x.RuleId)"] = $x }
+    $ids = @(@($Summary.ByRule.PSObject.Properties | Where-Object { $_ } | ForEach-Object Name) + @($Summary.Matched.PSObject.Properties | Where-Object { $_ } | ForEach-Object Name) | Where-Object { $_ } | Select-Object -Unique)
+    @(foreach ($id in $ids) {
+        $x = $names["$id"]
+        [ordered]@{ ruleId = "$id"; rule = $(if ($x) { "$($x.Persona): $($x.TagType) = $(if ($x.Value -is [DBNull]) { '' } else { $x.Value })" } else { "rule $id (no longer there)" }); changes = [int]$Summary.ByRule."$id"; decided = [int]$Summary.Matched."$id" }
+    }) | Sort-Object { -$_.changes }, { -$_.decided }
 }
 
 # ---- the identity report page (DESIGN §5.4; owner 2026-10-31: "gui view with filters", "that shows gaps", "similar to

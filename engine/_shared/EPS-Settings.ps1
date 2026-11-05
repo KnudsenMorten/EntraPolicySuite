@@ -56,6 +56,12 @@ function Test-EpsSettingsCatalog {
             if ($c.when -eq 'raise' -and $s.type -notin 'int', 'number') { "${k}: confirm 'raise' is for a number" }
         }
         foreach ($d in @($s.dependsOn)) { if ($d -and -not ($Catalog.settings | Where-Object key -eq $d)) { "${k}: dependsOn '$d' is not in the catalog" } }
+        if ($s.dependsOnByValue) {
+            foreach ($p in $s.dependsOnByValue.PSObject.Properties) {
+                if (@($s.values) -notcontains $p.Name) { "${k}: dependsOnByValue '$($p.Name)' is not one of the values" }
+                foreach ($d in @($p.Value)) { if ($d -and -not ($Catalog.settings | Where-Object key -eq $d)) { "${k}: dependsOnByValue '$d' is not in the catalog" } }
+            }
+        }
     }
 }
 
@@ -73,7 +79,7 @@ function ConvertTo-EpsSettingValue {
     switch ($Entry.type) {
         'boolean' { if ($Value -is [bool]) { return & $good $(if ($Value) { 'true' } else { 'false' }) }
                     if ($s -in 'true', 'false') { return & $good $s.ToLowerInvariant() }; return & $bad 'true or false' }
-        'enum'    { $m = @($Entry.values | Where-Object { $_ -eq $s }); if ($m) { return & $good "$($m[0])" }; return & $bad "one of: $(@($Entry.values) -join ', ')" }
+        'enum'    { $m = @($Entry.values | Where-Object { $_ -eq $s }); if ($m.Count) { return & $good "$($m[0])" }; return & $bad "one of: $(@($Entry.values) -join ', ')" }
         'int'     { $n = [long]0; if (-not [long]::TryParse($s.Trim(), [Globalization.NumberStyles]::Integer, $inv, [ref]$n)) { return & $bad 'a whole number' }
                     if (($null -ne $Entry.min -and $n -lt $Entry.min) -or ($null -ne $Entry.max -and $n -gt $Entry.max)) { return & $bad "from $($Entry.min) to $($Entry.max)" }
                     return & $good $n.ToString($inv) }
@@ -115,7 +121,7 @@ function Get-EpsSettingsView {
     $rows = foreach ($s in @($cat.Catalog.settings)) {
         $r = $stored[$s.key]
         [ordered]@{ key = $s.key; group = $s.group; label = $s.label; type = $s.type; values = $s.values; min = $s.min; max = $s.max; maxLength = $s.maxLength
-            maxItems = $s.maxItems; itemHint = $s.itemHint; default = $s.default; role = $s.role; editable = ($s.editable -ne $false); setBy = $s.setBy
+            maxItems = $s.maxItems; itemHint = $s.itemHint; default = $s.default; role = $s.role; editable = ($s.editable -ne $false); setBy = $s.setBy; pick = $s.pick
             active = ($s.active -ne $false); confirm = @($s.confirm | Where-Object { $_ }); info = $s.info
             value = $(if ($r) { $r.Value } else { $null }); isSet = [bool]$r; updatedAtUtc = $(if ($r) { & $at $r.UpdatedAtUtc }); updatedBy = $(if ($r) { $r.UpdatedBy }) }
     }

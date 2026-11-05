@@ -10,7 +10,9 @@
 Set-StrictMode -Off
 
 $script:EpsGroupDefaultsCache = $null
-$script:EpsGroupActions = @('create', 'rule', 'members', 'forceupdate', 'au')
+$script:EpsGroupActions = @('create', 'rule', 'editrule', 'members', 'forceupdate', 'au')
+# GROUPS-ACTIONS: Graph's limit for a membership rule (3072 characters)
+$script:EpsGroupRuleMax = 3072
 $script:EpsGroupMemberKinds = @('pilot', 'exclude', 'breakglass')
 
 function Get-EpsGroupDefaults {
@@ -43,6 +45,35 @@ function Get-EpsPilotStageRule {
     $s = switch ($Stage) { 'Pilot2' { 'Pilot2' } 'Pilot3' { 'Pilot3' } 'Prod' { 'Prod' } default { 'Pilot1' } }
     $rule = switch ($s) { 'Pilot2' { $r.Pilot2 } { $_ -in 'Pilot3', 'Prod' } { $r.Pilot3 } default { $(if ($r.Pilot1) { $r.Pilot1 } else { $r.Initial }) } }
     @{ Rule = $rule; Processing = $(if ($s -eq 'Prod' -and "$($Pilot.prod)" -eq 'Paused') { 'Paused' } else { 'On' }); Stage = $s }
+}
+
+function Get-EpsCustomPilotRule {
+    <#
+      PURE (GROUPS-ACTIONS). A dynamic pilot group whose rule the operator set: that rule is its Pilot1 base, and a stage
+      widens it as v1 widens its own (CAnnn.ps1): every "(<attribute> -contains "_pilot1")" in it becomes "_pilot1 or
+      _pilot2" at Pilot2 and "_pilot1 or _pilot2 or _pilot3" at Pilot3 / Prod; Prod pauses the rule when v1 pauses it. A
+      custom rule without a "_pilot1" clause is kept as it is at every stage (only the pause at Prod applies).
+      @{ Rule; Processing; Stage; Widened }.
+    #>
+    param([Parameter(Mandatory)][string]$Rule, [string]$Stage, [string]$ProdProcessing = 'Paused')
+    $s = switch ($Stage) { 'Pilot2' { 'Pilot2' } 'Pilot3' { 'Pilot3' } 'Prod' { 'Prod' } default { 'Pilot1' } }
+    $levels = switch ($s) { 'Pilot2' { 2 } { $_ -in 'Pilot3', 'Prod' } { 3 } default { 1 } }
+    $rx = '\(\s*(user\.\w+)\s+-contains\s+"_pilot1"\s*\)'
+    $widened = [regex]::IsMatch($Rule, $rx)
+    $out = if ($levels -gt 1 -and $widened) {
+        [regex]::Replace($Rule, $rx, { param($m) $a = $m.Groups[1].Value; '(' + ((1..$levels | ForEach-Object { "($a -contains `"_pilot$_`")" }) -join ' or ') + ')' })
+    } else { $Rule }
+    @{ Rule = $out; Processing = $(if ($s -eq 'Prod' -and "$ProdProcessing" -eq 'Paused') { 'Paused' } else { 'On' }); Stage = $s; Widened = $widened }
+}
+
+function Get-EpsGroupRuleOverrides {
+    # GROUPS-ACTIONS: the rules the operator set (eps.GroupRuleOverride): name -> @{ rule; by; at; reason }
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $o = @{}
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, MembershipRule, SetBy, Reason, SetAtUtc FROM eps.GroupRuleOverride')) {
+        $o["$($r.Name)"] = @{ rule = "$($r.MembershipRule)"; by = "$($r.SetBy)"; at = $r.SetAtUtc; reason = $(if ($r.Reason -is [DBNull]) { '' } else { "$($r.Reason)" }) }
+    }
+    $o
 }
 
 function Get-EpsManagedGroups {
@@ -100,6 +131,15 @@ function Get-EpsManagedGroups {
             $names = if ($pa) { @($pa.names) } else { @($lib.groups.pilot[$Method]) }
             for ($l = 0; $l -lt $names.Count; $l++) { & $add @{ name = $names[$l]; kind = 'pilot'; assignment = 'Assigned'; description = $(if ($pa) { $pa.description } else { "Pilot Users for $($names[$l])" }); au = 'Pilot'; templates = @($id); level = $l + 1 } }
         }
+    }
+    # GROUPS-ACTIONS: a rule the operator set wins over v1's (v1Rule keeps v1's, for "back to v1's rule"); a dynamic pilot
+    # group's custom rule is its Pilot1 base, widened for the policy's stage
+    $ov = Get-EpsGroupRuleOverrides -ConnectionString $ConnectionString
+    foreach ($n in @($ov.Keys)) {
+        if (-not $groups.Contains($n) -or $groups[$n].assignment -ne 'Dynamic') { continue }
+        $g = $groups[$n]; $g.v1Rule = $g.rule; $g.custom = $true; $g.customBy = $ov[$n].by; $g.customAt = $ov[$n].at; $g.customBase = $ov[$n].rule
+        if ($g.kind -eq 'pilot') { $cr = Get-EpsCustomPilotRule -Rule $ov[$n].rule -Stage "$($g.stage)" -ProdProcessing $(if ("$($g.stage)" -eq 'Prod') { "$($g.processing)" } else { 'Paused' }); $g.rule = $cr.Rule; $g.processing = $cr.Processing }
+        else { $g.rule = $ov[$n].rule }
     }
     @{ Method = $Method; Groups = $groups; AdminUnits = $aus; InUse = $inUse }
 }
@@ -178,8 +218,15 @@ function Get-EpsGroupOverview {
         [ordered]@{ name = $g.name; kind = $g.kind; assignment = $g.assignment; description = $g.description; rule = $g.rule; processing = $g.processing; templates = @($g.templates); level = $g.level
             inTenant = $(if ($null -eq $found) { 'unknown' } elseif ($found) { 'yes' } else { 'missing' }); members = $(if ($s) { & $nv $s.Members }); ruleInTenant = $(if ($s) { & $nv $s.RuleInTenant }); processingInTenant = $(if ($s) { & $nv $s.Processing })
             ruleOk = $ruleOk; adminUnit = $auName; inAdminUnit = $inAu; error = $(if ($s) { & $nv $s.Error })
-            canCreate = ($found -eq $false -and ($g.assignment -ne 'Dynamic' -or [bool]$g.rule)); canRule = ($found -eq $true -and $g.assignment -eq 'Dynamic' -and $ruleOk -eq $false -and [bool]$g.rule)
-            canMembers = ($found -eq $true -and $g.assignment -eq 'Assigned' -and $script:EpsGroupMemberKinds -contains $g.kind) }
+            objectId = $(if ($s) { & $nv $s.ObjectId }); stage = $g.stage
+            # GROUPS-ACTIONS: the operator's own rule (v1Rule = v1's, for "back to v1's rule")
+            custom = [bool]$g.custom; customBase = $g.customBase; v1Rule = $(if ($g.custom) { $g.v1Rule } else { $g.rule }); customBy = $g.customBy; customAt = $g.customAt
+            # the actions, offered on every row (owner 2026-11-05 "should i see buttn here like edit ... or create or
+            # validate"): not read yet = the engine's plan decides (a group that is there is skipped)
+            canCheck = $true
+            canCreate = ($found -ne $true -and ($g.assignment -ne 'Dynamic' -or [bool]$g.rule)); canRule = ($found -eq $true -and $g.assignment -eq 'Dynamic' -and $ruleOk -eq $false -and [bool]$g.rule)
+            canEditRule = ($found -ne $false -and $g.assignment -eq 'Dynamic')
+            canMembers = ($found -ne $false -and $g.assignment -eq 'Assigned' -and $script:EpsGroupMemberKinds -contains $g.kind) }
     }
     $aus = foreach ($k in $m.AdminUnits.Keys) { $s = $st["au:$($m.AdminUnits[$k].name)"]; [ordered]@{ purpose = $k; name = $m.AdminUnits[$k].name; description = $m.AdminUnits[$k].description; inTenant = $(if (-not $s -or $null -eq (& $nv $s.Found)) { 'unknown' } elseif ($s.Found) { 'yes' } else { 'missing' }); error = $(if ($s) { & $nv $s.Error }) } }
     $at = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT MAX(CheckedAtUtc) AS At FROM eps.ManagedGroup')[0].At
@@ -192,7 +239,11 @@ function Get-EpsGroupPlan {
       in the engine): @{ ok; reason; action; items (@{ name; do (create | rule | add | remove | update | place | skip |
       refused); detail; body }); summary }.
         create      -Names: each missing group, made as v1 makes it (type, rule, description); a group that is there is skipped
-        rule        -Names: a dynamic group's rule and processing set to EntraPolicySuite's (v1's -ForceUpdate)
+        rule        -Names: a dynamic group's rule and processing set to EntraPolicySuite's (v1's -ForceUpdate; the operator's
+                    own rule when he set one - GROUPS-ACTIONS)
+        editrule    -Names (one dynamic group) -Rule: the operator's own rule, written now and kept as this install's rule
+                    for the group (a pilot group's: its Pilot1 base, widened for the policy's stage); -Back: v1's rule
+                    again, the custom rule dropped (GROUPS-ACTIONS)
         members     -Names (one) -Add / -Remove (UPNs): an ASSIGNED pilot, exclude or break-glass group only; a break-glass
                     account never leaves the break-glass group
         forceupdate -Template: v1's GroupForceUpdate - the exclude group's description, the dynamic pilot group back to
@@ -201,7 +252,7 @@ function Get-EpsGroupPlan {
       A name EntraPolicySuite does not manage is refused - it never touches another group.
     #>
     param([Parameter(Mandatory)]$Managed, [hashtable]$State = @{}, [Parameter(Mandatory)][string]$Action, [string[]]$Names = @(), [string[]]$Add = @(), [string[]]$Remove = @(),
-          [string]$Template, [string[]]$BreakGlassUpns = @())
+          [string]$Template, [string[]]$BreakGlassUpns = @(), [string]$Rule, [switch]$Back)
     $items = [System.Collections.Generic.List[object]]::new()
     # an empty list may arrive as one empty value
     $Names = @($Names | Where-Object { "$_".Trim() }); $Add = @($Add | Where-Object { "$_".Trim() }); $Remove = @($Remove | Where-Object { "$_".Trim() })
@@ -233,6 +284,29 @@ function Get-EpsGroupPlan {
                 $items.Add(@{ name = $n; do = 'rule'; detail = "now: $(& $nv $s.RuleInTenant) ($(& $nv $s.Processing)); after: $($g.rule) ($($g.processing))"; body = [ordered]@{ membershipRule = $g.rule; membershipRuleProcessingState = $g.processing } })
             }
         }
+        'editrule' {
+            if (@($Names).Count -ne 1) { return & $out $false 'name: ONE dynamic group' }
+            $n = $Names[0]; $g = $Managed.Groups[$n]; $s = $State[$n]
+            if ($g.assignment -ne 'Dynamic') { return & $out $false "$n is an assigned group: it has no membership rule (change its members)" }
+            if ((& $found $n) -ne $true) { return & $out $false "$n is not in the tenant - create it first" }
+            if ($Back) {
+                if (-not $g.custom) { return & $out $false "$n has no rule of yours - it already uses v1's rule" }
+                $base = $g.v1Rule
+                if (-not $base) { return & $out $false "v1 has no membership rule for $n - set your own instead" }
+                $pdv = if ($g.kind -eq 'pilot') { (Get-EpsGroupDefaults).templates[@($g.templates)[0]].pilotDynamic }
+                $want = if ($pdv) { Get-EpsPilotStageRule -Pilot $pdv -Stage "$($g.stage)" } else { @{ Rule = $base; Processing = 'On' } }
+                $items.Add(@{ name = $n; do = 'editrule'; back = $true; detail = "back to v1's rule: $($want.Rule) ($($want.Processing)); your rule is dropped"; body = [ordered]@{ membershipRule = $want.Rule; membershipRuleProcessingState = $want.Processing } })
+            } else {
+                $new = ConvertTo-EpsGroupRuleText $Rule
+                if (-not $new) { return & $out $false 'rule: the membership rule' }
+                if ($new.Length -gt $script:EpsGroupRuleMax) { return & $out $false "rule: at most $($script:EpsGroupRuleMax) characters (Microsoft Entra's limit)" }
+                if ($new -notmatch '(?i)\b(user|device)\.\w+') { return & $out $false 'rule: a membership rule names user.<property> or device.<property>, e.g. (user.department -eq "Sales")' }
+                $want = if ($g.kind -eq 'pilot') { Get-EpsCustomPilotRule -Rule $new -Stage "$($g.stage)" -ProdProcessing $(if ("$($g.stage)" -eq 'Prod') { "$($g.processing)" } else { 'Paused' }) } else { @{ Rule = $new; Processing = 'On' } }
+                $note = if ($g.kind -eq 'pilot' -and "$($g.stage)" -in 'Pilot2', 'Pilot3', 'Prod') { $(if ($want.Widened) { " (your rule is the Pilot1 base; the policy is at $($g.stage), so it is widened to $($want.Rule))" } else { " (no `"_pilot1`" clause in it: kept as it is at every stage)" }) } else { '' }
+                if ((ConvertTo-EpsGroupRuleText (& $nv $s.RuleInTenant)) -eq (ConvertTo-EpsGroupRuleText $want.Rule) -and "$(& $nv $s.Processing)" -eq $want.Processing -and $g.custom -and (ConvertTo-EpsGroupRuleText $g.customBase) -eq $new) { return & $out $false 'nothing to change: that is already the rule' }
+                $items.Add(@{ name = $n; do = 'editrule'; customRule = $new; detail = "now: $(& $nv $s.RuleInTenant) ($(& $nv $s.Processing)); after: $($want.Rule) ($($want.Processing))$note"; body = [ordered]@{ membershipRule = $want.Rule; membershipRuleProcessingState = $want.Processing } })
+            }
+        }
         'members' {
             if (@($Names).Count -ne 1) { return & $out $false 'name: ONE group' }
             $n = $Names[0]; $g = $Managed.Groups[$n]
@@ -256,14 +330,15 @@ function Get-EpsGroupPlan {
                 $f = & $found $g.name; $s = $State[$g.name]
                 if ($f -ne $true) {
                     if ($g.assignment -eq 'Dynamic' -and -not $g.rule) { $items.Add(@{ name = $g.name; do = 'refused'; detail = 'missing, and v1 has no rule for it' }); continue }
-                    $c = $g.Clone(); if ($g.kind -eq 'pilot' -and $g.assignment -eq 'Dynamic') { $p1 = Get-EpsPilotStageRule -Pilot (Get-EpsGroupDefaults).templates[$Template].pilotDynamic -Stage 'Pilot1'; $c.rule = $p1.Rule; $c.processing = 'On' }
+                    $c = $g.Clone(); if ($g.kind -eq 'pilot' -and $g.assignment -eq 'Dynamic') { $c.rule = $(if ($g.custom) { $g.customBase } else { (Get-EpsPilotStageRule -Pilot (Get-EpsGroupDefaults).templates[$Template].pilotDynamic -Stage 'Pilot1').Rule }); $c.processing = 'On' }
                     $items.Add(@{ name = $g.name; do = 'create'; detail = 'missing - made as v1 makes it'; body = (& $body $c) }); continue
                 }
                 $b = [ordered]@{ description = $g.description }
                 if ($g.kind -eq 'pilot' -and $g.assignment -eq 'Dynamic') {
+                    # GROUPS-ACTIONS: the operator's own rule is kept - its Pilot1 base is what a force update puts back
                     $pd = (Get-EpsGroupDefaults).templates[$Template].pilotDynamic
-                    if (-not $pd) { $items.Add(@{ name = $g.name; do = 'refused'; detail = 'v1 has no rule for it' }); continue }
-                    $p1 = Get-EpsPilotStageRule -Pilot $pd -Stage 'Pilot1'; $b.membershipRule = $p1.Rule; $b.membershipRuleProcessingState = 'On'
+                    if (-not $pd -and -not $g.custom) { $items.Add(@{ name = $g.name; do = 'refused'; detail = 'v1 has no rule for it' }); continue }
+                    $b.membershipRule = $(if ($g.custom) { $g.customBase } else { (Get-EpsPilotStageRule -Pilot $pd -Stage 'Pilot1').Rule }); $b.membershipRuleProcessingState = 'On'
                 }
                 $items.Add(@{ name = $g.name; do = 'update'; detail = "description$(if ($b.membershipRule) { "; the rule back to Pilot1: $($b.membershipRule) (On)$(if ($g.stage -and $g.stage -ne 'Pilot1') { " - the policy is at $($g.stage): its pilot group shrinks to the Pilot1 users" })" })"; body = $b })
             }

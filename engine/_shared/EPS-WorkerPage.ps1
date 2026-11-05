@@ -127,6 +127,27 @@ SELECT (SELECT TOP 1 ChangeId FROM @c) AS ChangeId, (SELECT TOP 1 PackageId FROM
     @{ Ok = $true; Status = 200; PackageId = [long]$r.PackageId; ChangeId = [long]$r.ChangeId; Reason = "queued again as package $($r.PackageId) (change $($r.ChangeId)); a worker takes it on its next cycle (every 5 minutes)" }
 }
 
+function Get-EpsOnboardFixCommands {
+    <#
+      ADMIN-WALK-2 N6: Get started's "Fix it" commands for THIS install - runnable, with this install's values filled in
+      (as the Hybrid worker page's), never "-?". What the web app cannot know (the sender mailbox, the recipients when
+      not set) stays a <placeholder>. @{ <step key> = @{ script; command; who } }
+    #>
+    param([string]$TenantId = '', [string]$SubscriptionId = $env:EPS_SUBSCRIPTION_ID, [string]$ResourceGroup = $env:EPS_RESOURCE_GROUP, [string]$Recipients = '')
+    $base = 'https://invardia.com/support/eps'
+    $line = { param($script, $args0) "Invoke-WebRequest $base/$script.ps1 -OutFile .\$script.ps1; .\$script.ps1 $args0" }
+    $t = if ($TenantId) { $TenantId } else { '<tenant id>' }; $s = if ($SubscriptionId) { $SubscriptionId } else { '<subscription id>' }
+    $rg = if ($ResourceGroup) { " -ResourceGroup $ResourceGroup" } else { '' }
+    if ($Recipients -match '^\s*\[') { $Recipients = try { @($Recipients | ConvertFrom-Json) -join ',' } catch { '' } }
+    $rc = if ($Recipients) { "'$($Recipients.Replace("'", "''"))'" } else { "'<alerts@contoso.com>'" }
+    [ordered]@{
+        rights = [ordered]@{ script = 'Grant-EpsEnginePermissions'; who = 'a Global Administrator (or Privileged Role Administrator)'
+            command = & $line 'Grant-EpsEnginePermissions' "-TenantId $t -SubscriptionId $s$rg" }
+        mail = [ordered]@{ script = 'Initialize-EpsMailSender'; who = 'an Exchange administrator'
+            command = & $line 'Initialize-EpsMailSender' "-TenantId $t -SubscriptionId $s -Sender '<eps-alerts@contoso.com>' -Recipients $rc$rg" }
+    }
+}
+
 function Get-EpsWorkerSetup {
     <#
       "Add a worker": the three commands for THIS install, in order, with this install's values filled in (the database,
