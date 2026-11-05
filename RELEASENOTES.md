@@ -2,6 +2,10 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.80 - the report backlog in the heartbeat
+- The 4-hourly heartbeat tells Invardia how many run reports are still waiting to be sent and how old the oldest
+  is (0 when it has caught up), so a backlog shows up at once.
+
 ## 2.0.79 - run reports catch up with Invardia (fix)
 - Fixed: an install with many runs could fall behind in reporting them to Invardia (at one install about two days),
   because each 4-hour report sent at most 20 records. A report now sends up to 100, in rounds of 20 with a pause

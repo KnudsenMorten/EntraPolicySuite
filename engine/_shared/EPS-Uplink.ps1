@@ -33,9 +33,9 @@ $script:EpsUplinkRoundPosts = 20
 $script:EpsUplinkMaxRounds  = 5
 $script:EpsUplinkRoundWaitMs = 65000
 $script:EpsUplinkMaxPosts   = $script:EpsUplinkRoundPosts * $script:EpsUplinkMaxRounds
-# §8.4 (4) UplinkBacklog on the heartbeat: OFF until Invardia says its deploy takes the field (Invardia 2026-11-05: "keep
-# it off until I say it's deployed") - a release switches it on
-$script:EpsUplinkSendBacklog = $false
+# §8.4 (4) UplinkBacklog on the heartbeat: ON since 2.0.80 - Invardia 2026-11-05 ~11:10Z: "DEPLOYED (f0f2403b, deploy
+# 42014508678 success). Switch it on in your next release" (2.0.79 built it OFF until then)
+$script:EpsUplinkSendBacklog = $true
 $script:EpsUplinkPauseMs    = 2500
 $script:EpsUplinkHeartbeatHours = 4       # owner 2026-10-10 "make it every 4 hr": a product constant, not a setting
 $script:EpsUplinkAlertMax   = 10
