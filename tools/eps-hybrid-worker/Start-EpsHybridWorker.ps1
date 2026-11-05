@@ -29,7 +29,10 @@ if ($cfg.ManagedIdentityClientId) { $env:EPS_ManagedIdentityClientId = $cfg.Mana
 $version = (Get-Content -LiteralPath (Join-Path $app 'VERSION') -Raw).Trim()
 try {
     $ad = New-EpsAdDirectory -Server $cfg.AdServer
-    $r = Invoke-EpsHybridWorkerCycle -ConnectionString $cfg.ConnectionString -Ad $ad -WorkerName $cfg.WorkerName -RunAs $runAs -Version $version
+    # WORKER-GUI (2.0.82): the page shows this worker's scheduled task, AD environment (P14) and host type
+    $taskFacts = Get-EpsWorkerTaskFacts
+    $r = Invoke-EpsHybridWorkerCycle -ConnectionString $cfg.ConnectionString -Ad $ad -WorkerName $cfg.WorkerName -RunAs $runAs -Version $version `
+         -Environment "$($cfg.Environment)" -HostType "$($cfg.HostType)" -TaskFacts $taskFacts
     Say "cycle as $runAs`: groups $($r.Groups) (errors $($r.GroupErrors)), packages $($r.Claimed): done $($r.Done), failed $($r.Failed)$(if ($r.AdUsers) { ", AD users read $(if ($r.AdUsers -lt 0) { 'FAILED' } else { $r.AdUsers })" })"
     exit 0
 } catch {

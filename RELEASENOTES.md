@@ -2,6 +2,61 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.82 - deploy templates, the hybrid worker page, Get started creates what is missing, backup and undo
+- New: Conditional Access > Templates shows which templates are in your tenant already, and a SuperAdmin deploys a
+  template as a NEW policy - off, or report-only for the pilot group - one at a time or the selected ones. What it
+  creates is shown first: the policy, every group it uses and whether the group is there. The groups it needs that are
+  missing are created first, as v1's setup did; the policy is then created and managed from here at once.
+- New: when a newer version of a template comes with a release, the policy's page offers to test it NEXT TO your
+  policy: a second policy, named with its version, report-only for the pilot group; your policy is not touched. When it
+  is ready, Promote turns the new version on and your old one off (kept); Roll back puts the old one back as it was.
+  After a promote, the old version can be removed - you type its name to confirm.
+- Every one of these is a SuperAdmin's own action with a reason: the policies are read again first, a change is refused
+  when a policy changed since you looked or when the result would no longer exclude the break-glass accounts, and every
+  change is read back and recorded in the policy's history and the audit trail. Nothing deploys, promotes or removes a
+  policy by itself.
+- New page Administration > Hybrid worker: every worker with its scheduled task (running, disabled, last result, next
+  run), the AD domain and domain controller it uses, the account it runs as, its version against this release and when
+  it last reported (late after a time you set). Below: the AD changes waiting for it and the ones that failed with why,
+  the numbers per day, and the three steps to add a worker with this install's values filled in, ready to copy.
+- New: Test connection (Admin) asks a worker, on its next cycle, what it is connected to and whether it can read AD
+  users; it reads AD only. Try again (Admin) queues a failed AD tag change once more as a new change, the failed one
+  stays in the history.
+- New: several AD forests or domains, as v1's environments (Internal_Prod, DMZ_Prod, ...): list them in Settings >
+  Hybrid worker by user principal name suffix, install one worker per environment with -Environment, and each AD change
+  goes to the worker of its user's environment. The Overview shows one line about the workers, with a link to the page.
+- New: Get started creates what v1's setup created, each after you saw the change and gave a reason (SuperAdmin), applied
+  by the engine and read back:
+  - the two authentication strengths the templates name - FIDO2 + Temporary Access Pass (limited to v1's 11 key models)
+    and Windows Hello for Business + Temporary Access Pass - when they are missing; an existing strength is never changed
+  - the denied-countries named location with v1's countries and unknown countries; when it is there, the countries of
+    v1's list it lacks are added and none is taken out
+  - a trusted location (your office or NAT IP ranges), or new ranges for one you named before
+  - the break-glass accounts of your list that are not in the tenant, as cloud accounts that must change their password
+    at the first sign-in. Entra Policy Suite never shows or keeps the password: set it, or a Temporary Access Pass, in
+    Entra, register the FIDO2 key and give the role yourself, as with v1
+- New: the named-locations job from v1 - each day it keeps the named locations 'Azure.Network.ServiceTag.<tag>' up to date
+  with the IP prefixes of your Azure service tags (the tag list from v1's file, imported on the Import v1 page), and
+  changes a location only when its prefixes changed or it is missing. It changes no other named location and no policy.
+  Switch it on with the setting NamedLocations.Enabled (off by default); the region is the setting NamedLocations.Region.
+  Switch v1's own job off when you switch this one on.
+- The engine needs one more Microsoft Graph permission for the strengths, Policy.ReadWrite.AuthenticationMethod: run the
+  install again once (Get started, step 1, shows when it is granted).
+- New: Administration > Backups / Undo. Every night every Conditional Access policy (adopted or not), named location and
+  authentication strength is backed up, together with the tagging configuration (rules, tag types and values, condition
+  types, saved scopes and the settings - never a secret); the newest 30 are kept, and "Back up now" takes one at any time.
+  A backup can be downloaded as JSON files, one per policy, as v1 exported them.
+- New: a backup is also taken just BEFORE every change Entra Policy Suite makes to a policy, and before every commit of
+  the tagging rules. If that backup cannot be written, the change is not made.
+- New: put policies back from a backup - pick them, see what changes for each, approve. A policy that is no longer in
+  your tenant is created again, off. A tagging configuration backup is restored as the same changes the pages make
+  (each checked; with the commit queue on, staged for a commit).
+- New: Undo. Every change made to a policy from here can be undone from its page (a copy or a deployed policy is turned
+  off, never deleted); a tagging run can be undone (each tag goes back to its old value - a tag changed since is left as
+  it is, and the mass-change guard applies); a commit of the tagging rules can be undone. An undo is a new change: shown
+  first, approved with a reason, checked like any change (for a policy: SuperAdmin, read again first, refused when the
+  result would no longer exclude the break-glass accounts). Nothing is restored by itself.
+
 ## 2.0.81 - edit and clone a Conditional Access policy, and the groups your policies use
 - New: Edit on an adopted policy's page changes any part of it - its name, state, the users, groups and roles it
   includes or excludes, applications, user actions, client apps, platforms, locations, sign-in and user risk, the

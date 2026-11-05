@@ -40,6 +40,10 @@ param(
     [ValidateSet('Auto', 'AzureVm', 'Arc')][string]$HostType = 'Auto',
     [string]$Root = 'C:\EntraPolicySuite',
     [ValidateSet('', 'pim')][string]$AsGuestOf = '',
+    # V1-PARITY P14 (v1: Internal_Prod / DMZ_Prod / Internal_Dev / Internal_Test): the AD environment this worker serves -
+    # it then takes only the changes of users in that environment (setting HybridWorker.EnvironmentByUpnSuffix). Empty =
+    # the only AD (every change without an environment).
+    [ValidatePattern('^$|^[A-Za-z0-9_-]{1,50}$')][string]$Environment = '',
     [string]$SourcePath = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [switch]$Remove
 )
@@ -88,7 +92,7 @@ Step "lock $Root down: SYSTEM + Administrators full; $GmsaName read + execute, m
     & icacls $Root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "${GmsaName}:(OI)(CI)RX" | Out-Null
     & icacls (Join-Path $Root 'logs') /grant "${GmsaName}:(OI)(CI)M" | Out-Null
 }
-$cfg = [ordered]@{ WorkerName = $WorkerName; AdServer = $AdServer; ManagedIdentityClientId = $ManagedIdentityClientId
+$cfg = [ordered]@{ WorkerName = $WorkerName; AdServer = $AdServer; ManagedIdentityClientId = $ManagedIdentityClientId; Environment = $Environment; HostType = $(if ($isArc) { 'Arc' } else { 'AzureVm' })
                    ConnectionString = "Server=tcp:$SqlServer,1433;Database=$Database;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30" }
 Step "write $Root\worker.json (the database and the worker's name - no secret)" { $cfg | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'worker.json') -Encoding utf8 }
 if ($isArc) { Step "add $GmsaName to the local group '$arcGroup' (it reads the Arc agent's identity key)" { if (-not (Get-LocalGroupMember -Group $arcGroup -ErrorAction SilentlyContinue | Where-Object Name -eq $GmsaName)) { Add-LocalGroupMember -Group $arcGroup -Member $GmsaName } } }

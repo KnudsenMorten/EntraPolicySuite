@@ -21,6 +21,7 @@
     { "name": "AdServer", "required": false, "default": "the domain locator", "help": "a domain controller to use" },
     { "name": "ManagedIdentityClientId", "required": false, "default": "the machine's identity", "help": "a user-assigned identity's client id (Azure VM)" },
     { "name": "HostType", "required": false, "default": "Auto", "help": "Auto | AzureVm | Arc" },
+    { "name": "Environment", "required": false, "default": "", "help": "the AD environment this worker serves (e.g. DMZ_Prod) when you have several AD forests or domains; empty = the only one" },
     { "name": "Remove", "required": false, "default": false, "help": "take the worker away" }
   ],
   "readsOnly": [ "the release folder it installs from" ],

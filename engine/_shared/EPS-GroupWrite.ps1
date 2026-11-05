@@ -7,7 +7,8 @@
 #
 # Loaded by the ENGINE only (tools/eps-engine/job-entry.ps1): the web app never loads this file. Callers: the routes
 # POST /api/groups/{create|rule|members|forceupdate|au} (the engine runs them from the SuperAdmin's signed request) and
-# the stage move (Invoke-EpsCaStageMove sets the dynamic pilot group's rule for the stage, as v1's CAnnn.ps1 does).
+# the stage move (Invoke-EpsCaStageMove sets the dynamic pilot group's rule for the stage, as v1's CAnnn.ps1 does), and
+# a template deploy (EPS-CaWrite.ps1 creates the groups the new policy needs first, as v1's Initial_Setup does).
 # tests/Test-EpsGroups.ps1 pins it.
 
 Set-StrictMode -Off
@@ -91,11 +92,12 @@ function Invoke-EpsGroupChange {
         2. refused when the plan is (a name EPS does not manage, a break-glass account out of the break-glass group, ...)
         3. the writes, each read back; one journal row per group changed (eps.ConfigChange, Entity Group / AdminUnit)
         4. what was read back stored for the Groups page (eps.ManagedGroup)
+      -Templates (CA-TEMPLATES): templates not adopted yet whose groups count as managed (a deploy creates them first).
       Returns @{ Result = ok | partial | refused | failed; Reason; Items; Text }.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Action, [string[]]$Names = @(), [string[]]$Add = @(), [string[]]$Remove = @(),
-          [string]$Template, [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
-    $m = Get-EpsManagedGroups -ConnectionString $ConnectionString
+          [string]$Template, [string[]]$Templates = @(), [Parameter(Mandatory)][string]$Actor, [string]$Reason, [scriptblock]$Log = { param($l, $m) Write-Host "[$l] $m" })
+    $m = Get-EpsManagedGroups -ConnectionString $ConnectionString -Templates $Templates
     $read = switch ($Action) { 'forceupdate' { @($m.Groups.Values | Where-Object { @($_.templates) -contains $Template } | ForEach-Object name) } 'au' { @($m.Groups.Keys) } default { @($Names | Where-Object { $m.Groups.Contains($_) }) } }
     $live = @{}; foreach ($x in @(Read-EpsManagedGroupState -Names @($read) -AdminUnits $m.AdminUnits)) { $live["$($x.Name)"] = $x }
     $bg = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT UserPrincipalName FROM eps.BreakGlassAccount' | ForEach-Object { "$($_.UserPrincipalName)" })

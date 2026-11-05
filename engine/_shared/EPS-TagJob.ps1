@@ -236,7 +236,11 @@ function Invoke-EpsTagJob {
         }
         [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes))
         if ($queuedAd) {
-            [void](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes))
+            # V1-PARITY P14: each AD change goes to the worker of its user's AD environment (HybridWorker.EnvironmentByUpnSuffix)
+            # (EPS-WorkerPage.ps1 + EPS-Scheduler.ps1, both loaded by the engine; a test that loads neither queues without one)
+            $envMap = if ((Get-Command ConvertFrom-EpsEnvironmentMap -ErrorAction SilentlyContinue) -and (Get-Command Get-EpsSetting -ErrorAction SilentlyContinue)) { ConvertFrom-EpsEnvironmentMap (Get-EpsSetting -ConnectionString $ConnectionString -Name 'HybridWorker.EnvironmentByUpnSuffix' -Default '[]') } else { @{ Entries = @(); Bad = @() } }
+            if ($envMap.Bad.Count) { & $log 'Warning' "the AD environments setting has line(s) that are not '<upn suffix>=<environment>', left out: $($envMap.Bad -join '; ')" }
+            [void](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes) -EnvironmentMap @($envMap.Entries))
             $ws = Get-EpsWorkerStatus -ConnectionString $ConnectionString
             & $log $(if ($ws.Alive) { 'Info' } else { 'Warning' }) "$queuedAd AD-synced change(s) queued for the hybrid worker$(if (-not $ws.Alive) { ' - NO worker heartbeat in 30 min: they wait until a worker runs' })"
         }

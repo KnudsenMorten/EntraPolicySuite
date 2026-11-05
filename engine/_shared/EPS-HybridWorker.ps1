@@ -16,18 +16,22 @@ function Get-EpsWorkerStatus {
 }
 
 function Add-EpsWorkPackages {
-    # The run's AD changes (Status Queued, already in eps.TagChange) -> one work package each, linked by ChangeId.
-    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [object[]]$Changes = @())
+    # The run's AD changes (Status Queued, already in eps.TagChange) -> one work package each, linked by ChangeId. With
+    # -EnvironmentMap (P14) each package names the AD environment of its user, and only a worker of that environment
+    # takes it.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [object[]]$Changes = @(), [object[]]$EnvironmentMap = @())
     $queued = @($Changes | Where-Object { $_.Status -eq 'Queued' })
     if (-not $queued.Count) { return 0 }
     $ids = @{}
     foreach ($r in Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $RunId } -Query "SELECT ChangeId, ObjectId, Attribute FROM eps.TagChange WHERE RunId = @r AND Status = 'Queued'") { $ids["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r.ChangeId }
     $dt = [System.Data.DataTable]::new()
-    foreach ($c in 'Kind', 'ChangeId', 'RunId', 'Payload', 'Status') { $col = $dt.Columns.Add($c); if ($c -eq 'ChangeId') { $col.DataType = [long] }; if ($c -eq 'RunId') { $col.DataType = [guid] } }
+    foreach ($c in 'Kind', 'ChangeId', 'RunId', 'Payload', 'Status', 'Environment') { $col = $dt.Columns.Add($c); if ($c -eq 'ChangeId') { $col.DataType = [long] }; if ($c -eq 'RunId') { $col.DataType = [guid] } }
     foreach ($c in $queued) {
         $row = $dt.NewRow(); $row.Kind = 'AdSetAttribute'; $row.RunId = $RunId; $row.Status = 'Queued'
         $cid = $ids["$($c.ObjectId)|$($c.Attribute)".ToLowerInvariant()]; $row.ChangeId = if ($cid) { [long]$cid } else { [DBNull]::Value }
         $row.Payload = @{ sid = [string]$c.OnPremisesSecurityIdentifier; upn = [string]$c.OnPremisesUserPrincipalName; objectId = [string]$c.ObjectId; attribute = $c.Attribute; value = [string]$c.NewValue } | ConvertTo-Json -Compress
+        $env = if ($EnvironmentMap.Count) { Get-EpsWorkEnvironment -Upn ([string]$c.OnPremisesUserPrincipalName) -Entries $EnvironmentMap } else { $null }   # EPS-WorkerPage.ps1
+        $row.Environment = if ($env) { $env } else { [DBNull]::Value }
         $dt.Rows.Add($row)
     }
     $conn = New-EpsSqlConnection -ConnectionString $ConnectionString
@@ -69,11 +73,23 @@ function Invoke-EpsHybridWorkerCycle {
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Ad, [Parameter(Mandatory)][string]$WorkerName,
           [string]$RunAs = [Environment]::UserName, [string]$Version, [int]$BatchSize = 500, [int]$StaleMinutes = 30, [int]$MaxAttempts = 5,
-          [int]$GroupRefreshMinutes = 60, [int]$UserSnapshotHours = 12, [datetime]$NowUtc = [datetime]::UtcNow)
-    $beat = { param($result) Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ w = $WorkerName; m = [Environment]::MachineName; r = $RunAs; v = $Version; t = $NowUtc; x = $result } -Query @'
+          [int]$GroupRefreshMinutes = 60, [int]$UserSnapshotHours = 12, [datetime]$NowUtc = [datetime]::UtcNow,
+          # WORKER-GUI (2.0.82): what the page shows - the worker's AD environment (P14; '' = the only one), its host type
+          # and its scheduled task as read on the machine (Get-EpsWorkerTaskFacts)
+          [string]$Environment = '', [string]$HostType = '', [hashtable]$TaskFacts = @{})
+    # what the worker is connected to (read only; an AD without Describe - a test's fake - reports nothing)
+    $adFacts = $null
+    if ($Ad.PSObject.Methods['Describe']) { try { $adFacts = $Ad.Describe() } catch { $adFacts = [pscustomobject]@{ Domain = $null; Server = $null; Error = "$($_.Exception.Message)" } } }
+    $dbv = { param($v) if ($null -eq $v -or "$v" -eq '') { [DBNull]::Value } else { $v } }
+    $beat = { param($result) Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ w = $WorkerName; m = [Environment]::MachineName; r = $RunAs; v = $Version; t = $NowUtc; x = $result
+              d = (& $dbv $adFacts.Domain); s = (& $dbv $adFacts.Server); e = (& $dbv $Environment); h = (& $dbv $HostType)
+              ts = (& $dbv $TaskFacts.State); te = $(if ($TaskFacts.ContainsKey('Enabled')) { [bool]$TaskFacts.Enabled } else { [DBNull]::Value })
+              tl = (& $dbv $TaskFacts.LastRunUtc); tr = (& $dbv $TaskFacts.LastResult); tn = (& $dbv $TaskFacts.NextRunUtc) } -Query @'
 MERGE eps.WorkerHeartbeat AS d USING (SELECT @w AS WorkerName) AS s ON d.WorkerName = s.WorkerName
-WHEN MATCHED THEN UPDATE SET Machine = @m, RunAs = @r, Version = @v, LastSeenUtc = @t, LastResult = @x
-WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, LastResult) VALUES (@w, @m, @r, @v, @t, @x);
+WHEN MATCHED THEN UPDATE SET Machine = @m, RunAs = @r, Version = @v, LastSeenUtc = @t, LastResult = @x, AdDomain = @d, AdServer = @s, Environment = @e, HostType = @h,
+    TaskState = @ts, TaskEnabled = @te, TaskLastRunUtc = @tl, TaskLastResult = @tr, TaskNextRunUtc = @tn
+WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, LastResult, AdDomain, AdServer, Environment, HostType, TaskState, TaskEnabled, TaskLastRunUtc, TaskLastResult, TaskNextRunUtc)
+    VALUES (@w, @m, @r, @v, @t, @x, @d, @s, @e, @h, @ts, @te, @tl, @tr, @tn);
 '@ | Out-Null }
     & $beat 'cycle started'
     $sum = [ordered]@{ Groups = 0; GroupErrors = 0; Done = 0; Failed = 0; Claimed = 0; AdUsers = 0 }
@@ -114,14 +130,29 @@ WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, 
     }
 
     # 2. the work packages: claim atomically (READPAST: another worker's claimed rows are skipped, not waited on)
-    $claimed = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ n = $BatchSize; w = $WorkerName; t = $NowUtc; s = $NowUtc.AddMinutes(-$StaleMinutes); m = $MaxAttempts } -Query @'
+    #    P14: a package for an AD environment goes only to a worker of that environment; a package without one to any
+    $claimed = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ n = $BatchSize; w = $WorkerName; t = $NowUtc; s = $NowUtc.AddMinutes(-$StaleMinutes); m = $MaxAttempts; e = "$Environment" } -Query @'
 UPDATE TOP (@n) p SET Status = 'Claimed', ClaimedBy = @w, ClaimedAtUtc = @t, Attempts = Attempts + 1
-OUTPUT INSERTED.PackageId, INSERTED.ChangeId, INSERTED.Payload, INSERTED.Attempts
+OUTPUT INSERTED.PackageId, INSERTED.Kind, INSERTED.ChangeId, INSERTED.Payload, INSERTED.Attempts
 FROM eps.WorkPackage p WITH (READPAST, UPDLOCK, ROWLOCK)
-WHERE p.Kind = 'AdSetAttribute' AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
+WHERE p.Kind IN ('AdSetAttribute', 'AdPing') AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
+  AND (p.Environment IS NULL OR p.Environment = @e)
 '@)
     $sum.Claimed = $claimed.Count
     foreach ($p in $claimed) {
+        # WORKER-GUI: a connection test (read only) - what this worker is connected to, answered once, never retried
+        if ("$($p.Kind)" -eq 'AdPing') {
+            $ans = $null; $perr = $null
+            try {
+                if (-not $adFacts) { throw 'this worker cannot describe its AD connection (no Describe)' }
+                if ($adFacts.PSObject.Properties['Error'] -and $adFacts.Error) { throw "$($adFacts.Error)" }
+                $ans = "worker $WorkerName on $([Environment]::MachineName)$(if ($Environment) { " (AD environment $Environment)" }): domain $($adFacts.Domain), domain controller $($adFacts.Server), runs as $RunAs, $(if ($adFacts.CanReadUsers) { 'reads AD users' } else { 'could NOT read an AD user' })"
+                if (-not $adFacts.CanReadUsers) { $perr = $ans; $ans = $null }
+            } catch { $perr = "$($_.Exception.Message)" }
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $p.PackageId; s = $(if ($perr) { 'Failed' } else { 'Done' }); e = $perr; r = $ans; t = $NowUtc } -Query 'UPDATE eps.WorkPackage SET Status = @s, Error = @e, Result = @r, DoneAtUtc = @t WHERE PackageId = @id' | Out-Null
+            if ($perr) { $sum.Failed++ } else { $sum.Done++ }
+            continue
+        }
         $pl = $p.Payload | ConvertFrom-Json
         $err = $null
         try {
@@ -153,6 +184,25 @@ WHERE p.Kind = 'AdSetAttribute' AND p.Attempts < @m AND (p.Status = 'Queued' OR 
     }
     & $beat ("groups $($sum.Groups) (errors $($sum.GroupErrors)), packages $($sum.Claimed): done $($sum.Done), failed $($sum.Failed)$(if ($sum.AdUsers) { ", AD users $(if ($sum.AdUsers -lt 0) { 'FAILED' } else { $sum.AdUsers })" })")
     [pscustomobject]$sum
+}
+
+function Get-EpsWorkerTaskFacts {
+    <#
+      WORKER-GUI (2.0.82): the worker's scheduled task as Windows sees it - the worker runs as the task 'EntraPolicySuite
+      Hybrid Worker' (folder \EPS\), not as a Windows service. Read through the Task Scheduler's COM interface (no
+      module). Never throws: @{ State; Enabled; LastRunUtc; LastResult; NextRunUtc } or @{ State = 'Unknown'; Error }.
+    #>
+    param([string]$TaskName = 'EntraPolicySuite Hybrid Worker', [string[]]$TaskPath = @('\EPS\', '\'))
+    if (-not $IsWindows) { return @{ State = 'Unknown'; Error = 'not Windows' } }
+    try {
+        $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect()
+        $t = $null
+        foreach ($p in $TaskPath) { try { $t = $svc.GetFolder($(if ($p -eq '\') { '\' } else { $p.TrimEnd('\') })).GetTask($TaskName); if ($t) { break } } catch { $t = $null } }
+        if (-not $t) { return @{ State = 'Missing'; Error = "no scheduled task '$TaskName'" } }
+        $states = @{ 0 = 'Unknown'; 1 = 'Disabled'; 2 = 'Queued'; 3 = 'Ready'; 4 = 'Running' }
+        $utc = { param($d) if ($d -and ([datetime]$d).Year -gt 1999) { ([datetime]$d).ToUniversalTime() } else { $null } }
+        @{ State = $states[[int]$t.State]; Enabled = [bool]$t.Enabled; LastRunUtc = (& $utc $t.LastRunTime); LastResult = ('0x{0:X}' -f [int]$t.LastTaskResult); NextRunUtc = (& $utc $t.NextRunTime) }
+    } catch { @{ State = 'Unknown'; Error = "$($_.Exception.Message)" } }
 }
 
 function Write-EpsAdUserSnapshot {

@@ -46,6 +46,17 @@ function New-EpsAdDirectory {
         }
         throw "could not read the domain's naming context from $($this.Root)RootDSE - is a domain controller reachable?"
     }
+    # WORKER-GUI (2.0.82): what the worker is connected to - read only (RootDSE + one search for a single user object):
+    # @{ Domain (DNS form); Server (the DC that answered); NamingContext; CanReadUsers }
+    $ad | Add-Member ScriptMethod Describe {
+        $rootDse = [System.DirectoryServices.DirectoryEntry]::new("$($this.Root)RootDSE")
+        $rootDse.RefreshCache(@('defaultNamingContext', 'dnsHostName'))
+        $nc = [string]$rootDse.Properties['defaultNamingContext'].Value
+        $dns = (@($nc -split ',' | Where-Object { $_ -match '^DC=' } | ForEach-Object { $_.Substring(3) }) -join '.')
+        $read = $false
+        try { $ds = [System.DirectoryServices.DirectorySearcher]::new($this.SearchRoot()); $ds.Filter = '(&(objectCategory=person)(objectClass=user))'; $ds.SizeLimit = 1; [void]$ds.PropertiesToLoad.Add('objectSid'); $read = [bool]$ds.FindOne() } catch { $read = $false }
+        [pscustomobject]@{ Domain = $dns; Server = [string]$rootDse.Properties['dnsHostName'].Value; NamingContext = $nc; CanReadUsers = $read }
+    }
     $ad | Add-Member ScriptMethod HasAttribute {
         param([string]$Attribute)
         if (-not $this.Schema.ContainsKey($Attribute)) {

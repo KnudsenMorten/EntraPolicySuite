@@ -640,6 +640,269 @@ function Get-EpsCaEditPlanFromStore {
     $plan
 }
 
+# ---- CA-TEMPLATES (owner 2026-11-05: Templates "Side-by-side only"; "fully manageable in the gui"; "always 100% operator
+# controlled"; V1-PARITY P5 / P6): the PLANS, pure. Deploy a template as a NEW policy (v1's CAnnn.ps1 -Mode Initial_Setup),
+# test a newer version NEXT TO the policy it replaces (-Mode Install_Latest_Policy_Disabled), then Promote (the new one to
+# Prod, the old one off and kept), Roll back (the old one back as it was, the new one off) or remove the old one. Nothing
+# here writes: the page shows the plan; the engine (EPS-CaWrite.ps1) makes it again from the live tenant before it writes.
+$script:EpsCaDeployStages = @('Initial', 'Pilot1')
+
+function Get-EpsCaTemplateRest {
+    # the part of a template's name after its CA number: CA100-Admins-Internal-... -> Admins-Internal-...
+    param([Parameter(Mandatory)]$Template)
+    $n = "$($Template.name)"; $p = "$($Template.id)-"
+    if ($n.StartsWith($p)) { $n.Substring($p.Length) } else { $n }
+}
+
+function Get-EpsCaDeployPlan {
+    <#
+      A template -> the NEW policy v1's Initial_Setup makes, in names: @{ ok; reason; mode (deploy | version); templateId;
+      version; stage; displayName; state; body (displayName, state, conditions, grantControls, sessionControls - every
+      reference resolved to a NAME); groups (@{ name; use (include | exclude); inTenant yes | missing | unknown }); rows
+      (path / value, what the policy will be); breakGlass; notes }.
+        -Stage Initial (off, v1's default) or Pilot1 (report-only for the pilot group)
+        -VersionCopy: a test of a newer version next to the policy it replaces - named CAnnn-vX.Y-<rest> (v1's
+         Install_Latest_Policy_Disabled), Pilot1 by default
+        -Existing: the tenant's policies (@{ displayName; templateId; versionCopy }) - a deploy of a template that is already
+         in the tenant is refused (the newer version is TESTED next to it instead); a name that is taken is refused
+        -GroupState: group name -> $true (in the tenant) / $false (missing) / $null (unknown). A missing group is created
+         first, as v1 does (the engine, through EPS-GroupWrite.ps1) - the plan only lists it.
+      Refused when the template is incomplete in v1, the targeting method is not set, a reference cannot be named exactly,
+      or the result would not exclude the break-glass accounts (never "fixed").
+    #>
+    param([Parameter(Mandatory)]$Template, [string]$Stage = 'Initial', $Ctx = @{}, $Catalog = (Get-EpsCaTemplateCatalog), [object[]]$Existing = @(), [switch]$VersionCopy, [hashtable]$GroupState = @{})
+    $t = $Template; $rest = Get-EpsCaTemplateRest $t
+    $plan = [ordered]@{ ok = $false; reason = $null; mode = $(if ($VersionCopy) { 'version' } else { 'deploy' }); templateId = "$($t.id)"; version = "$($t.version)"; stage = $Stage
+        displayName = $null; state = $null; body = $null; groups = @(); rows = @(); breakGlass = $null; notes = [System.Collections.Generic.List[string]]::new() }
+    $no = { param($why) $plan.reason = $why; $plan.notes = @($plan.notes); $plan }
+    if ($Stage -notin $script:EpsCaDeployStages) { return & $no "stage: $($script:EpsCaDeployStages -join ' or ') (a new policy starts off or report-only; move it on from there)" }
+    if ($t.incomplete) { return & $no "$($t.id) is incomplete in v1 ($(@($t.gaps) -join '; ')) - complete the template first" }
+    if (-not $Ctx.Method) { return & $no 'the group-targeting method is not set (Settings > Conditional Access > CA.GroupTargetingMethod): the pilot and target groups cannot be named' }
+    $plan.displayName = if ($VersionCopy) { "$($t.id)-$($t.version)-$rest" } else { "$($t.id)-$Stage-$rest" }
+    if ($VersionCopy) {
+        if (@($Existing | Where-Object { "$($_.displayName)" -ieq $plan.displayName }).Count) { return & $no "$($plan.displayName) is already in the tenant - the version is being tested already" }
+    } else {
+        $there = @($Existing | Where-Object { "$($_.templateId)" -eq "$($t.id)" -and -not $_.versionCopy } | ForEach-Object { "$($_.displayName)" })
+        if ($there.Count) { return & $no "$($t.id) is already in the tenant ($($there -join ', ')) - a template is deployed once; a newer version is tested NEXT TO it (Test a new version, on its policy page)" }
+        if (@($Existing | Where-Object { "$($_.displayName)" -ieq $plan.displayName }).Count) { return & $no "a policy named $($plan.displayName) is already in the tenant" }
+    }
+    $plan.state = "$($Catalog.stageState[$Stage])"
+    # every reference -> its ONE name (the pilot group of Pilot1 - v1's Initial_Setup targets it too)
+    $bad = $null
+    $walk = $null
+    $walk = { param($v, [string]$path)
+        if ($v -is [System.Collections.IDictionary]) { $o = [ordered]@{}; foreach ($k in @($v.Keys)) { $o["$k"] = & $walk $v[$k] $(if ($path) { "$path.$k" } else { "$k" }) }; return $o }
+        if ($v -is [System.Collections.IList]) {
+            $l = [System.Collections.Generic.List[object]]::new()
+            foreach ($i in $v) { foreach ($x in @(& $walk $i $path)) { $l.Add($x) } }
+            return , @($l)
+        }
+        if ($v -is [string] -and $v -match '^\{.+\}$') {
+            $names = [System.Collections.Generic.List[string]]::new()
+            foreach ($s in (Resolve-EpsCaTemplateSlots -Item $v -Template $t -Stage 'Pilot1' -Ctx $Ctx -Catalog $Catalog)) {
+                $s = @($s)
+                if ($s.Count -ne 1 -or "$($s[0])" -match '\((not resolvable|unknown target group|no break-glass account)') { if (-not $script:EpsCaDeployBad) { $script:EpsCaDeployBad = "$path cannot be named exactly: $(@($s) -join ' or ')" }; continue }
+                $names.Add("$($s[0])")
+            }
+            if ($names.Count -eq 1) { return "$($names[0])" }
+            return , @($names)
+        }
+        $v }
+    $script:EpsCaDeployBad = $null
+    $src = ConvertTo-Json -InputObject $t.body -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30
+    $resolved = & $walk $src ''
+    $bad = $script:EpsCaDeployBad; $script:EpsCaDeployBad = $null
+    if ($bad) { return & $no $bad }
+    $body = [ordered]@{ displayName = $plan.displayName; state = $plan.state }
+    foreach ($k in 'conditions', 'grantControls', 'sessionControls') { if ($resolved.Contains($k) -and $null -ne $resolved[$k]) { $body[$k] = $resolved[$k] } }
+    # a list that is a single name came back as a string: the user / group / role / location lists stay lists
+    foreach ($p in @($script:EpsCaEditNamePaths.Keys) + @('conditions.applications.includeApplications', 'conditions.applications.excludeApplications', 'conditions.applications.includeUserActions', 'conditions.clientAppTypes', 'grantControls.builtInControls')) {
+        $parts = $p.Split('.'); $o = $body
+        foreach ($s in $parts[0..($parts.Count - 2)]) { if ($o -is [System.Collections.IDictionary]) { $o = $o[$s] } else { $o = $null }; if ($null -eq $o) { break } }
+        if ($o -is [System.Collections.IDictionary] -and $o[$parts[-1]] -is [string]) { $o[$parts[-1]] = @($o[$parts[-1]]) }
+    }
+    $plan.body = $body
+    # the groups it names, and whether each is in the tenant (a missing one is created first, as v1 does)
+    $gs = [System.Collections.Generic.List[object]]::new()
+    foreach ($use in 'include', 'exclude') {
+        foreach ($n in (Get-EpsCaList $body "conditions.users.$($use)Groups")) {
+            $f = if ($GroupState.ContainsKey($n)) { $GroupState[$n] } else { $null }
+            $gs.Add([ordered]@{ name = $n; use = $use; inTenant = $(if ($f -eq $true) { 'yes' } elseif ($f -eq $false) { 'missing' } else { 'unknown' }) })
+        }
+    }
+    $plan.groups = @($gs)
+    $miss = @($gs | Where-Object { $_.inTenant -eq 'missing' })
+    if ($miss.Count) { $plan.notes.Add("$($miss.Count) group(s) are not in the tenant: they are created first, as v1's Initial_Setup does ($(@($miss | ForEach-Object name) -join ', ')).") }
+    if (@($gs | Where-Object { $_.inTenant -eq 'unknown' }).Count) { $plan.notes.Add('Some groups were not read yet (Conditional Access > Groups > Read the groups): the engine reads them before it deploys and creates any that are missing.') }
+    # the break-glass check, by NAME (the engine checks it again by id on the result)
+    $bgNames = @(Get-EpsCaRoleGroupNames -Role $Catalog.breakGlassGroupRole -Ctx $Ctx -Catalog $Catalog | ForEach-Object { "$_".ToLowerInvariant() })
+    $acc = @($Ctx.BreakGlass.Accounts | Where-Object { $_ } | ForEach-Object { "$($_.Upn)".ToLowerInvariant() })
+    $xg = @(Get-EpsCaList $body 'conditions.users.excludeGroups' | ForEach-Object { "$_".ToLowerInvariant() }); $xu = @(Get-EpsCaList $body 'conditions.users.excludeUsers' | ForEach-Object { "$_".ToLowerInvariant() })
+    $bgOk = [bool]$t.breakGlassPolicy -or @($xg | Where-Object { $bgNames -contains $_ }).Count -or ($acc.Count -and -not @($acc | Where-Object { $xu -notcontains $_ }).Count)
+    $plan.breakGlass = [ordered]@{ ok = [bool]$bgOk; exempt = [bool]$t.breakGlassPolicy; text = $(if ($t.breakGlassPolicy) { 'the break-glass policy itself (it targets the break-glass accounts)' } elseif ($bgOk) { 'excludes the break-glass group / accounts' } else { 'does NOT exclude the break-glass group or accounts - a lock-out risk' }) }
+    if (-not $bgOk) { return & $no "the break-glass check refuses it: the new policy $($plan.breakGlass.text)" }
+    $plan.rows = @(Compare-EpsCaCanonical -Before ([ordered]@{}) -After (ConvertTo-EpsCaCanonical $body) | ForEach-Object { [ordered]@{ path = $_.path; value = $_.after } })
+    $plan.notes.Add($(if ($Stage -eq 'Initial') { 'It is created OFF (v1''s Initial_Setup): nobody is affected until you move it to Pilot1.' } else { 'It is created report-only for the pilot group (Pilot1): evaluated and logged, nothing enforced.' }))
+    if ($VersionCopy) { $plan.notes.Add('The policy it replaces is NOT touched. Promote turns this one on in Prod and the old one off; Roll back undoes that.') }
+    $plan.ok = $true; $plan.notes = @($plan.notes)
+    $plan
+}
+
+function Get-EpsCaVersionInfo {
+    # whether a policy's template has a NEWER version in the library: @{ available; current; library; reason }. Only an
+    # adopted policy matched to a template (not a test copy itself) can test one; the version it was adopted / deployed at
+    # is the adoption record's.
+    param($Adoption, $Review, $Catalog = (Get-EpsCaTemplateCatalog))
+    $nv = { param($v) if ($v -is [DBNull]) { $null } else { $v } }
+    $out = [ordered]@{ available = $false; current = $null; library = $null; reason = $null }
+    if (-not $Adoption -or "$(& $nv $Adoption.Status)" -ne 'Adopted') { $out.reason = 'adopt it first'; return $out }
+    $tid = "$(& $nv $Adoption.TemplateId)"; if (-not $tid) { $tid = "$($Review.templateId)" }
+    $t = if ($tid) { $Catalog.ById[$tid] }
+    if (-not $t) { $out.reason = 'it has no template in the library'; return $out }
+    $out.current = "$(& $nv $Adoption.TemplateVersion)"; $out.library = "$($t.version)"
+    if ($Review.versionCopy) { $out.reason = 'it is a test of a version itself'; return $out }
+    if ($out.current -and $out.current -eq $out.library) { $out.reason = "it is on the library's version ($($out.library))"; return $out }
+    $out.available = $true; $out
+}
+
+function Get-EpsCaPairPlan {
+    <#
+      Promote / Roll back / Remove the old version of ONE pair, pure: -Old and -New = the two policies (bodies), -Pair =
+      eps.CaVersionPair's row. @{ ok; reason; action; old = @{ id; displayNameBefore / After; stateBefore / After; patch };
+      new = @{ ... }; changes (who / field / before / after); breakGlass; notes }.
+        Promote   the new one to Prod (its name CAnnn-Prod-<rest>, the template's Prod targets, on); the old one OFF and
+                  renamed CAnnn-<its version>-<rest> - kept, so Roll back can put it back
+        Rollback  the old one back to its name, state and users as they were before the promote; the new one OFF, named
+                  CAnnn-<its version>-<rest> again
+        Remove    the old one is DELETED - only after a promote, only when it is off
+      -NewStagePlan: Get-EpsCaStagePlan of the new one to Prod (the caller makes it, from the live policy).
+    #>
+    param([Parameter(Mandatory)][ValidateSet('Promote', 'Rollback', 'Remove')][string]$Action, [Parameter(Mandatory)]$Pair, $Old, $New, $NewStagePlan, $Catalog = (Get-EpsCaTemplateCatalog))
+    $nv = { param($v) if ($v -is [DBNull]) { $null } else { $v } }
+    $t = $Catalog.ById["$($Pair.TemplateId)"]
+    $rest = if ($t) { Get-EpsCaTemplateRest $t } else { $null }
+    $st = "$(& $nv $Pair.Status)"
+    $plan = [ordered]@{ ok = $false; reason = $null; action = $Action; old = $null; new = $null; changes = [System.Collections.Generic.List[object]]::new(); notes = [System.Collections.Generic.List[string]]::new() }
+    $no = { param($why) $plan.reason = $why; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes); $plan }
+    if (-not $t) { return & $no "$($Pair.TemplateId) is not in the template library" }
+    $ver = { param($v) if ("$v" -match '^v\d+(\.\d+)*$') { "$v" } else { 'v1.0' } }
+    $oldVer = & $ver (& $nv $Pair.OldVersion); $newVer = & $ver $Pair.NewVersion
+    $word = { param($s) if ($script:EpsCaStateWord[$s]) { $script:EpsCaStateWord[$s] } else { "$s" } }
+    $add = { param($who, $f, $b, $a) if ("$b" -cne "$a") { $plan.changes.Add([ordered]@{ policy = $who; field = $f; before = $b; after = $a }) } }
+    switch ($Action) {
+        'Promote' {
+            if ($st -notin 'Testing', 'RolledBack') { return & $no "the pair is $st - only a version under test (or rolled back) is promoted" }
+            if (-not $NewStagePlan -or -not $NewStagePlan.ok) { return & $no "the new version cannot move to Prod: $(if ($NewStagePlan) { $NewStagePlan.reason } else { 'no plan' })" }
+            $plan.new = [ordered]@{ id = "$($Pair.NewPolicyId)"; displayNameBefore = "$(Get-EpsCaV $New 'displayName')"; displayNameAfter = "$($t.id)-Prod-$rest"; stateBefore = "$(Get-EpsCaV $New 'state')"; stateAfter = $NewStagePlan.stateAfter; set = $NewStagePlan.set }
+            $plan.old = [ordered]@{ id = "$($Pair.OldPolicyId)"; displayNameBefore = "$(Get-EpsCaV $Old 'displayName')"; displayNameAfter = "$($t.id)-$oldVer-$rest"; stateBefore = "$(Get-EpsCaV $Old 'state')"; stateAfter = 'disabled'
+                           patch = [ordered]@{ displayName = "$($t.id)-$oldVer-$rest"; state = 'disabled' } }
+            & $add 'new' 'name' $plan.new.displayNameBefore $plan.new.displayNameAfter; & $add 'new' 'state' (& $word $plan.new.stateBefore) (& $word $plan.new.stateAfter)
+            foreach ($c in @($NewStagePlan.changes | Where-Object { $_.field -notin 'name', 'state' })) { & $add 'new' $c.field $c.before $c.after }
+            & $add 'old' 'name' $plan.old.displayNameBefore $plan.old.displayNameAfter; & $add 'old' 'state' (& $word $plan.old.stateBefore) 'off'
+            $plan.notes.Add("The new version ($newVer) is turned ON in Prod first; then the old one ($oldVer) is turned off and kept - Roll back puts it back as it is now.")
+            foreach ($n in @($NewStagePlan.notes)) { if ($n -notmatch 'skips') { $plan.notes.Add($n) } }
+        }
+        'Rollback' {
+            if ($st -ne 'Promoted') { return & $no "the pair is $st - only a promoted version is rolled back" }
+            $ob = if (& $nv $Pair.OldBeforeJson) { "$($Pair.OldBeforeJson)" | ConvertFrom-Json -AsHashtable -Depth 30 } else { $null }
+            if (-not $ob) { return & $no 'how the old policy was before the promote is not recorded - change it with Edit' }
+            $op = [ordered]@{ displayName = "$($ob.displayName)"; state = "$($ob.state)" }
+            if ($ob.users) { $op.conditions = [ordered]@{ users = $ob.users } }
+            $plan.old = [ordered]@{ id = "$($Pair.OldPolicyId)"; displayNameBefore = "$(Get-EpsCaV $Old 'displayName')"; displayNameAfter = $op.displayName; stateBefore = "$(Get-EpsCaV $Old 'state')"; stateAfter = $op.state; patch = $op }
+            $plan.new = [ordered]@{ id = "$($Pair.NewPolicyId)"; displayNameBefore = "$(Get-EpsCaV $New 'displayName')"; displayNameAfter = "$($t.id)-$newVer-$rest"; stateBefore = "$(Get-EpsCaV $New 'state')"; stateAfter = 'disabled'
+                           patch = [ordered]@{ displayName = "$($t.id)-$newVer-$rest"; state = 'disabled' } }
+            & $add 'old' 'name' $plan.old.displayNameBefore $plan.old.displayNameAfter; & $add 'old' 'state' (& $word $plan.old.stateBefore) (& $word $plan.old.stateAfter)
+            & $add 'old' 'users' 'as now' 'as before the promote'
+            & $add 'new' 'name' $plan.new.displayNameBefore $plan.new.displayNameAfter; & $add 'new' 'state' (& $word $plan.new.stateBefore) 'off'
+            $plan.notes.Add("The old version ($oldVer) is turned back on as it was before the promote first; then the new one ($newVer) is turned off and kept - Promote again when it is ready.")
+        }
+        'Remove' {
+            if ($st -ne 'Promoted') { return & $no "the pair is $st - the old version is removed only after a promote" }
+            if ("$(Get-EpsCaV $Old 'state')" -ne 'disabled') { return & $no 'the old version is not off - only an off policy is removed' }
+            $plan.old = [ordered]@{ id = "$($Pair.OldPolicyId)"; displayNameBefore = "$(Get-EpsCaV $Old 'displayName')"; displayNameAfter = '(deleted)'; stateBefore = 'disabled'; stateAfter = '(deleted)' }
+            & $add 'old' 'policy' $plan.old.displayNameBefore '(deleted from the tenant)'
+            $plan.notes.Add('The old version is DELETED from the tenant - this cannot be rolled back from here. Type its name to confirm.')
+        }
+    }
+    $plan.ok = $true; $plan.changes = @($plan.changes); $plan.notes = @($plan.notes)
+    $plan
+}
+
+function Get-EpsCaVersionPair {
+    # the newest version pair a policy is part of (as the old or the new one), or $null
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$PolicyId)
+    @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT TOP 1 PairId, TemplateId, OldPolicyId, NewPolicyId, OldVersion, NewVersion, Status, OldBeforeJson, CreatedBy, CreatedAtUtc, ChangedBy, ChangedAtUtc, Reason FROM eps.CaVersionPair WHERE OldPolicyId = @p OR NewPolicyId = @p ORDER BY PairId DESC')[0]
+}
+
+function Get-EpsCaExistingPolicies {
+    # the tenant's policies as the engine last read them: @{ id; displayName; templateId; versionCopy }
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT PolicyId, DisplayName, JSON_VALUE(ReviewJson, '$.templateId') AS TemplateId, JSON_VALUE(ReviewJson, '$.versionCopy') AS VersionCopy FROM eps.CaPolicy" | ForEach-Object {
+        @{ id = "$($_.PolicyId)"; displayName = "$($_.DisplayName)"; templateId = $(if ($_.TemplateId -is [DBNull]) { $null } else { "$($_.TemplateId)" }); versionCopy = $(if ($_.VersionCopy -is [DBNull]) { $null } else { "$($_.VersionCopy)" }) } })
+}
+
+function Get-EpsCaDeployPlanFromStore {
+    # the web app's preview of a deploy (or of a test of a newer version, -VersionOf = the policy it is tested next to):
+    # from what the engine last read (eps.CaPolicy, eps.ManagedGroup) - no Graph. Returns the plan (+ versionOf), or $null
+    # when there is no such template / policy.
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$TemplateId, [string]$Stage = 'Initial', [string]$VersionOf)
+    $cat = Get-EpsCaTemplateCatalog
+    $names = Get-EpsCaNameMap -ConnectionString $ConnectionString
+    $ctx = Get-EpsCaContext -ConnectionString $ConnectionString -Names $names -NoGraph
+    $gs = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Found FROM eps.ManagedGroup')) { $gs["$($r.Name)"] = $(if ($r.Found -is [DBNull]) { $null } else { [bool]$r.Found }) }
+    # a group the engine resolved for a policy it read is in the tenant
+    foreach ($k in $names.Keys) { $n = $names[$k]; if ($n.Kind -eq 'group' -and $n.Name -and -not $gs.ContainsKey($n.Name)) { $gs["$($n.Name)"] = $true } }
+    if ($VersionOf) {
+        $d = Get-EpsCaPolicyDetail -ConnectionString $ConnectionString -PolicyId ([guid]$VersionOf)
+        if (-not $d) { return $null }
+        $rv = @{}; if ($d.Policy.ReviewJson -and $d.Policy.ReviewJson -isnot [DBNull]) { $rv = $d.Policy.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20 }
+        $vi = Get-EpsCaVersionInfo -Adoption $d.Adoption -Review $rv -Catalog $cat
+        $t = $cat.ById["$(if ($d.Adoption -and $d.Adoption.TemplateId -isnot [DBNull]) { $d.Adoption.TemplateId } else { $rv.templateId })"]
+        if (-not $vi.available) { return [ordered]@{ ok = $false; reason = "no newer version to test: $($vi.reason)"; mode = 'version'; versionInfo = $vi; groups = @(); rows = @(); notes = @() } }
+        $open = Get-EpsCaVersionPair -ConnectionString $ConnectionString -PolicyId ([guid]$VersionOf)
+        if ($open -and "$($open.Status)" -in 'Testing', 'RolledBack') { return [ordered]@{ ok = $false; reason = "a version is already being tested next to this policy ($($open.NewVersion)) - promote it, or roll it back"; mode = 'version'; versionInfo = $vi; groups = @(); rows = @(); notes = @() } }
+        $plan = Get-EpsCaDeployPlan -Template $t -Stage $Stage -Ctx $ctx -Catalog $cat -Existing (Get-EpsCaExistingPolicies -ConnectionString $ConnectionString) -VersionCopy -GroupState $gs
+        $plan.versionInfo = $vi; $plan.versionOf = $VersionOf; $plan.expected = $rv.hash
+        return $plan
+    }
+    $t = $cat.ById["$TemplateId".ToUpperInvariant()]
+    if (-not $t) { return $null }
+    Get-EpsCaDeployPlan -Template $t -Stage $Stage -Ctx $ctx -Catalog $cat -Existing (Get-EpsCaExistingPolicies -ConnectionString $ConnectionString) -GroupState $gs
+}
+
+function Get-EpsCaPairPlanFromStore {
+    # the web app's preview of Promote / Roll back / Remove for the pair a policy is in, from the last read - no Graph
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$PolicyId, [Parameter(Mandatory)][string]$Action)
+    $pair = Get-EpsCaVersionPair -ConnectionString $ConnectionString -PolicyId $PolicyId
+    if (-not $pair) { return [ordered]@{ ok = $false; reason = 'this policy has no version under test'; action = $Action; changes = @(); notes = @() } }
+    $get = { param($id) $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = [guid]"$id" } -Query 'SELECT BodyJson, ReviewJson FROM eps.CaPolicy WHERE PolicyId = @p')[0]
+        if ($r -and $r.BodyJson -and $r.BodyJson -isnot [DBNull]) { @{ Body = ($r.BodyJson | ConvertFrom-Json -AsHashtable -Depth 30); Review = ($r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20) } } }
+    $o = & $get $pair.OldPolicyId; $n = & $get $pair.NewPolicyId
+    if (-not $n -or ($Action -ne 'Promote' -and -not $o)) { return [ordered]@{ ok = $false; reason = 'one of the two policies is not in the last read - read the policy list again'; action = $Action; changes = @(); notes = @() } }
+    $sp = $null
+    if ($Action -eq 'Promote') {
+        $names = Get-EpsCaNameMap -ConnectionString $ConnectionString
+        $ctx = Get-EpsCaContext -ConnectionString $ConnectionString -Names $names -NoGraph
+        $sp = Get-EpsCaPromoteStagePlan -New $n.Body -NewReview $n.Review -TemplateId "$($pair.TemplateId)" -Ctx $ctx -Names $names
+    }
+    $plan = Get-EpsCaPairPlan -Action $Action -Pair $pair -Old $(if ($o) { $o.Body }) -New $n.Body -NewStagePlan $sp
+    $plan.expectedOld = $(if ($o) { $o.Review.hash }); $plan.expectedNew = $n.Review.hash; $plan.pairId = "$($pair.PairId)"
+    $plan
+}
+
+function Get-EpsCaPromoteStagePlan {
+    # the new version's move to Prod, by the template's stages: the stage plan of the policy as if it carried its stage in
+    # its name (a test copy, CAnnn-vX.Y-..., never moves through the stages by itself)
+    param([Parameter(Mandatory)]$New, [Parameter(Mandatory)]$NewReview, [Parameter(Mandatory)][string]$TemplateId, $Ctx = @{}, [hashtable]$Names = @{}, $Catalog = (Get-EpsCaTemplateCatalog))
+    $t = $Catalog.ById[$TemplateId]
+    if (-not $t) { return [ordered]@{ ok = $false; reason = "$TemplateId is not in the library" } }
+    $as = ConvertTo-Json -InputObject $New -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30
+    $from = "$($NewReview.stage)"; if ($from -notin $script:EpsCaStageOrder) { $from = 'Pilot1' }
+    $as.displayName = "$TemplateId-$from-$(Get-EpsCaTemplateRest $t)"
+    $rv = @{}; foreach ($k in @($NewReview.Keys)) { $rv["$k"] = $NewReview[$k] }; $rv.stage = $from
+    Get-EpsCaStagePlan -Policy $as -Review $rv -To 'Prod' -Ctx $Ctx -Names $Names -Catalog $Catalog
+}
+
 # ---- the documentation (v1: Entra-CA-Policies-Documentation[-with-IDs].csv / .xlsx) --------------------------------------
 $script:EpsCaDocColumns = @('Template', 'Stage', 'DisplayName', 'State', 'IncludeUsers', 'ExcludeUsers', 'IncludeGroups', 'ExcludeGroups', 'IncludeRoles', 'ExcludeRoles',
     'IncludeApplications', 'ExcludeApplications', 'UserActions', 'AuthenticationContexts', 'ClientAppTypes', 'IncludePlatforms', 'ExcludePlatforms', 'IncludeLocations', 'ExcludeLocations',
@@ -745,8 +1008,12 @@ function Get-EpsCaPolicyDetail {
     }
     # CA-LIFECYCLE: the stage moves made from here (newest first)
     $mv = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $PolicyId } -Query 'SELECT TOP 50 MoveId, DisplayName, FromStage, ToStage, Result, ResultText, RequestedBy, Reason, MovedAtUtc FROM eps.CaStageMove WHERE PolicyId = @p ORDER BY MovedAtUtc DESC')
+    # CA-TEMPLATES: a newer version of its template, and the version pair it is part of (as the old or the new one)
+    $rvh = if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -AsHashtable -Depth 20 } else { @{} }
+    $pair = Get-EpsCaVersionPair -ConnectionString $ConnectionString -PolicyId $PolicyId
     @{ Policy = $r; Body = $body; Names = $used; Review = $(if ($r.ReviewJson -and $r.ReviewJson -isnot [DBNull]) { $r.ReviewJson | ConvertFrom-Json -Depth 20 }); Adoption = $a; Findings = $f; Moves = $mv
-       Documentation = @(Get-EpsCaDocumentationRows -Rows @($r) -Names $names)[0] }
+       Documentation = @(Get-EpsCaDocumentationRows -Rows @($r) -Names $names)[0]
+       VersionInfo = (Get-EpsCaVersionInfo -Adoption $a -Review $rvh); Pair = $pair }
 }
 
 # ---- adopt / release: a RECORD, applied by the engine from the operator's signed request -----------------------------------

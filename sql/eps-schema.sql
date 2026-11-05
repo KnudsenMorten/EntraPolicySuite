@@ -944,3 +944,108 @@ CREATE TABLE eps.ManagedGroup (
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 22)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (22, '2.0.81');
+
+-- v23 (2.0.82, CA-TEMPLATES - owner 2026-11-05: Templates "Side-by-side only"; V1-PARITY P5 / P6): a new template version
+-- tested NEXT TO the policy it replaces (v1's Install_Latest_Policy_Disabled), then promoted (the new one to Prod, the old
+-- one off and kept), rolled back (the old one back as it was, the new one off) or the old one removed. One row per pair;
+-- OldBeforeJson = the old policy's name, state and users as they were before the promote (what a roll back puts back).
+-- The engine writes it from a SuperAdmin's signed request; the web app shows it on both policies' pages.
+IF OBJECT_ID('eps.CaVersionPair') IS NULL
+CREATE TABLE eps.CaVersionPair (
+    PairId        BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CaVersionPair PRIMARY KEY,
+    TemplateId    NVARCHAR(20)   NOT NULL,
+    OldPolicyId   UNIQUEIDENTIFIER NOT NULL,
+    NewPolicyId   UNIQUEIDENTIFIER NOT NULL,
+    OldVersion    NVARCHAR(20)   NULL,
+    NewVersion    NVARCHAR(20)   NOT NULL,
+    Status        NVARCHAR(12)   NOT NULL,                -- Testing | Promoted | RolledBack | Removed
+    OldBeforeJson NVARCHAR(MAX)  NULL,
+    CreatedBy     NVARCHAR(320)  NOT NULL,
+    CreatedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_CaVersionPair_At DEFAULT SYSUTCDATETIME(),
+    ChangedBy     NVARCHAR(320)  NULL,
+    ChangedAtUtc  DATETIME2      NULL,
+    Reason        NVARCHAR(2000) NULL,
+    CONSTRAINT CK_CaVersionPair_Status CHECK (Status IN ('Testing', 'Promoted', 'RolledBack', 'Removed'))
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 23)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (23, '2.0.82');
+
+GO
+-- v24 (2.0.82, WORKER-GUI - owner 2026-11-05: "i didnt see the ad hybrid worker anywhere in the gui or where to configure
+-- it or see the services" / "is that not built"; V1-PARITY P14 several AD environments): the worker reports its scheduled
+-- task (state, on / off, last / next run, last result), its AD domain + domain controller and its AD environment; a work
+-- package carries the AD environment it is for (NULL = any worker) and the answer of a read-only connection test.
+IF COL_LENGTH('eps.WorkerHeartbeat', 'AdDomain') IS NULL
+ALTER TABLE eps.WorkerHeartbeat ADD
+    AdDomain       NVARCHAR(256) NULL,              -- the domain the worker reads / writes (from RootDSE)
+    AdServer       NVARCHAR(256) NULL,              -- the domain controller it used
+    Environment    NVARCHAR(50)  NULL,              -- its AD environment (v1: Internal_Prod / DMZ_Prod / ...), NULL = the only one
+    HostType       NVARCHAR(20)  NULL,              -- AzureVm | Arc
+    TaskState      NVARCHAR(20)  NULL,              -- the scheduled task as the worker read it: Ready | Running | Disabled | Queued | Unknown
+    TaskEnabled    BIT           NULL,
+    TaskLastRunUtc DATETIME2     NULL,
+    TaskLastResult NVARCHAR(40)  NULL,              -- the previous run's result code (0x0 = ok)
+    TaskNextRunUtc DATETIME2     NULL;
+IF COL_LENGTH('eps.WorkPackage', 'Environment') IS NULL
+ALTER TABLE eps.WorkPackage ADD
+    Environment    NVARCHAR(50)   NULL,             -- the AD environment the package is for; NULL = any worker
+    Result         NVARCHAR(2000) NULL,             -- what the worker answered (a connection test)
+    RequestedBy    NVARCHAR(320)  NULL;             -- a person's test or retry (the tagging job leaves it empty)
+
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 24)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (24, '2.0.82');
+
+-- v25 (2.0.82, UNDO-BACKUP - owner 2026-11-05: "i need to have both a new feature Undo + another new feature
+-- backup/restore. look at how PIM does it"; "it must work for both ca policies + tagging so i can recover"; "ok go with
+-- daily keep 30"; V1-PARITY P10 = v1's JSON export of every CA policy): immutable backup sets. A CA set holds every
+-- policy (adopted or not), named location and authentication strength as read (one row each, v1's JSON); a configuration
+-- set holds the tagging configuration (rules as this app's CSV, tag types, values, condition types, scopes) and the
+-- non-secret settings. Kind: Daily (the Backup job, the newest 30 kept), BeforeChange (taken by the engine BEFORE each of
+-- its CA writes / before each commit - kept 30 days), Manual ("Back up now", kept 30 days). Nothing ever UPDATEs a set:
+-- the engine inserts and prunes, the web app reads.
+IF OBJECT_ID('eps.CaBackup') IS NULL
+CREATE TABLE eps.CaBackup (
+    BackupId       BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CaBackup PRIMARY KEY,
+    Kind           NVARCHAR(16)   NOT NULL,
+    TakenAtUtc     DATETIME2      NOT NULL CONSTRAINT DF_CaBackup_At DEFAULT SYSUTCDATETIME(),
+    TakenBy        NVARCHAR(320)  NOT NULL,
+    Cause          NVARCHAR(400)  NULL,
+    Policies       INT            NOT NULL CONSTRAINT DF_CaBackup_P DEFAULT 0,
+    NamedLocations INT            NOT NULL CONSTRAINT DF_CaBackup_N DEFAULT 0,
+    AuthStrengths  INT            NOT NULL CONSTRAINT DF_CaBackup_A DEFAULT 0,
+    CONSTRAINT CK_CaBackup_Kind CHECK (Kind IN ('Daily', 'BeforeChange', 'Manual'))
+);
+IF OBJECT_ID('eps.CaBackupItem') IS NULL
+CREATE TABLE eps.CaBackupItem (
+    BackupId       BIGINT         NOT NULL CONSTRAINT FK_CaBackupItem_Set REFERENCES eps.CaBackup (BackupId),
+    ItemType       NVARCHAR(20)   NOT NULL,
+    ObjectId       NVARCHAR(64)   NOT NULL,
+    DisplayName    NVARCHAR(400)  NULL,
+    BodyJson       NVARCHAR(MAX)  NOT NULL,
+    CONSTRAINT PK_CaBackupItem PRIMARY KEY (BackupId, ItemType, ObjectId),
+    CONSTRAINT CK_CaBackupItem_Type CHECK (ItemType IN ('policy', 'namedLocation', 'authStrength'))
+);
+IF OBJECT_ID('eps.ConfigBackup') IS NULL
+CREATE TABLE eps.ConfigBackup (
+    BackupId       BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ConfigBackup PRIMARY KEY,
+    Kind           NVARCHAR(16)   NOT NULL,
+    TakenAtUtc     DATETIME2      NOT NULL CONSTRAINT DF_ConfigBackup_At DEFAULT SYSUTCDATETIME(),
+    TakenBy        NVARCHAR(320)  NOT NULL,
+    Cause          NVARCHAR(400)  NULL,
+    RefId          NVARCHAR(64)   NULL,                    -- the commit it was taken before
+    CountsJson     NVARCHAR(MAX)  NULL,
+    CONSTRAINT CK_ConfigBackup_Kind CHECK (Kind IN ('Daily', 'BeforeChange', 'Manual'))
+);
+IF OBJECT_ID('eps.ConfigBackupItem') IS NULL
+CREATE TABLE eps.ConfigBackupItem (
+    BackupId       BIGINT         NOT NULL CONSTRAINT FK_ConfigBackupItem_Set REFERENCES eps.ConfigBackup (BackupId),
+    Entity         NVARCHAR(40)   NOT NULL,               -- Setting | TagType | TagValue | ConditionType | Scope | Rules
+    ItemKey        NVARCHAR(400)  NOT NULL,
+    BodyJson       NVARCHAR(MAX)  NOT NULL,
+    CONSTRAINT PK_ConfigBackupItem PRIMARY KEY (BackupId, Entity, ItemKey)
+);
+
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 25)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (25, '2.0.82');

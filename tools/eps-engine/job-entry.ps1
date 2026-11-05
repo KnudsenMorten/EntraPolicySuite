@@ -19,7 +19,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 function Say($m) { Write-Host "[$([datetime]::UtcNow.ToString('u'))] [eps $version $Job] $m" }
 
@@ -229,6 +229,33 @@ WHERE q.Job = 'Config' AND q.Status = 'Dispatched'
         Say "configuration: $n request(s)"
         exit 0
     }
+    if ($Job -eq 'Backup') {
+        # UNDO-BACKUP (owner 2026-11-05: "ok go with daily keep 30"): every Conditional Access policy, named location and
+        # authentication strength, and the tagging configuration, as one set each (EPS-Backup.ps1) - READS the tenant only.
+        # A "Back up now" request is taken first (nothing outside changes: nothing to sign); otherwise the daily run.
+        $runId = [guid]::NewGuid()
+        $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
+UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
+OUTPUT INSERTED.RequestId, INSERTED.RequestedBy, INSERTED.Reason
+FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE q.Job = 'Backup' AND q.Status = 'Dispatched'
+'@)[0]
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'Backup', 'Apply', NULL)" | Out-Null
+        $script:__seq = 0
+        $log = { param($level, $msg) $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
+        $ok = $false; $res = $null
+        try {
+            $res = if ($req) { Invoke-EpsBackupJob -ConnectionString $ConnectionString -Kind Manual -Actor "$($req.RequestedBy)" -Cause "Back up now$(if ($req.Reason) { ": $($req.Reason)" })" -Log $log }
+                   else { Invoke-EpsBackupJob -ConnectionString $ConnectionString -Kind Daily -Log $log }
+            $ok = $true
+        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        finally {
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Policies + $res.ConfigItems } else { 0 }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = 0, Applied = 0 WHERE RunId = @id' | Out-Null
+            if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "CA backup $($res.CaBackupId) ($($res.Policies) policies), configuration backup $($res.ConfigBackupId)" } else { 'the backup failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
+        }
+        exit $(if ($ok) { 0 } else { 1 })
+    }
     if ($Job -eq 'IdentityReport') {
         # the identity report (DESIGN §5.4) - READ ONLY towards the tenant and AD: one run = one snapshot the GUI reads.
         # A "Run now" request is taken first (nothing to sign: nothing outside changes); otherwise the scheduled run.
@@ -252,6 +279,34 @@ WHERE q.Job = 'IdentityReport' AND q.Status = 'Dispatched'
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Users + $res.Devices } else { 0 }); p = [int]$(if ($res) { $res.Gaps } else { 0 }) } `
                 -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0 WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$($res.Users) users, $($res.Devices) devices, $($res.Gaps) open gap view(s)" } else { 'the report failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
+        }
+        exit $(if ($ok) { 0 } else { 1 })
+    }
+    if ($Job -eq 'NamedLocations') {
+        # V1-PARITY P8 (v1's EntraNamedLocations_AzureNetworkServiceTags.ps1, a daily VisualCron job): the Azure service tags
+        # as IP named locations 'Azure.Network.ServiceTag.<tag>' - written only when a tag's prefixes changed (or its
+        # location is missing), only those locations (EPS-OnboardWrite.ps1). Runs when NamedLocations.Enabled is on.
+        $runId = [guid]::NewGuid()
+        $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
+UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
+OUTPUT INSERTED.RequestId, INSERTED.RequestedBy
+FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE q.Job = 'NamedLocations' AND q.Status = 'Dispatched'
+'@)[0]
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'NamedLocations', 'Apply', NULL)" | Out-Null
+        $script:__seq = 0
+        $log = { param($level, $msg) $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
+        $ok = $false; $res = $null
+        try {
+            & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - the service-tag named locations"
+            $res = Invoke-EpsServiceTagJob -ConnectionString $ConnectionString -Log $log
+            $ok = -not $res.Failed
+        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        finally {
+            $st = if ($ok) { 'Succeeded' } elseif ($res -and $res.Written) { 'PartlyFailed' } else { 'Failed' }
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $st; o = [int]$(if ($res) { $res.Tags } else { 0 }); p = [int]$(if ($res) { $res.Written + $res.Failed } else { 0 }); a = [int]$(if ($res) { $res.Written } else { 0 }); f = [int]$(if ($res) { $res.Failed } else { 0 }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = @a, Failed = @f WHERE RunId = @id' | Out-Null
+            if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($res) { "$($res.Tags) tag(s): $($res.Written) written, $($res.Unchanged) unchanged, $($res.Failed) failed" } else { 'the job failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
     }

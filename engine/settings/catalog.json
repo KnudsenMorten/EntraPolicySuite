@@ -16,7 +16,9 @@
     { "id": "NamedLocations", "label": "Named locations" },
     { "id": "IdentityReport", "label": "Identity report" },
     { "id": "Uplink", "label": "Invardia telemetry" },
-    { "id": "Update", "label": "Updates" }
+    { "id": "Update", "label": "Updates" },
+    { "id": "Backup", "label": "Backups" },
+    { "id": "HybridWorker", "label": "Hybrid worker" }
   ],
   "settings": [
     {
@@ -484,12 +486,24 @@
       }
     },
     {
-      "key": "NamedLocations.Region", "group": "NamedLocations", "label": "Azure region for the service-tag named locations", "type": "text", "maxLength": 60, "pattern": "^[a-z0-9]{2,60}$", "default": "westeurope", "role": "Admin", "active": false,
+      "key": "NamedLocations.Enabled", "group": "NamedLocations", "label": "Keep the Azure service tags as named locations", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Switches the daily named-locations job on (v1's EntraNamedLocations_AzureNetworkServiceTags.ps1): for each service tag in the list (v1's CSV, imported on the Import v1 page) it reads the tag's IP prefixes and keeps the named location 'Azure.Network.ServiceTag.<tag>' up to date - written only when the prefixes changed, or when the location is missing.",
+        "enabled": "Used from the next daily run (06:00, or Run now on the Jobs page).",
+        "disabled": "Off (the default): the job does not run and the service-tag named locations stay as they are.",
+        "risk": "It changes named locations in the tenant, but ONLY those whose name starts 'Azure.Network.ServiceTag.' - never another one, never a policy. A policy that uses such a location follows the new prefixes. Reversible: switch it off.",
+        "requires": "Admin. The engine's right to write named locations (granted by the install).",
+        "recommended": "On when you used v1's service-tag job.",
+        "docUrl": "https://invardia.com/docs/eps/settings/NamedLocations.Enabled/"
+      }
+    },
+    {
+      "key": "NamedLocations.Region", "group": "NamedLocations", "label": "Azure region for the service-tag named locations", "type": "text", "maxLength": 60, "pattern": "^[a-z0-9]{2,60}$", "default": "westeurope", "role": "Admin",
       "info": {
         "what": "The Azure region whose service tags become named locations (v1 used westeurope, hard-coded). Set by the v1 import.",
-        "enabled": "Kept for the named locations job, which is not in this release: saving it changes nothing yet.",
+        "enabled": "Used from the named-locations job's next run.",
         "disabled": "westeurope (v1's value).",
-        "risk": "None in this release. Reversible.",
+        "risk": "A wrong region gives the tags of that region: the named locations then hold its prefixes. Reversible.",
         "requires": "Admin.",
         "recommended": "The region your workloads run in, e.g. westeurope.",
         "docUrl": "https://invardia.com/docs/eps/settings/NamedLocations.Region/"
@@ -698,6 +712,59 @@
         "requires": "SuperAdmin. Outbound HTTPS to invardia.com from the jobs.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Update.Enabled/"
+      }
+    },
+    {
+      "key": "HybridWorker.StaleMinutes",
+      "group": "HybridWorker",
+      "label": "A worker is late after (minutes)",
+      "type": "int",
+      "min": 10,
+      "max": 1440,
+      "default": "15",
+      "role": "Admin",
+      "info": {
+        "what": "The hybrid worker reports every 5 minutes. When a worker has not reported for this many minutes, Administration > Hybrid worker and the Overview show it as late, with how long ago it last reported.",
+        "enabled": "Used at once on the page.",
+        "disabled": "15 minutes (the default): three missed cycles.",
+        "risk": "Display only: nothing runs or stops because of it. Reversible.",
+        "requires": "Admin.",
+        "recommended": "15.",
+        "docUrl": "https://invardia.com/docs/eps/settings/HybridWorker.StaleMinutes/"
+      }
+    },
+    {
+      "key": "HybridWorker.EnvironmentByUpnSuffix",
+      "group": "HybridWorker",
+      "label": "AD environments (one worker each)",
+      "type": "list",
+      "maxItems": 50,
+      "itemMaxLength": 310,
+      "itemPattern": "^@?[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\s*=\\s*[A-Za-z0-9_-]{1,50}$",
+      "itemHint": "<upn suffix>=<environment>, e.g. dmz.contoso.com=DMZ_Prod",
+      "default": "[]",
+      "role": "Admin",
+      "info": {
+        "what": "For several Active Directory forests or domains (v1 ran its scripts once per environment: Internal_Prod, DMZ_Prod, Internal_Dev, Internal_Test). Each line sends the AD changes of users whose on-premises user principal name ends in the suffix to the hybrid worker installed for that environment (Install-EpsHybridWorker -Environment <name>). The longest matching suffix wins.",
+        "enabled": "From the next tagging run, each AD change is queued for its user's environment, and only a worker of that environment takes it. A user that matches no line goes to a worker installed without an environment.",
+        "disabled": "Empty (the default): one AD - every worker takes every change.",
+        "risk": "A change for an environment that has no worker waits until one reports (the Hybrid worker page lists such environments). A wrong suffix sends a change to a worker that cannot find the user: it fails with 'not in AD' and can be tried again. Reversible.",
+        "requires": "Admin. One hybrid worker per environment, installed with -Environment.",
+        "recommended": "Empty with one AD. With several, one line per domain suffix.",
+        "docUrl": "https://invardia.com/docs/eps/settings/HybridWorker.EnvironmentByUpnSuffix/"
+      }
+    },
+    {
+      "key": "Backup.Enabled", "group": "Backup", "label": "Back up every night", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Stop the nightly backup?", "body": "No new backup is taken at night: a policy or a rule changed by mistake can then only be put back from an older backup, or from the backup taken just before a change made here." } ],
+      "info": {
+        "what": "Every night the Backup job stores every Conditional Access policy (adopted or not), named location and authentication strength, and the tagging configuration (rules, tag types and values, condition types, saved scopes and the settings - never a secret). The newest 30 are kept. Administration > Backups / Undo lists them, downloads a backup as JSON files and puts things back.",
+        "enabled": "On (the default): the Backup job runs every night at 00:30 (Platform.TimeZone). It only reads the tenant.",
+        "disabled": "Off: no nightly backup. Back up now still works, and a backup is still taken just before every change made here.",
+        "risk": "Nothing changes in the tenant or the directory. Off, the newest backup gets older. Reversible.",
+        "requires": "SuperAdmin.",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Backup.Enabled/"
       }
     }
   ]

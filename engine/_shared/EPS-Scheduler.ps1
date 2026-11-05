@@ -18,7 +18,7 @@ function Get-EpsDefaultJobSchedule {
         [pscustomobject]@{ Job = 'UserTagging';    Schedule = 'daily 01:00'; AcaJobName = 'caj-eps-usertag';   Implemented = $true }
         [pscustomobject]@{ Job = 'DeviceTagging';  Schedule = 'daily 01:30'; AcaJobName = 'caj-eps-devicetag'; Implemented = $true }
         [pscustomobject]@{ Job = 'IdentityReport'; Schedule = 'daily 02:00'; AcaJobName = 'caj-eps-idreport';  Implemented = $true }
-        [pscustomobject]@{ Job = 'NamedLocations'; Schedule = 'daily 06:00'; AcaJobName = 'caj-eps-namedloc';  Implemented = $false }
+        [pscustomobject]@{ Job = 'NamedLocations'; Schedule = 'daily 06:00'; AcaJobName = 'caj-eps-namedloc';  Implemented = $true }   # V1-PARITY P8 (2.0.82): v1's service-tag job
         [pscustomobject]@{ Job = 'TamperMonitor';  Schedule = 'every 15m';   AcaJobName = 'caj-eps-tamper';    Implemented = $true }
         [pscustomobject]@{ Job = 'PolicyDeploy';   Schedule = 'manual';      AcaJobName = 'caj-eps-policy';    Implemented = $false }
         # the CA Policy Analyzer (DESIGN §5.7): manual - its MONITORS have their own schedules (eps.CaMonitor); Parallel =
@@ -33,6 +33,9 @@ function Get-EpsDefaultJobSchedule {
         # UPDATER-1 phase 1 (owner 2026-11-04 "Yes, build it now"): every night, which release is approved for this install's
         # ring - CHECK ONLY: it reports, it installs nothing (EPS-Updater.ps1)
         [pscustomobject]@{ Job = 'Update';         Schedule = 'daily 03:00'; AcaJobName = 'caj-eps-update';    Implemented = $true; EnabledDefault = $true }
+        # UNDO-BACKUP (owner 2026-11-05: "ok go with daily keep 30"): every CA policy, named location and authentication
+        # strength, and the tagging configuration, stored once a day (the newest 30 kept); reads the tenant only
+        [pscustomobject]@{ Job = 'Backup';         Schedule = 'daily 00:30'; AcaJobName = 'caj-eps-backup';    Implemented = $true; EnabledDefault = $true }
     )
 }
 

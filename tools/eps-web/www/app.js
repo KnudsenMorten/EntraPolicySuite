@@ -2346,6 +2346,250 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     });
     document.body.appendChild(d); d.showModal();
   }
+  // CA-TEMPLATES (owner 2026-11-05: Templates "Side-by-side only"; "fully manageable in the gui"; "always 100% operator
+  // controlled"; V1-PARITY P5 / P6): deploy a template as a new policy, test a newer version NEXT TO the policy it
+  // replaces, then promote it / roll it back / remove the old one. Each shows the plan (from the last read, nothing
+  // written) before the SuperAdmin approves; the engine reads the tenant again before it writes.
+  function capPlanDialog(o) {
+    // o: { title; guide; stages ([value, label] or none); load(stage) -> plan; show(plan, box); go (the button);
+    //      send(plan, reason, stage, typed) -> request; enforce(plan) -> a tick box first; confirmName(plan) -> a name to type }
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': o.title });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    d.appendChild(el('h3', { text: o.title }));
+    d.appendChild(el('div', { class: 'guide', text: o.guide }));
+    var stageSel = null;
+    if (o.stages) { stageSel = el('select', { 'aria-label': 'Start it as' }, o.stages.map(function (s) { return el('option', { value: s[0], text: s[1] }); })); d.appendChild(el('div', { class: 'toolbar' }, el('label', null, 'Start it as: ', stageSel))); }
+    var body = el('div');
+    d.appendChild(body);
+    var load = function () {
+      clear(body).appendChild(el('p', { class: 'smeta', text: 'Working out what it does ...' }));
+      o.load(stageSel ? stageSel.value : null).then(function (pl) {
+        clear(body);
+        if (!pl.ok) { body.appendChild(el('p', { class: 'c-danger', text: 'Cannot: ' + textOf(pl.reason) })); body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close }))); return; }
+        o.show(pl, body);
+        if ((pl.notes || []).length) body.appendChild(el('ul', { class: 'hints' }, pl.notes.map(function (n) { return el('li', { text: n }); })));
+        var reason = el('input', { type: 'text', placeholder: 'Reason (optional)', style: 'width:100%' });
+        var go = el('button', { type: 'button', text: o.go });
+        var need = o.confirmName ? o.confirmName(pl) : null, typed = null, ack = null, enforce = o.enforce ? o.enforce(pl) : false;
+        var upd = function () { go.disabled = !!((need && typed.value.trim() !== need) || (enforce && !ack.checked)); };
+        if (need) { typed = el('input', { type: 'text', 'aria-label': 'Type the name to confirm', placeholder: need, style: 'width:100%' }); typed.addEventListener('input', upd); body.appendChild(el('p', null, 'Type ', el('b', { text: need }), ' to confirm: ', typed)); }
+        if (enforce) { ack = el('input', { type: 'checkbox' }); ack.addEventListener('change', upd); body.appendChild(el('label', null, ack, ' I have checked who this ENFORCES the policy for (the CA Policy Analyzer shows the sign-ins it would have blocked).')); }
+        upd();
+        go.addEventListener('click', function () {
+          go.disabled = true; close();
+          notice('Sending: ' + o.title + ' ...');
+          o.send(pl, reason.value.trim(), stageSel ? stageSel.value : null, typed ? typed.value.trim() : null).then(function (x) { afterAction(x, o.title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+        });
+        body.appendChild(el('p', null, reason));
+        body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+      }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); });
+    };
+    if (stageSel) stageSel.addEventListener('change', load);
+    document.body.appendChild(d); d.showModal();
+    load();
+  }
+  function capDeployShow(pl, box) {
+    box.appendChild(el('p', null, el('b', { text: pl.displayName }), ' - ' + (pl.state === 'disabled' ? 'off' : pl.state === 'enabledForReportingButNotEnforced' ? 'report-only for the pilot group' : textOf(pl.state)) + ' · ' + textOf(pl.templateId) + ' ' + textOf(pl.version)));
+    box.appendChild(el('h4', { text: 'The groups it uses' }));
+    box.appendChild(table(pl.groups || [], [{ key: 'name', label: 'Group' }, { key: 'use', label: 'Used to', type: 'cat' }, { key: 'inTenant', label: 'In the tenant', type: 'cat', cls: function (g) { return g.inTenant === 'missing' ? 'c-warning' : ''; } }], { empty: 'No group.' }));
+    box.appendChild(el('h4', { text: 'The new policy' }));
+    box.appendChild(table(pl.rows || [], [{ key: 'path', label: 'Setting', type: 'cat' }, { key: 'value', label: 'Value', wrap: true }], { empty: 'Nothing.' }));
+    var bg = pl.breakGlass || {};
+    box.appendChild(el('p', { class: bg.ok === false ? 'c-danger' : null, text: 'Break-glass: ' + textOf(bg.text) + ' (checked again by the engine on the result)' }));
+  }
+  function capDeploy(t) {
+    capPlanDialog({ title: 'Deploy ' + t.id + ' ' + t.version + ' as a new policy',
+      guide: 'Creates a NEW policy in your tenant from the template, as v1\'s Initial_Setup does: the groups it needs are created first when they are missing, then the policy - OFF, or report-only for the pilot group. It is adopted at once; move it through the stages from its page. The engine reads the tenant again first and refuses if the template is already there, a name or group cannot be found, or the break-glass accounts would not be excluded.',
+      stages: [['Initial', 'Initial - off'], ['Pilot1', 'Pilot1 - report-only for the pilot group']],
+      load: function (stage) { return api('GET', '/api/catemplates/' + encodeURIComponent(t.id) + '/deploy-plan?' + qs({ stage: stage })); },
+      show: capDeployShow, go: 'Create the policy',
+      send: function (pl, reason, stage) { return api('POST', '/api/catemplates/' + encodeURIComponent(t.id) + '/deploy', { stage: stage, reason: reason }); } });
+  }
+  function capNewVersion(j) {
+    var pol = j.policy, vi = j.versionInfo || {};
+    capPlanDialog({ title: 'Test ' + textOf(vi.library) + ' next to ' + pol.DisplayName,
+      guide: 'Creates a SECOND policy from the newer template version (v1\'s Install_Latest_Policy_Disabled), named with its version. This policy (' + textOf(vi.current || 'its version') + ') is NOT touched. Compare the two; then Promote turns the new one on in Prod and this one off (kept), and Roll back undoes that.',
+      stages: [['Pilot1', 'Pilot1 - report-only for the pilot group'], ['Initial', 'Initial - off']],
+      load: function (stage) { return api('GET', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/version-plan?' + qs({ action: 'test', stage: stage })); },
+      show: capDeployShow, go: 'Create the test policy',
+      send: function (pl, reason, stage) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/newversion', { stage: stage, expected: pl.expected, reason: reason }); } });
+  }
+  function capPairShow(pl, box) {
+    box.appendChild(table(pl.changes || [], [{ key: 'policy', label: 'Policy', type: 'cat' }, { key: 'field', label: 'Setting', type: 'cat' }, { key: 'before', label: 'Now', wrap: true }, { key: 'after', label: 'After', wrap: true }], { empty: 'Nothing changes.' }));
+  }
+  var CAP_PAIR = {
+    promote: ['Promote', 'promote', 'The new version is turned ON in Prod first, then the old one OFF - it is kept, so Roll back can put it back as it is now. Both CHANGE in your tenant; the engine reads both again first and refuses if one changed since this view, or if the break-glass accounts would not stay excluded.'],
+    rollback: ['Roll back', 'rollback', 'The old version is turned back on as it was before the promote first, then the new one OFF (kept - promote it again when it is ready). Both CHANGE in your tenant; the engine reads both again first.'],
+    removeold: ['Remove the old version', 'remove', 'DELETES the old version from your tenant. It must be off (after a promote). This cannot be rolled back from here: type its name to confirm.'] };
+  function capPair(j, what) {
+    var pol = j.policy, x = CAP_PAIR[what];
+    capPlanDialog({ title: x[0] + ': ' + j.pair.TemplateId + ' ' + textOf(j.pair.OldVersion) + ' / ' + textOf(j.pair.NewVersion), guide: x[2],
+      load: function () { return api('GET', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/version-plan?' + qs({ action: x[1] })); },
+      show: capPairShow, go: x[0],
+      enforce: function () { return what === 'promote'; },
+      confirmName: what === 'removeold' ? function (pl) { return pl.old ? pl.old.displayNameBefore : ''; } : null,
+      send: function (pl, reason, stage, typed) {
+        var b = { expectedOld: pl.expectedOld, expectedNew: pl.expectedNew, reason: reason };
+        if (what === 'removeold') return api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/removeold', { confirm: typed, expectedOld: pl.expectedOld, reason: reason });
+        if (what === 'promote') return api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/promote', b);
+        return api('POST', '/api/capolicies/policies/' + encodeURIComponent(pol.PolicyId) + '/rollback', b); } });
+  }
+  function capVersionSection(p, j) {
+    // the version pair this policy is in, and its buttons (SuperAdmin); or a newer version of its template to test
+    var pr = j.pair, vi = j.versionInfo || {}, owner = isRole('SuperAdmin');
+    p.appendChild(el('h3', { text: 'Template version' }));
+    if (pr && pr.Status !== 'Removed') {
+      var isNew = String(pr.NewPolicyId).toLowerCase() === String(j.policy.PolicyId).toLowerCase();
+      var other = isNew ? pr.OldPolicyId : pr.NewPolicyId;
+      var what = { Testing: 'the new version is under test next to the old one', Promoted: 'the new version is promoted; the old one is off and kept', RolledBack: 'rolled back: the old version is on, the new one off' }[pr.Status] || pr.Status;
+      p.appendChild(el('p', null, pr.TemplateId + ': ' + textOf(pr.OldVersion || 'the adopted version') + ' (old) and ' + textOf(pr.NewVersion) + ' (new) - ' + what + '. This is the ' + (isNew ? 'new' : 'old') + ' one; ', el('a', { href: '#capolicies/' + other, text: 'the ' + (isNew ? 'old' : 'new') + ' one' }), '.'));
+      if (owner) {
+        var bar = el('div', { class: 'toolbar' });
+        if (pr.Status === 'Testing' || pr.Status === 'RolledBack') bar.appendChild(el('button', { type: 'button', text: 'Promote ' + textOf(pr.NewVersion), onclick: function () { capPair(j, 'promote'); } }));
+        if (pr.Status === 'Promoted') {
+          bar.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Roll back to ' + textOf(pr.OldVersion || 'the old version'), onclick: function () { capPair(j, 'rollback'); } }));
+          bar.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Remove the old version', onclick: function () { capPair(j, 'removeold'); } }));
+        }
+        p.appendChild(bar);
+      }
+    } else if (vi.available) {
+      p.appendChild(el('p', null, 'The library has ' + textOf(vi.library) + ' of this template; this policy is ' + textOf(vi.current || 'from an earlier version') + '. ' + (owner ? 'Test the new version next to it - this policy is not touched.' : 'A SuperAdmin can test it next to this policy.')));
+      if (owner) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Test a new version (' + textOf(vi.library) + ')', onclick: function () { capNewVersion(j); } })));
+    } else p.appendChild(el('p', { class: 'smeta', text: 'No newer version to test' + (vi.reason ? ': ' + vi.reason : '') + '.' + (pr && pr.Status === 'Removed' ? ' The old version (' + textOf(pr.OldVersion) + ') was removed.' : '') }));
+  }
+  // UNDO-BACKUP (owner 2026-11-05: "i need to have both a new feature Undo + another new feature backup/restore. look at
+  // how PIM does it"; "it must work for both ca policies + tagging so i can recover"; "ok go with daily keep 30"): the
+  // Backups / Undo page, the undo of one change of a policy, of a tagging run and of a commit. Every restore and undo is
+  // shown first as a plan (nothing written) and sent with a reason; the engine applies it through the same checks as the
+  // change it puts back.
+  function sendRequests(title, reqs, reason) {
+    // the requests of a configuration restore, one after the other through their own routes (the commit queue stages
+    // those it stages); then the usual follow-up of what the engine did
+    if (bulkBusy) { notice('Still sending the previous changes - wait for them to finish.', 'warn'); return; }
+    var ids = [], errs = [], i = 0;
+    bulkBusy = true;
+    notice('Sending ' + fmtNum(reqs.length) + ' change(s) ...');
+    var next = function () {
+      if (i >= reqs.length) { bulkBusy = false; afterAction({ requestIds: ids, errors: errs, count: reqs.length }, title); return; }
+      var q = reqs[i++], body = JSON.parse(JSON.stringify(q.body || {}));
+      body.reason = title + (reason ? ': ' + reason : '');
+      api(q.method, q.path, body).then(function (res) { if (res && res.queued && res.requestId) ids.push(res.requestId); }, function (e) { errs.push(q.summary + ' - ' + e.message); }).then(next);
+    };
+    next();
+  }
+  function configRestoreDialog(title, guide, load) {
+    // a configuration restore / the undo of a commit: the plan as the requests the pages make, each ticked; the operator
+    // unticks what he does not want, gives a reason, sends
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': title });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    d.appendChild(el('h3', { text: title }));
+    d.appendChild(el('div', { class: 'guide', text: guide }));
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Working out what it changes ...' }));
+    d.appendChild(body);
+    document.body.appendChild(d); d.showModal();
+    load().then(function (pl) {
+      clear(body);
+      if (!pl.ok && !(pl.requests || []).length) { body.appendChild(el('p', { class: 'c-danger', text: 'Cannot: ' + textOf(pl.reason) })); body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close }))); return; }
+      body.appendChild(el('p', { text: textOf(pl.summary) }));
+      var picks = (pl.requests || []).map(function (q) { var cb = el('input', { type: 'checkbox', 'aria-label': q.summary }); cb.checked = true; return { q: q, cb: cb }; });
+      body.appendChild(el('div', { class: 'plist' }, picks.map(function (x) { return el('label', { class: 'pitem' }, x.cb, ' ' + x.q.summary + ' ', el('span', { class: 'smeta', text: '(' + x.q.method + ' ' + x.q.path + ')' })); })));
+      if ((pl.notes || []).length) body.appendChild(el('ul', { class: 'hints' }, pl.notes.map(function (n) { return el('li', { text: n }); })));
+      var reason = el('input', { type: 'text', placeholder: 'Reason (optional)', style: 'width:100%' });
+      var go = el('button', { type: 'button', text: 'Send the ticked changes' });
+      go.addEventListener('click', function () {
+        var reqs = picks.filter(function (x) { return x.cb.checked; }).map(function (x) { return x.q; });
+        if (!reqs.length) { notice('Nothing ticked.', 'warn'); return; }
+        close(); sendRequests(title, reqs, reason.value.trim());
+      });
+      body.appendChild(el('p', null, reason));
+      body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); });
+  }
+  function caRestoreShow(pl, box) {
+    var s = pl.summary || {};
+    box.appendChild(el('p', { text: fmtNum(s.patch) + ' changed back, ' + fmtNum(s.create) + ' created again (OFF), ' + fmtNum(s.same) + ' as in the backup already, ' + fmtNum(s.refused) + ' refused.' }));
+    box.appendChild(table(pl.items || [], [{ key: 'displayName', label: 'Policy', wrap: true }, { key: 'action', label: 'Does', type: 'cat', render: function (r) { return !r.ok ? 'refused' : { patch: 'changed back', create: 'created again, OFF', none: 'nothing (as in the backup)' }[r.action] || r.action; } },
+      { key: 'stateAfter', label: 'State after', type: 'cat' }, { key: 'changes', label: 'What changes', wrap: true, render: function (r) { return (r.changes || []).map(function (c) { return c.path + ': ' + textOf(c.before) + ' -> ' + textOf(c.after); }).join('\n') || textOf(r.reason); } },
+      { key: 'breakGlass', label: 'Break-glass', wrap: true, render: function (r) { return r.breakGlass ? textOf(r.breakGlass.text) : ''; } }], { empty: 'No policy picked.' }));
+  }
+  function caRestoreDialog(backupId, ids) {
+    capPlanDialog({ title: 'Put back from Conditional Access backup ' + backupId,
+      guide: 'Each policy is put back as it is in the backup: only the parts that differ are changed, and a policy that is no longer in your tenant is created again - always OFF, adopted, ready to move through the stages. The engine reads each policy again first, takes a backup of it as it is now, and refuses one that changed since this view or that would no longer exclude the break-glass accounts. This CHANGES your tenant.',
+      load: function () { return api('POST', '/api/backups/ca/' + backupId + '/restore-plan', { policyIds: ids }).then(function (pl) { pl.ok = (pl.items || []).some(function (r) { return r.ok && r.action !== 'none'; }); if (!pl.ok) pl.reason = 'nothing to put back: ' + ((pl.items || []).map(function (r) { return r.displayName + ' (' + textOf(r.reason || 'as in the backup already') + ')'; }).join('; ') || 'no policy'); return pl; }); },
+      show: caRestoreShow, go: 'Put them back',
+      send: function (pl, reason) { var todo = (pl.items || []).filter(function (r) { return r.ok && r.action !== 'none'; }), exp = {}; todo.forEach(function (r) { exp[r.policyId] = r.expected; });
+        return api('POST', '/api/backups/ca/' + backupId + '/restore', { policyIds: todo.map(function (r) { return r.policyId; }), expected: exp, reason: reason }); } });
+  }
+  function caUndoDialog(policyId, m) {
+    capPlanDialog({ title: 'Undo: ' + textOf(m.DisplayName) + ' (' + textOf(m.FromStage) + ' -> ' + textOf(m.ToStage) + ', ' + fmtTime(m.MovedAtUtc) + ')',
+      guide: 'Puts the policy back as it was before this change - a NEW change, made like any other (a copy or a deploy is turned OFF, never deleted). The engine reads the policy again first, takes a backup of it as it is now, and refuses if it changed since this view or if the result would no longer exclude the break-glass accounts. This CHANGES your tenant.',
+      load: function () { return api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId) + '/undo-plan?' + qs({ move: m.MoveId })).then(function (pl) { if (pl.ok && pl.action === 'none') { pl.ok = false; pl.reason = 'nothing to undo: ' + textOf(pl.reason); } return pl; }); },
+      show: function (pl, box) { box.appendChild(el('p', { text: textOf(pl.label) })); caRestoreShow({ items: [pl], summary: { patch: pl.action === 'patch' ? 1 : 0, create: pl.action === 'create' ? 1 : 0, same: 0, refused: 0 } }, box); },
+      go: 'Undo this change',
+      send: function (pl, reason) { return api('POST', '/api/capolicies/policies/' + encodeURIComponent(policyId) + '/undo', { move: m.MoveId, expected: pl.expected, reason: reason }); } });
+  }
+  function runUndoDialog(runId) {
+    capPlanDialog({ title: 'Undo this tagging run',
+      guide: 'A NEW run writes every tag this run applied back to the value it had before - only where the object still has the value this run wrote (a later change is never overwritten). The mass-change guard measures it like a run; AD-synced users are written by the hybrid worker. This CHANGES your directory.',
+      load: function () { return api('GET', '/api/runs/' + encodeURIComponent(runId) + '/undo-plan'); },
+      show: function (pl, box) {
+        box.appendChild(el('p', { text: fmtNum(pl.applied) + ' tag(s) this run applied' + (pl.applied > (pl.changes || []).length ? ' (the first ' + fmtNum((pl.changes || []).length) + ' shown)' : '') + '.' }));
+        box.appendChild(table(pl.changes || [], [{ key: 'object', label: 'Object' }, { key: 'tagType', label: 'Tag type', type: 'cat' }, { key: 'directory', label: 'Directory', type: 'cat' }, { key: 'now', label: 'Now (as the run wrote it)', wrap: true }, { key: 'back', label: 'Put back', wrap: true }], { empty: 'Nothing.' }));
+        var ap = el('input', { type: 'checkbox' }); ap.addEventListener('change', function () { pl.approve = ap.checked; });
+        box.appendChild(el('label', null, ap, ' Approve it if the mass-change guard holds it (I have checked the numbers).'));
+      },
+      go: 'Undo this run',
+      send: function (pl, reason) { return api('POST', '/api/runs/' + encodeURIComponent(runId) + '/undo', { approve: !!pl.approve, reason: reason }); } });
+  }
+  function backNow() {
+    withReason('Back up now', 'The Backup job stores every Conditional Access policy, named location and authentication strength, and the tagging configuration, now (it only reads the tenant). Kept 30 days.', function (reason) { return api('POST', '/api/jobs/Backup/run', { mode: 'Apply', reason: reason }); });
+  }
+  function drawBackupCa(p, id) {
+    var owner = isRole('SuperAdmin');
+    p.appendChild(el('p', null, el('a', { href: '#backups', text: '< Backups / Undo' })));
+    return api('GET', '/api/backups/ca/' + encodeURIComponent(id)).then(function (j) {
+      var b = j.backup;
+      p.appendChild(el('h2', { text: 'Conditional Access backup ' + b.BackupId + ' - ' + fmtTime(b.TakenAtUtc) }));
+      p.appendChild(el('p', { text: b.Kind + ' · ' + fmtNum(b.Policies) + ' policies, ' + fmtNum(b.NamedLocations) + ' named locations, ' + fmtNum(b.AuthStrengths) + ' authentication strengths · ' + textOf(b.TakenBy) + (b.Cause ? ' · ' + b.Cause : '') }));
+      if (isRole('Admin')) p.appendChild(el('div', { class: 'toolbar' }, el('a', { href: '/api/backups/ca/' + b.BackupId + '/export', text: 'Download as JSON files (v1\'s export)' })));
+      p.appendChild(el('div', { class: 'guide', text: 'Pick the policies to put back' + (owner ? '' : ' (a SuperAdmin puts them back)') + '. Each one is shown first with what changes; a policy that is no longer in your tenant is created again, OFF. Named locations and authentication strengths are kept in the backup and in the download; they are put back by hand.' }));
+      var pol = (j.items || []).filter(function (r) { return r.ItemType === 'policy'; });
+      p.appendChild(table(pol, [{ key: 'DisplayName', label: 'Policy', wrap: true }, { key: 'State', label: 'State in the backup', type: 'cat' }, { key: 'Now', label: 'Now', type: 'cat', cls: function (r) { return r.Now === 'not in the tenant' ? 'c-warning' : ''; } }, { key: 'ObjectId', label: 'Id' }],
+        { sort: 'DisplayName', dir: 1, empty: 'No policy in this backup.', bulk: owner ? [{ label: 'Put back...', run: function (sel) { caRestoreDialog(b.BackupId, sel.map(function (r) { return r.ObjectId; })); } }] : [] }));
+      var other = (j.items || []).filter(function (r) { return r.ItemType !== 'policy'; });
+      if (other.length) { p.appendChild(el('h3', { text: 'Named locations and authentication strengths' })); p.appendChild(table(other, [{ key: 'ItemType', label: 'Kind', type: 'cat' }, { key: 'DisplayName', label: 'Name', wrap: true }, { key: 'ObjectId', label: 'Id' }], { sort: 'DisplayName', dir: 1 })); }
+    });
+  }
+  function drawBackups(p, arg) {
+    if (/^ca-\d+$/.test(arg || '')) return drawBackupCa(p, arg.substring(3));
+    var admin = isRole('Admin'), owner = isRole('SuperAdmin');
+    p.appendChild(el('div', { class: 'guide', text: 'Every night the Backup job stores every Conditional Access policy (adopted or not), named location and authentication strength, and the tagging configuration - the newest 30 are kept. A backup is also taken BEFORE every change Entra Policy Suite makes to a policy and before every commit of the tagging rules; a change whose backup cannot be written is refused. Putting something back is a new change: you see it first, and it goes through the same checks. Nothing is restored by itself.' }));
+    return api('GET', '/api/backups').then(function (j) {
+      if (admin) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Back up now', onclick: backNow }), el('span', { class: 'count', text: 'Daily sets kept: ' + j.keepDaily + '; backups before a change and manual ones: ' + j.keepDays + ' days.' })));
+      p.appendChild(el('h3', { text: 'Conditional Access backups' }));
+      p.appendChild(table(j.ca || [], [{ key: 'TakenAtUtc', label: 'Taken', type: 'date' }, { key: 'Kind', label: 'Kind', type: 'cat' }, { key: 'Policies', label: 'Policies', type: 'num' }, { key: 'NamedLocations', label: 'Named locations', type: 'num' }, { key: 'AuthStrengths', label: 'Strengths', type: 'num' },
+        { key: 'Cause', label: 'Why', wrap: true }, { key: 'TakenBy', label: 'By', type: 'cat' }, { key: '_o', label: '', render: function (r) { return el('a', { href: '#backups/ca-' + r.BackupId, text: 'Open' }); } }], { sort: 'TakenAtUtc', dir: -1, empty: 'No backup yet - the first one is taken tonight, or now with Back up now.' }));
+      p.appendChild(el('h3', { text: 'Tagging configuration backups' }));
+      p.appendChild(table(j.config || [], [{ key: 'TakenAtUtc', label: 'Taken', type: 'date' }, { key: 'Kind', label: 'Kind', type: 'cat' }, { key: 'CountsJson', label: 'Holds', wrap: true, render: function (r) { try { var o = JSON.parse(r.CountsJson || '{}'); return Object.keys(o).map(function (k) { return o[k] + ' ' + k; }).join(', '); } catch (e) { return textOf(r.CountsJson); } } },
+        { key: 'Cause', label: 'Why', wrap: true }, { key: 'TakenBy', label: 'By', type: 'cat' },
+        { key: '_r', label: '', render: function (r) { return admin ? el('button', { type: 'button', class: 'secondary', text: 'Restore...', onclick: function () { configRestoreDialog('Restore the tagging configuration from backup ' + r.BackupId, 'The rules, tag types, values, condition types and settings go back as they are in this backup (' + fmtTime(r.TakenAtUtc) + '): each as the change the pages make, through its own checks - with the commit queue on, the rules and tag types are STAGED for a commit. Untick what you want to keep as it is. Secrets are never in a backup.', function () { return api('GET', '/api/backups/config/' + r.BackupId + '/restore-plan'); }); } }) : null; } }],
+        { sort: 'TakenAtUtc', dir: -1, empty: 'No backup yet.' }));
+      p.appendChild(el('h3', { text: 'Undo a recent change' }));
+      p.appendChild(el('h4', { text: 'Conditional Access' }));
+      p.appendChild(table(j.moves || [], [{ key: 'MovedAtUtc', label: 'When', type: 'date' }, { key: 'DisplayName', label: 'Policy', render: function (m) { return el('a', { href: '#capolicies/' + m.PolicyId, text: m.DisplayName }); } }, { key: 'FromStage', label: 'From', type: 'cat' }, { key: 'ToStage', label: 'To', type: 'cat' }, { key: 'RequestedBy', label: 'By', type: 'cat' }, { key: 'Reason', label: 'Reason', wrap: true },
+        { key: '_u', label: '', render: function (m) { return owner ? el('button', { type: 'button', class: 'secondary', text: 'Undo...', onclick: function () { caUndoDialog(m.PolicyId, m); } }) : null; } }], { sort: 'MovedAtUtc', dir: -1, empty: 'No change made from here yet.' }));
+      p.appendChild(el('h4', { text: 'Tagging runs' }));
+      p.appendChild(table(j.runs || [], [{ key: 'StartedAtUtc', label: 'Run', type: 'date', render: function (r) { return el('a', { href: '#run/' + r.RunId, text: fmtTime(r.StartedAtUtc) }); } }, { key: 'Job', label: 'Job', type: 'cat' }, { key: 'Status', label: 'Status', type: 'cat' }, { key: 'Applied', label: 'Tags written', type: 'num' },
+        { key: 'UndoneBy', label: 'Undone', render: function (r) { return r.UndoneBy ? el('a', { href: '#run/' + r.UndoneBy, text: 'yes' }) : ''; } },
+        { key: '_u', label: '', render: function (r) { return admin && !r.UndoneBy ? el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } }) : null; } }], { sort: 'StartedAtUtc', dir: -1, empty: 'No tagging run wrote anything yet.' }));
+      p.appendChild(el('h4', { text: 'Commits of the tagging rules' }));
+      p.appendChild(table(j.commits || [], [{ key: 'CommittedAtUtc', label: 'Committed', type: 'date' }, { key: 'CommittedBy', label: 'By', type: 'cat' }, { key: 'Changes', label: 'Changes', type: 'num' }, { key: 'FirstChange', label: 'First change', wrap: true },
+        { key: '_u', label: '', render: function (c) { return admin && c.BackupId ? el('button', { type: 'button', class: 'secondary', text: 'Undo this commit...', onclick: function () { configRestoreDialog('Undo the commit of ' + fmtTime(c.CommittedAtUtc), 'What this commit changed goes back as it was just before it (the backup taken before the commit), as the changes the pages make - with the commit queue on, they are STAGED for a commit. A later change to the same rules is undone with it: check the list.', function () { return api('GET', '/api/commits/' + c.CommitId + '/undo-plan'); }); } }) : (c.BackupId ? null : el('span', { class: 'smeta', text: 'no backup before it' })); } }], { sort: 'CommittedAtUtc', dir: -1, empty: 'No commit yet.' }));
+    });
+  }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
     p.appendChild(el('div', { class: 'guide', text: 'The engine reads the tenant\'s Conditional Access policies and compares each with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt only RECORDS that you manage a policy from here. The ONE change this page makes in the tenant: a SuperAdmin moves an adopted policy to another stage (Move stage), after seeing what changes. Nothing changes a policy by itself.' }));
@@ -2427,8 +2671,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         p.appendChild(el('div', { class: 'guide', text: 'Move this policy to any stage: Pilot1 (report-only for the pilot group), Pilot2 / Pilot3 (on for the pilot group), Prod (on for its targets), or Disable (off, as Initial). Each move shows what changes before you approve it, and CHANGES the policy in your tenant.' }));
         p.appendChild(capStageBar(row));
       } else p.appendChild(el('p', { class: 'smeta', text: 'Now ' + textOf(rv.stage) + '. ' + (ad && ad.Status === 'Adopted' ? 'A SuperAdmin moves it between stages.' : 'Adopt it first to move it between stages from here.') }));
+      // UNDO-BACKUP: each applied change can be undone (SuperAdmin) - its body before it put back, after a plan
       if ((j.moves || []).length) p.appendChild(table(j.moves, [{ key: 'MovedAtUtc', label: 'When', type: 'date' }, { key: 'FromStage', label: 'From', type: 'cat' }, { key: 'ToStage', label: 'To', type: 'cat' },
-        { key: 'RequestedBy', label: 'By', type: 'cat' }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Result', label: 'Result', type: 'cat', cls: function (m) { return m.Result !== 'applied' ? 'c-danger' : ''; } }, { key: 'ResultText', label: 'Note', wrap: true }], { sort: 'MovedAtUtc', dir: -1 }));
+        { key: 'RequestedBy', label: 'By', type: 'cat' }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Result', label: 'Result', type: 'cat', cls: function (m) { return m.Result !== 'applied' ? 'c-danger' : ''; } }, { key: 'ResultText', label: 'Note', wrap: true },
+        { key: '_undo', label: '', render: function (m) { return owner && /^applied/.test(m.Result || '') ? el('button', { type: 'button', class: 'link', text: 'Undo...', onclick: function () { m.DisplayName = m.DisplayName || pol.DisplayName; caUndoDialog(pol.PolicyId, m); } }) : null; } }], { sort: 'MovedAtUtc', dir: -1 }));
+      if (owner) p.appendChild(el('p', { class: 'smeta' }, 'Every change made from here can be undone (a new change, shown first). A whole earlier state: ', el('a', { href: '#backups', text: 'Backups / Undo' }), '.'));
+      // CA-TEMPLATES: a newer version of its template - tested next to it, then promoted / rolled back / the old one removed
+      if (ad && ad.Status === 'Adopted' || j.pair) capVersionSection(p, j);
       if ((rv.notes || []).length) p.appendChild(el('ul', { class: 'hints' }, rv.notes.map(function (n) { return el('li', { text: n }); })));
       p.appendChild(el('h3', { text: rv.inLibrary ? (rv.matches ? 'As the template (' + textOf(rv.stage) + ')' : 'What differs from the template at ' + textOf(rv.stage)) : 'No template to compare with' }));
       if (rv.inLibrary && (rv.diff || []).length) p.appendChild(table(rv.diff, [{ key: 'path', label: 'Setting', type: 'cat' }, { key: 'expected', label: 'Template wants', wrap: true }, { key: 'actual', label: 'Tenant has', wrap: true },
@@ -2464,13 +2713,22 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   }
   function drawCaTemplates(p) {
     capSubnav(p, 'templates');
-    p.appendChild(el('div', { class: 'guide', text: 'The template library of this release (v1\'s CA000-CA800, converted to data). A template names groups, accounts and names by their role ({breakGlassGroup}, {group:Admins_All}, ...): the values are your settings, never part of the template. Read only: this release compares with the templates; it deploys nothing.' }));
+    var owner = isRole('SuperAdmin');
+    p.appendChild(el('div', { class: 'guide', text: 'The template library of this release (v1\'s CA000-CA800, converted to data). A template names groups, accounts and names by their role ({breakGlassGroup}, {group:Admins_All}, ...): the values are your settings, never part of the template. A SuperAdmin deploys a template as a NEW policy (Deploy: off or report-only, the groups it needs created first, adopted at once - v1\'s Initial_Setup). A template already in your tenant is not deployed again: a newer version is TESTED next to its policy (Test a new version, on the policy\'s page), then promoted. Nothing is deployed by itself.' }));
     var slot = el('div');
     return api('GET', '/api/capolicies/templates').then(function (j) {
-      p.appendChild(table(j.rows || [], [{ key: 'id', label: 'Template', render: function (t) { return el('button', { type: 'button', class: 'link', text: t.id, onclick: function () {
+      if (owner && !j.method) p.appendChild(el('p', { class: 'c-warning', text: 'The group-targeting method is not set (Settings > Conditional Access > CA.GroupTargetingMethod): set it before you deploy.' }));
+      var cols = [{ key: 'id', label: 'Template', render: function (t) { return el('button', { type: 'button', class: 'link', text: t.id, onclick: function () {
           api('GET', '/api/capolicies/templates?' + qs({ id: t.id })).then(function (x) { clear(slot).appendChild(el('h3', { text: x.template.id + ' ' + x.template.version + ' ' + x.template.name })); slot.appendChild(el('pre', { class: 'log', text: JSON.stringify(x.template, null, 2) })); slot.scrollIntoView(); }).catch(function (e) { status(e.message); }); } }); } },
-        { key: 'version', label: 'Version', type: 'cat' }, { key: 'name', label: 'Name' }, { key: 'persona', label: 'Persona', type: 'cat' },
-        { key: 'breakGlassPolicy', label: 'Break-glass policy', type: 'cat' }, { key: 'incomplete', label: 'Incomplete', type: 'cat' }, { key: 'notes', label: 'Notes', wrap: true }], { sort: 'id', dir: 1 }));
+        { key: 'version', label: 'Version', type: 'cat' }, { key: 'name', label: 'Name' }, { key: 'persona', label: 'Persona', type: 'cat' }, { key: 'inTenant', label: 'In the tenant', wrap: true },
+        { key: 'breakGlassPolicy', label: 'Break-glass policy', type: 'cat' }, { key: 'incomplete', label: 'Incomplete', type: 'cat' }, { key: 'notes', label: 'Notes', wrap: true }];
+      if (owner) cols.push({ key: '_d', label: '', render: function (t) { if (t.inTenant || t.incomplete) return null; return el('button', { type: 'button', class: 'secondary', text: 'Deploy', onclick: function (e) { e.stopPropagation(); capDeploy(t); } }); } });
+      var bulk = owner ? [{ label: 'Deploy (off)', run: function (sel) {
+        var todo = sel.filter(function (t) { return !t.inTenant && !t.incomplete; });
+        if (!todo.length) { notice('Every selected template is in the tenant already (or incomplete in v1).'); return; }
+        bulkAction('Deploy templates (off)', 'Each template becomes a NEW policy in your tenant, OFF (v1\'s Initial_Setup), adopted at once; the groups each needs are created first when missing. The engine checks each again first and refuses one that is already there or would not exclude the break-glass accounts. Open one with its Deploy button first to see what it creates.', todo,
+          function (t, reason) { return api('POST', '/api/catemplates/' + encodeURIComponent(t.id) + '/deploy', { stage: 'Initial', reason: reason }); }); } }] : [];
+      p.appendChild(table(j.rows || [], cols, { sort: 'id', dir: 1, bulk: bulk }));
       p.appendChild(slot);
     });
   }
@@ -2727,6 +2985,80 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       p.appendChild(table(rows, cols, { empty: 'No group to manage yet: set the group targeting method (Get started) and adopt your policies.' }));
     });
   }
+  // ---- GET-STARTED phase 2, the rest (V1-PARITY P7 / P8 / P9; owner 2026-11-03 "Check + create on approval"): the
+  // authentication strengths, the denied-countries and trusted locations, the break-glass accounts - as v1 makes them.
+  // The plan first (from the last check), then a reason; the engine reads the tenant again, writes and reads it back.
+  // the four create routes, written out (tests/Test-EpsApiReference.ps1 matches every page call to a route)
+  var ONB_PATH = { strengths: '/api/onboarding/strengths', deniedcountries: '/api/onboarding/deniedcountries', trusted: '/api/onboarding/trusted', breakglass: '/api/onboarding/breakglass' };
+  var ONB_DO = { create: 'create', update: 'update', skip: 'no change', refused: 'cannot yet' };
+  function onbDialog(action, payload, title) {
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': title });
+    var closed = false;
+    var close = function () { if (closed) return; closed = true; try { d.close(); } catch (e) { /* already closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    d.addEventListener('close', close);
+    var body = el('div', null, el('p', { class: 'smeta', text: 'Working out what changes ...' }));
+    d.appendChild(el('h3', { text: title }));
+    d.appendChild(body);
+    document.body.appendChild(d); d.showModal();
+    api('GET', '/api/onboarding/plan?' + qs(grpQuery(Object.assign({ action: action }, payload)))).then(function (pl) {
+      clear(body);
+      body.appendChild(el('div', { class: 'guide', text: 'This CHANGES your tenant, as v1 does. The engine applies it at its next check (within 5 minutes): it reads the tenant again first and plans again from what it finds; each change is read back. Nothing that is there already is changed, unless it says so below.' }));
+      body.appendChild(table(pl.items || [], [{ key: 'name', label: 'What', wrap: true }, { key: 'do', label: 'Change', type: 'cat', render: function (r) { return el('span', { class: r.do === 'refused' ? 'c-danger' : null, text: ONB_DO[r.do] || r.do }); } }, { key: 'detail', label: 'How', wrap: true }], { sort: null, empty: 'Nothing.' }));
+      if (!pl.ok) {
+        body.appendChild(el('p', { class: 'c-danger', text: 'Nothing to send: ' + textOf(pl.reason) }));
+        body.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })));
+        return;
+      }
+      var reason = el('input', { type: 'text', placeholder: 'Reason (optional) - e.g. onboarding as v1', style: 'width:100%' });
+      var go = el('button', { type: 'button', text: 'Make the change (' + pl.summary + ')' });
+      go.addEventListener('click', function () {
+        go.disabled = true; close();
+        notice('Sending: ' + title + ' ...');
+        api('POST', ONB_PATH[action], Object.assign({}, payload, { reason: reason.value.trim() }))
+          .then(function (x) { afterAction(x, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
+      });
+      body.appendChild(el('p', null, reason));
+      body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
+  }
+  function onbTrusted() {
+    // a trusted (IP) named location: your office / NAT addresses - v1 never made one, about 90 template conditions use one
+    var d = el('dialog', { class: 'dlg-wide', 'aria-label': 'A trusted location' });
+    var close = function () { try { d.close(); } catch (e) { /* closed */ } if (d.parentNode) d.parentNode.removeChild(d); };
+    var name = el('input', { type: 'text', maxlength: 256, placeholder: 'e.g. Office Copenhagen', style: 'width:100%' });
+    var ranges = el('textarea', { rows: 5, style: 'width:100%', placeholder: '203.0.113.10/32 - one IP range (CIDR) per line' });
+    var trusted = el('input', { type: 'checkbox', 'aria-label': 'Trusted' }); trusted.checked = true;
+    d.appendChild(el('h3', { text: 'A trusted location (IP ranges)' }));
+    d.appendChild(el('p', { class: 'smeta', text: 'Made in the tenant as an IP named location; when one by this name is there, its ranges and trust are set. The service-tag locations (Azure.Network.ServiceTag.*) are kept by their own job.' }));
+    d.appendChild(el('div', { class: 'rf-grid' }, el('div', { class: 'rf-l', text: 'Name' }), el('div', { class: 'rf-c' }, name), el('div', { class: 'rf-l', text: 'IP ranges' }), el('div', { class: 'rf-c' }, ranges),
+      el('div', { class: 'rf-l', text: 'Trusted' }), el('div', { class: 'rf-c' }, el('label', { class: 'rf-check' }, trusted, ' mark it as a trusted location'))));
+    d.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Show the change', onclick: function () {
+      var r = ranges.value.split(/[\n,;\s]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+      var n = name.value.trim(); close();
+      onbDialog('trusted', { name: n, ranges: r, trusted: trusted.checked }, 'Trusted location ' + n);
+    } }), el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
+    document.body.appendChild(d); d.showModal();
+  }
+  function onbButtons(s) {
+    // the create buttons of a step (SuperAdmin), from what the last check found
+    var it = s.items || [];
+    var st = function (k) { var x = it.filter(function (r) { return r.item === k; })[0]; return x ? x.state : null; };
+    var b = [];
+    if (s.key === 'auth') {
+      var miss = ['FIDO', 'WHfB'].filter(function (k) { return st('strength:' + k) === 'missing'; });
+      if (miss.length) b.push(el('button', { type: 'button', text: 'Create the missing strengths (' + miss.length + ')', onclick: function () { onbDialog('strengths', { names: miss }, 'Create the authentication strengths'); } }));
+    }
+    if (s.key === 'locations') {
+      if (st('denied') === 'missing') b.push(el('button', { type: 'button', text: 'Create the denied-countries location', onclick: function () { onbDialog('deniedcountries', {}, 'Create the denied-countries location'); } }));
+      if (st('denied') === 'check') b.push(el('button', { type: 'button', class: 'secondary', text: 'Add v1\'s missing countries', onclick: function () { onbDialog('deniedcountries', {}, 'Add v1\'s countries to the denied-countries location'); } }));
+      b.push(el('button', { type: 'button', class: 'secondary', text: 'Add or set a trusted location', onclick: onbTrusted }));
+    }
+    if (s.key === 'breakglass') {
+      var acc = it.filter(function (r) { return /^account:/.test(r.item || '') && r.state === 'missing'; }).map(function (r) { return r.item.substring(8); });
+      if (acc.length) b.push(el('button', { type: 'button', text: 'Create the missing accounts (' + acc.length + ')', onclick: function () { onbDialog('breakglass', { names: acc }, 'Create the break-glass accounts'); } }));
+    }
+    return b.length ? el('div', { class: 'toolbar' }, b) : null;
+  }
   function drawGetStarted(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');
     p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look. Do the steps in any order.' }));
@@ -2772,12 +3104,92 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         // CA-GROUPS (Get started phase 2): a missing group is created from here - the plan first, then the engine
         var gsMissing = (s.items || []).filter(function (r) { return /^group:/.test(r.item || '') && r.state === 'missing'; }).map(function (r) { return r.item.substring(6); });
         if (owner && gsMissing.length) box.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Create the missing groups (' + gsMissing.length + ')', onclick: function () { grpDialog('create', { names: gsMissing }, 'Create the missing groups: ' + s.title); } }), el('a', { href: '#capolicies/groups', text: 'All groups' })));
+        // GET-STARTED phase 2: the strengths, the locations, the break-glass accounts (the plan first, then the engine)
+        var ob = owner ? onbButtons(s) : null; if (ob) box.appendChild(ob);
         if ((s.items || []).length) box.appendChild(table(s.items, [{ key: 'title', label: 'Item', wrap: true }, { key: 'state', label: 'State', type: 'cat', cls: function (r) { return GS_CLS[r.state] || ''; }, render: function (r) { return el('span', { text: GS_STATE[r.state] || r.state }); } },
           { key: 'detail', label: 'What was found', wrap: true },
           owner ? { key: '_g', label: '', render: function (r) { return /^group:/.test(r.item || '') && r.state === 'missing' ? el('button', { type: 'button', class: 'secondary', text: 'Create', onclick: function () { grpDialog('create', { names: [r.item.substring(6)] }, 'Create ' + r.item.substring(6)); } }) : null; } } : null].filter(Boolean), { sort: null }));
         else box.appendChild(el('p', { class: 'smeta', text: 'Not checked yet - press Check now.' }));
         p.appendChild(box);
       });
+    });
+  }
+  // ---- WORKER-GUI (2.0.82, owner 2026-11-05: "i didnt see the ad hybrid worker anywhere in the gui or where to configure
+  // it or see the services" / "is that not built"): Administration > Hybrid worker - each worker with its scheduled task,
+  // AD domain, environment, version and last report; the AD work queue (waiting / failed, Try again); a connection test;
+  // the three commands that add a worker to THIS install; the AD environments (V1-PARITY P14)
+  function workerLine(w, stale) {
+    // one worker in words: what to look at first
+    if (!w) return 'No hybrid worker has reported yet - AD-synced users get their tags once one runs.';
+    var bits = [w.name + ' on ' + w.machine];
+    if (w.stale) bits.push('LATE: last report ' + fmtNum(w.minutesSinceSeen) + ' min ago (late after ' + fmtNum(stale) + ')');
+    if (w.taskProblem) bits.push('its scheduled task is ' + (w.taskState || 'off'));
+    if (w.behind) bits.push('version ' + w.version + ' is behind');
+    return bits.join(' - ');
+  }
+  function drawWorker(p) {
+    p.appendChild(el('div', { class: 'guide', text: 'The hybrid worker is a small program on a domain-joined Windows server in your network. It writes the tags of AD-synced users in Active Directory and reads AD group members for the rules. It runs as the scheduled task \'EntraPolicySuite Hybrid Worker\' every 5 minutes, as its gMSA, and talks to Entra Policy Suite only through the database - nothing comes in to it. It needs no password.' }));
+    return api('GET', '/api/worker').then(function (j) {
+      var admin = isRole('Admin');
+      // the workers
+      p.appendChild(el('h3', { text: 'Workers' }));
+      var bad = (j.workers || []).filter(function (w) { return w.stale || w.taskProblem || w.behind; });
+      if (!(j.workers || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'No hybrid worker has reported yet. Tags of AD-synced users wait in the queue below until one runs - add one with the steps further down.' }));
+      bad.forEach(function (w) { p.appendChild(el('div', { class: 'bar bar-warn', text: workerLine(w, j.staleMinutes) })); });
+      p.appendChild(table(j.workers || [], [
+        { key: 'name', label: 'Worker' }, { key: 'machine', label: 'Machine' }, { key: 'environment', label: 'AD environment', type: 'cat', render: function (w) { return w.environment || '(the only one)'; } },
+        { key: 'adDomain', label: 'AD domain', render: function (w) { return (w.adDomain || '?') + (w.adServer ? ' (' + w.adServer + ')' : ''); } },
+        { key: 'runAs', label: 'Runs as' }, { key: 'hostType', label: 'Host', type: 'cat' },
+        { key: 'taskState', label: 'Scheduled task', type: 'cat', cls: function (w) { return w.taskProblem ? 'c-danger' : ''; }, render: function (w) { return (w.taskState || '?') + (w.taskEnabled === false ? ' (disabled)' : '') + (w.taskLastResult ? ' - last result ' + w.taskLastResult : ''); } },
+        { key: 'taskNextRunUtc', label: 'Next run', type: 'date' },
+        { key: 'version', label: 'Version', cls: function (w) { return w.behind ? 'c-warning' : ''; }, render: function (w) { return w.version + (w.behind ? ' (behind ' + j.release + ')' : ''); } },
+        { key: 'lastSeenUtc', label: 'Last report', type: 'date', cls: function (w) { return w.stale ? 'c-danger' : 'c-good'; } },
+        { key: 'lastResult', label: 'Last cycle', wrap: true }], { empty: 'No hybrid worker has reported.' }));
+      // the queue
+      p.appendChild(el('h3', { text: 'AD changes for the worker' }));
+      var by = {}; (j.counts || []).forEach(function (c) { by[c.status] = (by[c.status] || 0) + c.count; });
+      p.appendChild(el('div', { class: 'cards' }, card(by.Queued || 0, 'waiting'), card(by.Claimed || 0, 'being written now'), card(by.Done || 0, 'written and read back'), card(by.Failed || 0, 'failed', (by.Failed || 0) > 0)));
+      (j.environmentsWithoutWorker || []).forEach(function (e) { p.appendChild(el('div', { class: 'bar bar-warn', text: 'AD environment ' + e + ' has no worker that reports: its changes wait. Install one with -Environment ' + e + '.' })); });
+      if ((j.perDay || []).length) p.appendChild(el('details', null, el('summary', { text: 'Per day (14 days)' }), table(j.perDay, [{ key: 'day', label: 'Day' }, { key: 'queued', label: 'Queued', type: 'num' }, { key: 'done', label: 'Written', type: 'num' }, { key: 'failed', label: 'Failed', type: 'num' }], { sort: 'day', dir: -1 })));
+      var pkgCols = [{ key: 'packageId', label: '#', type: 'num' }, { key: 'upn', label: 'User' }, { key: 'attribute', label: 'Attribute', type: 'cat' }, { key: 'value', label: 'Value', wrap: true },
+        { key: 'environment', label: 'Environment', type: 'cat' }, { key: 'attempts', label: 'Tries', type: 'num' }, { key: 'queuedAtUtc', label: 'Queued', type: 'date' }];
+      p.appendChild(el('h3', { text: 'Failed' }));
+      var fcols = pkgCols.concat([{ key: 'error', label: 'Why', wrap: true }, { key: 'doneAtUtc', label: 'Failed at', type: 'date' }]);
+      if (admin) fcols.push({ key: '_r', label: '', render: function (r) {
+        if (r.retried) return el('span', { class: 'smeta', text: 'tried again' });
+        if (!r.canRetry) return el('span', { class: 'smeta', text: 'not retried (did not match the engine\'s record)' });
+        return el('button', { type: 'button', class: 'secondary', text: 'Try again', onclick: function () {
+          withReason('Try again: ' + r.upn + ' ' + r.attribute, 'A new change and a new work package for the same user, attribute and value; the failed ones stay in the history. A worker takes it on its next cycle.', function (reason) { return api('POST', '/api/worker/retry', { packageId: r.packageId, reason: reason }); }); } }); } });
+      p.appendChild(table(j.failed || [], fcols, { sort: 'doneAtUtc', dir: -1, empty: 'No AD change failed.' }));
+      p.appendChild(el('h3', { text: 'Waiting' }));
+      p.appendChild(table(j.waiting || [], pkgCols.concat([{ key: 'status', label: 'State', type: 'cat' }, { key: 'claimedBy', label: 'Taken by' }]), { sort: 'queuedAtUtc', dir: 1, empty: 'Nothing waits for the worker.' }));
+      // the connection test
+      p.appendChild(el('h3', { text: 'Connection test' }));
+      p.appendChild(el('div', { class: 'guide', text: 'Asks a worker, on its next cycle, what it is connected to: the domain, the domain controller, the account it runs as, and whether it can read AD users. It reads AD only - nothing is written.' }));
+      if (admin) {
+        var envs = [''].concat((j.environments || []).map(function (e) { return e.environment; }).filter(function (v, i, a) { return a.indexOf(v) === i; }));
+        var es = el('select', { 'aria-label': 'AD environment' }, envs.map(function (e) { return el('option', { value: e, text: e || 'any worker' }); }));
+        p.appendChild(el('div', { class: 'toolbar' }, envs.length > 1 ? es : null, el('button', { type: 'button', text: 'Test connection', onclick: function () {
+          withReason('Test the hybrid worker connection', 'A read-only request; a worker' + (es.value ? ' of ' + es.value : '') + ' answers on its next cycle (every 5 minutes). Reload this page to see the answer.', function (reason) { return api('POST', '/api/worker/test', { environment: es.value, reason: reason }); }); } })));
+      }
+      p.appendChild(table(j.tests || [], [{ key: 'queuedAtUtc', label: 'Asked', type: 'date' }, { key: 'requestedBy', label: 'By' }, { key: 'environment', label: 'Environment', type: 'cat' }, { key: 'status', label: 'State', type: 'cat', cls: stCell('status') },
+        { key: 'worker', label: 'Answered by' }, { key: 'answer', label: 'Answer', wrap: true, render: function (t) { return t.answer || (t.status === 'Queued' ? 'waiting for the next worker cycle' : ''); } }], { sort: 'queuedAtUtc', dir: -1, empty: 'No test yet.' }));
+      // add a worker
+      p.appendChild(el('h3', { text: 'Add a worker' }));
+      p.appendChild(el('div', { class: 'guide', text: 'Three steps, in this order. Each script is one self-contained file from invardia.com/support/eps/ - no module. The values of this install are filled in; replace what is in <angle brackets>. With several AD forests or domains, install one worker per environment (-Environment) and list the environments in Settings > Hybrid worker.' }));
+      (j.setup || []).forEach(function (s) {
+        var code = el('pre', { class: 'log', text: s.command });
+        p.appendChild(el('div', { class: 'card' },
+          el('div', { class: 'lbl', text: 'Step ' + s.step + ': ' + s.script + ' - ' + s.where }),
+          el('p', { text: s.what }), el('p', { class: 'smeta', text: 'Needs: ' + s.needs }), code,
+          el('button', { type: 'button', class: 'secondary', text: 'Copy', onclick: function () { if (navigator.clipboard) navigator.clipboard.writeText(s.command).then(function () { status('Copied step ' + s.step + '.'); }); } })));
+      });
+      // the AD environments (P14)
+      p.appendChild(el('h3', { text: 'AD environments' }));
+      p.appendChild(el('p', null, (j.environments || []).length ? 'Changes go to the worker of their user\'s environment: ' : 'One AD: every worker takes every change. For several forests or domains, set ',
+        (j.environments || []).length ? (j.environments || []).map(function (e) { return e.suffix + ' -> ' + e.environment; }).join(', ') + '. ' : null,
+        el('a', { href: '#settings', text: 'Settings > Hybrid worker' }), (j.environments || []).length ? ' changes it.' : '.'));
+      if ((j.environmentErrors || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'Not read (not "<upn suffix>=<environment>"): ' + j.environmentErrors.join('; ') }));
     });
   }
   var PAGES = [
@@ -2792,8 +3204,13 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           { key: 'Job', label: 'Job', type: 'cat', render: function (r) { return jobName(r.Job); } }, { key: 'Mode', label: 'Mode', type: 'cat' }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') },
           { key: 'StartedAtUtc', label: 'Started', type: 'date' }, { key: 'Objects', label: 'Objects', type: 'num' }, { key: 'Planned', label: 'Planned', type: 'num' },
           { key: 'Applied', label: 'Applied', type: 'num' }, { key: 'Failed', label: 'Failed', type: 'num' }, { key: 'HeldReason', label: 'Held because', wrap: true }], { empty: 'No job has run yet.' }));
-        p.appendChild(el('h3', { text: 'Hybrid workers' }));
-        p.appendChild(table(o.workers, [{ key: 'WorkerName', label: 'Worker' }, { key: 'Machine', label: 'Machine' }, { key: 'Version', label: 'Version' }, { key: 'LastSeenUtc', label: 'Last seen', type: 'date' }, { key: 'LastResult', label: 'Last result', wrap: true }], { empty: 'No hybrid worker has reported. AD-synced users wait for one.' }));
+        // WORKER-GUI: one line per worker here; the details on Administration > Hybrid worker
+        p.appendChild(el('h3', { text: 'Hybrid worker' }));
+        var ws = o.workers || [], late = ws.filter(function (w) { return (Date.now() - new Date(w.LastSeenUtc).getTime()) / 60000 > (o.workerStaleMinutes || 15); });
+        p.appendChild(el('p', { class: !ws.length || late.length || o.workPackagesFailed ? 'c-warning' : '' },
+          !ws.length ? 'No hybrid worker has reported - AD-synced users wait for one. ' : fmtNum(ws.length) + ' worker(s), ' + (late.length ? fmtNum(late.length) + ' LATE (' + late.map(function (w) { return w.WorkerName; }).join(', ') + ')' : 'all reporting') + '; ',
+          ws.length ? fmtNum(o.workPackagesQueued) + ' AD change(s) waiting, ' + fmtNum(o.workPackagesFailed) + ' failed in 7 days. ' : null,
+          el('a', { href: '#worker', text: 'Hybrid worker page' })));
         // UPLINK-1: Invardia telemetry and the support state Invardia reported (shown only - no access is granted from it)
         p.appendChild(el('h3', { text: 'Invardia telemetry and support' }));
         var ul = o.uplink || {}, su = o.support;
@@ -2926,6 +3343,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
           { key: 'RunId', label: '', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, text: 'run' }) : null; } }], { sort: 'RequestedAtUtc', dir: -1, empty: 'No requests yet.' }));
       });
     } },
+    { id: 'worker', label: 'Hybrid worker', role: 'Reader', draw: drawWorker },
     { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
       return api('GET', '/api/settings').then(function (j) {
@@ -2962,7 +3380,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
     } },
     { id: 'audit', label: 'Audit', role: 'Admin', draw: function (p) {
       p.appendChild(pagedTable('/api/audit', [{ key: 'q', label: 'Search actor, action, target, change' },
-        { key: 'category', label: 'Category', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard', 'identity', 'ca', 'setup', 'update', 'support', 'v1import'] }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
+        { key: 'category', label: 'Category', options: ['', 'access', 'setting', 'rule', 'tagtype', 'tagvalue', 'condition', 'scope', 'queue', 'job', 'tamper', 'mail', 'audit', 'changes', 'auth', 'web', 'guard', 'identity', 'ca', 'setup', 'update', 'support', 'backup', 'v1import', 'worker'] }, { key: 'outcome', label: 'Outcome', options: ['', 'ok', 'error', 'refused', 'held'] },
         { key: 'from', label: 'From', type: 'date' }, { key: 'to', label: 'To', type: 'date' }], [
         { key: 'TsUtc', label: 'When', type: 'date' }, { key: 'Action', label: 'Action', type: 'cat' }, { key: 'Actor', label: 'Who' }, { key: 'ActorSource', label: 'From', type: 'cat' },
         { key: 'Target', label: 'Target', wrap: true }, { key: 'Reason', label: 'Reason', wrap: true }, { key: 'Outcome', label: 'Outcome', type: 'cat', cls: stCell('Outcome') }, { key: 'OutcomeText', label: 'Detail', wrap: true },
@@ -3014,6 +3432,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         draw();
       });
     } },
+    { id: 'backups', label: 'Backups / Undo', role: 'Reader', draw: function (p, arg) { return drawBackups(p, arg); } },
     { id: 'run', label: null, role: 'Reader', draw: function (p, id) {
       return api('GET', '/api/runs/' + encodeURIComponent(id || '')).then(function (j) {
         var r = j.run;
@@ -3021,13 +3440,16 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         p.appendChild(el('div', { class: 'cards' }, card(r.Objects, 'objects'), card(r.Planned, 'planned'), card(r.Overwrites, 'overwrites'), card(r.Applied, 'applied'), card(r.Failed, 'failed', r.Failed > 0)));
         p.appendChild(el('p', null, 'Started ', timeEl(r.StartedAtUtc), r.EndedAtUtc ? ', ended ' : '', r.EndedAtUtc ? timeEl(r.EndedAtUtc) : null, '. ', el('a', { href: '#changes/' + r.RunId, text: 'Its tag changes' })));
         if (r.HeldReason) p.appendChild(el('div', { class: 'guide', text: 'HELD: ' + r.HeldReason }));
+        // UNDO-BACKUP: a tagging run that wrote tags can be undone (a new run puts the old values back)
+        if (isRole('Admin') && /^(User|Device)Tagging$/.test(r.Job) && r.Mode === 'Apply' && r.Applied > 0) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } })));
+        if (r.UndoOfRunId) p.appendChild(el('p', null, 'The undo of ', el('a', { href: '#run/' + r.UndoOfRunId, text: 'this run' }), '.'));
         p.appendChild(el('h3', { text: 'Log' }));
         p.appendChild(el('pre', { class: 'log', text: j.log.map(function (l) { return fmtTime(l.AtUtc) + '  ' + l.Level + '  ' + l.Message; }).join('\n') || '(no log lines)' }));
       });
     } }
   ];
   // the tab order (owner 2026-10-31: "rules is core so it must be left in view. tamper is less importantant")
-  var NAV_ORDER = ['overview', 'rules', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'changes', 'capolicies', 'ca', 'settings', 'access', 'audit', 'tamper', 'apiref'];
+  var NAV_ORDER = ['overview', 'rules', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'changes', 'capolicies', 'ca', 'backups', 'settings', 'worker', 'access', 'audit', 'tamper', 'apiref'];
   PAGES.sort(function (a, b) { var x = NAV_ORDER.indexOf(a.id), y = NAV_ORDER.indexOf(b.id); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
 
   // ---- navigation ------------------------------------------------------------------------------------------------
@@ -3061,7 +3483,9 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       { hash: 'runs', label: 'Runs', desc: 'Every run with its log.' }] },
     { label: 'Administration', items: [
       { hash: 'settings', label: 'Settings', desc: 'Every setting with what it does.' },
+      { hash: 'worker', label: 'Hybrid worker', desc: 'The AD worker: its scheduled task, AD domain, queue, connection test, how to add one.' },
       { hash: 'access', label: 'Access', desc: 'Who may sign in, and their role.' },
+      { hash: 'backups', label: 'Backups / Undo', desc: 'The daily backups of your policies and tagging; put something back, undo a change.' },
       { hash: 'audit', label: 'Audit', desc: 'Every change and who made it.' },
       { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] }
   ];

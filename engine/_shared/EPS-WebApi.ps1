@@ -94,6 +94,37 @@ function Invoke-EpsGroupRoute {
     New-EpsWebResponse -Body @{ ok = $true; partial = ($s.Result -eq 'partial'); text = "Groups ($Action): $($s.Text)" } -Audit @{ Target = $t; After = $after; Outcome = $(if ($s.Result -eq 'partial') { 'error' } else { 'ok' }); OutcomeText = $(if ($s.Result -eq 'partial') { "$($s.Reason)" }) }
 }
 
+function Invoke-EpsOnboardRoute {
+    # GET-STARTED phase 2 (V1-PARITY P7 / P8 / P9): the four create routes (Apply = Engine) - the engine reads the tenant,
+    # plans again and writes (EPS-OnboardWrite.ps1, loaded by the engine only); the web app never reaches here with the
+    # write loaded. A break-glass account's password is never in an answer, a log or the audit.
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$Action)
+    $b = $Context.Body; $list = { param($v) @(@($v) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+    $loc = if ($Action -eq 'trusted') { @{ name = "$($b.name)"; ranges = @(& $list $b.ranges); trusted = $(if ($null -eq $b.trusted) { $true } else { [bool]$b.trusted }) } }
+    $t = "Onboarding|$Action$(if ($loc) { "|$($loc.name)" })"
+    if (-not (Get-Command Invoke-EpsOnboardChange -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine creates it in the tenant' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+    $s = Invoke-EpsOnboardChange -ConnectionString $Context.Ctx.ConnectionString -Action $Action -Names (& $list $b.names) -Location $loc -Actor $Context.Caller.identity -Reason "$($b.reason)"
+    if ($s.Result -eq 'refused') { return New-EpsWebResponse -Status 409 -Body @{ error = "Not changed: $($s.Reason). Nothing in the tenant was changed." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "$($s.Reason)" } }
+    $after = @{ items = @($s.Items | ForEach-Object { "$($_.do) $($_.name): $($_.result)$(if ($_.error) { " ($($_.error))" })" }) }
+    if ($s.Result -eq 'failed') { return New-EpsWebResponse -Status 502 -Body @{ error = "Not changed: $($s.Text)" } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = "$($s.Reason)"; After = $after } }
+    New-EpsWebResponse -Body @{ ok = $true; partial = ($s.Result -eq 'partial'); text = "Get started ($Action): $($s.Text) Press Check now to see it on this page." } -Audit @{ Target = $t; After = $after; Outcome = $(if ($s.Result -eq 'partial') { 'error' } else { 'ok' }); OutcomeText = $(if ($s.Result -eq 'partial') { "$($s.Reason)" }) }
+}
+
+function Invoke-EpsCaVersionRoute {
+    # CA-TEMPLATES: the promote and the roll back of a version pair (Apply = Engine) - the engine reads both policies again
+    # and writes (EPS-CaWrite.ps1, loaded by the engine only); the web app never reaches here with the write loaded
+    param([Parameter(Mandatory)]$Context, [Parameter(Mandatory)][string]$PolicyId, [Parameter(Mandatory)][ValidateSet('Promote', 'Rollback')][string]$Action)
+    $t = "CaPolicy|$PolicyId"; $b = $Context.Body
+    if (-not (Get-Command Invoke-EpsCaVersionPair -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+    $s = Invoke-EpsCaVersionPair -ConnectionString $Context.Ctx.ConnectionString -PolicyId ([guid]$PolicyId) -Action $Action -ExpectedOld "$($b.expectedOld)" -ExpectedNew "$($b.expectedNew)" -Actor $Context.Caller.identity -Reason "$($b.reason)"
+    $word = if ($Action -eq 'Promote') { 'promoted' } else { 'rolled back' }
+    $code = switch ($s.Result) { 'ok' { 200 } 'partial' { 200 } 'missing' { 404 } 'changed' { 409 } 'refused' { 409 } default { 502 } }
+    if ($s.Result -notin 'ok', 'partial') { return New-EpsWebResponse -Status $code -Body @{ error = "Not $($word): $($s.Reason)" } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+    if ($s.Result -eq 'partial') { return New-EpsWebResponse -Body @{ ok = $true; partial = $true; text = "Half $($word): $($s.Reason)" } -Audit @{ Target = $t; Before = $s.Before; After = $s.After; Outcome = 'error'; OutcomeText = "$($s.Reason)" } }
+    New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "$(if ($Action -eq 'Promote') { 'Promoted' } else { 'Rolled back' }): $($s.After.on.displayName) is on ($($s.After.on.stage)); $($s.After.off.displayName) is off and kept.$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
+        -Audit @{ Target = "$t ($($s.After.on.displayName))"; Before = $s.Before; After = $s.After }
+}
+
 function Get-EpsWebRoutes {
     # Method, Pattern (anchored; named groups become $m), Role, Action (audited when set), Handler { param($c, $m) }
     # $c = @{ Ctx; Caller; Role; Query; Body (parsed JSON); Correlation }. A handler returns New-EpsWebResponse.
@@ -124,7 +155,9 @@ function Get-EpsWebRoutes {
                 workPackagesQueued = & $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Status IN ('Queued', 'Claimed')"
                 schemaVersion = & $q 'SELECT MAX(Version) FROM eps.SchemaVersion'
                 lastRuns = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT r.Job, r.RunId, r.Mode, r.Status, r.StartedAtUtc, r.EndedAtUtc, r.Objects, r.Planned, r.Applied, r.Failed, r.HeldReason FROM eps.Run r WHERE r.StartedAtUtc = (SELECT MAX(StartedAtUtc) FROM eps.Run x WHERE x.Job = r.Job) ORDER BY r.Job'))
-                workers = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT WorkerName, Machine, Version, LastSeenUtc, LastResult FROM eps.WorkerHeartbeat ORDER BY WorkerName'))
+                workers = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT WorkerName, Machine, Version, LastSeenUtc, LastResult, Environment, TaskState FROM eps.WorkerHeartbeat ORDER BY WorkerName'))
+                workerStaleMinutes = [int](Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'HybridWorker.StaleMinutes' -Default '15')
+                workPackagesFailed = & $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Kind = 'AdSetAttribute' AND Status = 'Failed' AND DoneAtUtc >= DATEADD(DAY, -7, SYSUTCDATETIME())"
                 uplink = @{ last = $ul.last; heartbeatUtc = $ul.heartbeat }
                 support = $sup
             }) } }
@@ -715,7 +748,8 @@ function Get-EpsWebRoutes {
             $t = if ($d.Review -and $d.Review.templateId) { (Get-EpsCaTemplateCatalog).ById["$($d.Review.templateId)"] }
             New-EpsWebResponse -Body @{ policy = @(ConvertTo-EpsWebValue ($d.Policy | Select-Object PolicyId, DisplayName, State, ModifiedAtUtc, SeenAtUtc))[0]; body = $d.Body; names = $d.Names; review = $d.Review
                 adoption = @(ConvertTo-EpsWebValue $d.Adoption)[0]; findings = @(ConvertTo-EpsWebValue $d.Findings); documentation = $d.Documentation; template = $t
-                moves = @(ConvertTo-EpsWebValue $d.Moves); stageMoves = @(Get-EpsCaStageMoves "$($d.Review.stage)"); stages = @($script:EpsCaStageOrder) } } }
+                moves = @(ConvertTo-EpsWebValue $d.Moves); stageMoves = @(Get-EpsCaStageMoves "$($d.Review.stage)"); stages = @($script:EpsCaStageOrder)
+                versionInfo = $d.VersionInfo; pair = $(if ($d.Pair) { @(ConvertTo-EpsWebValue ($d.Pair | Select-Object PairId, TemplateId, OldPolicyId, NewPolicyId, OldVersion, NewVersion, Status, CreatedBy, CreatedAtUtc, ChangedBy, ChangedAtUtc, Reason))[0] }) } } }
         # CA-LIFECYCLE (owner 2026-11-03: "in ca policy i need buttons to easily controll and movevto another lufecycle phase
         # like pilot1, pilot2"; "Write on approval", "SuperAdmin only"): the preview of ONE move, from the last read - the
         # page shows it before the operator approves; the engine makes the plan again from the live policy before it writes
@@ -767,6 +801,150 @@ function Get-EpsWebRoutes {
             if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not copied: $($s.Reason). Nothing was created." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
             New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; policyId = $s.NewId; text = "Created $($s.After.displayName), a copy of $($s.Before.displayName): OFF, adopted - move it through the stages when it is ready.$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
                 -Audit @{ Target = "CaPolicy|$($s.NewId) ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        # CA-TEMPLATES (owner 2026-11-05: Templates "Side-by-side only"; "fully manageable in the gui"; "always 100%
+        # operator controlled"; V1-PARITY P5 / P6): deploy a template as a NEW policy, test a newer version next to the
+        # policy it replaces, then promote it / roll it back / remove the old one. The previews read SQL only; every change
+        # is a SuperAdmin's request, applied by the engine (EPS-CaWrite.ps1) after it reads the tenant again.
+        @{ Method = 'GET'; Pattern = '^/api/catemplates/(?<template>[A-Za-z0-9]{1,20})/deploy-plan$'; Summary = 'What deploying one template as a new policy would create (its name, state, who it targets, the groups it needs), from the last read. Changes nothing.'; Body = 'stage: Initial (off) or Pilot1 (report-only)'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $st = if ("$($c.Query.stage)") { "$($c.Query.stage)" } else { 'Initial' }
+            $plan = Get-EpsCaDeployPlanFromStore -ConnectionString $c.Ctx.ConnectionString -TemplateId $m.template -Stage $st
+            if (-not $plan) { return New-EpsWebError 404 'no such template in the library' }
+            New-EpsWebResponse -Body $plan } }
+        @{ Method = 'POST'; Pattern = '^/api/catemplates/(?<template>[A-Za-z0-9]{1,20})/deploy$'; Summary = 'Deploy one template as a new, adopted policy (off or report-only), creating the groups it needs first, after the engine checks the tenant again.'; Body = 'stage: Initial or Pilot1; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.deploy'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaTemplate|$($m.template)"; $st = if ("$($c.Body.stage)") { "$($c.Body.stage)" } else { 'Initial' }
+            if ($st -notin 'Initial', 'Pilot1') { return New-EpsWebResponse -Status 400 -Body @{ error = 'stage: Initial or Pilot1' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "bad stage '$st'" } }
+            if (-not (Get-Command Invoke-EpsCaTemplateDeploy -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaTemplateDeploy -ConnectionString $c.Ctx.ConnectionString -TemplateId $m.template -Stage $st -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'invalid' { 400 } 'missing' { 404 } 'changed' { 409 } 'notadopted' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not deployed: $($s.Reason). No policy was created." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; policyId = $s.NewId; text = "Created $($s.After.displayName) from $($s.After.template): $(if ($st -eq 'Initial') { 'OFF' } else { 'report-only for the pilot group' }), adopted$(if (@($s.Groups).Count) { "; created first: $(@($s.Groups) -join ', ')" }).$(if (-not $s.Verified) { " Read back, it differs from the plan: $($s.Differs -join '; ')." })" } `
+                -Audit @{ Target = "CaPolicy|$($s.NewId) ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        @{ Method = 'GET'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/version-plan$'; Summary = 'What testing a newer template version next to this policy, or promoting / rolling back / removing its version pair, would do, from the last read. Changes nothing.'; Body = 'action: test, promote, rollback or remove; stage (test): Pilot1 or Initial'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $a = "$($c.Query.action)"
+            if ($a -eq 'test') { $plan = Get-EpsCaDeployPlanFromStore -ConnectionString $c.Ctx.ConnectionString -TemplateId '' -Stage $(if ("$($c.Query.stage)") { "$($c.Query.stage)" } else { 'Pilot1' }) -VersionOf $m.policy }
+            elseif ($a -in 'promote', 'rollback', 'remove') { $plan = Get-EpsCaPairPlanFromStore -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -Action $(switch ($a) { 'promote' { 'Promote' } 'rollback' { 'Rollback' } default { 'Remove' } }) }
+            else { return New-EpsWebError 400 'action: test, promote, rollback or remove' }
+            if (-not $plan) { return New-EpsWebError 404 'no such policy in the last read of the policy list' }
+            New-EpsWebResponse -Body $plan } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/newversion$'; Summary = 'Test the newer template version next to this adopted policy: a second policy, CAnnn-vX.Y-..., report-only for the pilot group (or off); this policy is not touched.'; Body = 'stage: Pilot1 or Initial; expected: the review hash of this policy as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.newversion'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"; $st = if ("$($c.Body.stage)") { "$($c.Body.stage)" } else { 'Pilot1' }
+            if ($st -notin 'Initial', 'Pilot1') { return New-EpsWebResponse -Status 400 -Body @{ error = 'stage: Pilot1 or Initial' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = "bad stage '$st'" } }
+            if (-not (Get-Command Invoke-EpsCaTemplateDeploy -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaTemplateDeploy -ConnectionString $c.Ctx.ConnectionString -VersionOf $m.policy -Stage $st -Expected "$($c.Body.expected)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'invalid' { 400 } 'missing' { 404 } 'changed' { 409 } 'notadopted' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not created: $($s.Reason). Nothing was changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; policyId = $s.NewId; text = "Created $($s.After.displayName) ($($s.After.template)) next to $($s.Before.displayName), which is not touched: $(if ($st -eq 'Initial') { 'OFF' } else { 'report-only for the pilot group' }). Promote it when it is ready." } `
+                -Audit @{ Target = "CaPolicy|$($s.NewId) ($($s.After.displayName))"; Before = $s.Before; After = $s.After } } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/promote$'; Summary = 'Promote the version under test: the new version on in Prod first, then the old one off and kept, after the engine reads both again (break-glass included).'; Body = 'expectedOld, expectedNew: the review hashes as you saw them; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.promote'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsCaVersionRoute -Context $c -PolicyId $m.policy -Action 'Promote' } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/rollback$'; Summary = 'Roll a promote back: the old version on again as it was first, then the new one off, after the engine reads both again (break-glass included).'; Body = 'expectedOld, expectedNew: the review hashes as you saw them; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.rollback'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsCaVersionRoute -Context $c -PolicyId $m.policy -Action 'Rollback' } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/removeold$'; Summary = 'Delete the old version of a promoted pair from the tenant (it must be off; its name typed to confirm).'; Body = 'confirm: the old version''s name; expectedOld: its review hash as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.removeold'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"
+            if (-not (Get-Command Invoke-EpsCaRemoveOldVersion -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsCaRemoveOldVersion -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -ExpectedOld "$($c.Body.expectedOld)" -Confirm "$($c.Body.confirm)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'missing' { 404 } 'changed' { 409 } 'refused' { 409 } default { 502 } }
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $code -Body @{ error = "Not removed: $($s.Reason). Nothing was changed." } -Audit @{ Target = $t; Outcome = $(if ($code -eq 502) { 'error' } else { 'refused' }); OutcomeText = "$($s.Reason)" } }
+            New-EpsWebResponse -Body @{ ok = $true; verified = [bool]$s.Verified; text = "Deleted $($s.Before.displayName) ($($s.Before.version)) from the tenant: $($s.After.version) replaces it.$(if (-not $s.Verified) { ' Read back, it is still there - read the policy list again.' })" } `
+                -Audit @{ Target = "CaPolicy|$($s.Before.policyId) ($($s.Before.displayName))"; Before = $s.Before; After = $s.After } } }
+        # UNDO-BACKUP (owner 2026-11-05: "i need to have both a new feature Undo + another new feature backup/restore. look
+        # at how PIM does it"; "it must work for both ca policies + tagging so i can recover"; "ok go with daily keep 30"):
+        # the backups (read), the plans (read, nothing written), and the restores / undos - each a request the engine applies
+        # through the same gates as the change it puts back (CA: EPS-CaWrite.ps1 Invoke-EpsCaRestore; tagging: a new run)
+        @{ Method = 'GET'; Pattern = '^/api/backups$'; Summary = 'The backups (Conditional Access and the tagging configuration), newest first, and the recent changes that can be undone.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $l = Get-EpsBackupList -ConnectionString $cs
+            $moves = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query "SELECT TOP (50) MoveId, PolicyId, DisplayName, FromStage, ToStage, Result, RequestedBy, Reason, MovedAtUtc FROM eps.CaStageMove WHERE Result LIKE 'applied%' ORDER BY MovedAtUtc DESC"))
+            $runs = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query @'
+SELECT TOP (30) r.RunId, r.Job, r.Status, r.StartedAtUtc, r.Applied, (SELECT TOP (1) u.RunId FROM eps.Run u WHERE u.UndoOfRunId = r.RunId AND u.Mode = 'Undo' AND u.Status IN ('Succeeded', 'PartlyFailed')) AS UndoneBy
+FROM eps.Run r WHERE r.Job IN ('UserTagging', 'DeviceTagging') AND r.Mode = 'Apply' AND r.Status IN ('Succeeded', 'PartlyFailed') AND r.Applied > 0 ORDER BY r.StartedAtUtc DESC
+'@))
+            $commits = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query @'
+SELECT TOP (30) p.CommitId, MAX(p.CommittedBy) AS CommittedBy, MAX(p.CommittedAtUtc) AS CommittedAtUtc, COUNT(*) AS Changes, MIN(p.Summary) AS FirstChange,
+       (SELECT TOP (1) b.BackupId FROM eps.ConfigBackup b WHERE b.RefId = CONVERT(NVARCHAR(64), p.CommitId)) AS BackupId
+FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL GROUP BY p.CommitId ORDER BY MAX(p.CommittedAtUtc) DESC
+'@))
+            New-EpsWebResponse -Body @{ ca = @(ConvertTo-EpsWebValue $l.Ca); config = @(ConvertTo-EpsWebValue $l.Config); moves = $moves; runs = $runs; commits = $commits; keepDaily = $script:EpsBackupKeepDaily; keepDays = $script:EpsBackupKeepDays } } }
+        @{ Method = 'GET'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})$'; Summary = 'One Conditional Access backup: every policy, named location and authentication strength it holds, each policy compared with the last read of the tenant.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $d = Get-EpsCaBackupDetail -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id)
+            if (-not $d) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body @{ backup = @(ConvertTo-EpsWebValue $d.Header)[0]; items = @(ConvertTo-EpsWebValue $d.Items) } } }
+        @{ Method = 'GET'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})/export$'; Summary = 'One Conditional Access backup as a zip of JSON files, one per policy (v1''s export), with the named locations and authentication strengths.'; Public = $false
+           Role = 'Admin'; Action = 'backup.ca.export'; Handler = { param($c, $m)
+            $z = Get-EpsCaBackupZip -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id)
+            if (-not $z) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body $z.Bytes -ContentType 'application/zip' -Headers @{ 'Content-Disposition' = "attachment; filename=""$($z.Name)""" } -Audit @{ Target = "CaBackup|$($m.id)"; After = @{ files = $z.Files } } } }
+        @{ Method = 'POST'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})/restore-plan$'; Summary = 'What putting back the picked policies of one Conditional Access backup would change, per policy, with the break-glass check, from the last read. Changes nothing.'; Body = 'policyIds: the policies to put back (none = all)'; Public = $false
+           Role = 'SuperAdmin'; Action = 'ca.policy.restore.check'; Handler = { param($c, $m)
+            $plan = Get-EpsCaRestorePlanFromStore -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id) -PolicyIds @(@($c.Body.policyIds) | Where-Object { "$_" -match '^[0-9a-fA-F-]{36}$' })
+            if (-not $plan) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body $plan -Audit @{ Target = "CaBackup|$($m.id)"; After = $plan.summary; WhatIf = $true } } }
+        @{ Method = 'POST'; Pattern = '^/api/backups/ca/(?<id>\d{1,18})/restore$'; Summary = 'Put the picked policies of one Conditional Access backup back (one that is gone is created again, off), after the engine checks each again (break-glass included).'; Body = 'policyIds; expected: { policyId: the review hash as you saw it }; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.restore'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaBackup|$($m.id)"
+            if (-not (Get-Command Invoke-EpsCaRestore -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $ids = @(@($c.Body.policyIds) | Where-Object { "$_" -match '^[0-9a-fA-F-]{36}$' } | ForEach-Object { "$_".ToLowerInvariant() } | Select-Object -Unique)
+            if (-not $ids.Count -or $ids.Count -gt 200) { return New-EpsWebResponse -Status 400 -Body @{ error = 'policyIds: the policies to put back (1 to 200)' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'no policy named' } }
+            $rows = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ b = [long]$m.id } -Query "SELECT ObjectId, DisplayName, BodyJson FROM eps.CaBackupItem WHERE BackupId = @b AND ItemType = 'policy'" | Where-Object { "$($_.ObjectId)".ToLowerInvariant() -in $ids })
+            if (-not $rows.Count) { return New-EpsWebResponse -Status 404 -Body @{ error = 'the backup does not hold these policies (or it was removed by the retention)' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'not in the backup' } }
+            $exp = $c.Body.expected
+            $items = @(foreach ($r in $rows) { @{ PolicyId = "$($r.ObjectId)"; Mode = 'Restore'; Body = ($r.BodyJson | ConvertFrom-Json -AsHashtable -Depth 30); Expected = $(if ($exp) { "$($exp."$($r.ObjectId)")" }) } })
+            $s = Invoke-EpsCaRestore -ConnectionString $c.Ctx.ConnectionString -Items $items -Source "the restore from backup $($m.id)" -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $code = switch ($s.Result) { 'ok' { 200 } 'partial' { 207 } default { 409 } }
+            New-EpsWebResponse -Status $code -Body @{ ok = ($s.Result -eq 'ok'); items = @($s.Items); text = "Restore from backup $($m.id): $($s.Text)." } `
+                -Audit @{ Target = $t; Outcome = $(if ($s.Result -eq 'ok') { 'ok' } elseif ($s.Done) { 'error' } else { 'refused' }); OutcomeText = $s.Text; After = @{ items = @($s.Items) } } } }
+        @{ Method = 'GET'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/undo-plan$'; Summary = 'What "Undo this change" would do for one change in a policy''s history (its body before it put back, or a copy / a deploy turned off), from the last read. Changes nothing.'; Body = 'move: the history row'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            if ("$($c.Query.move)" -notmatch '^\d{1,18}$') { return New-EpsWebError 400 'move: the history row to undo' }
+            $plan = Get-EpsCaUndoPlanFromStore -ConnectionString $c.Ctx.ConnectionString -PolicyId ([guid]$m.policy) -MoveId ([long]$c.Query.move)
+            if (-not $plan) { return New-EpsWebError 404 'no such change in this policy''s history' }
+            New-EpsWebResponse -Body $plan } }
+        @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/undo$'; Summary = 'Undo one change in a policy''s history: its body before the change put back (a copy or a deploy is turned off, never deleted), after the engine checks it again (break-glass included).'; Body = 'move: the history row; expected: the review hash as you saw it; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.undo'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "CaPolicy|$($m.policy)"
+            if (-not (Get-Command Invoke-EpsCaRestore -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine changes a Conditional Access policy' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            if ("$($c.Body.move)" -notmatch '^\d{1,18}$') { return New-EpsWebResponse -Status 400 -Body @{ error = 'move: the history row to undo' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'no move' } }
+            $mv = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ p = [guid]$m.policy; i = [long]$c.Body.move } -Query 'SELECT MoveId, PolicyId, DisplayName, FromStage, ToStage, BeforeJson, Result, MovedAtUtc FROM eps.CaStageMove WHERE PolicyId = @p AND MoveId = @i')[0]
+            if (-not $mv) { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such change in this policy''s history' } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = 'no such move' } }
+            $u = Get-EpsCaUndoTarget -Move $mv
+            if (-not $u.Ok) { return New-EpsWebResponse -Status 409 -Body @{ error = "Not undone: $($u.Reason)." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $u.Reason } }
+            $s = Invoke-EpsCaRestore -ConnectionString $c.Ctx.ConnectionString -Items @(@{ PolicyId = "$($m.policy)"; Mode = $u.Mode; Body = $u.Body; Expected = "$($c.Body.expected)" }) -Source $u.Label -Actor $c.Caller.identity -Reason "$($c.Body.reason)"
+            $i = @($s.Items)[0]
+            if ($s.Result -ne 'ok') { return New-EpsWebResponse -Status $(if ("$($i.result)" -eq 'failed') { 502 } else { 409 }) -Body @{ error = "Not undone: $($i.text). The policy was not changed." } -Audit @{ Target = $t; Outcome = $(if ("$($i.result)" -eq 'failed') { 'error' } else { 'refused' }); OutcomeText = "$($i.text)" } }
+            New-EpsWebResponse -Body @{ ok = $true; text = "$(if ($i.result -eq 'same') { "Nothing to undo: $($i.displayName) is as it was before that change already." } else { "Undone ($($u.Label)): $($i.displayName) - $($i.text)." })" } -Audit @{ Target = "$t ($($i.displayName))"; After = $i } } }
+        @{ Method = 'GET'; Pattern = '^/api/backups/config/(?<id>\d{1,18})$'; Summary = 'One backup of the tagging configuration: what it holds.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $d = Get-EpsConfigBackupDetail -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id)
+            if (-not $d) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body @{ backup = @(ConvertTo-EpsWebValue $d.Header)[0]; items = @($d.Items | ForEach-Object { [ordered]@{ entity = $_.Entity; key = $_.ItemKey } }) } } }
+        @{ Method = 'GET'; Pattern = '^/api/backups/config/(?<id>\d{1,18})/restore-plan$'; Summary = 'What restoring one tagging configuration backup would change, as the requests the pages make (rules, tag types, values, settings). Changes nothing.'; Public = $false
+           Role = 'Admin'; Handler = { param($c, $m)
+            $p = Get-EpsConfigRestorePlan -ConnectionString $c.Ctx.ConnectionString -BackupId ([long]$m.id)
+            if (-not $p) { return New-EpsWebError 404 'no such backup (it may have been removed by the retention)' }
+            New-EpsWebResponse -Body $p } }
+        @{ Method = 'GET'; Pattern = '^/api/commits/(?<commit>[0-9a-fA-F-]{36})/undo-plan$'; Summary = 'What "Undo this commit" would change: what the commit touched, back as it was in the backup taken just before it. Changes nothing.'; Public = $false
+           Role = 'Admin'; Handler = { param($c, $m)
+            New-EpsWebResponse -Body (Get-EpsCommitUndoPlan -ConnectionString $c.Ctx.ConnectionString -CommitId ([guid]$m.commit)) } }
+        @{ Method = 'GET'; Pattern = '^/api/runs/(?<id>[0-9a-fA-F-]{36})/undo-plan$'; Summary = 'What "Undo this run" would put back: the tags a tagging run applied, each to its old value. Changes nothing.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $p = Get-EpsTagRunUndoPreview -ConnectionString $c.Ctx.ConnectionString -RunId ([guid]$m.id)
+            if (-not $p) { return New-EpsWebError 404 'no such run' }
+            New-EpsWebResponse -Body $p } }
+        @{ Method = 'POST'; Pattern = '^/api/runs/(?<id>[0-9a-fA-F-]{36})/undo$'; Summary = 'Undo a tagging run: a new run writes each tag it applied back to its old value (a tag changed since is left as it is), measured by the mass-change guard.'; Body = 'approve: true to apply a held undo; reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'job.run.undo'; NeedsReason = $true; Handler = { param($c, $m)
+            $t = "Run|$($m.id)"
+            if (-not (Get-Command Invoke-EpsApplyChanges -ErrorAction SilentlyContinue)) { return New-EpsWebResponse -Status 500 -Body @{ error = 'only the engine writes tags' } -Audit @{ Target = $t; Outcome = 'error'; OutcomeText = 'not the engine' } }
+            $s = Invoke-EpsTagRunUndo -ConnectionString $c.Ctx.ConnectionString -RunId ([guid]$m.id) -Actor $c.Caller.identity -Reason "$($c.Body.reason)" -Approve:([bool]$c.Body.approve)
+            if ($s.Result -in 'missing', 'refused') { return New-EpsWebResponse -Status $(if ($s.Result -eq 'missing') { 404 } else { 409 }) -Body @{ error = "Not undone: $($s.Reason)." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $s.Reason } }
+            if ($s.Result -eq 'held') { return New-EpsWebResponse -Status 409 -Body @{ error = "HELD by the mass-change guard: $($s.Reason). Nothing was written - send the undo again with Approve to apply it."; runId = $s.RunId } -Audit @{ Target = $t; Outcome = 'held'; OutcomeText = $s.Reason; After = @{ undoRun = $s.RunId; planned = $s.Planned }; Guard = $true } }
+            New-EpsWebResponse -Body @{ ok = $true; runId = $s.RunId; text = "Undone in run $($s.RunId): $($s.Applied) tag(s) put back$(if ($s.Queued) { ", $($s.Queued) queued for the hybrid worker (AD)" })$(if ($s.Failed) { ", $($s.Failed) FAILED" })$(if ($s.Skipped) { ", $($s.Skipped) left as they are (changed since the run)" })." } `
+                -Audit @{ Target = $t; Outcome = $(if ($s.Failed) { 'error' } else { 'ok' }); After = @{ undoRun = $s.RunId; applied = $s.Applied; queued = $s.Queued; failed = $s.Failed; skipped = $s.Skipped } } } }
         # GET-STARTED (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak glass, auth methods, naming
         # conv for groups etc. see all req in v1 scripts"; DESIGN §5.10): the engine checks, the page shows what it found
         @{ Method = 'GET'; Pattern = '^/api/onboarding$'; Summary = 'Get started: every onboarding step with what the last check found, the break-glass accounts and the targeting method.'; Public = $false
@@ -792,6 +970,24 @@ function Get-EpsWebRoutes {
             if ($bad) { return New-EpsWebResponse -Status 400 -Body @{ error = $bad } -Audit @{ Target = "BreakGlassAccount|$upn"; Outcome = 'refused'; OutcomeText = $bad } }
             $s = Save-EpsBreakGlassAccount -ConnectionString $c.Ctx.ConnectionString -UserPrincipalName $upn -DisplayName "$($b.displayName)" -Method "$($b.method)" -Placement "$($b.placement)" -Enabled $(if ($null -eq $b.enabled) { $true } else { [bool]$b.enabled }) -Actor $c.Caller.identity
             New-EpsWebResponse -Body @{ ok = $true; text = $(if ($s.Result -eq 'unchanged') { "Nothing to change for $upn." } else { "Saved $upn in the break-glass list. Nothing in the tenant changed - read the policy list again to check every policy excludes it." }) } -Audit @{ Target = "BreakGlassAccount|$upn"; Before = $s.Before; After = $s.After } } }
+        # GET-STARTED phase 2, the rest (V1-PARITY P7 / P8 / P9; owner 2026-11-03 "Check + create on approval"; 2026-11-05
+        # "it is always 100% opeator controlled"): the strengths, the denied-countries and trusted locations, the break-glass
+        # accounts, as v1 makes them. The preview reads SQL only; every create is a SuperAdmin's request the engine applies
+        @{ Method = 'GET'; Pattern = '^/api/onboarding/plan$'; Summary = 'What a Get started create would do, from the last check. Changes nothing.'; Body = 'action: strengths, deniedcountries, trusted or breakglass; names (comma separated); name, ranges, trusted (a trusted location)'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $cs = $c.Ctx.ConnectionString; $sp = { param($v) @("$v" -split '[,;\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+            $set = @{}; foreach ($n in 'CA.AuthStrengthFidoName', 'CA.AuthStrengthWhfbName', 'CA.DeniedCountriesLocationName') { $set[$n] = "$(Get-EpsSetting -ConnectionString $cs -Name $n -Default '')" }
+            $loc = if ("$($c.Query.action)" -eq 'trusted') { @{ name = "$($c.Query.name)"; ranges = @(& $sp $c.Query.ranges); trusted = ("$($c.Query.trusted)" -ne 'false') } }
+            $pl = Get-EpsOnboardPlan -Action "$($c.Query.action)" -State (Get-EpsOnboardPreviewState -ConnectionString $cs) -Names (& $sp $c.Query.names) -Location $loc -Settings $set
+            New-EpsWebResponse -Body @{ ok = $pl.ok; reason = $pl.reason; action = $pl.action; summary = $pl.summary; items = @($pl.items | ForEach-Object { [ordered]@{ name = $_.name; do = $_.do; detail = $_.detail } }) } } }
+        @{ Method = 'POST'; Pattern = '^/api/onboarding/strengths$'; Summary = 'Create the missing authentication strengths as v1 does: FIDO2 + TAP (v1''s 11 key models) and Windows Hello + TAP.'; Body = 'names: FIDO, WHfB (empty = both); reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'onboarding.strengths'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsOnboardRoute -Context $c -Action 'strengths' } }
+        @{ Method = 'POST'; Pattern = '^/api/onboarding/deniedcountries$'; Summary = 'Create the denied-countries named location as v1 does, or add the countries of v1''s list it lacks (none is taken out).'; Body = 'reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'onboarding.deniedcountries'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsOnboardRoute -Context $c -Action 'deniedcountries' } }
+        @{ Method = 'POST'; Pattern = '^/api/onboarding/trusted$'; Summary = 'Create an IP named location (your office or NAT addresses), or set its ranges and trust.'; Body = 'name; ranges: CIDR ranges; trusted: true or false; reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'onboarding.trusted'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsOnboardRoute -Context $c -Action 'trusted' } }
+        @{ Method = 'POST'; Pattern = '^/api/onboarding/breakglass$'; Summary = 'Create the break-glass accounts of the list that are not in the tenant, as v1 does (the password is never shown or kept).'; Body = 'names: user principal names (empty = every missing one); reason'; Public = $false
+           Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'onboarding.breakglass'; NeedsReason = $true; Handler = { param($c, $m) Invoke-EpsOnboardRoute -Context $c -Action 'breakglass' } }
         # CA-GROUPS (owner 2026-11-05: "make sure to also include the underlying groups that must be provisioned and managed";
         # "Yes, Group.ReadWrite.All"; V1-PARITY): the groups the policies use, as v1 makes them. The page and the preview read
         # SQL only; every change is a SuperAdmin's request, applied by the engine (EPS-GroupWrite.ps1), read back, journaled
@@ -827,8 +1023,12 @@ function Get-EpsWebRoutes {
            Role = 'Reader'; Handler = { param($c, $m)
             $cat = Get-EpsCaTemplateCatalog
             if ("$($c.Query.id)") { $t = $cat.ById["$($c.Query.id)".ToUpperInvariant()]; if (-not $t) { return New-EpsWebError 404 'no such template' }; return New-EpsWebResponse -Body @{ template = $t; refs = $cat.refs; stageState = $cat.stageState } }
+            # CA-TEMPLATES: which templates are in the tenant already (a policy with its CA number, as last read)
+            $inT = @{}; foreach ($x in @(Get-EpsCaExistingPolicies -ConnectionString $c.Ctx.ConnectionString)) { if ($x.templateId) { $inT[$x.templateId] = @(@($inT[$x.templateId]) + "$($x.displayName)" | Where-Object { $_ }) } }
             New-EpsWebResponse -Body @{ library = $cat.library; stages = @($cat.stages); refs = $cat.refs
-                rows = @($cat.templates | ForEach-Object { [ordered]@{ id = $_.id; version = $_.version; name = $_.name; persona = $_.persona; breakGlassPolicy = [bool]$_.breakGlassPolicy; incomplete = [bool]$_.incomplete; notes = (@($_.gaps) -join '; ') } }) } } }
+                method = "$(Get-EpsSetting -ConnectionString $c.Ctx.ConnectionString -Name 'CA.GroupTargetingMethod' -Default '')"
+                rows = @($cat.templates | ForEach-Object { [ordered]@{ id = $_.id; version = $_.version; name = $_.name; persona = $_.persona; breakGlassPolicy = [bool]$_.breakGlassPolicy; incomplete = [bool]$_.incomplete; notes = (@($_.gaps) -join '; ')
+                    inTenant = $(if ($inT[$_.id]) { @($inT[$_.id]) -join ', ' } else { '' }) } }) } } }
         @{ Method = 'POST'; Pattern = '^/api/capolicies/policies/(?<policy>[0-9a-fA-F-]{36})/adopt$'; Summary = 'Adopt a Conditional Access policy as it is: Entra Policy Suite records it (its body becomes the baseline). Nothing in the tenant changes.'; Body = 'expected: the review hash as you saw it; reason'; Public = $false
            Role = 'SuperAdmin'; Apply = 'Engine'; Action = 'ca.policy.adopt'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaPolicy|$($m.policy)"
@@ -1052,10 +1252,25 @@ function Get-EpsWebRoutes {
             $before = if ($s.BeforeSet) { @{ value = $s.Before } } else { @{ value = $null; notSet = $true } }
             if (-not $s.Saved) { return New-EpsWebResponse -Body @{ ok = $true; changed = $false; value = $v.Value; text = 'No change: the setting already has this value.' } -Audit @{ Target = $t; Before = $before; OutcomeText = 'no change' } }
             New-EpsWebResponse -Body @{ ok = $true; changed = $true; value = $v.Value; text = "Saved: $($e.label)." } -Audit @{ Target = $t; Before = $before; After = @{ value = $v.Value } } } }
-        @{ Method = 'GET'; Pattern = '^/api/worker$'; Summary = 'The hybrid workers and the work packages by state.'; Public = $true
+        # WORKER-GUI (2.0.82, owner 2026-11-05: "i didnt see the ad hybrid worker anywhere in the gui or where to configure it
+        # or see the services"): Administration > Hybrid worker
+        @{ Method = 'GET'; Pattern = '^/api/worker$'; Summary = 'The hybrid workers (scheduled task, AD domain, environment, version, last seen), the AD work queue, the last connection tests and how to add a worker.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
-            New-EpsWebResponse -Body @{ workers = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT * FROM eps.WorkerHeartbeat ORDER BY WorkerName'))
-                packages = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT Status, COUNT(*) AS Count FROM eps.WorkPackage GROUP BY Status') } } }
+            $pg = Get-EpsWorkerPage -ConnectionString $c.Ctx.ConnectionString -ReleaseVersion "$($c.Ctx.Version)"
+            $pg.setup = @(Get-EpsWorkerSetup -ConnectionString "$($c.Ctx.ConnectionString)" -TenantId "$($c.Ctx.AuthConfig.TenantId)")
+            New-EpsWebResponse -Body $pg } }
+        @{ Method = 'POST'; Pattern = '^/api/worker/test$'; Summary = 'Test the hybrid worker connection: the next cycle of a worker (of the AD environment given) answers what it is connected to. Reads AD only.'; Body = 'environment (optional); reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'worker.test.request'; NeedsReason = $true; Handler = { param($c, $m)
+            $env = "$($c.Body.environment)".Trim()
+            if ($env -and $env -notmatch '^[A-Za-z0-9_-]{1,50}$') { return New-EpsWebError 400 "'$env' is not an AD environment name" }
+            $id = New-EpsWorkerTestPackage -ConnectionString $c.Ctx.ConnectionString -Actor $c.Caller.identity -Environment $env
+            New-EpsWebResponse -Body @{ ok = $true; packageId = $id; text = "Test queued (package $id). A worker$(if ($env) { " of $env" }) answers on its next cycle (every 5 minutes) - see 'Connection tests'." } -Audit @{ Target = "WorkPackage $id"; After = @{ environment = $env } } } }
+        @{ Method = 'POST'; Pattern = '^/api/worker/retry$'; Summary = 'Try a failed AD tag change again: a new change record and a new work package (the failed ones stay as they are).'; Body = 'packageId; reason'; Public = $false
+           Role = 'Admin'; Apply = 'Engine'; Action = 'worker.retry'; NeedsReason = $true; Handler = { param($c, $m)
+            $pid0 = 0L; if (-not [long]::TryParse("$($c.Body.packageId)", [ref]$pid0) -or $pid0 -le 0) { return New-EpsWebError 400 'packageId: the failed work package' }
+            $r = Invoke-EpsWorkPackageRetry -ConnectionString $c.Ctx.ConnectionString -PackageId $pid0 -Actor $c.Caller.identity
+            if (-not $r.Ok) { return New-EpsWebResponse -Status $r.Status -Body @{ error = $r.Reason } -Audit @{ Target = "WorkPackage $pid0"; Outcome = 'refused'; OutcomeText = $r.Reason } }
+            New-EpsWebResponse -Body @{ ok = $true; packageId = $r.PackageId; changeId = $r.ChangeId; text = $r.Reason } -Audit @{ Target = "WorkPackage $pid0"; After = @{ packageId = $r.PackageId; changeId = $r.ChangeId } } } }
         @{ Method = 'GET'; Pattern = '^/api/access$'; Summary = 'Who has which role in this app.'; Public = $false
            Role = 'Admin'; Handler = { param($c, $m)
             New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT Principal, ObjectId, Role, GrantedBy, GrantedAtUtc FROM eps.WebAccess ORDER BY Role DESC, Principal')) } } }
@@ -1136,8 +1351,8 @@ function Get-EpsApiReference {
     #>
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
-        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; groups = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; me = 'App'; version = 'App'; reference = 'App' }
+        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; tamper = 'Tamper'
+        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; me = 'App'; version = 'App'; reference = 'App' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {
@@ -1266,6 +1481,12 @@ function Invoke-EpsCommitQueue {
     $cs = $Commit.Ctx.ConnectionString
     $rows = @(Invoke-EpsSql -ConnectionString $cs -Query "SELECT * FROM eps.PendingChange WHERE Status = 'Pending' ORDER BY Id" | Where-Object { $Ids -contains [long]$_.Id })
     $commitId = [guid]::NewGuid(); $done = [System.Collections.Generic.List[object]]::new(); $types = @{}
+    # UNDO-BACKUP (PIM: "a snapshot before every commit"): the configuration as it is, stored BEFORE the commit - the base
+    # of "Undo this commit". No backup = no commit (every row stays Pending)
+    if ($rows.Count) {
+        $bk = Backup-EpsConfigBeforeCommit -ConnectionString $cs -CommitId $commitId -Actor $Commit.Caller.identity
+        if (-not $bk.Ok) { return @{ CommitId = $commitId; Items = @($rows | ForEach-Object { [ordered]@{ id = [long]$_.Id; summary = [string]$_.Summary; applied = $false; error = "$($bk.Reason) - nothing was committed"; text = '' } }); Runs = @(); Applied = 0; Failed = $rows.Count } }
+    }
     foreach ($r in $rows) {
         $res = Invoke-EpsWebReplay -Commit $Commit -Row $r -CommitReason $Reason
         $ok = $res.Status -lt 400

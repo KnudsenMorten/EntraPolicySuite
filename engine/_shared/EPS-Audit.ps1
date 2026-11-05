@@ -27,9 +27,14 @@ $script:EpsAuditActions = @(
     'ca.policy.adopt', 'ca.policy.release'   # Conditional Access: the operator RECORDS that he adopts / releases a policy - nothing in the tenant changes
     'identity.action.set'           # ID-ACTIONS (2.0.30): the follow-up fields set on users (EPS data only)
     'onboarding.check', 'breakglass.change'   # GET-STARTED (2.0.28): the engine checks the onboarding steps (reads only); the break-glass list edited (EPS data)
+    'onboarding.strengths', 'onboarding.deniedcountries', 'onboarding.trusted', 'onboarding.breakglass'   # GET-STARTED phase 2 (2.0.82, V1-PARITY P7-P9): a SuperAdmin's creates, the engine writes them (EPS-OnboardWrite.ps1)
     'ca.policy.stage'               # CA-LIFECYCLE (2.0.27): a SuperAdmin moves ONE adopted policy ONE stage - the engine's one Conditional Access write
     'ca.policy.edit', 'ca.policy.clone', 'ca.policy.edit.check'   # CA-EDIT (owner 2026-11-05): a SuperAdmin edits ONE adopted policy / clones it into a new one (created off, adopted)
+    'ca.policy.deploy', 'ca.policy.newversion', 'ca.policy.promote', 'ca.policy.rollback', 'ca.policy.removeold'   # CA-TEMPLATES (owner 2026-11-05, "Side-by-side only"): a template deployed as a new policy; a newer version tested next to it, promoted, rolled back, the old one removed
     'ca.group.check', 'ca.group.create', 'ca.group.rule', 'ca.group.members', 'ca.group.forceupdate', 'ca.group.au'   # CA-GROUPS (2.0.81): the groups the policies use - read, and a SuperAdmin's changes (the engine writes them, EPS-GroupWrite.ps1)
+    'ca.policy.restore', 'ca.policy.restore.check', 'ca.policy.undo'   # UNDO-BACKUP (owner 2026-11-05): a SuperAdmin puts policies back from a backup / undoes one change of a policy (the engine writes it); the check of a restore (nothing written)
+    'job.run.undo'                  # UNDO-BACKUP: "Undo this run" of a tagging run - the engine writes the old tags back (a new run, Mode Undo)
+    'backup.ca.export'              # UNDO-BACKUP: a Conditional Access backup downloaded as v1's JSON files (a READ mark: every policy leaves the app)
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names
     'identity.run.request', 'identity.export', 'view.save', 'view.delete'   # the identity report (read only) and saved views (LIST-1)
     'tamper.event.accept'           # the change was legitimate (no outside change)
@@ -48,6 +53,7 @@ $script:EpsAuditActions = @(
     'tamper.alarm-inputs.export'    # READ mark: the alarm inputs downloaded (the break-glass accounts and the tamper allow list)
     'setup.database.apply'          # caj-eps-dbinit set up the database: schema, roles, users (incl. the hybrid worker), the first SuperAdmin, removals
     'update.apply'                  # the updater installed a release (or stopped part way): the components rolled
+    'worker.test.request', 'worker.retry'   # WORKER-GUI (2.0.82): an Admin tests the hybrid worker connection (a read-only package) / tries a failed AD tag change again (a new change + package)
 )
 
 function Get-EpsAuditActions { $script:EpsAuditActions }

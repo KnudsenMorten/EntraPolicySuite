@@ -305,7 +305,7 @@ function Invoke-EpsOnboardingCheck {
         & $add 'locations' 'trusted' 'Trusted locations (office IPs)' $(if ($trusted.Count) { 'ok' } else { 'missing' }) $(if ($trusted.Count) { "$($trusted.Count): $(@($trusted | ForEach-Object displayName) -join ', ')" } else { 'none - about 90 template conditions use "all trusted locations"; v1 never made one, you add your office / NAT IPs' })
     }
     $tags = @(& $sql 'SELECT Tag FROM eps.ServiceTagLocation WHERE Enabled = 1')
-    & $add 'locations' 'servicetags' 'Azure service tags as named locations' 'info' $(if ($tags.Count) { "$($tags.Count) tag(s): $(@($tags | ForEach-Object Tag) -join ', ') - the named-locations job is not built yet; v1's job keeps them" } else { 'none' })
+    & $add 'locations' 'servicetags' 'Azure service tags as named locations' 'info' $(if ($tags.Count) { "$($tags.Count) tag(s): $(@($tags | ForEach-Object Tag) -join ', ') - $(if ((& $set 'NamedLocations.Enabled' 'false') -eq 'true') { 'the named-locations job keeps them daily (switched on)' } else { 'the named-locations job keeps them once NamedLocations.Enabled is on (it is off) - then switch v1''s job off' })" } else { 'none' })
 
     # 9 tag attributes and rules
     foreach ($t in @(& $sql "SELECT Name, ObjectType, Attribute, Enabled FROM eps.TagType ORDER BY ObjectType, Name")) {
