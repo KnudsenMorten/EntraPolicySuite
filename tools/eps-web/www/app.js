@@ -76,8 +76,10 @@
     if (pend.total === 1) return 'Sent: ' + pendingReqs[Object.keys(pendingReqs)[0]] + '. ' + ENGINE_WAIT;
     return 'Sent ' + fmtNum(pend.total) + ' changes: ' + fmtNum(pend.done) + ' applied, ' + fmtNum(left) + ' waiting' + (pend.failed.length ? ', ' + fmtNum(pend.failed.length) + ' not applied' : '') + '. ' + ENGINE_WAIT;
   }
-  function watchRequest(id, label) {
+  function watchRequest(id, label, at) {
     if (!Object.keys(pendingReqs).length) { pend.total = 0; pend.done = 0; pend.failed = []; pend.rounds = 0; pend.since = new Date(Date.now() - 120000).toISOString(); }
+    // a request taken up again after a reload is older: read from its own time
+    if (at) { var t = new Date(new Date(at).getTime() - 60000); if (!isNaN(t) && t.toISOString() < pend.since) pend.since = t.toISOString(); }
     pendingReqs[String(id).toLowerCase()] = label || 'your change'; pend.total++;
     notice(pendingText());
     if (!pend.timer) pend.timer = setTimeout(pollRequests, 4000);
@@ -113,6 +115,17 @@
     }
     if (r && r.queued && r.requestId) watchRequest(r.requestId, label);
     else { notice(r && r.text ? r.text : 'Done.'); render(); }
+  }
+  // CA-MONPEND (owner 2026-11-05: "it was not shown even though i refreshed the page ... no info"): a reload forgot the
+  // changes this person sent and the engine had not applied yet - take them up again, so the bar keeps following them
+  function resumeRequests() {
+    api('GET', '/api/requests/mine?since=' + encodeURIComponent(new Date(Date.now() - 3600000).toISOString())).then(function (d) {
+      (d.rows || []).forEach(function (q) {
+        if (q.Job !== 'Config' || ['Pending', 'Dispatched', 'Running'].indexOf(q.Status) < 0) return;
+        var mm = /^\/api\/ca\/monitors\/(.+)$/.exec(q.Path || '');
+        watchRequest(q.RequestId, mm ? (q.Method === 'DELETE' ? 'Delete monitor ' : 'Save monitor ') + decodeURIComponent(mm[1]) : 'your change' + (q.Path ? ' (' + q.Method + ' ' + q.Path + ')' : ''), q.RequestedAtUtc);
+      });
+    }).catch(function () { /* the bar is a help, not a must */ });
   }
   function withReason(title, text, fn) {
     var d = document.getElementById('reasonDialog');
@@ -1740,6 +1753,8 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
         { key: 'InScope', label: 'In scope', type: 'num' }, { key: 'Impacted', label: 'Impacted', type: 'num', cls: function (r) { return r.Impacted > 0 ? 'c-danger' : ''; } }, { key: 'Errors', label: 'Errors', type: 'num' },
         { key: 'Monitor', label: 'Monitor', type: 'cat' }, { key: 'AnalysisId', label: '', render: function (r) { return el('a', { href: '#ca/' + r.AnalysisId, text: 'users' }); } }]));
       p.appendChild(el('h3', { text: 'Monitors' }));
+      // CA-MONPEND: a save the engine has not applied yet is not in the table - say it is on its way
+      if ((all[1].pending || []).length) p.appendChild(el('div', { class: 'bar bar-info' }, caPendingText(all[1].pending) + ' ', el('button', { type: 'button', class: 'link', text: 'Reload', onclick: function () { render(); } })));
       p.appendChild(el('div', { class: 'guide', text: 'A monitor is a saved analysis that runs on a schedule - several side by side, e.g. one per persona (Users-Internal, Admins, ...) and one for the global policies (CA00x). A persona takes all its policies, also ones added later. An alert mail goes out only when users are impacted, to the monitor\'s own recipients (a team) or else to the alert recipients in Settings. Edit loads a monitor into the form above.' }));
       var mcols = [{ key: 'Name', label: 'Monitor' }, { key: 'Schedule', label: 'Schedule' }, { key: 'Enabled', label: 'On', type: 'cat' },
         { key: 'Definition', label: 'Policies', wrap: true, render: function (m) { try { var d = JSON.parse(m.Definition); var ids = (d.policyIds || []).length; var old = (d.policyPrefixes || []).concat(d.policyPatterns || []); return [].concat((d.personas || []).map(function (x) { return 'persona ' + x; }), ids ? [ids + ' picked'] : [], old.length ? ['older series ' + old.join(', ')] : [], (d.excludePolicyIds || []).length ? [d.excludePolicyIds.length + ' left out'] : []).join(', ') + ((d.alertTo || []).length ? ' · alert to ' + d.alertTo.join(', ') : ''); } catch (e) { return ''; } } },
@@ -1756,18 +1771,23 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
   // what happens.
   function caMonitorPick(kind, sel) {
     Promise.all([api('GET', '/api/ca/monitors'), api('GET', '/api/ca/policies'), api('GET', '/api/ca/personas')]).then(function (all) {
-      var mons = all[0].rows || [];
-      if (!mons.length) { notice('No monitor yet - make one on the CA Policy Analyzer page (Save as monitor).', 'warn'); return; }
+      var mons = all[0].rows || [], waiting = all[0].pending || [];
+      // CA-MONPEND (owner 2026-11-05: "nothing happens when i click add to monitor"): a saved monitor the engine has not
+      // applied yet is not in the list - say so instead of "no monitor"; a monitor with a change still waiting is not
+      // changed again (this PUT would overwrite it)
+      var waitFor = function (n) { return waiting.filter(function (w) { return String(w.Name).toLowerCase() === String(n).toLowerCase(); }).length > 0; };
+      if (!mons.length) { notice(waiting.length ? caPendingText(waiting) + ' Try again when it is applied.' : 'No monitor yet - make one on the CA Policy Analyzer page (Save as monitor).', 'warn'); return; }
       var pols = all[1].rows || [], takes = {};
       (all[2].rows || []).forEach(function (pe) { takes[pe.name.toLowerCase()] = (pe.takes || []).map(function (x) { return String(x).toLowerCase(); }); });
       var d = el('dialog', { class: 'rg-dlg', 'aria-label': 'Pick the monitor' }); document.body.appendChild(d);
       var close = function () { if (d.open) d.close(); if (d.parentNode) d.parentNode.removeChild(d); };
       d.addEventListener('close', function () { if (d.parentNode) d.parentNode.removeChild(d); });
-      var pick = el('select', { 'aria-label': 'Monitor' }, mons.map(function (m) { return el('option', { value: m.Name, text: m.Name + (m.Enabled ? '' : ' (off)') }); }));
+      var pick = el('select', { 'aria-label': 'Monitor' }, mons.map(function (m) { return el('option', { value: m.Name, text: m.Name + (m.Enabled ? '' : ' (off)') + (waitFor(m.Name) ? ' (a change waits for the engine)' : '') }); }));
       d.appendChild(el('h3', { text: (kind === 'add' ? 'Add ' : 'Remove ') + fmtNum(sel.length) + ' policy(ies) ' + (kind === 'add' ? 'to' : 'from') + ' a monitor' }));
       d.appendChild(el('div', { class: 'form' }, el('label', null, 'Monitor ', pick)));
       d.appendChild(el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close }), el('button', { type: 'button', text: 'Next', onclick: function () {
         var m = mons.filter(function (x) { return x.Name === pick.value; })[0]; close(); if (!m) return;
+        if (waitFor(m.Name)) { notice('Monitor ' + m.Name + ' has a change waiting for the engine (its next check, within 5 minutes) - try again when it is applied, so this change does not overwrite it.', 'warn'); return; }
         var def = {}; try { def = JSON.parse(m.Definition || '{}') || {}; } catch (e) { def = {}; }
         var plan = caMonitorPlan(kind, def, sel, takes, pols);
         if (!plan.changed) { notice(plan.lines.join(' '), 'warn'); return; }
@@ -1777,6 +1797,11 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       } })));
       d.showModal();
     }).catch(function (e) { notice('Could not read the monitors: ' + e.message, 'warn'); });
+  }
+  // CA-MONPEND: the monitor saves / deletes the engine has not applied yet, in one sentence
+  function caPendingText(waiting) {
+    return 'Waiting for the engine (it applies changes at its next check, every 5 minutes): ' + waiting.map(function (w) {
+      return (w.Method === 'DELETE' ? 'delete' : 'save') + ' monitor ' + w.Name + ' (requested ' + fmtTime(w.RequestedAtUtc) + (w.RequestedBy ? ' by ' + w.RequestedBy : '') + ')'; }).join('; ') + '.';
   }
   // the change to ONE monitor's definition and a plain line per policy - kept apart from the dialog so it can be read
   // on its own: { def, changed, lines, summary }
@@ -2857,6 +2882,7 @@ function jobName(j) { return j === 'Tick' ? 'Engine' : textOf(j); }
       document.getElementById('tenantId').textContent = m.tenantId || '';
       document.getElementById('noSuperAdmin').hidden = !m.noSuperAdmin;
       render();
+      resumeRequests();
     }).catch(function (e) { status('Could not load: ' + e.message); });
   });
 })();

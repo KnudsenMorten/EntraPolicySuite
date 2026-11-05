@@ -262,7 +262,7 @@ function Get-EpsWebRoutes {
            Role = 'Reader'; Handler = { param($c, $m)
             $since = [datetime]::MinValue
             if (-not [datetime]::TryParse("$($c.Query.since)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal, AssumeUniversal', [ref]$since)) { return New-EpsWebError 400 'since: a time (ISO 8601, UTC)' }
-            $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ by = "$($c.Caller.identity)"; s = $since } -Query 'SELECT TOP (2000) RequestId, Job, Status, StatusText, RequestedAtUtc, UpdatedAtUtc FROM eps.JobRequest WHERE RequestedBy = @by AND RequestedAtUtc >= @s ORDER BY RequestedAtUtc'))
+            $rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ by = "$($c.Caller.identity)"; s = $since } -Query "SELECT TOP (2000) RequestId, Job, Status, StatusText, RequestedAtUtc, UpdatedAtUtc, CASE WHEN ISJSON(Scope) = 1 THEN JSON_VALUE(Scope, '$.method') END AS Method, CASE WHEN ISJSON(Scope) = 1 THEN JSON_VALUE(Scope, '$.path') END AS Path FROM eps.JobRequest WHERE RequestedBy = @by AND RequestedAtUtc >= @s ORDER BY RequestedAtUtc"))
             New-EpsWebResponse -Body @{ rows = $rows } } }
         @{ Method = 'GET'; Pattern = '^/api/requests/(?<rid>[0-9a-fA-F-]{36})$'; Summary = 'The state of one request: queued, running, done, failed or refused, with its result text.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
@@ -546,7 +546,10 @@ function Get-EpsWebRoutes {
                 -Audit @{ Target = "CaAnalysis|$($m.aid)"; After = @{ rows = $rows.Count } } } }
         @{ Method = 'GET'; Pattern = '^/api/ca/monitors$'; Summary = 'The analyzer monitors: saved analyses that run on a schedule.'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
-            New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled, LastStartedUtc, LastStartResult, UpdatedAtUtc FROM eps.CaMonitor ORDER BY Name')) } } }
+            # CA-MONPEND (owner 2026-11-05: "i added a monitor, but it was not shown even though i refreshed the page"): a
+            # save is applied by the engine within 5 minutes - the changes still waiting are listed, so the page can say so
+            $pend = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT RequestId, JSON_VALUE(Scope, '$.method') AS Method, SUBSTRING(JSON_VALUE(Scope, '$.path'), 18, 100) AS Name, Status, RequestedBy, RequestedAtUtc FROM eps.JobRequest WHERE Job = 'Config' AND Status IN ('Pending', 'Dispatched', 'Running') AND ISJSON(Scope) = 1 AND JSON_VALUE(Scope, '$.path') LIKE '/api/ca/monitors/%' ORDER BY RequestedAtUtc"))
+            New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled, LastStartedUtc, LastStartResult, UpdatedAtUtc FROM eps.CaMonitor ORDER BY Name')); pending = $pend } } }
         @{ Method = 'PUT'; Pattern = '^/api/ca/monitors/(?<mn>[A-Za-z0-9_.-]{1,100})$'; Summary = 'Create or change a monitor.'; Body = 'definition: the analysis (as for analyze; excludePolicyIds: policies left out of this monitor); schedule; enabled'; Public = $true
            Role = 'Admin'; Apply = 'Engine'; Action = 'ca.monitor.change'; NeedsReason = $true; Handler = { param($c, $m)
             $t = "CaMonitor|$($m.mn)"

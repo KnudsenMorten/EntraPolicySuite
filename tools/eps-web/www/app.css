@@ -46,6 +46,9 @@ code { background:var(--code-bg); padding:1px 4px; border-radius:3px; }
 .bar-warn { background:var(--warning-bg); color:var(--text); }
 :root[data-theme="dark"] .bar-info { background:#0c2d6b; color:#e6edf3; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .bar-info { background:#0c2d6b; color:#e6edf3; } }
+/* CA-MONPEND (owner 2026-11-05: "nothing happens when i click add to monitor"): the notice sat above the tabs and
+   scrolled out of sight - it floats now, seen wherever the page is scrolled */
+#noticeBar { position:fixed; right:16px; bottom:40px; z-index:50; max-width:min(640px, calc(100% - 32px)); border:1px solid var(--border); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,.2); }
 
 /* tabs (BRAND-2.2 / 2.9): one row, scrolls sideways on a phone */
 #tabs { display:flex; gap:4px; background:var(--surface-alt); border-bottom:1px solid var(--border); padding:0 6px; overflow-x:auto; position:sticky; top:0; z-index:20; }

@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.78 - a saved monitor you can follow (fix)
+- Fixed: "Add to monitor..." seemed to do nothing. Its answer appeared at the top of the page, out of sight when the
+  page was scrolled. Notices now float at the bottom right, visible wherever you are on the page.
+- Fixed: a new or changed monitor was not shown after a reload, with nothing to say why. The engine applies a saved
+  monitor at its next check (within 5 minutes). The Monitors list now shows what is still waiting, and after a
+  reload the page goes on following your waiting changes until they are applied.
+- "Add to monitor..." names a monitor that is saved but not applied yet, and does not change a monitor while a change
+  to it is still waiting, so one change never overwrites the other.
+
 ## 2.0.77 - the build pool in the heartbeat
 - A private-network install tells Invardia the state of its registry build pool (size, instances running, when it
   was checked), as the update job read it. An install without a pool sends nothing for it.
