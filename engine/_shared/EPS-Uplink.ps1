@@ -26,7 +26,16 @@ $script:EpsUplinkEndpoint   = 'https://invardia.com/api/uplink/v1/report'
 $script:EpsUplinkProduct    = 'entrapolicysuite'
 $script:EpsUplinkSecretName = 'uplink-key'
 $script:EpsUplinkKvApi      = '7.4'
-$script:EpsUplinkMaxPosts   = 20          # framework §8.4: ~20 per cycle (Invardia: 30 / min per client IP, shared behind a NAT)
+# framework §8.4 "The contract for every product" (Invardia 2026-11-05, UPLINK-BACKLOG): ~20 POSTs is a RATE guard (30 / min
+# per client IP, shared behind a NAT), not a cap - rounds of 20, 2.5 s apart, >= 65 s between rounds, up to 5 rounds (100)
+# per cycle, stopping at the first non-ok answer. One round per cycle left internal's run records ~43 h behind.
+$script:EpsUplinkRoundPosts = 20
+$script:EpsUplinkMaxRounds  = 5
+$script:EpsUplinkRoundWaitMs = 65000
+$script:EpsUplinkMaxPosts   = $script:EpsUplinkRoundPosts * $script:EpsUplinkMaxRounds
+# §8.4 (4) UplinkBacklog on the heartbeat: OFF until Invardia says its deploy takes the field (Invardia 2026-11-05: "keep
+# it off until I say it's deployed") - a release switches it on
+$script:EpsUplinkSendBacklog = $false
 $script:EpsUplinkPauseMs    = 2500
 $script:EpsUplinkHeartbeatHours = 4       # owner 2026-10-10 "make it every 4 hr": a product constant, not a setting
 $script:EpsUplinkAlertMax   = 10
@@ -63,14 +72,14 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog')
     run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog')
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -313,7 +322,13 @@ function New-EpsUplinkHeartbeat {
         # framework rule 11g (5): BuildPool { tier, count, building, checkedUtc } as the update job last READ it (stored in
         # eps.UplinkState 'buildpool'). No pool / never read / not this shape = LEFT OUT (absent = "no pool, shared builders")
         $bpx = ConvertFrom-EpsUplinkBuildPool -Text "$($Facts.BuildPool)"
-        if ($bpx) { $o.BuildPool = $bpx }        # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
+        if ($bpx) { $o.BuildPool = $bpx }
+        # framework §8.4 (4) (Invardia 2026-11-05): UplinkBacklog { pending, oldestUtc, checkedUtc } - the run records not
+        # sent yet as checked before this cycle sends; caught up = 0 and null. Left out only when it could not be read.
+        $bl = $Facts.UplinkBacklog
+        if ($bl -and $null -ne $bl.Pending -and [int]$bl.Pending -ge 0 -and (ConvertTo-EpsUplinkIso $bl.CheckedUtc)) {
+            $o.UplinkBacklog = [ordered]@{ pending = [int]$bl.Pending; oldestUtc = $(if ([int]$bl.Pending -gt 0) { ConvertTo-EpsUplinkIso $bl.OldestUtc } else { $null }); checkedUtc = (ConvertTo-EpsUplinkIso $bl.CheckedUtc) }
+        }        # FLEET-STEPS: each one-time step of this install with its state from a real check (at most 40, closed lists)
         $steps = [System.Collections.Generic.List[object]]::new()
         foreach ($s in @($Facts.SetupSteps)) {
             if (-not $s -or $steps.Count -ge 40 -or "$($s.key)" -notmatch '^[a-z0-9-]{1,60}$') { continue }
@@ -532,11 +547,36 @@ function Get-EpsUplinkRunPlan {
       successful runs (every 5 minutes) and the uplink job's own runs are not reported (the heartbeat says both).
     #>
     param([object[]]$Runs, [hashtable]$Watermarks = @{}, [Parameter(Mandatory)][datetime]$DefaultSinceUtc)
-    @($Runs | Where-Object {
+    $due = @($Runs | Where-Object {
         $_ -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] -and "$($_.Status)" -ne 'Running' -and "$($_.Job)" -ne 'Uplink' -and
         -not ("$($_.Job)" -eq 'Tick' -and "$($_.Status)" -eq 'Succeeded') -and
         ([datetime]$_.EndedAtUtc) -gt $(if ($Watermarks.ContainsKey((Get-EpsUplinkJobId "$($_.Job)"))) { [datetime]$Watermarks[(Get-EpsUplinkJobId "$($_.Job)")] } else { $DefaultSinceUtc })
     } | Sort-Object { [datetime]$_.EndedAtUtc })
+    # framework §8.4 (Invardia 2026-11-05): a job that holds an Update run or a run that did not succeed goes FIRST -
+    # that job's runs oldest-first from its own watermark (never the newest first: the watermark would pass runs not sent
+    # yet); then every other job's runs, oldest-first as before
+    $first = @($due | Where-Object { "$($_.Job)" -eq 'Update' -or "$($_.Status)" -ne 'Succeeded' } | ForEach-Object { Get-EpsUplinkJobId "$($_.Job)" } | Select-Object -Unique)
+    @(@($due | Where-Object { $first -contains (Get-EpsUplinkJobId "$($_.Job)") } | Sort-Object { [array]::IndexOf($first, (Get-EpsUplinkJobId "$($_.Job)")) }, { [datetime]$_.EndedAtUtc }) +
+      @($due | Where-Object { $first -notcontains (Get-EpsUplinkJobId "$($_.Job)") }))
+}
+function Get-EpsUplinkDueRuns {
+    # the finished runs not reported yet (per job from its watermark in -State; a job without one: the last 24 h), in the
+    # order they go (Get-EpsUplinkRunPlan). -Top bounds the read.
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [datetime]$NowUtc = [datetime]::UtcNow, [int]$Top = 500)
+    $wm = @{}; foreach ($name in @($State.Keys | Where-Object { $_ -like 'watermark:*' })) { $t = ConvertFrom-EpsUplinkTime $State[$name]; if ($t) { $wm[$name.Substring(10)] = $t } }
+    $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
+    $since = @(@($wm.Values) + $default | Sort-Object)[0]
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' ORDER BY EndedAtUtc")
+    @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
+}
+function Get-EpsUplinkBacklog {
+    # §8.4 (4): the run records not sent yet, as checked now - @{ Pending; OldestUtc; CheckedUtc }; $null when unreadable
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $due = @(Get-EpsUplinkDueRuns -ConnectionString $ConnectionString -State $State -NowUtc $NowUtc -Top 5000)
+        $old = @($due | ForEach-Object { [datetime]$_.EndedAtUtc } | Sort-Object)[0]
+        @{ Pending = $due.Count; OldestUtc = $(if ($due.Count) { [datetime]::SpecifyKind($old, 'Utc') }); CheckedUtc = $NowUtc }
+    } catch { $null }
 }
 
 # ---------------------------------------------------------------------------------------------------- alert records
@@ -772,8 +812,8 @@ function Invoke-EpsUplinkCycle {
         Support; Stopped; Lines }. Never throws. -Log { param($level, $msg) } gets every line.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version, [string]$TenantId = $env:EPS_TENANT_ID, [datetime]$NowUtc = [datetime]::UtcNow,
-          [int]$PauseMs = $script:EpsUplinkPauseMs, [string]$WebUrl = $env:EPS_WEB_URL, [string]$Endpoint = $script:EpsUplinkEndpoint, [scriptblock]$Log = { param($l, $m) })
-    $res = @{ Mode = 'disabled'; Posts = 0; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
+          [int]$PauseMs = $script:EpsUplinkPauseMs, [int]$RoundWaitMs = $script:EpsUplinkRoundWaitMs, [string]$WebUrl = $env:EPS_WEB_URL, [string]$Endpoint = $script:EpsUplinkEndpoint, [scriptblock]$Log = { param($l, $m) })
+    $res = @{ Mode = 'disabled'; Posts = 0; Rounds = 1; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
     $say = { param($l, $m) $res.Lines.Add($m); & $Log $l $m }
     $finish = { param($line) try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'last' -Value "$(ConvertTo-EpsUplinkIso $NowUtc) $line" } catch { }; $res }
     try {
@@ -786,7 +826,9 @@ function Invoke-EpsUplinkCycle {
         $post = {
             param([System.Collections.IDictionary]$rec)
             if ($res.Posts -ge $script:EpsUplinkMaxPosts) { return @{ Ok = $false; Status = 0; Reason = 'budget'; Budget = $true } }
-            if ($res.Posts -gt 0) { & $script:EpsUplinkSleep $PauseMs }
+            # a new round waits >= 65 s (the 30 / min limit has passed); inside a round 2.5 s apart
+            if ($res.Posts -gt 0 -and ($res.Posts % $script:EpsUplinkRoundPosts) -eq 0) { & $script:EpsUplinkSleep $RoundWaitMs; $res.Rounds++ }
+            elseif ($res.Posts -gt 0) { & $script:EpsUplinkSleep $PauseMs }
             $res.Posts++
             Send-EpsUplinkRecord -Record $rec -Key $key -Endpoint $Endpoint
         }
@@ -796,6 +838,7 @@ function Invoke-EpsUplinkCycle {
         $lastHb = if ($st.heartbeat) { ConvertFrom-EpsUplinkTime $st.heartbeat }
         if (-not $lastHb -or ($NowUtc - $lastHb).TotalMinutes -ge ($script:EpsUplinkHeartbeatHours * 60 - 10)) {
             $facts = Get-EpsUplinkHeartbeatFacts -ConnectionString $ConnectionString -Version $Version
+            if ($script:EpsUplinkSendBacklog) { $facts.UplinkBacklog = Get-EpsUplinkBacklog -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc }
             $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc)
             if (-not $r.Ok -and $r.Status -in 400, 413, 422) {
                 # Invardia names the refused fields (422 { error, fields }): only THOSE are left out of the one resend; a
@@ -857,20 +900,16 @@ function Invoke-EpsUplinkCycle {
         }
 
         # 3. the run records, one watermark per job
-        $wm = @{}; foreach ($name in @($st.Keys | Where-Object { $_ -like 'watermark:*' })) { $t = ConvertFrom-EpsUplinkTime $st[$name]; if ($t) { $wm[$name.Substring(10)] = $t } }
-        $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
-        $since = @(@($wm.Values) + $default | Sort-Object)[0]
-        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP (500) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' ORDER BY EndedAtUtc")
-        foreach ($run in (Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)) {
+        foreach ($run in (Get-EpsUplinkDueRuns -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc)) {
             $r = & $post (New-EpsUplinkRunRecord -Run $run -Version $Version -TenantId $TenantId -Key $key -NowUtc $NowUtc)
             if (-not $r.Ok) {
-                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "uplink: $($script:EpsUplinkMaxPosts) POSTs this cycle - the rest of the runs go next cycle" } else { & $fail "run record $(Get-EpsUplinkJobId $run.Job)" $r }
+                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "uplink: $($script:EpsUplinkMaxPosts) POSTs this cycle ($($script:EpsUplinkMaxRounds) rounds) - the rest of the runs go next cycle" } else { & $fail "run record $(Get-EpsUplinkJobId $run.Job)" $r }
                 break
             }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$(Get-EpsUplinkJobId $run.Job)" -Value ([datetime]::SpecifyKind([datetime]$run.EndedAtUtc, 'Utc').ToString('o', [Globalization.CultureInfo]::InvariantCulture))
             $res.Runs++
         }
-        if ($res.Runs) { & $say 'Info' "uplink: $($res.Runs) run record(s) sent" }
+        if ($res.Runs) { & $say 'Info' "uplink: $($res.Runs) run record(s) sent in $($res.Rounds) round(s)" }
         & $finish "identified: heartbeat $($res.Heartbeat), $($res.Alerts) alert(s), $($res.Runs) run(s)$(if ($res.Stopped) { ", stopped ($($res.Stopped))" })"
     } catch {
         $res.Stopped = 'error'

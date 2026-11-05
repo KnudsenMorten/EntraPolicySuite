@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.79 - run reports catch up with Invardia (fix)
+- Fixed: an install with many runs could fall behind in reporting them to Invardia (at one install about two days),
+  because each 4-hour report sent at most 20 records. A report now sends up to 100, in rounds of 20 with a pause
+  between rounds to stay within the allowed request rate, so a backlog is cleared within a few reports.
+- A job with a failed run or an update run is reported first. Each job's runs are still sent oldest first, so
+  nothing is skipped.
+
 ## 2.0.78 - a saved monitor you can follow (fix)
 - Fixed: "Add to monitor..." seemed to do nothing. Its answer appeared at the top of the page, out of sight when the
   page was scrolled. Notices now float at the bottom right, visible wherever you are on the page.
