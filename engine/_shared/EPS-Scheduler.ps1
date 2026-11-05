@@ -230,6 +230,9 @@ function Invoke-EpsTick {
         $master = "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Platform.JobsEnabled' -Default 'true')" -eq 'true'
         $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT * FROM eps.JobSchedule')
         $byJob = @{}; foreach ($r in $rows) { $byJob[$r.Job] = $r }
+        # UPD-HOLD (framework §8.18): an update waiting to install or installing goes FIRST - nothing new starts (requests wait,
+        # never refused); it never blocks the update itself. Read once per check; a failed read = no hold (EPS-Updater.ps1).
+        $updateHold = [bool]((Get-Command Test-EpsUpdateHold -ErrorAction SilentlyContinue) -and (Test-EpsUpdateHold -ConnectionString $ConnectionString))
 
         # a run still marked Running after the run limit is dead (framework JOB-RUN-LIMIT): closed, so it stops blocking
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ t = $NowUtc.AddDays(-$RunLimitDays) } `
@@ -245,6 +248,7 @@ function Invoke-EpsTick {
             $r = $byJob[$job]
             if (-not $r) { return 'no schedule row' }
             if (-not $impl[$job]) { return 'not in this release' }
+            if ($updateHold -and $job -ne 'Update') { return 'an update is being installed (update hold) - starts when it is done' }
             if ($alwaysOn[$job]) { return $null }   # the Config job: configuration changes always get applied (SEC-AUDIT-1 S1)
             if (-not $master) { return 'all jobs are switched off (Platform.JobsEnabled)' }
             if (-not $r.Enabled) { return 'the job is switched off' }
@@ -291,7 +295,7 @@ function Invoke-EpsTick {
                 $decisions.Add(@{ Job = $q.Job; Action = 'Waiting'; Reason = 'an earlier request for this job was started in this engine check'; RequestId = $q.RequestId }); continue
             }
             $why = & $blocked $q.Job
-            if ($why -and $why -notmatch 'overlap') {
+            if ($why -and $why -notmatch 'overlap|update hold') {
                 Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; t = $why } -Query "UPDATE eps.JobRequest SET Status = 'Refused', StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id" | Out-Null
                 $decisions.Add(@{ Job = $q.Job; Action = 'Refused'; Reason = $why; RequestId = $q.RequestId }); continue
             }

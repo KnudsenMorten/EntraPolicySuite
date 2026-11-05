@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.74 - updates install only between runs
+- An update never changes the database while another job runs. When a new release is due, no new job starts (a "Run
+  now" waits); the update waits until the running jobs have finished - at most 45 minutes - and only then installs.
+  If they are still running after 45 minutes, nothing is changed and the update tries again the next night; Invardia
+  is told. Nothing that runs is ever stopped.
+
 ## 2.0.73 - support access in the heartbeat
 - The heartbeat to Invardia reports the support access the install applied: the level, until when the Support app has
   database admin (only during an open support session), and that its read access is in place - as the support-access

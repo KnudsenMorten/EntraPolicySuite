@@ -105,6 +105,77 @@ function Get-EpsUpdateRunGate {
     return @{ Go = $true; Running = @(); Reason = 'no job is running: an update could start' }
 }
 
+# ---- UPD-HOLD (framework §8.18, owner 2026-11-05 "it can destroy schema"): an update never changes the database under a
+# running run. It is installed BETWEEN runs and a waiting update goes FIRST: the update run marks itself as the hold
+# (eps.Run Scope '{"updateHold":true}' on its own Running row - JSON, as the column is) -> the scheduler dispatches nothing new; the update then waits until
+# no work job runs (eps.Run AND the Container Apps executions), at most 45 minutes, else it gives up until the next night.
+# The hold ends with the run (Status leaves Running), is lifted in a finally, and expires on its own after 120 minutes (a
+# crashed update never blocks the product). Nothing is ever cancelled.
+$script:EpsUpdateHold = @{ Scope = '{"updateHold":true}'; ExpireMinutes = 120; WaitMinutes = 45; PollSeconds = 30
+    # always running or part of the update itself - never waited for: the scheduler (dispatches nothing while held), the
+    # support-access job (no schema use beyond its own row), the setup job (the update's own migrate) and the update job
+    NotWaitedFor = @('caj-eps-tick', 'caj-eps-engine', 'caj-eps-support', 'caj-eps-dbinit', 'caj-eps-update', 'caj-eps-updater') }
+
+function Get-EpsUpdateHoldSql {
+    <# PURE. The scheduler's read: is an update holding? (its own Running row, marked, not past the expiry). #>
+    "SELECT COUNT(*) FROM eps.Run WHERE Job = N'Update' AND Status = N'Running' AND EndedAtUtc IS NULL AND Scope = N'$($script:EpsUpdateHold.Scope)' AND StartedAtUtc > DATEADD(MINUTE, -$([int]$script:EpsUpdateHold.ExpireMinutes), SYSUTCDATETIME())"
+}
+
+function Test-EpsUpdateHold {
+    <# Is an update holding the dispatch? Never throws: a failed read = no hold (the product never stops on it). #>
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    try { return ([int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query (Get-EpsUpdateHoldSql)) -gt 0) } catch { return $false }
+}
+
+function Set-EpsUpdateHold {
+    <# Marks (-On) or unmarks this update run as the hold. Never throws; returns $true when the row changed. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [switch]$On)
+    try {
+        $n = Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $RunId; s = $(if ($On) { $script:EpsUpdateHold.Scope } else { [DBNull]::Value }) } `
+            -Query "UPDATE eps.Run SET Scope = @s WHERE RunId = @id AND Job = N'Update'"
+        return ([int]$n -eq 1)
+    } catch { return $false }
+}
+
+function Get-EpsUpdateRunningWork {
+    <#
+      Which work jobs run now? eps.Run (Running, not Tick / Update) AND - with -Arm - the Container Apps executions in state
+      Running of every job not in NotWaitedFor (an execution that started but has not written its run row yet). A job read
+      that fails counts as RUNNING (never migrate on doubt). -Arm { param($path) } returns the ARM JSON; -Jobs the job names.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [scriptblock]$Arm, [string[]]$Jobs = @())
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT DISTINCT Job FROM eps.Run WHERE Status = 'Running' AND Job NOT IN ('Tick', 'Update')")) { if ("$($r.Job)") { $out.Add("$($r.Job)") } }
+    if ($Arm) {
+        foreach ($j in @($Jobs | Where-Object { $_ -and $_ -notin $script:EpsUpdateHold.NotWaitedFor })) {
+            try {
+                $ex = & $Arm $j
+                if (@(@($ex.value) | Where-Object { "$($_.properties.status)" -eq 'Running' }).Count) { $out.Add($j) }
+            } catch { $out.Add("$j (its executions could not be read)") }
+        }
+    }
+    return @($out | Select-Object -Unique)
+}
+
+function Wait-EpsUpdateQuiet {
+    <#
+      Waits until no work job runs: -Probe { } -> the running job names (Get-EpsUpdateRunningWork). Checks at once, then every
+      -PollSeconds, at most -WaitMinutes. @{ Go; Waited (minutes); Running (the last names) }. -Sleep / -Now are seams.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$Probe, [int]$WaitMinutes = $script:EpsUpdateHold.WaitMinutes, [int]$PollSeconds = $script:EpsUpdateHold.PollSeconds,
+          [scriptblock]$Sleep = { param($s) Start-Sleep -Seconds $s }, [scriptblock]$Now = { [datetime]::UtcNow }, [scriptblock]$Log = { param($l, $m) })
+    $start = & $Now; $last = @(); $said = ''
+    while ($true) {
+        $last = @(& $Probe)
+        $mins = [math]::Round(((& $Now) - $start).TotalMinutes, 1)
+        if (-not $last.Count) { return @{ Go = $true; Waited = $mins; Running = @() } }
+        $txt = $last -join ', '
+        if ($txt -ne $said) { & $Log 'Info' "update hold: waiting for $txt (the database is changed only between runs)"; $said = $txt }
+        if (((& $Now) - $start).TotalMinutes -ge $WaitMinutes) { return @{ Go = $false; Waited = $mins; Running = $last } }
+        & $Sleep $PollSeconds
+    }
+}
+
 function Send-EpsUpdateRunTrack {
     <#
       Framework §8.8: an update run to Invardia (POST /api/install/runs kind 'update', then its events). Phase 1 reports the
@@ -169,7 +240,10 @@ function Invoke-EpsUpdateCheck {
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Version, [scriptblock]$Log = { param($l, $m) },
           [scriptblock]$Http, [AllowNull()][object]$InstallKey = $null, [object[]]$TrustedKeys = $script:InvardiaUpdateTrustedKeys,
           [AllowEmptyString()][AllowNull()][string]$Ring = $env:EPS_RING, [AllowNull()][object]$UpdaterClientId = $null, [switch]$CheckOnly,
-          [scriptblock]$ApplyTokenProvider, [scriptblock]$Fetch, [int]$PollSeconds = 15)
+          [scriptblock]$ApplyTokenProvider, [scriptblock]$Fetch, [int]$PollSeconds = 15,
+          # UPD-HOLD: this update run's eps.Run row (the hold is marked on it; none = no hold, the apply waits as before),
+          # -QuietProbe { } -> running work job names (default: eps.Run + the ARM executions), -WaitSleep { param($s) }
+          [AllowNull()][object]$RunId = $null, [scriptblock]$QuietProbe, [scriptblock]$WaitSleep, [scriptblock]$WaitNow)
     $ringN = Get-EpsUpdateRing -Ring $Ring
     & $Log 'Info' "update cycle: running $Version, ring $ringN"
     $t = Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys
@@ -193,18 +267,49 @@ function Invoke-EpsUpdateCheck {
         try { $vault = Invoke-EpsVaultShapeCheck -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved0 }
         & $Log $(if ($vault.State -eq 'failed') { 'Warning' } else { 'Info' }) "key vault shape (rule 11): $($vault.State) - $($vault.Reason)"
     }
-    if ($t.State -eq 'available' -and $updater -and $g.Go -and -not $CheckOnly) {
-        $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
-        & $Log 'Info' "update run to Invardia: $($tr.Reason)"
-        & $tr.Emit 'check' 'ok' "$($t.Version) is approved for ring $ringN"
+    $quiet = $null
+    if ($t.State -eq 'available' -and $updater -and -not $CheckOnly) {
         $saved = $global:EPS_TokenProvider
         # Azure as the UPDATER identity for the apply only (the engine identity holds no Azure right)
         if (-not $ApplyTokenProvider) { $ApplyTokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
         $global:EPS_TokenProvider = $ApplyTokenProvider
+        $held = $false
         try {
-            $applied = Invoke-EpsUpdateApply -Target @{ Version = $t.Version; Sha256 = $t.Sha256; Size = $t.Size; DownloadUrl = $t.DownloadUrl } -RunningVersion $Version `
-                -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
-        } finally { $global:EPS_TokenProvider = $saved }
+            # UPD-HOLD: hold the dispatch FIRST (a waiting update goes first), then wait until no work job runs
+            if ($RunId) { $held = Set-EpsUpdateHold -ConnectionString $ConnectionString -RunId ([guid]"$RunId") -On; & $Log 'Info' "update hold: $(if ($held) { 'on - no new job starts until the update is done' } else { 'could not be set - the apply waits for running jobs only' })" }
+            if (-not $QuietProbe) {
+                $cs = $ConnectionString; $rgp = "/subscriptions/$env:EPS_SUBSCRIPTION_ID/resourceGroups/$env:EPS_RESOURCE_GROUP/providers/Microsoft.App/jobs"
+                $QuietProbe = {
+                    $names = @(); $arm = $null
+                    if (Get-Command Invoke-EpsArm -ErrorAction SilentlyContinue) {
+                        $names = @(@((Invoke-EpsArm -Path $rgp -ApiVersion $script:EpsApi.acajob).value) | ForEach-Object { "$($_.name)" })
+                        $arm = { param($j) Invoke-EpsArm -Path "$rgp/$j/executions" -ApiVersion $script:EpsApi.acajob }
+                    }
+                    Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names
+                }.GetNewClosure()
+            }
+            $wq = @{ Probe = $QuietProbe; Log = $Log }; if ($WaitSleep) { $wq.Sleep = $WaitSleep }; if ($WaitNow) { $wq.Now = $WaitNow }
+            $quiet = Wait-EpsUpdateQuiet @wq
+            if ($quiet.Go) {
+                & $Log 'Info' "update hold: no work job runs$(if ($quiet.Waited -gt 0) { " (waited $($quiet.Waited) min)" }) - installing"
+                $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
+                & $Log 'Info' "update run to Invardia: $($tr.Reason)"
+                & $tr.Emit 'check' 'ok' "$($t.Version) is approved for ring $ringN"
+                $applied = Invoke-EpsUpdateApply -Target @{ Version = $t.Version; Sha256 = $t.Sha256; Size = $t.Size; DownloadUrl = $t.DownloadUrl } -RunningVersion $Version `
+                    -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
+            }
+        } finally {
+            $global:EPS_TokenProvider = $saved
+            if ($held) { [void](Set-EpsUpdateHold -ConnectionString $ConnectionString -RunId ([guid]"$RunId")); & $Log 'Info' 'update hold: lifted' }
+        }
+    }
+    if ($quiet -and -not $quiet.Go) {
+        # gave up: nothing changed; said in the run, to Invardia (the update run waits) and on the heartbeat (Update.waited)
+        $why = "update to $($t.Version) waited $([int]$script:EpsUpdateHold.WaitMinutes) min for running jobs ($(@($quiet.Running) -join ', ')), retries next night"
+        & $Log 'Warning' $why
+        $track = Send-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http -WaitReason $why
+        $g = @{ Go = $false; Running = @($quiet.Running); Reason = $why }
+    } elseif ($applied) {
         $track = @{ Ok = $tr.Ok; Reason = $tr.Reason }
         # AUD-01: the install changed (or stopped part way) - in the audit trail, not only in the run's log. A change no
         # person asked for: the job is the actor (AUDIT-1.1). Never fails the cycle.

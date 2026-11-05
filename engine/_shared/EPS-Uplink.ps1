@@ -208,6 +208,24 @@ function Select-EpsUplinkRecord {
 }
 
 # ---------------------------------------------------------------------------------------------------- the heartbeat
+function ConvertTo-EpsUplinkUpdateWaited {
+    <#
+      PURE. The update run's give-up line ("update to 2.0.74 waited 45 min for running jobs (UserTagging, ...), retries next
+      night") + when that run ended -> [ordered]@{ version; atUtc; minutes; job } (job = the FIRST job it waited for, as a
+      slug: a-z 0-9 -, at most 60, 'eps-' + the job, e.g. eps-usertagging / eps-tamper). Anything else -> $null (left out).
+    #>
+    param([AllowEmptyString()][string]$Text, $AtUtc)
+    $m = [regex]::Match("$Text", 'update to ([0-9A-Za-z.+-]{1,50}) waited (\d{1,4}) min for running jobs \(([^)]*?)(?:\)|$)')
+    if (-not $m.Success -or $null -eq $AtUtc -or $AtUtc -is [DBNull]) { return $null }
+    $first = ("$($m.Groups[3].Value)" -split ',')[0].Trim() -replace '\s*\(.*$', ''
+    $slug = ($first.ToLowerInvariant() -replace '^caj-', '' -replace '[^a-z0-9-]', '-' -replace '-{2,}', '-').Trim('-')
+    if (-not $slug) { return $null }
+    if ($slug -notlike 'eps-*') { $slug = "eps-$slug" }
+    if ($slug.Length -gt 60) { $slug = $slug.Substring(0, 60).TrimEnd('-') }
+    $at = ([datetime]$AtUtc); if ($at.Kind -ne 'Utc') { $at = [datetime]::SpecifyKind($at, 'Utc') }
+    [ordered]@{ version = $m.Groups[1].Value; atUtc = $at.ToString('yyyy-MM-ddTHH:mm:ssZ'); minutes = [int]$m.Groups[2].Value; job = $slug }
+}
+
 function New-EpsUplinkHeartbeat {
     <#
       PURE. The heartbeat from the facts Get-EpsUplinkHeartbeatFacts read. -WithoutNewFields: the liveness record only
@@ -238,7 +256,13 @@ function New-EpsUplinkHeartbeat {
             $jobs.Add($it)
         }
         if ($jobs.Count) { $o.Jobs = @($jobs) }
-        if ("$($Facts.Update.Installed)" -match '^[0-9A-Za-z.+-]{1,50}$') { $o.Update = [ordered]@{ installed = "$($Facts.Update.Installed)" } }
+        if ("$($Facts.Update.Installed)" -match '^[0-9A-Za-z.+-]{1,50}$') {
+            $o.Update = [ordered]@{ installed = "$($Facts.Update.Installed)" }
+            # UPD-HOLD: the last update gave up waiting for running jobs (< 26 h) -> waited { version, atUtc, minutes, job } -
+            # STRUCTURED (Invardia's contract takes no free text; Invardia writes the sentence). Else left out.
+            $wv = ConvertTo-EpsUplinkUpdateWaited -Text "$($Facts.Update.Waited.Text)" -AtUtc $Facts.Update.Waited.AtUtc
+            if ($wv) { $o.Update.waited = $wv }
+        }
         if ($Facts.Mail) {
             # mailJob + restriction are required by the contract; the heartbeat reports only what the job itself has
             # read at run time, so restriction is the contract's 'not-verified' value - never a guess of 'verified'
@@ -411,7 +435,9 @@ function Get-EpsUplinkHeartbeatFacts {
         Counts = $counts
         EnvironmentName = (Get-EpsEnvironmentName -ConnectionString $ConnectionString)
         Jobs = @($jobs)
-        Update = @{ Installed = $Version }
+        # UPD-HOLD: the last update run's give-up line ("... waited 45 min for running jobs ..., retries next night"), only
+        # while it is the LATEST update run and under 26 h old - so it shows in Invardia's fleet view, never fails silently
+        Update = @{ Installed = $Version; Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }) }
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default

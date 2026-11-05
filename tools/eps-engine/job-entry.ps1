@@ -102,7 +102,7 @@ WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
         $script:__seq = 0
         $log = { param($level, $msg) $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
         $u = $null; $ok = $false
-        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
+        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log -RunId $runId; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
         catch { & $log 'Error' "$($_.Exception.Message)" }
         $sum = if ($u) { $u.Summary } else { 'the check failed - see its log' }
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum; a = $(if ($u.Applied.Ok) { @($u.Applied.Rolled).Count } else { 0 }) } `
