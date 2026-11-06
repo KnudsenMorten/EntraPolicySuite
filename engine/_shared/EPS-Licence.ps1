@@ -421,7 +421,12 @@ function Invoke-EpsLicenceRequestCycle {
         $body = New-EpsLicenceKnockBody -Version $Version -TenantId $TenantId -InstallId $(if ($iid) { $iid } else { [guid]::NewGuid().ToString('D') }) -CurrentLicenceId "$(if ($lic) { $lic.LicenseId })" -CurrentValidTo $(if ($lic) { $lic.ValidTo }) -CurrentLicenceSha256 (Get-EpsLicenceFileSha256 -LicenceText $LicenceText)
         $r = $null; try { $r = & $Http 'POST' "$base/api/licence-requests" $body (New-EpsLicenceKnockHeaders -InstallKey $InstallKey -InstallId $iid) } catch { $r = @{ status = 0; body = $null; error = 'the request failed' } }
         if ("$($r.status)" -notin '200', '201', '202' -or -not "$($r.body.pullToken)") {
-            $st = & $save 'Error' "the licence request could not be sent (HTTP $([int]"0$($r.status)")) - sent again on the next run" $null
+            # Invardia's own reason (its error code / message - never a secret: the request carries the install key in a
+            # header only) is kept, so a refusal can be acted on (found at the first live knock, 2026-11-05: a bare 422)
+            $why = ''
+            if ($r.body) { $e = $r.body; $why = "$(if ($e.error) { $e.error } elseif ($e.code) { $e.code })$(if ($e.message) { ': ' + $e.message } elseif ($e.reason) { ': ' + $e.reason })"; if (-not $why -and $e -is [string]) { $why = "$e" } }
+            if ($why.Length -gt 300) { $why = $why.Substring(0, 300) }
+            $st = & $save 'Error' "the licence request could not be sent (HTTP $([int]"0$($r.status)")$(if ($why) { " - Invardia: $why" })) - sent again on the next run" $null
             return @{ action = 'knock'; ok = $false; state = $st; message = $st.message; stored = $false }
         }
         $token = "$($r.body.pullToken)"; & $Store.SetPull $token $iid

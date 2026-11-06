@@ -2,6 +2,14 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## Next (not released yet)
+
+## 2.0.88 - License request messages and the policy as code Key Vault right
+- When Invardia refuses a license request, the update run's log now shows Invardia's reason, not only the HTTP code.
+- Policy as code: Git push and read need a Key Vault right that Entra Policy Suite never grants itself. Until your Key
+  Vault administrator grants it, push and read refuse and name the right. The zip download of the policy files works
+  without it.
+
 ## 2.0.87 - Pro: the license path, the trial, the License page and the first Pro features
 - (2.0.86 was published on GitHub but never released to an install: its documentation pack failed a spelling check. 2.0.87 is the same release with that text fixed.)
 - New: Entra Policy Suite Pro and the trial, the same way as PIM Manager and SecurityInsight. Pro and the trial open
