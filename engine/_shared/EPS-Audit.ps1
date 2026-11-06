@@ -65,6 +65,9 @@ $script:EpsAuditActions = @(
     # EPS PRO (2.0.86): an Admin sets a persona's passkey target / marks stale accounts keep or disable; a SuperAdmin approves
     # the disable or enables an account again (the engine writes them, pro/engine/EPS-ProStaleWrite.ps1)
     'pro.passkey.target', 'pro.stale.decide', 'pro.stale.approve', 'pro.stale.reenable'
+    # EPS PRO (2.0.90): the API for scripts - a USE mark (a person's script calls, one per person per hour; each change is
+    # audited by its own route) - and every tool call of the MCP server
+    'api.use', 'mcp.tool'
 )
 
 function Get-EpsAuditActions { $script:EpsAuditActions }

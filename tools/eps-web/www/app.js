@@ -5011,7 +5011,8 @@ function schedPicker(current, job) {
     { feature: 'passkey-tracker', hash: 'passkey', label: 'Passkey rollout', menu: 'Identity report', desc: 'Per persona: who has a passkey or another phishing-resistant method, the target date, who to chase.' },
     { feature: 'stale-identities', hash: 'stale', label: 'Stale identities', menu: 'Identity report', desc: 'Inactive users and guests: review them, approve, and the engine disables them (and can put them back).' },
     { feature: 'licence-optimisation', hash: 'license-optimization', label: 'License optimization', menu: 'Identity report', desc: 'Licenses to review - unused, held twice, plans off for everyone - priced with your own prices. Read only.' },
-    { feature: 'policy-as-code', hash: 'policy-as-code', label: 'Policy as code', menu: 'Conditional Access', desc: 'Your policies as JSON in Git: push them, read a reviewed commit back, apply what you pick.' }];
+    { feature: 'policy-as-code', hash: 'policy-as-code', label: 'Policy as code', menu: 'Conditional Access', desc: 'Your policies as JSON in Git: push them, read a reviewed commit back, apply what you pick.' },
+    { feature: 'mcp', hash: 'api-mcp', label: 'API and MCP', menu: 'Administration', desc: 'Your own scripts (API) and AI assistants (MCP) use Entra Policy Suite with your own sign-in and your own role.' }];
   function addProMenu(m) {
     var on = m.proFeatures || [];
     PRO_PAGES.forEach(function (x) {

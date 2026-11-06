@@ -2038,10 +2038,26 @@ function Invoke-EpsWebRequest {
     $base = @{ 'X-EPS-Version' = $Ctx.Version; 'Cache-Control' = 'no-store' }
     $out = { param($r) foreach ($k in $base.Keys) { if (-not $r.Headers.ContainsKey($k)) { $r.Headers[$k] = $base[$k] } }; $r.Remove('Audit'); $r }
     if ($path -eq '/healthz' -and $method -in 'GET', 'HEAD') { return (& $out (New-EpsWebResponse -Body 'ok' -ContentType 'text/plain; charset=utf-8')) }
+    # EPS PRO (2.0.90): the API for scripts (/mcp/api/...) and the MCP server (/mcp) - the sign-in front's bearer path, so a
+    # person's own access token; the code is the Pro package's (pro/engine/EPS-ProMcp.ps1): without it, 404 as for any path
+    $isMcp = $path -eq '/mcp' -or $path -like '/mcp/*'
+    $proMcp = [bool](Get-Command Invoke-EpsProMcpRequest -ErrorAction SilentlyContinue)
+    if ($method -eq 'GET' -and $path -in '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp') {
+        # where an MCP client learns which tenant and scope sign it in (no secret in it) - only while MCP is switched on
+        if (-not $proMcp -or (Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature 'mcp')) { return (& $out (New-EpsWebError 404 'not found')) }
+        return (& $out (New-EpsWebResponse -Body (Get-EpsProMcpResourceMetadata -AuthConfig $Ctx.AuthConfig -HostName (Get-EpsProMcpHost -Headers $h))))
+    }
 
     # 2. the caller - on every path, pages and files too
     $caller = Resolve-EpsWebCaller -Authorization "$($h['Authorization'])" -Config $Ctx.AuthConfig
     if (-not $caller.trusted) {
+        if ($isMcp -and $proMcp) {
+            # an MCP client without a (valid) token: 401 + where to learn how to sign in (MCP authorization, RFC 9728)
+            $hn = Get-EpsProMcpHost -Headers $h
+            $r401 = New-EpsWebResponse -Status 401 -Body @{ error = 'not signed in: send your own access token (Authorization: Bearer)'; version = $Ctx.Version }
+            if ($hn) { $r401.Headers['WWW-Authenticate'] = "Bearer resource_metadata=`"https://$hn/.well-known/oauth-protected-resource/mcp`"" }
+            return (& $out $r401)
+        }
         $key = "$($caller.reason)"; $now = [datetime]::UtcNow
         if (-not $script:EpsWebAuditThrottle[$key] -or ($now - $script:EpsWebAuditThrottle[$key]).TotalMinutes -ge 5) {
             $script:EpsWebAuditThrottle[$key] = $now
@@ -2058,6 +2074,22 @@ function Invoke-EpsWebRequest {
     # the first sign-in of a person named by UPN pins the row to their object id (a renamed UPN keeps its role; a new
     # account that takes the old UPN does not inherit it)
 
+    $viaScript = ''
+    if ($isMcp) {
+        if (-not $proMcp) { return (& $out (New-EpsWebError 404 'not found')) }   # Community: no such path
+        if ($path -in '/mcp', '/mcp/') {
+            if ($pd = Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature 'mcp') { return (& $out $pd) }
+            return (& $out (Invoke-EpsProMcpRequest -Request $Request -Ctx $Ctx -Caller $caller -Role $role))
+        }
+        if ($path -notlike '/mcp/api/*') { return (& $out (New-EpsWebError 404 'not found')) }
+        # a tool call of the MCP server comes through here too (ViaMcp is set in-process only - never from a header)
+        $viaScript = if ($Request.ViaMcp -eq $true) { 'mcp' } else { 'api' }
+        if ($pd = Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature $viaScript) { return (& $out $pd) }
+        $path = $path.Substring(4)
+        # a USE mark: a person's script calls, at most one row per person per hour (each change is audited by its route)
+        if ($viaScript -eq 'api') { [void](Write-EpsWebMark -ConnectionString $Ctx.ConnectionString -Action 'api.use' -Actor $caller.identity -Target 'ScriptApi' -Hours 1 -After @{ role = $role }) }
+    }
+
     if ($path -notlike '/api/*') {
         if ($method -notin 'GET', 'HEAD') { return (& $out (New-EpsWebError 405 'method not allowed')) }
         return (& $out (Get-EpsWebStaticFile -Ctx $Ctx -Path $path))
@@ -2068,8 +2100,11 @@ function Invoke-EpsWebRequest {
 
     $correlation = [guid]::NewGuid()
     $refuse = { param($status, $text)
-        [void](Write-EpsAuditEvent -ConnectionString $Ctx.ConnectionString -Action 'web.request.refused' -Actor $caller.identity -Target "$method $path" -Outcome 'refused' -OutcomeText $text -CorrelationId $correlation)
+        [void](Write-EpsAuditEvent -ConnectionString $Ctx.ConnectionString -Action 'web.request.refused' -Actor $caller.identity -Target "$(if ($viaScript) { "$viaScript " })$method $path" -Outcome 'refused' -OutcomeText $text -CorrelationId $correlation)
         & $out (New-EpsWebError $status $text) }
+    # the API for scripts / MCP: the PUBLIC profile only (owner 2026-11-01 "Yes, as is": settings, the access list, restores,
+    # discard-all and every DELETE stay in the app)
+    if ($viaScript -and -not (Test-EpsApiRoutePublic -Route $route)) { return (& $refuse 403 'refused: this is done in the app only - it is not in the API for scripts') }
     $body = $null
     # SEC-AUDIT-1 S12: an export (a GET that writes an audit row and hands out data) only from this app's own page - another
     # site's link would be followed with the session cookie (SameSite=Lax)
@@ -2089,7 +2124,7 @@ function Invoke-EpsWebRequest {
     if (-not (Test-EpsWebRole -Have $role -Need $route.Role)) { return (& $refuse 403 "this needs the $($route.Role) role (you are $role)") }
     # a reason is OPTIONAL (owner 2026-11-02: "things are too complex with all these reasons"): a note the audit trail keeps if given
 
-    $c = @{ Ctx = $Ctx; Caller = $caller; Role = $role; Query = $(if ($Request.Query) { $Request.Query } else { @{} }); Body = $body; Correlation = $correlation }
+    $c = @{ Ctx = $Ctx; Caller = $caller; Role = $role; Query = $(if ($Request.Query) { $Request.Query } else { @{} }); Body = $body; Correlation = $correlation; Headers = $h; Via = $viaScript }
     # the commit queue: a tagging-config save is validated and STAGED, not written (owner 2026-10-31); a commit replays it
     $stage = $route.Stage -and (Test-EpsCommitQueueOn -ConnectionString $Ctx.ConnectionString)
     try {

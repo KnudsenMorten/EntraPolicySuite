@@ -15,6 +15,7 @@ $script:EpsWeb = @{
     GraphAppId = '00000003-0000-0000-c000-000000000000'
     GraphUserRead = 'e1fe6dd8-ba31-4d61-89e7-88639da4683d'       # delegated User.Read (the front's silent ID-token refresh)
     DefaultAccess = '00000000-0000-0000-0000-000000000000'       # "default access" app role (assignment required)
+    AzCliAppId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'          # Microsoft Azure CLI: pre-authorised for the app's own scope (2.0.90, the API / MCP token)
     KvApi = '2023-07-01'
 }
 
@@ -76,6 +77,27 @@ function New-EpsWebAppRegistrationBody {
         requiredResourceAccess = @([ordered]@{ resourceAppId = $script:EpsWeb.GraphAppId; resourceAccess = @(@{ id = $script:EpsWeb.GraphUserRead; type = 'Scope' }) })
         passwordCredentials = @(); keyCredentials = @()
     }
+}
+
+function Get-EpsWebPreAuthPatch {
+    <#
+      PURE. EPS 2.0.90 (Pro: API for scripts + MCP): the Azure CLI pre-authorised for the app's OWN scope, so a person who
+      uses the CLI gets their own access token (az account get-access-token --scope api://<id>/user_impersonation) without
+      a consent prompt. It grants nothing: the token only proves who the person is; assignment required still decides who
+      gets one, and their role here what it may do. MERGES: every scope and pre-authorisation already there is kept.
+      -> the PATCH body, or $null when nothing is missing (or the scope is not there yet).
+    #>
+    param($Api)
+    $scopes = @(if ($Api -and $Api.oauth2PermissionScopes) { @($Api.oauth2PermissionScopes) })
+    $sc = @($scopes | Where-Object { "$($_.value)" -eq $script:EpsWeb.Scope })[0]
+    if (-not $sc) { return $null }
+    $sid = "$($sc.id)"
+    $pre = @(if ($Api.preAuthorizedApplications) { @($Api.preAuthorizedApplications) })
+    $cli = @($pre | Where-Object { "$($_.appId)" -eq $script:EpsWeb.AzCliAppId })[0]
+    if ($cli -and @($cli.delegatedPermissionIds) -contains $sid) { return $null }
+    $pre = if ($cli) { @($pre | ForEach-Object { if ("$($_.appId)" -eq $script:EpsWeb.AzCliAppId) { [ordered]@{ appId = $_.appId; delegatedPermissionIds = @(@($_.delegatedPermissionIds) + $sid | Select-Object -Unique) } } else { $_ } }) }
+           else { @($pre) + [ordered]@{ appId = $script:EpsWeb.AzCliAppId; delegatedPermissionIds = @($sid) } }
+    [ordered]@{ api = [ordered]@{ oauth2PermissionScopes = @($scopes); preAuthorizedApplications = @($pre) } }
 }
 
 function Get-EpsFicSpec {
@@ -231,6 +253,17 @@ function Invoke-EpsWebRegistrationStep {
     }
     $uri = "api://$($app.appId)"
     if (@($app.identifierUris) -notcontains $uri) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ identifierUris = @($uri) }) } }
+    # 2.0.90: the Azure CLI pre-authorised for the app's own scope (a person's own token for the API / MCP) - merged, kept;
+    # a scope just created can refuse a pre-authorisation for a while (Graph replication): a few tries, then a warning -
+    # never a stop (the sign-in does not need it; the next run of the install adds it)
+    try {
+        $preAuth = Get-EpsWebPreAuthPatch -Api (Invoke-EpsGraph -Path "v1.0/applications/$($app.id)?`$select=id,api").api
+        foreach ($wait in 0, 10, 20, 40) {
+            if (-not $preAuth) { break }
+            if ($wait) { Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { $wait }) }
+            try { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body $preAuth); $preAuth = $null } catch { if ($wait -eq 40) { throw } }
+        }
+    } catch { Write-Warning "the Azure CLI could not be pre-authorised for $($script:EpsWeb.Scope) yet ($((("$($_.Exception.Message)") -split "`n")[0])) - the API / MCP token then asks for consent once; the next run of the install adds it" }
     # a service principal just made may not be readable yet, and an answer without its id is no service principal
     # (live, internal 2026-10-30: the consent query then went out with an empty id) - "not visible yet", retried
     $sp = Invoke-EpsWithRetry { $x = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,appRoleAssignmentRequired,displayName" -All)[0]; if (-not $x) { $x = Invoke-EpsGraph -Method POST -Path 'v1.0/servicePrincipals' -Body @{ appId = $app.appId; appRoleAssignmentRequired = $true; tags = @('WindowsAzureActiveDirectoryIntegratedApp') } }

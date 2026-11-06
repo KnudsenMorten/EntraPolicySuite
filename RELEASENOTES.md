@@ -4,7 +4,23 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
-## 2.0.89 - The License page and the Pro pages, walked through as an administrator
+## 2.0.90 - Pro: the API for your scripts and an MCP server for AI assistants
+- Pro: your own scripts reach Entra Policy Suite through its API, and AI assistants through its MCP server - always as
+  the signed-in person, with that person's own role (Reader, Admin or SuperAdmin). There is no key to hand out and no
+  app identity: you take your own token with the Azure CLI, and only people assigned to the app get one. A change goes
+  through the same checks as on the pages (the commit queue, the engine's signed request) and the audit trail shows it as
+  yours. Settings, the access list, restores and deletes stay in the app.
+- Administration > API and MCP (Pro) shows the addresses of your installation, the line that gives you your token, an
+  example for a script, the line to add the MCP server to Claude Code, and the tools your role gets.
+- The install now pre-authorises the Azure CLI for the app's own sign-in scope, so taking your token asks for no extra
+  consent. It grants nothing by itself. Existing installations get it on their next install run.
+- The API reference handed to invardia.com now includes the MCP server's tools (mcp.json).
+
+## 2.0.89 - The first Pro release, with the License page fixed
+- The first Pro release: Entra Policy Suite Pro and the 60-day trial are ordered at invardia.com. The license and the
+  signed Pro update channel were proven end to end at Invardia's own installation (2.0.88), and this version was walked
+  through page by page as an administrator with a Pro license: Passkey rollout, Stale identities, License optimization
+  and Policy as code.
 - Administration > License works again: it showed only "Could not load" in every edition. It now lists the edition, the
   state, the dates and the Pro features by the names of their pages; API access, the MCP server and several tenants
   (MSP) say "licensed - comes in a later release" instead of "yes".
