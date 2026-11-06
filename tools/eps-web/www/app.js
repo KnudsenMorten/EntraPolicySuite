@@ -4492,14 +4492,20 @@ function schedPicker(current, job) {
       if (u.cap != null) rows.push(['Users in scope', (u.count == null ? 'not counted yet (after the next user tagging run)' : fmtNum(u.count)) + ' of ' + fmtNum(u.cap) + (u.percent != null ? ' (' + u.percent + ' %)' : '') + (LIC_STATE[u.state] ? ' - ' + LIC_STATE[u.state] : '')]);
       if (l.request) rows.push(['License request', l.request.status + (l.request.message ? ' - ' + l.request.message : '') + (l.request.atUtc ? ' (' + fmtTime(l.request.atUtc) + ')' : '')]);
       if (l.claim) rows.push(['Install key', l.claim.action + (l.claim.message ? ' - ' + l.claim.message : '') + (l.claim.atUtc ? ' (' + fmtTime(l.claim.atUtc) + ')' : '')]);
-      p.appendChild(el('dl', { class: 'kv' }, rows.map(function (r) { return [el('dt', { text: r[0] }), el('dd', { text: r[1] })]; })));
+      // ADMIN-WALK Pro (2026-11-06): one flat list of dt / dd (el() appends one level of array - a list of PAIRS threw
+      // "parameter 1 is not of type 'Node'" and the page showed only "Could not load")
+      var kv = []; rows.forEach(function (r) { kv.push(el('dt', { text: r[0] }), el('dd', { text: r[1] })); });
+      p.appendChild(el('dl', { class: 'kv' }, kv));
       var tb = el('div', { class: 'toolbar' }, el('a', { href: l.buyUrl, target: '_blank', rel: 'noopener', text: l.edition === 'community' ? 'Pro and the trial at invardia.com' : 'Upgrade or renew at invardia.com' }));
       if (isRole('SuperAdmin') && l.claimAgain) tb.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Claim again', onclick: function () {
         withReason('Claim again', 'Forgets the refused claim or the rejected request; the next update run asks Invardia again. The license itself is not changed.', function (reason) { return api('POST', '/api/license/claim-again', { reason: reason }); }); } }));
       p.appendChild(tb);
       p.appendChild(el('h3', { text: 'Pro features' }));
       p.appendChild(el('p', { class: 'smeta', text: 'Everything Entra Policy Suite does today stays in Community. Pro adds these; they switch on with a valid Pro license or the trial for this tenant.' }));
-      p.appendChild(table(l.features || [], [{ key: 'name', label: 'Feature' }, { key: 'enabled', label: 'On here', type: 'cat', render: function (f) { return f.enabled ? 'yes' : 'no'; } }, { key: 'why', label: 'Why', wrap: true }], { sort: 'name', dir: 1, empty: 'No Pro feature.' }));
+      // ADMIN-WALK Pro (2026-11-06): the page names, and a licensed feature this release does not have yet says so
+      p.appendChild(table(l.features || [], [{ key: 'label', label: 'Feature', render: function (f) { return f.label || f.name; } },
+        { key: 'enabled', label: 'On here', type: 'cat', render: function (f) { return !f.enabled ? 'no' : (f.inRelease === false ? 'licensed - comes in a later release' : 'yes'); } },
+        { key: 'why', label: 'Why', wrap: true }], { sort: 'label', dir: 1, empty: 'No Pro feature.' }));
     });
   }
   // the Pro code (pro/<feature>.js) is loaded ONLY for a feature the server says is on for this install - never otherwise
@@ -4929,7 +4935,10 @@ function schedPicker(current, job) {
   function render() {
     drawTabs();
     var c = current(), pg = PAGES.filter(function (x) { return x.id === c.id; })[0] || PAGES[0];
-    var main = clear(document.getElementById('page'));
+    // ADMIN-WALK Pro (2026-11-06): each render draws into its OWN container. A draw still loading from an earlier render
+    // (on a Pro install every pro/*.js addPage renders again) then lands in a box no longer on the page - it appended
+    // into the shared #page before and the License page came out twice.
+    var main = el('div'); clear(document.getElementById('page')).appendChild(main);
     if (!isRole(pg.role)) { main.appendChild(el('div', { class: 'empty', text: 'This page needs the ' + pg.role + ' role.' })); return; }
     if (pg.label) main.appendChild(el('h2', { text: pg.label }));
     pg.draw(main, c.arg).catch(function (e) { main.appendChild(el('div', { class: 'empty', text: 'Could not load: ' + e.message })); });
@@ -4976,6 +4985,8 @@ function schedPicker(current, job) {
       document.getElementById('tenantName').textContent = m.tenantName || '-';
       document.getElementById('tenantId').textContent = m.tenantId || '';
       document.getElementById('noSuperAdmin').hidden = !m.noSuperAdmin;
+      // ADMIN-WALK Pro (2026-11-06): the header names the edition the verified license gives (it said "Community" always)
+      if (m.edition) document.getElementById('edition').textContent = m.edition;
       addProMenu(m);
       loadProFeatures(m);
       render();

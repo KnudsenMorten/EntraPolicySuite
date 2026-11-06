@@ -29,6 +29,12 @@ $script:EpsLicenceBase      = 'https://invardia.com'
 $script:EpsLicenceUpgradeUrl = 'invardia.com'
 $script:EpsLicenceCacheSeconds = 60
 $script:EpsProFeatures = @('api', 'mcp', 'passkey-tracker', 'licence-optimisation', 'stale-identities', 'policy-as-code', 'msp')
+# what the License page calls them, and whether this release ships them (a licensed feature not shipped yet says so)
+$script:EpsProFeatureLabels = @{
+    'api' = @{ Label = 'API access'; InRelease = $false }; 'mcp' = @{ Label = 'MCP server (AI assistants)'; InRelease = $false }
+    'passkey-tracker' = @{ Label = 'Passkey rollout'; InRelease = $true }; 'licence-optimisation' = @{ Label = 'License optimization'; InRelease = $true }
+    'stale-identities' = @{ Label = 'Stale identities'; InRelease = $true }; 'policy-as-code' = @{ Label = 'Policy as code'; InRelease = $true }
+    'msp' = @{ Label = 'Several tenants (MSP)'; InRelease = $false } }
 
 # PUBLIC halves only - byte-identical to the copies the framework verifier (sync/_AitLicense.ps1), PIM and SI embed.
 $script:EpsLicenceAitCertB64 = 'MIIFFzCCAv+gAwIBAgIQNY8l3/KZOoxF7K1nXIXwazANBgkqhkiG9w0BAQsFADAnMSUwIwYDVQQDDBxBdXRvbWF0ZUlULUxpY2Vuc2luZy1TZXJ2aWNlMB4XDTI2MDgxMTEzMDY0NloXDTQ2MDgxMTEzMTE0NlowJzElMCMGA1UEAwwcQXV0b21hdGVJVC1MaWNlbnNpbmctU2VydmljZTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBALuth8WywLfudbaoZ6eR570apvs5LXzOeGfl5Z14z6Nl6DQgvwMLXG/8lZEHOCKsHWVtEnjZOZigsh4c16owJVhuW67OgY0Iy6OjmfeXzu+kcTICSdZ+Qj3ecsGp1Cz6Xo1AjYbgIORdqUBncy4BAuA1bxH0E+V+1zT+ltEk840xpLdWde+m7W8q7BrG9klh+xQl8xJTjeliyV0JN2mvBjI0JwB9t9vL2/luMWWtHp752/ZG4Icd9u6HyqSR/xEmlZIjkZwI7LEPLTICXV1iA3c3nFUEHkLhLlpDW6EQn3cip0Sijr7SVWEBH1fCA8vCo+PxIEgJc3RXaeRhqD4UOwPJIziHtrpy8+9L15zrhXnhIGZv2mUAHKiamUIOmKl9vj31vFp/vJx1chE0XA358T09HGu0jKgSbbC4afKQPKf3v+BHPU42T/xIOPMxDJWuFqKvr4anL7P5PEkTjycBRCkXnIPC5PlrXR/ZZz4oit4WKhbdzONYwb8CKnsF2Z9IVL9yviVJxAIr7kiGqRme9+H0t5A+hzAydxdFMQnop+R8Q02a0sei9WrdtCbwLempVVrXIS6N4hh5kvLqMouDi62b0h645UNk2cWahDIZWTKd/MYdlcdrtRt5muy2LOasHByVxUrZKwH7IetCmv+Kkm1BfMF6Fvi1Jh2Qgz4bo5XJAgMBAAGjPzA9MA4GA1UdDwEB/wQEAwIHgDAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBT+IiWP1iqSIwaRLiV1somJAQ+ELjANBgkqhkiG9w0BAQsFAAOCAgEAFiDfl7nhDNIywkCZgu9iw0RtJUyJqiq8y+fXomucqowAQZKPhkpuHftZZjtDe09WM35TqjRgL7hqmJiEgqPlRrAv78FjE41RwMcANN2PVCrdcMcuDVdRbS40rObpp0B6+uVUiWY4+8MW6G8Wv+7CIBUEP8ypo3BhxQJZLpyJDKLNiPqnTVKOmYXe7BivfVz63F2Pg2dNXic1poQ7S6JTi/8FM4AV2Ge/zVQF+LaiIuBDJX3JjHnKXxNf1Zhk8PF6DeWaVSNyXtjESlaUfsz0U2Ue87UUZ8ELIuqjHTpG66HPInblBZme6VvR13n5QxmnvjPXdtmXAJzDzCf+76labSGQu9fMFxUoKwjAwT9vHrdFw8JEStappW7urXj+Oafp1wVafJOXzjd9utr8WT3AhaPeqMx3FYH20e2b7QNCI3owtm0ogHRg36neahe78PikiMe15AUpD3+BD6pKeLV7tsExeXZjxDxhFUSpScD0TrCOUEJdKL2Cfx8rM3ceISSiTTYmuJmU7fznQ122A6GNW58mpSk8miPYb3MzbLW0JFPRrEDiyT8dW1M9s98DL+7VR0z2QxgxhNMKyrVgBM7YgQtbtPLz26NBqAQsqG50rOdn7XmprzvnTmnb+r2PUQuqb6rCTAQFTJ3MjH7BviP3GkwJyvzMZ+S6OnUAGB2Fn3Y='
@@ -217,13 +223,15 @@ function Get-EpsLicenceView {
         edition = $l.Edition; editionText = $u.editionText; customer = "$($lic.Customer)"; licenseId = "$($lic.LicenseId)"
         validFrom = $(if ($lic.ValidFrom) { $lic.ValidFrom.ToString('yyyy-MM-dd') }); validTo = $(if ($lic.ValidTo) { $lic.ValidTo.ToString('yyyy-MM-dd') }); graceUntil = $(if ($lic.GraceUntil) { $lic.GraceUntil.ToString('yyyy-MM-dd') })
         tenantId = $TenantId; boundHere = $bound; usage = $u
-        features = @($script:EpsProFeatures | ForEach-Object { $t = Test-EpsProFeatureForEdition -Feature $_ -Edition $l.Edition; [ordered]@{ name = $_; enabled = $t.Enabled; why = $t.Why } })
+        # ADMIN-WALK Pro (2026-11-06): the page name an admin knows, and whether THIS release has it (api / mcp / msp: licensed, not shipped yet)
+        features = @($script:EpsProFeatures | ForEach-Object { $t = Test-EpsProFeatureForEdition -Feature $_ -Edition $l.Edition; $m = $script:EpsProFeatureLabels[$_]
+            [ordered]@{ name = $_; label = $(if ($m) { $m.Label } else { $_ }); inRelease = $(if ($m) { [bool]$m.InRelease } else { $true }); enabled = $t.Enabled; why = $t.Why } })
         setBy = $(if ($s) { $s.SetBy }); setAtUtc = $(if ($s) { $s.SetAtUtc })
         claim = $(if ($s -and $s.ClaimAction) { [ordered]@{ action = $s.ClaimAction; message = $s.ClaimMessage; atUtc = $s.ClaimAtUtc } })
         request = $(if ($s -and $s.RequestStatus) { [ordered]@{ status = $s.RequestStatus; message = $s.RequestMessage; atUtc = $s.RequestAtUtc; nextPollUtc = $s.NextPollUtc } })
         claimAgain = [bool]($s -and ($s.ClaimAction -in 'refused', 'retry' -or $s.RequestStatus -in 'Rejected', 'Error'))
         buyUrl = "https://$($script:EpsLicenceUpgradeUrl)"
-        howTo = 'The license comes from Invardia: the update job asks for it, checks it and installs it. Nobody pastes or uploads a license. Pro and the trial open when Invardia announces them.'
+        howTo = 'The license comes from Invardia: the update job asks for it, checks it and installs it. Nobody pastes or uploads a license. Pro and the 60-day trial are ordered at invardia.com.'
     }
 }
 

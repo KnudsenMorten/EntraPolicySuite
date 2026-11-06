@@ -399,3 +399,7 @@ a.btn-link { display:inline-block; padding:4px 10px; border-radius:5px; backgrou
 .rowmenu-list[hidden] { display:none; }
 .rowmenu-item { display:block; width:100%; text-align:left; background:none; border:0; border-radius:0; color:var(--text); padding:5px 12px; }
 .rowmenu-item:hover, .rowmenu-item:focus { background:var(--surface-alt); color:var(--accent); outline:none; }
+/* ADMIN-WALK Pro (2026-11-06): the License page's details - label and value on one row */
+dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 18px; margin:12px 0 16px; }
+dl.kv dt { color:var(--text-muted, inherit); font-weight:600; }
+dl.kv dd { margin:0; overflow-wrap:anywhere; }

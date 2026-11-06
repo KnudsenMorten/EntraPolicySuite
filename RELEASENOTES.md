@@ -4,7 +4,21 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.89 - The License page and the Pro pages, walked through as an administrator
+- Administration > License works again: it showed only "Could not load" in every edition. It now lists the edition, the
+  state, the dates and the Pro features by the names of their pages; API access, the MCP server and several tenants
+  (MSP) say "licensed - comes in a later release" instead of "yes".
+- The header names the edition the license gives (Pro Enterprise, Pro Business, Pro (trial)); it said "Community" always.
+- A page opened while the Pro pages were still loading could be drawn twice, one copy under the other. Each page now
+  draws once.
+- Stale identities: "Mark disable" and "Mark keep" ask for the reason in the app's own dialog, not the browser's prompt.
+- License optimization and Policy as code link to their own settings section, by the name the Settings page uses.
+- The texts that said Pro and the trial open later now say they are ordered at invardia.com.
+
 ## 2.0.88 - License request messages and the policy as code Key Vault right
+- The first Pro release: the license and the signed Pro update channel were proven end to end at Invardia's own
+  installation - the license was requested, signed by Invardia, checked and kept in the installation's Key Vault, and
+  this version was then taken from the signed Pro channel and installed by the product's own update job.
 - When Invardia refuses a license request, the update run's log now shows Invardia's reason, not only the HTTP code.
 - Policy as code: Git push and read need a Key Vault right that Entra Policy Suite never grants itself. Until your Key
   Vault administrator grants it, push and read refuse and name the right. The zip download of the policy files works
