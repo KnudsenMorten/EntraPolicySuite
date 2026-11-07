@@ -4,6 +4,13 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.93 - Clearer run reports to Invardia
+- When the scheduler could not start a job, its run now says which job and why. A start that only timed out on the
+  job's queue (a short storage hiccup - the next check a few minutes later starts the job) is reported as that, so it
+  is not mistaken for a real failure.
+- The scheduler's runs are reported to Invardia as "eps-engine", the same name as its role everywhere else. Nothing
+  changes in your installation's Azure resources.
+
 ## 2.0.92 - The tamper check's one-hour limit reaches every installation
 - The update now also sets the tamper check's one-hour time limit (2.0.91 set it only on an install run), so an
   installation gets it with its next update. Nothing else in a job's settings is changed.

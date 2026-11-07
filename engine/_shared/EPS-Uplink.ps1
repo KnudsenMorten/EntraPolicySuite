@@ -52,7 +52,7 @@ $script:EpsUplinkLists = @{
     Hosting         = @('container', 'vm', 'arc')
     RuntimeIdentity = @('mi-container', 'mi-vm', 'mi-arc', 'spn-certificate', 'spn-secret')
     FixKind         = @('customer-config', 'product-defect')
-    ErrorClass      = @('held-guard', 'partly-failed', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified')
+    ErrorClass      = @('held-guard', 'partly-failed', 'queue-start-timeout', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified')
     JobResult       = @('succeeded', 'failed', 'stopped', 'running')
     UpdaterResult   = @('succeeded', 'failed', 'nothing-to-do')
     MailJob         = @('present', 'missing')
@@ -131,9 +131,12 @@ function ConvertTo-EpsUplinkIso {
 }
 
 function Get-EpsUplinkJobId {
-    # PURE. 'UserTagging' -> 'eps-usertagging' (stable, lower-case, the server's id shape)
+    # PURE. 'UserTagging' -> 'eps-usertagging' (stable, lower-case, the server's id shape). The scheduler ('Tick') reports
+    # as eps-engine - the role word of framework §5.5 (Invardia 2026-11-07, SUP-2026-00438: "tick" is a word the owner
+    # rejected; these labels reach his tickets). Azure job names at old installs are not touched.
     param([Parameter(Mandatory)][string]$Job)
     $s = ($Job.Trim().ToLowerInvariant() -replace '[^a-z0-9-]', '-').Trim('-')
+    if ($s -eq 'tick') { $s = 'engine' }
     if ($s.Length -gt 56) { $s = $s.Substring(0, 56) }
     "eps-$s"
 }
@@ -507,11 +510,18 @@ function Get-EpsUplinkHeartbeatFacts {
 # ---------------------------------------------------------------------------------------------------- run records
 function Get-EpsUplinkErrorClass {
     # PURE. eps.Run -> @{ Outcome; ErrorClass; FixKind } (closed lists). A held run is a warning (the guard did its job).
-    param([string]$Status, [string]$Text)
+    param([string]$Status, [string]$Text, [string]$Job)
     switch ($Status) {
         'Succeeded'    { return @{ Outcome = 'ok'; ErrorClass = ''; FixKind = '' } }
         'Held'         { return @{ Outcome = 'warning'; ErrorClass = 'held-guard'; FixKind = '' } }
-        'PartlyFailed' { return @{ Outcome = 'warning'; ErrorClass = 'partly-failed'; FixKind = '' } }
+        'PartlyFailed' {
+            # SUP-2026-00438 (Invardia 2026-11-07): a tick whose ONLY failures are job starts through the queue that timed
+            # out = queue-start-timeout (a transient: the next tick starts the job); anything else stays partly-failed
+            $parts = @("$Text" -split ';\s*' | Where-Object { "$_".Trim() })
+            $qto = '^[A-Za-z][^:]{0,80}: queue eps-[a-z0-9-]{1,60}: .*(?i:time(d)? ?out)'
+            $c = if ($Job -eq 'Tick' -and $parts.Count -and -not @($parts | Where-Object { $_.Trim() -notmatch $qto }).Count) { 'queue-start-timeout' } else { 'partly-failed' }
+            return @{ Outcome = 'warning'; ErrorClass = $c; FixKind = '' }
+        }
     }
     $c = switch -Regex ("$Text") {
         '(?i)run limit'                                          { 'run-limit'; break }
@@ -530,7 +540,7 @@ function New-EpsUplinkRunRecord {
     param([Parameter(Mandatory)]$Run, [string]$Version, [string]$TenantId, [string]$Key, [datetime]$NowUtc = [datetime]::UtcNow)
     $o = New-EpsUplinkEnvelope -Kind 'run' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
     $o.Job = Get-EpsUplinkJobId "$($Run.Job)"
-    $cls = Get-EpsUplinkErrorClass -Status "$($Run.Status)" -Text "$($Run.HeldReason)"
+    $cls = Get-EpsUplinkErrorClass -Status "$($Run.Status)" -Text "$($Run.HeldReason)" -Job "$($Run.Job)"
     $o.Outcome = Select-EpsUplinkEnum $cls.Outcome 'Outcome'
     if ($Run.StartedAtUtc -and $Run.EndedAtUtc -and $Run.EndedAtUtc -isnot [DBNull]) {
         $ms = [int64](([datetime]$Run.EndedAtUtc - [datetime]$Run.StartedAtUtc).TotalMilliseconds)
@@ -569,6 +579,8 @@ function Get-EpsUplinkDueRuns {
     # order they go (Get-EpsUplinkRunPlan). -Top bounds the read.
     param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [datetime]$NowUtc = [datetime]::UtcNow, [int]$Top = 500)
     $wm = @{}; foreach ($name in @($State.Keys | Where-Object { $_ -like 'watermark:*' })) { $t = ConvertFrom-EpsUplinkTime $State[$name]; if ($t) { $wm[$name.Substring(10)] = $t } }
+    # 2.0.93: the scheduler's runs were eps-tick, now eps-engine - the old watermark carries on (nothing sent twice)
+    if (-not $wm.ContainsKey('eps-engine') -and $wm.ContainsKey('eps-tick')) { $wm['eps-engine'] = $wm['eps-tick'] }
     $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
     $since = @(@($wm.Values) + $default | Sort-Object)[0]
     $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' ORDER BY EndedAtUtc")

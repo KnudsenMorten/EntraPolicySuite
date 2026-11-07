@@ -383,8 +383,12 @@ function Invoke-EpsTick {
         }
         $failed = @($decisions | Where-Object { $_.Action -eq 'StartFailed' }).Count
         $status = if ($failed) { 'PartlyFailed' } else { 'Succeeded' }
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $status; j = ($decisions | ConvertTo-Json -Compress -Depth 4); n = @($decisions | Where-Object { $_.Action -eq 'Started' }).Count; f = $failed } `
-            -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @s, SummaryJson = @j, Applied = @n, Failed = @f WHERE RunId = @id' | Out-Null
+        # SUP-2026-00438 (Invardia 2026-11-07): the failed starts in words ("<job>: <reason>; ...") - the run record's
+        # ErrorText, and its class (only queue-start timeouts = queue-start-timeout, a transient the next tick heals)
+        $why = @($decisions | Where-Object { $_.Action -eq 'StartFailed' } | ForEach-Object { "$($_.Job): $($_.Reason)" }) -join '; '
+        if ($why.Length -gt 1000) { $why = $why.Substring(0, 1000) }
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $status; j = ($decisions | ConvertTo-Json -Compress -Depth 4); n = @($decisions | Where-Object { $_.Action -eq 'Started' }).Count; f = $failed; h = $(if ($why) { $why } else { $null }) } `
+            -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @s, SummaryJson = @j, Applied = @n, Failed = @f, HeldReason = @h WHERE RunId = @id' | Out-Null
         [pscustomobject]@{ RunId = $runId; Status = $status; Decisions = @($decisions) }
     } catch {
         $e = "$($_.Exception.Message)"
