@@ -223,6 +223,18 @@ function Invoke-EpsWithRetry {
     }
 }
 
+function Invoke-EpsOwnedRegistrationWrite {
+    # SECAUDIT-1a (Invardia 2026-11-07): a change to the registration's OWN settings. A run that may not make it (403: it is
+    # not an owner - e.g. the Support app after the handoff, without Application.ReadWrite.All) does not stop: the updater
+    # identity, the registration's owner, applies it on its next run (Sync-EpsWebRegistrationAsOwner). Said once per change.
+    param([Parameter(Mandatory)][scriptblock]$Do, [Parameter(Mandatory)][string]$What)
+    try { & $Do }
+    catch {
+        if ("$_" -notmatch '(?i)\b403\b|Authorization_RequestDenied|Insufficient privileges') { throw }
+        Write-Warning "$($What): this run may not change the registration (it is not an owner) - id-eps-updater, its owner, applies it on its next run"
+    }
+}
+
 function Invoke-EpsWebRegistrationStep {
     <#
       The registration: create (or find) it, api://<appId> + the scope, the service principal with assignment required,
@@ -245,14 +257,16 @@ function Invoke-EpsWebRegistrationStep {
     # place - same object, same app id, found by its tag - and read back
     if ("$($app.displayName)" -cne $n.WebAppRegistration) {
         $was = "$($app.displayName)"
-        Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ displayName = $n.WebAppRegistration }) }
-        $rb = Wait-EpsGraphDisplayName -Path "v1.0/applications/$($app.id)" -Want $n.WebAppRegistration
-        $app.displayName = $rb.displayName
-        if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
-        $Ctx.Renamed.Add("app registration '$was' -> '$($n.WebAppRegistration)'")
+        Invoke-EpsOwnedRegistrationWrite -What "the registration's name '$($n.WebAppRegistration)'" -Do {
+            Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ displayName = $n.WebAppRegistration }) }
+            $rb = Wait-EpsGraphDisplayName -Path "v1.0/applications/$($app.id)" -Want $n.WebAppRegistration
+            $app.displayName = $rb.displayName
+            if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+            $Ctx.Renamed.Add("app registration '$was' -> '$($n.WebAppRegistration)'")
+        }
     }
     $uri = "api://$($app.appId)"
-    if (@($app.identifierUris) -notcontains $uri) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ identifierUris = @($uri) }) } }
+    if (@($app.identifierUris) -notcontains $uri) { Invoke-EpsOwnedRegistrationWrite -What "the registration's address $uri" -Do { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body @{ identifierUris = @($uri) }) } } }
     # 2.0.90: the Azure CLI pre-authorised for the app's own scope (a person's own token for the API / MCP) - merged, kept;
     # a scope just created can refuse a pre-authorisation for a while (Graph replication): a few tries, then a warning -
     # never a stop (the sign-in does not need it; the next run of the install adds it)
@@ -287,13 +301,59 @@ function Invoke-EpsWebRegistrationStep {
     }
     $fic = Get-EpsFicSpec -TenantId $Ctx.TenantId -PrincipalId $Ctx.Identities.WebIdentity.PrincipalId
     $fics = @(Invoke-EpsGraph -Path "v1.0/applications/$($app.id)/federatedIdentityCredentials" -All)
-    if (-not @($fics | Where-Object { $_.issuer -eq $fic.issuer -and $_.subject -eq $fic.subject }).Count) { [void](Invoke-EpsGraph -Method POST -Path "v1.0/applications/$($app.id)/federatedIdentityCredentials" -Body $fic) }
+    if (-not @($fics | Where-Object { $_.issuer -eq $fic.issuer -and $_.subject -eq $fic.subject }).Count) { Invoke-EpsOwnedRegistrationWrite -What 'the web identity''s federated credential' -Do { [void](Invoke-EpsGraph -Method POST -Path "v1.0/applications/$($app.id)/federatedIdentityCredentials" -Body $fic) } }
     # who gets in: assignment required + the installing person (a SuperAdmin adds others: Entra assignment + the Access page)
     if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) {
         $as = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$($sp.id)/appRoleAssignedTo" -All | Where-Object { $_.principalId -eq $Ctx.Person.ObjectId })
         if (-not $as.Count) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "v1.0/servicePrincipals/$($sp.id)/appRoleAssignedTo" -Body @{ principalId = $Ctx.Person.ObjectId; resourceId = $sp.id; appRoleId = $script:EpsWeb.DefaultAccess }) } }
     }
     $Ctx.Web = @{ ClientId = [string]$app.appId; AppObjectId = [string]$app.id; SpId = [string]$sp.id }
+}
+
+function Get-EpsRegistrationOwnerPlan {
+    <#
+      PURE. SECAUDIT-1a (Invardia ruling 2026-11-07): the registration's owner is EPS's OWN updater identity (id-eps-updater,
+      a service principal), never the Support app. -Owners: the owner object ids today; -UpdaterId: the updater's service
+      principal id; -CallerId: the install's own principal when it is an APP ('' for a person - a person who installs stays
+      owner, as Entra makes them). @{ Add (the updater is not an owner yet); Remove (the calling app is an owner) }.
+      The caller is removed only AFTER the updater reads back as owner (Invoke-EpsRegistrationOwnerHandoff).
+    #>
+    param([string[]]$Owners = @(), [string]$UpdaterId, [string]$CallerId)
+    $o = @($Owners | Where-Object { $_ } | ForEach-Object { "$_".ToLowerInvariant() })
+    $u = "$UpdaterId".ToLowerInvariant(); $c = "$CallerId".ToLowerInvariant()
+    @{ Add = [bool]($u -and $o -notcontains $u); Remove = [bool]($u -and $c -and $c -ne $u -and $o -contains $c) }
+}
+
+function Invoke-EpsRegistrationOwnerHandoff {
+    <#
+      SECAUDIT-1a (Invardia ruling 2026-11-07): on the app registration AND the enterprise application, id-eps-updater is
+      made an owner and read back; then the calling app (an install run through the Invardia Support app) removes itself
+      and reads that back. Every later change to the registration's own settings is the updater's (Sync-EpsWebRegistration-
+      AsOwner). Never stops the install: a failure is a WARNING line, and the Support app stays owner when the updater
+      could not be added. Returns the lines (shown at the end of the run).
+    #>
+    param([Parameter(Mandatory)]$Ctx)
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $upd = "$($Ctx.Identities.UpdaterIdentity.PrincipalId)"; $un = "$($Ctx.Names.UpdaterIdentity)"
+    if (-not $upd -or -not $Ctx.Web -or -not $Ctx.Web.AppObjectId) { $lines.Add("registration owner: no $un or no registration yet - left as it is"); return @($lines) }
+    $caller = if ("$($Ctx.Person.PrincipalType)" -eq 'ServicePrincipal') { "$($Ctx.Person.ObjectId)" } else { '' }
+    foreach ($t in @(@{ What = 'app registration'; Path = "v1.0/applications/$($Ctx.Web.AppObjectId)" }, @{ What = 'enterprise application'; Path = "v1.0/servicePrincipals/$($Ctx.Web.SpId)" })) {
+        if ($t.Path -match '/$') { continue }
+        try {
+            $read = { @(Invoke-EpsGraph -Path "$($t.Path)/owners?`$select=id" -All | ForEach-Object { "$($_.id)".ToLowerInvariant() }) }
+            $p = Get-EpsRegistrationOwnerPlan -Owners (& $read) -UpdaterId $upd -CallerId $caller
+            if ($p.Add) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "$($t.Path)/owners/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$upd" }) } }
+            $now = & $read
+            if ($now -notcontains $upd.ToLowerInvariant()) { $lines.Add("WARNING: $($t.What): $un is not an owner after the add - the calling app stays owner"); continue }
+            if ($p.Add) { $lines.Add("$($t.What): $un is an owner (read back)") }
+            if ($p.Remove) {
+                [void](Invoke-EpsGraph -Method DELETE -Path "$($t.Path)/owners/$caller/`$ref")
+                if ((& $read) -contains $caller.ToLowerInvariant()) { $lines.Add("WARNING: $($t.What): the calling app is still an owner after the removal") }
+                else { $lines.Add("$($t.What): the calling app (this install run) is no longer an owner (read back)") }
+            }
+        } catch { $lines.Add("WARNING: $($t.What): the owners could not be set ($((("$($_.Exception.Message)") -split "`n")[0])) - the next install run tries again") }
+    }
+    @($lines)
 }
 
 function Invoke-EpsKeyVaultStep {
@@ -356,7 +416,9 @@ function Invoke-EpsWebAppStep {
     if (-not $fqdn) { throw "the web app $($n.WebApp) has no address yet (provisioning $($app.properties.provisioningState))" }
     $reg = Invoke-EpsGraph -Path "v1.0/applications/$($Ctx.Web.AppObjectId)?`$select=web"
     $uris = @(@(@($reg.web.redirectUris) + "https://$fqdn/signin-oidc") | Where-Object { $_ } | Select-Object -Unique)
-    [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $uris; logoutUrl = "https://$fqdn/signout-callback-oidc"; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } })
+    if (@($reg.web.redirectUris) -notcontains "https://$fqdn/signin-oidc" -or "$($reg.web.logoutUrl)" -ne "https://$fqdn/signout-callback-oidc" -or $reg.web.implicitGrantSettings.enableIdTokenIssuance -or $reg.web.implicitGrantSettings.enableAccessTokenIssuance) {
+        Invoke-EpsOwnedRegistrationWrite -What "the sign-in address https://$fqdn/signin-oidc" -Do { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $uris; logoutUrl = "https://$fqdn/signout-callback-oidc"; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } }) }
+    }
     $Ctx.Web.Fqdn = $fqdn
     $Ctx.Web.Url = "https://$fqdn/"
     # OPEN-15 (framework §12.11g): the sign-in front the web app RUNS - its image as ARM returned it after the deploy - goes

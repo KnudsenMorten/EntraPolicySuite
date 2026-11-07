@@ -54,6 +54,9 @@ $script:EpsEngineGraphRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All', 'G
 # GroupMember.Read.All (read only, G5 as changed 2026-11-05): reading the membership back is refused without it.
 # Not left out by -ExcludeGraphRole: G5 is binding for every product.
 $script:EpsUpdaterGraphRoles = @('PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup', 'PrivilegedAssignmentSchedule.Read.AzureADGroup', 'RoleManagementPolicy.Read.AzureADGroup', 'GroupMember.Read.All', 'Application.Read.All')
+# SECAUDIT-1a (Invardia ruling 2026-11-07): the updater OWNS the web app registration and changes only what it owns -
+# kept apart from the G5 list (the SQL admin group's check is not about it)
+$script:EpsUpdaterOwnerGraphRole = 'Application.ReadWrite.OwnedBy'
 function Get-EpsEngineGraphRoles {
     # the engine's Graph roles minus any the approver left out (-ExcludeGraphRole): a role not approved is never granted;
     # the feature that needs it reports its data as unavailable (e.g. Teams_Room_Like without Organization.Read.All)
@@ -605,7 +608,7 @@ function Test-EpsInstallStep {
         'queues'        { if (& $has "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)" $script:EpsApi.st) { @{ Action = 'update'; Detail = "$($n.Storage) (queues + who may send / read checked)" } } else { @{ Action = 'create'; Detail = "$($n.Storage) (no shared key) + one queue per work job; the tick may send, the engine read" } } }
         'jobs'          { @{ Action = 'run'; Detail = ((Get-EpsJobBodies -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)") | ForEach-Object { $_.Name }) -join ', ' } }
         'jobstarter'    { @{ Action = 'run'; Detail = "remove role '$($n.JobStarterRole)' if an older install made it; read back: $($n.TickIdentity) holds no role on $($n.ResourceGroup)" } }
-        'graph'         { @{ Action = 'run'; Detail = "$($n.EngineIdentity): $((Get-EpsEngineGraphRoles -Ctx $Ctx) -join ', ')$(if (@($Ctx.ExcludeGraphRoles).Count) { ' (left out, not approved: ' + (@($Ctx.ExcludeGraphRoles) -join ', ') + ')' }); $($n.UpdaterIdentity): $($script:EpsUpdaterGraphRoles -join ', ') (framework §4.5 G5: the SQL admin group's membership through PIM for Groups)" } }
+        'graph'         { @{ Action = 'run'; Detail = "$($n.EngineIdentity): $((Get-EpsEngineGraphRoles -Ctx $Ctx) -join ', ')$(if (@($Ctx.ExcludeGraphRoles).Count) { ' (left out, not approved: ' + (@($Ctx.ExcludeGraphRoles) -join ', ') + ')' }); $($n.UpdaterIdentity): $($script:EpsUpdaterGraphRoles -join ', ') (framework §4.5 G5: the SQL admin group's membership through PIM for Groups), $($script:EpsUpdaterOwnerGraphRole) (SECAUDIT-1a: it owns the web app registration - only what it owns)" } }
         'exchange'      { @{ Action = 'run'; Detail = "$($n.EngineIdentity): Exchange.ManageAsApp + Entra role Exchange Recipient Administrator - only while user tagging, the identity report or a mailbox condition is on (else removed)" } }
         'webregistration' { $a = try { Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)" } catch { $null }; if ($a) { @{ Action = 'update'; Detail = "$($a.displayName) ($($a.appId)): api://, scope $($script:EpsWeb.Scope), consents, federated credential for $($n.WebIdentity)" } } else { @{ Action = 'create'; Detail = "app registration '$($n.WebAppRegistration)' (single tenant, code flow, no secret, assignment required, you assigned)" } } }
         'keyvault'      { $up = "; $($n.EngineIdentity) Key Vault Secrets User on the secret $($script:EpsUplinkSecret) only if Invardia has put it there (the install never creates or reads it)"
@@ -881,7 +884,7 @@ function Invoke-EpsInstallStep {
         'graph'    {
             & $loadMi; [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles (Get-EpsEngineGraphRoles -Ctx $Ctx))
             # framework §4.5 G5: the updater's three PIM-for-Groups roles, granted here (setup) and read back
-            if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles $script:EpsUpdaterGraphRoles) }
+            if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles @($script:EpsUpdaterGraphRoles + $script:EpsUpdaterOwnerGraphRole)) }
         }
         'exchange' {
             & $loadMi
@@ -933,6 +936,9 @@ function Invoke-EpsInstallStep {
                 if ($Ctx.Web) { $Ctx.Web.Fqdn = $null; $Ctx.Web.Url = $null }
             }
             & $loadWeb; Invoke-EpsWebAppStep -Ctx $Ctx
+            # SECAUDIT-1a (Invardia 2026-11-07): the registration's last write of the run is done - the updater becomes its owner,
+            # the calling app (the Support app) leaves it; each read back, shown at the end of the run
+            $Ctx.OwnerLines = @(Invoke-EpsRegistrationOwnerHandoff -Ctx $Ctx)
         }
         # NET-1, the private network install's own steps (EPS-InstallNetwork.ps1)
         'network'          { Invoke-EpsNetworkStep -Ctx $Ctx }

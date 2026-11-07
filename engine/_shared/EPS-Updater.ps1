@@ -328,6 +328,13 @@ function Invoke-EpsUpdateCheck {
             catch { & $Log 'Warning' "build pool: not stored: $($_.Exception.Message)" }
         }
     }
+    # SECAUDIT-1a (Invardia ruling 2026-11-07): the web app registration's own settings, as its OWNER (the updater identity) -
+    # every run, never fails the cycle; the install run hands the ownership over
+    if ($updater -and -not $CheckOnly -and (Get-Command Sync-EpsWebRegistrationAsOwner -ErrorAction SilentlyContinue)) {
+        $saved2 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+        try { $wr = Sync-EpsWebRegistrationAsOwner -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved2 }
+        foreach ($l in $wr.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
+    }
     $quiet = $null
     if ($t.State -eq 'available' -and $updater -and -not $CheckOnly) {
         $saved = $global:EPS_TokenProvider

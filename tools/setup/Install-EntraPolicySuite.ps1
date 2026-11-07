@@ -316,4 +316,6 @@ Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
 $url = if ($ctx.Web -and $ctx.Web.Url) { "`nThe web app: $($ctx.Web.Url) - sign in as $($person.Upn) (its first SuperAdmin); others need an assignment to the '$($names.WebAppRegistration)' enterprise application and a role on the Access page." } else { '' }
 # the standard identity names (framework §12.11c): what this run renamed in place, read back
 if ($ctx.Renamed -and $ctx.Renamed.Count) { Write-Host "`nChanged to the standard (each read back):" -ForegroundColor Cyan; foreach ($r in $ctx.Renamed) { Write-Host "  $r" } }
+# SECAUDIT-1a: who owns the web app registration (the updater identity; the Support app never)
+if ($ctx.OwnerLines -and @($ctx.OwnerLines).Count) { Write-Host "`nThe web app registration's owner:" -ForegroundColor Cyan; foreach ($r in $ctx.OwnerLines) { Write-Host "  $r" -ForegroundColor $(if ("$r" -like 'WARNING*') { 'Yellow' } else { 'Gray' }) } }
 Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"

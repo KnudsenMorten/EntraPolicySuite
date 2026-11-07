@@ -4,12 +4,25 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.94 - The web app's sign-in registration is owned by the installation itself
+- The web app's sign-in registration in Entra is now owned by the installation's own update identity, not by whoever
+  ran the install. When Invardia's Support app ran the install, it removes itself as owner at the end of the run (after
+  the update identity is in place, so the registration always has an owner). A person who installs stays owner.
+- The update identity gets one new permission for this, which reaches only the registration it owns: it keeps that
+  registration's own settings as they should be (its address, the web app's sign-in addresses, the web identity's
+  credential) on every update. The tenant-wide consent and who is assigned to the app are still set by the install.
+- An install run that is not allowed to change the registration no longer stops there: it says so, and the update
+  identity applies the change on its next run.
+
 ## 2.0.93 - Clearer run reports to Invardia
 - When the scheduler could not start a job, its run now says which job and why. A start that only timed out on the
   job's queue (a short storage hiccup - the next check a few minutes later starts the job) is reported as that, so it
   is not mistaken for a real failure.
 - The scheduler's runs are reported to Invardia as "eps-engine", the same name as its role everywhere else. Nothing
   changes in your installation's Azure resources.
+- Coming from 2.0.90, this version also brings 2.0.91 and 2.0.92 (below): updates that re-read the release after a
+  wait, the tamper check's one-hour limit (set by the update itself), and the updater stopping a job execution that has
+  been stuck for hours. That last rule is built and tested, and has not yet been needed at an installation.
 
 ## 2.0.92 - The tamper check's one-hour limit reaches every installation
 - The update now also sets the tamper check's one-hour time limit (2.0.91 set it only on an install run), so an

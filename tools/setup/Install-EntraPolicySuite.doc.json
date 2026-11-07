@@ -76,9 +76,9 @@
       "target": "Entra",
       "action": "grant",
       "object": "id-eps-updater (assigned to the update job only)",
-      "permission": "Microsoft Graph application permissions PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only)",
+      "permission": "Microsoft Graph application permissions PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only), and Application.ReadWrite.OwnedBy (only the app registration it owns)",
       "scope": "the tenant (used only for the SQL admin group's membership)",
-      "why": "the SQL admin group is role-assignable; the update job keeps the database setup identity a member of it through a Privileged Identity Management for Groups assignment and renews a time-limited one before it ends",
+      "why": "the SQL admin group is role-assignable; the update job keeps the database setup identity a member of it through a Privileged Identity Management for Groups assignment and renews a time-limited one before it ends; it owns the web app's sign-in registration (the install hands the ownership to it) and keeps that registration's own settings as they should be",
       "undo": "remove the app role assignments (the update job then only reports the membership; run the install to renew it)"
     },
     {
