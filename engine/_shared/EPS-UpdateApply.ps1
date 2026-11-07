@@ -19,6 +19,17 @@ $script:EpsUpdateApplySteps = [ordered]@{
     migrate = 'Update the database'; apply = 'Roll out the new version'; health = 'Check the new version'; done = 'Done'; failed = 'Failed'
 }
 
+function Stop-EpsStuckJobExecution {
+    <#
+      UPD-STUCK-RUN (found live 2026-11-06 at internal; framework UPD-06): stops ONE Container Apps job execution the update
+      hold found stuck (Running for hours with no run row). As the updater identity (Contributor on the resource group).
+      Throws on a refusal - the caller says so and does not wait for it either way.
+    #>
+    param([Parameter(Mandatory)][string]$JobsPath, [Parameter(Mandatory)][ValidatePattern('^caj-eps-[a-z0-9-]{1,40}$')][string]$Job,
+          [Parameter(Mandatory)][ValidatePattern('^caj-eps-[a-z0-9-]{1,60}$')][string]$Execution, [Parameter(Mandatory)][string]$ApiVersion)
+    [void](Invoke-EpsArm -Method POST -Path "$JobsPath/$Job/executions/$Execution/stop" -ApiVersion $ApiVersion)
+}
+
 function Save-EpsReleaseArchive {
     <#
       The release zip from the signed manifest's link: https only, the size and SHA-256 the signature names, then the zip's

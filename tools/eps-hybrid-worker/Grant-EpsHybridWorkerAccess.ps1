@@ -40,10 +40,12 @@ Write-Host "Database: $($names.SqlServer).database.windows.net / $($names.Databa
 Write-Host $sql -ForegroundColor DarkGray
 if ($what) { Write-Host "`nWhatIf: nothing was run." -ForegroundColor Cyan; return }
 # SEC-08 row 7 (no person needs database admin rights): an install with the database setup job makes / removes the
-# worker's user through it - you only start the job (an Azure right on the resource group), no SQL right
+# worker's user through it - you only start the job (an Azure right on the resource group), no SQL right.
+# DBINIT-GRANTS-ONLY (framework §8.18): adding the worker is only a user + role membership, so it may run beside a
+# pipeline run (-Steps grants); removing a user waits for the full setup between runs
 $dbJob = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/jobs/$($names.DbInitJob)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
 if ($dbJob) {
-    $r = Invoke-EpsDbInitJob -Ctx @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol } -Worker $(if ($Remove) { 'remove' } else { "$WorkerClientId" }) -UseExisting
+    $r = Invoke-EpsDbInitJob -Ctx @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Names = $names; SolutionRoot = $sol } -Worker $(if ($Remove) { 'remove' } else { "$WorkerClientId" }) -UseExisting -Steps $(if ($Remove) { '' } else { 'grants' })
     Write-Host "`n$(if ($Remove) { "Removed the database user $user" } else { "The worker's identity ($WorkerClientId) is the database user $user (role eps_worker)" }) - done by the database setup job ($($r.Execution)), read back." -ForegroundColor Green
     return
 }

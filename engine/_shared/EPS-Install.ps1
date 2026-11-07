@@ -463,7 +463,7 @@ function Get-EpsJobBodies {
     # the tick is short; a work job may run up to the 7-day limit (framework JOB-RUN-LIMIT) and holds 200,000 users
     # in memory (2.2 GB measured 2026-10-30), so it gets 4 GiB
     @(& $mk $n.TickJob 'Tick' 'TickIdentity' 'Schedule' 1800 '0.25' '0.5Gi') +
-    @(foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) { & $mk (Get-EpsAcaJobResourceName -Names $n -Key $d.AcaJobName) $d.Job 'EngineIdentity' 'Event' 604800 '2.0' '4Gi' ([bool]$d.Parallel) $d.AcaJobName })
+    @(foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) { & $mk (Get-EpsAcaJobResourceName -Names $n -Key $d.AcaJobName) $d.Job 'EngineIdentity' 'Event' $(if ($d.PSObject.Properties['TimeoutSeconds'] -and [int]$d.TimeoutSeconds -gt 0) { [int]$d.TimeoutSeconds } else { 604800 }) '2.0' '4Gi' ([bool]$d.Parallel) $d.AcaJobName })
 }
 
 function Add-EpsRoleAssignment {

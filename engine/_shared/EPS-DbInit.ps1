@@ -180,6 +180,35 @@ function Test-EpsDbInitReadBack {
     @{ Ok = -not $problems.Count; Problems = @($problems); Lines = @($lines) }
 }
 
+function Get-EpsSchemaFileVersion {
+    # PURE. The schema version a release's sql/eps-schema.sql brings: its highest INSERT INTO eps.SchemaVersion
+    param([Parameter(Mandatory)][string]$Text)
+    $v = @([regex]::Matches($Text, '(?i)INSERT INTO eps\.SchemaVersion \(Version[^)]*\) VALUES \((\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
+    if ($v.Count) { ($v | Measure-Object -Maximum).Maximum } else { 0 }
+}
+
+function Test-EpsDbInitGrantsOnly {
+    <#
+      PURE. DBINIT-GRANTS-ONLY (framework §8.18, Invardia 39254c83, 2026-11-06): EPS_DBINIT_STEPS = grants may run BESIDE a
+      pipeline run because it changes no table or column a run uses - only the roles and grants, the identities' users and
+      their role membership, and create-if-missing objects that are already there. So it refuses: a database whose schema
+      is older than this release's (the grants may name what is not there yet - that needs the full run between runs), and
+      every input that writes data or removes something (a first SuperAdmin, users to remove, a worker removed, settings,
+      the Support app's starting level). EPS signs no procedure, so the re-sign rule (no open Support session) never applies.
+      @{ Ok; Reason }.
+    #>
+    param([Parameter(Mandatory)]$DbInput, [int]$DatabaseVersion, [int]$FileVersion, [string]$Worker, [string]$Seed, [int]$SettingCount)
+    $no = @()
+    if ($DatabaseVersion -lt $FileVersion) { $no += "the database is at schema $DatabaseVersion and this release brings $FileVersion - the full setup runs between runs" }
+    if ($DbInput.SuperAdmin) { $no += 'a first SuperAdmin (a data row)' }
+    if (@($DbInput.Drop).Count) { $no += "removing users ($(@($DbInput.Drop) -join ', '))" }
+    if ("$Worker" -eq 'remove') { $no += 'removing the hybrid worker''s user' }
+    if ("$Seed") { $no += 'the Support app''s starting level (a data row)' }
+    if ($SettingCount -gt 0) { $no += 'settings (data rows)' }
+    if ($no.Count) { return @{ Ok = $false; Reason = "grants only, but this is not only grants: $($no -join '; ')" } }
+    @{ Ok = $true; Reason = "grants only: schema $DatabaseVersion is this release's; roles, grants and users only" }
+}
+
 function Invoke-EpsDbInit {
     <#
       The job's run. -Log { param($m) } prints a line. Returns the exit code: 0 = everything read back, 1 = a step or the
@@ -212,6 +241,9 @@ function Invoke-EpsDbInit {
     $set = Read-EpsDbInitSettings -Json (& $e 'EPS_DBINIT_SETTINGS')
     if (-not $set.Ok) { & $Log "refused: $($set.Reason)"; return 2 }
     $by = "$(& $e 'EPS_DBINIT_BY')".Trim(); if ($by -notmatch '^[^\x00-\x1f<>''"]{1,200}$') { $by = 'setup script' }
+    $steps = "$(& $e 'EPS_DBINIT_STEPS')".Trim().ToLowerInvariant()
+    if ($steps -notin '', 'all', 'grants') { & $Log "refused: EPS_DBINIT_STEPS is '$steps' (all or grants)"; return 2 }
+    $grantsOnly = $steps -eq 'grants'
     & $Log "principals: $(@($in.Principals | ForEach-Object { "$($_.Name)=$($_.Role)" }) -join ', '); web user $($in.WebUser)$(if ($in.SuperAdmin) { "; first SuperAdmin $($in.SuperAdmin.Upn)" })$(if ($in.Drop.Count) { "; remove $($in.Drop -join ', ')" })"
     # the login first: the job's identity is the admin only through the group
     $ok = $false
@@ -227,9 +259,20 @@ function Invoke-EpsDbInit {
     }
     if (-not $ok) { & $Log "the job's identity could not sign in to SQL as the admin group's member after $LoginTries tries"; return 1 }
     try {
+        if ($grantsOnly) {
+            # DBINIT-GRANTS-ONLY: no schema change - the database must already be at this release's schema
+            $dbv = [int]"0$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query 'SELECT MAX(Version) FROM eps.SchemaVersion')"
+            $fv = Get-EpsSchemaFileVersion -Text (Get-Content -LiteralPath (Join-Path $SolutionRoot 'sql\eps-schema.sql') -Raw)
+            $go = Test-EpsDbInitGrantsOnly -DbInput $in -DatabaseVersion $dbv -FileVersion $fv -Worker $wk -Seed $seed -SettingCount @($set.Settings.Keys).Count
+            if (-not $go.Ok) { & $Log "refused: $($go.Reason)"; return 2 }
+            & $Log $go.Reason
+            # only the roles and grants, the users and the sign-in front's schema (create-if-missing); no record rows
+            $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl | Where-Object { $_.Name -like 'roles and grants*' -or $_.Name -like 'database users*' -or $_.Name -like "the sign-in front's state*" })
+        } else {
         $v = Install-EpsSchema -ConnectionString $ConnectionString -SchemaPath (Join-Path $SolutionRoot 'sql\eps-schema.sql')
         & $Log "schema: version $v"
         $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl -Version $ver)
+        }
         if ($seedSql) { $plan += @{ Name = "the Support app's starting level (only when none is set)"; Sql = $seedSql } }
         if ($set.Settings.Count) { $plan += @{ Name = "settings for a setup script: $(@($set.Settings.Keys) -join ', ') (by $by)"; Sql = (Get-EpsDbInitSettingsSql -Settings $set.Settings -By $by) } }
         foreach ($b in $plan) {
@@ -755,7 +798,9 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed)
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed,
+          # DBINIT-GRANTS-ONLY (framework §8.18): 'grants' = only roles, grants and users - may run beside a pipeline run
+          [ValidateSet('', 'all', 'grants')][string]$Steps = '')
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
     # -UseExisting: start the job the install made, as it is (a setup script: the person may start it, nothing else)
     if ($UseExisting) { $j = @{ Name = $n.DbInitJob } } else {
@@ -767,6 +812,7 @@ function Invoke-EpsDbInitJob {
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
     if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
     if ($Worker) { $env.EPS_DBINIT_WORKER = $Worker }
+    if ($Steps) { $env.EPS_DBINIT_STEPS = $Steps }
     if ($SupportSeed -and $SupportSeed.AppId) { $env.EPS_DBINIT_SUPPORT = "$($SupportSeed.AppId)|$($SupportSeed.Level)" }
     if ($Settings -and $Settings.Count) { $env.EPS_DBINIT_SETTINGS = ($Settings | ConvertTo-Json -Compress -Depth 5); if ($By) { $env.EPS_DBINIT_BY = $By } }
     $s = Start-EpsAcaJob -SubscriptionId $Ctx.SubscriptionId -ResourceGroup $n.ResourceGroup -Name $j.Name -Env $env -Waits @(0, 15, 30, 60)

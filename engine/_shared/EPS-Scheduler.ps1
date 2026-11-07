@@ -19,7 +19,7 @@ function Get-EpsDefaultJobSchedule {
         [pscustomobject]@{ Job = 'DeviceTagging';  Schedule = 'daily 01:30'; AcaJobName = 'caj-eps-devicetag'; Implemented = $true }
         [pscustomobject]@{ Job = 'IdentityReport'; Schedule = 'daily 02:00'; AcaJobName = 'caj-eps-idreport';  Implemented = $true }
         [pscustomobject]@{ Job = 'NamedLocations'; Schedule = 'daily 06:00'; AcaJobName = 'caj-eps-namedloc';  Implemented = $true }   # V1-PARITY P8 (2.0.82): v1's service-tag job
-        [pscustomobject]@{ Job = 'TamperMonitor';  Schedule = 'every 15m';   AcaJobName = 'caj-eps-tamper';    Implemented = $true }
+        [pscustomobject]@{ Job = 'TamperMonitor';  Schedule = 'every 15m';   AcaJobName = 'caj-eps-tamper';    Implemented = $true; TimeoutSeconds = 3600 }   # UPD-STUCK-RUN: a 30-s job, never 7 days
         [pscustomobject]@{ Job = 'PolicyDeploy';   Schedule = 'manual';      AcaJobName = 'caj-eps-policy';    Implemented = $false }
         # the CA Policy Analyzer (DESIGN §5.7): manual - its MONITORS have their own schedules (eps.CaMonitor); Parallel =
         # several executions side by side, one per request / monitor (owner 2026-10-30), the overlap guard per monitor

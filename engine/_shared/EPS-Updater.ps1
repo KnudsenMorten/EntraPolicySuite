@@ -113,7 +113,7 @@ function Get-EpsUpdateRunGate {
 # no work job runs (eps.Run AND the Container Apps executions), at most 45 minutes, else it gives up until the next night.
 # The hold ends with the run (Status leaves Running), is lifted in a finally, and expires on its own after 120 minutes (a
 # crashed update never blocks the product). Nothing is ever cancelled.
-$script:EpsUpdateHold = @{ Scope = '{"updateHold":true}'; ExpireMinutes = 120; WaitMinutes = 45; PollSeconds = 30
+$script:EpsUpdateHold = @{ Scope = '{"updateHold":true}'; ExpireMinutes = 120; WaitMinutes = 45; PollSeconds = 30; StuckMinutes = 120
     # always running or part of the update itself - never waited for: the scheduler (dispatches nothing while held), the
     # support-access job (no schema use beyond its own row), the setup job (the update's own migrate) and the update job
     NotWaitedFor = @('caj-eps-tick', 'caj-eps-engine', 'caj-eps-support', 'caj-eps-dbinit', 'caj-eps-update', 'caj-eps-updater') }
@@ -145,14 +145,31 @@ function Get-EpsUpdateRunningWork {
       Running of every job not in NotWaitedFor (an execution that started but has not written its run row yet). A job read
       that fails counts as RUNNING (never migrate on doubt). -Arm { param($path) } returns the ARM JSON; -Jobs the job names.
     #>
-    param([Parameter(Mandatory)][string]$ConnectionString, [scriptblock]$Arm, [string[]]$Jobs = @())
+    param([Parameter(Mandatory)][string]$ConnectionString, [scriptblock]$Arm, [string[]]$Jobs = @(),
+          # UPD-STUCK-RUN (found live 2026-11-06 at internal: caj-eps-tamper 4w76v "Running" for 4.5 h with no run row held the
+          # 2.0.90 update; framework UPD-06): an execution Running longer than -StuckMinutes while NO run row is Running at
+          # all is STUCK - handed to -OnStuck { param($job, $execution, $startUtc) } (the updater stops it) and not waited for.
+          # A long but real run always has its Running row, so it is still waited for.
+          [int]$StuckMinutes = $script:EpsUpdateHold.StuckMinutes, [scriptblock]$OnStuck, [datetime]$NowUtc = [datetime]::UtcNow)
     $out = [System.Collections.Generic.List[string]]::new()
-    foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT DISTINCT Job FROM eps.Run WHERE Status = 'Running' AND Job NOT IN ('Tick', 'Update')")) { if ("$($r.Job)") { $out.Add("$($r.Job)") } }
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Job, StartedAtUtc FROM eps.Run WHERE Status = 'Running' AND Job NOT IN ('Tick', 'Update')")
+    foreach ($r in $rows) { if ("$($r.Job)" -and -not $out.Contains("$($r.Job)")) { $out.Add("$($r.Job)") } }
     if ($Arm) {
         foreach ($j in @($Jobs | Where-Object { $_ -and $_ -notin $script:EpsUpdateHold.NotWaitedFor })) {
             try {
                 $ex = & $Arm $j
-                if (@(@($ex.value) | Where-Object { "$($_.properties.status)" -eq 'Running' }).Count) { $out.Add($j) }
+                $running = @(@($ex.value) | Where-Object { "$($_.properties.status)" -eq 'Running' })
+                $live = 0
+                foreach ($e in $running) {
+                    $st = [datetime]::MinValue
+                    $hasStart = [datetime]::TryParse("$($e.properties.startTime)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal,AssumeUniversal', [ref]$st)
+                    if ($StuckMinutes -gt 0 -and $hasStart -and -not $rows.Count -and ($NowUtc - $st).TotalMinutes -ge $StuckMinutes) {
+                        if ($OnStuck) { try { & $OnStuck $j "$($e.name)" $st } catch { } }
+                        continue
+                    }
+                    $live++
+                }
+                if ($live) { $out.Add($j) }
             } catch { $out.Add("$j (its executions could not be read: $((("$($_.Exception.Message)") -split "`n")[0].Substring(0, [Math]::Min(120, (("$($_.Exception.Message)") -split "`n")[0].Length))))") }
         }
     }
@@ -258,7 +275,7 @@ function Invoke-EpsUpdateCheck {
     # updater identity, framework §12.25) -> claim the install key (LIC-01) -> the SIGNED Pro channel (kind 'code', the
     # same verifier, the same sequence guard) instead of the Community channel. No licence = Community, exactly as before;
     # a Community install never knocks.
-    $proLicence = ''; $proEdition = 'community'
+    $proLicence = ''; $proEdition = 'community'; $fromPro = $false; $licHttp = $Http
     if (Get-Command Invoke-EpsLicenceCycle -ErrorAction SilentlyContinue) {
         $licHttp = if ($Http) { $Http } else { { param($m, $u, $b, $hd) Invoke-EpsUpdateHttp -Method $m -Url $u -Body $b -Headers $hd } }
         $write = if ($CheckOnly -or -not $ApplyTokenProvider) { { param($n, $v) @{ Ok = $false; Reason = 'this run has no updater identity (id-eps-updater) to write the Key Vault' } } }
@@ -269,7 +286,7 @@ function Invoke-EpsUpdateCheck {
         if ($proEdition -ne 'community') {
             $pt = Get-EpsProUpdateTarget -RunningVersion $Version -Ring $ringN -Http $licHttp -InstallKey $InstallKey -LicenceText $proLicence -Edition $proEdition -TrustedKeys $TrustedKeys
             & $Log $(if ($pt.State -in 'refused', 'unreachable') { 'Warning' } else { 'Info' }) "Pro channel for ring $ringN`: $($pt.State) - $($pt.Reason)"
-            if ($pt.State -ne 'community') { $t = $pt }
+            if ($pt.State -ne 'community') { $t = $pt; $fromPro = $true }
         }
     }
     $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http -LicenceText $proLicence
@@ -326,6 +343,7 @@ function Invoke-EpsUpdateCheck {
                 # the API version as a LOCAL value: a GetNewClosure() scriptblock does not see $script: variables (found live
                 # 2026-11-05 at internal: "ApiVersion ... is an empty string" - the update stopped, nothing changed)
                 $acaApi = if ($script:EpsApi -and "$($script:EpsApi.acajob)") { "$($script:EpsApi.acajob)" } else { '2024-03-01' }
+                $holdLog = $Log; $stuckTold = @{}; $stuck = $null
                 $QuietProbe = {
                     $names = @(); $arm = $null
                     if (Get-Command Invoke-EpsArm -ErrorAction SilentlyContinue) {
@@ -334,12 +352,32 @@ function Invoke-EpsUpdateCheck {
                         # copied to LOCALS first: a closure made inside this closure captures only local variables
                         $p0 = "$rgp"; $v0 = "$acaApi"
                         $arm = { param($j) Invoke-EpsArm -Path "$p0/$j/executions" -ApiVersion $v0 }.GetNewClosure()
+                        # UPD-STUCK-RUN: a stuck execution is stopped (the updater holds Contributor on the resource group),
+                        # said once in the run log (which reaches Invardia), and not waited for
+                        $lg = $holdLog; $told = $stuckTold
+                        $stuck = { param($j, $en, $st)
+                            if ($told.ContainsKey("$j/$en")) { return }; $told["$j/$en"] = $true
+                            try { Stop-EpsStuckJobExecution -JobsPath $p0 -Job $j -Execution $en -ApiVersion $v0; & $lg 'Warning' "update hold: $j execution $en has run since $($st.ToString('yyyy-MM-dd HH:mm'))Z with no run row - STUCK: stopped, not waited for (framework UPD-06)" }
+                            catch { & $lg 'Warning' "update hold: $j execution $en has run since $($st.ToString('yyyy-MM-dd HH:mm'))Z with no run row - STUCK, not waited for; stopping it failed: $((("$($_.Exception.Message)") -split "`n")[0])" } }.GetNewClosure()
                     }
-                    Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names
+                    Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names -OnStuck $stuck
                 }.GetNewClosure()
             }
             $wq = @{ Probe = $QuietProbe; Log = $Log }; if ($WaitSleep) { $wq.Sleep = $WaitSleep }; if ($WaitNow) { $wq.Now = $WaitNow }
             $quiet = Wait-EpsUpdateQuiet @wq
+            if ($quiet.Go -and $quiet.Waited -gt 0) {
+                # UPD-STALE-LINK (found live 2026-11-06 at internal, 2.0.89 -> 2.0.90): the signed download link is short-lived -
+                # after a 21-min wait the Pro package answered 401. After ANY wait the release is read again for a fresh link;
+                # the same version + SHA-256 = go on, anything else = nothing installed, the next run decides again
+                $t2 = if ($fromPro) { Get-EpsProUpdateTarget -RunningVersion $Version -Ring $ringN -Http $licHttp -InstallKey $InstallKey -LicenceText $proLicence -Edition $proEdition -TrustedKeys $TrustedKeys }
+                      else { Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys }
+                if ($t2.State -eq 'available' -and "$($t2.Version)" -eq "$($t.Version)" -and "$($t2.Sha256)" -eq "$($t.Sha256)" -and "$($t2.DownloadUrl)") {
+                    $t = $t2; & $Log 'Info' "update: the release read again after the wait (a fresh download link) - $($t2.Reason)"
+                } else {
+                    & $Log 'Warning' "update: the release read again after the wait is not the one this run planned ($($t2.State) - $($t2.Reason)) - nothing installed, the next run decides again"
+                    $quiet = @{ Go = $false; Waited = $quiet.Waited; Running = @(); Stale = $true }
+                }
+            }
             if ($quiet.Go) {
                 & $Log 'Info' "update hold: no work job runs$(if ($quiet.Waited -gt 0) { " (waited $($quiet.Waited) min)" }) - installing"
                 $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http

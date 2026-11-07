@@ -28,6 +28,9 @@ function Say($m) { Write-Host "[$([datetime]::UtcNow.ToString('u'))] [eps $versi
 
 if (-not $Job) { Say 'EPS_JOB is not set'; exit 2 }
 if (-not $ConnectionString) { Say 'EPS_SQL_CONNECTION is not set'; exit 2 }
+# UPD-STUCK-RUN (internal 2026-11-06): caj-eps-tamper-4w76v ran 5.5 h and printed NOTHING - every job says it started, so
+# a hang is placed (before this line = the container; after it = SQL, the queue or the job's own work)
+Say "start$(if ($env:CONTAINER_APP_REPLICA_NAME) { " ($env:CONTAINER_APP_REPLICA_NAME)" })"
 # V1-PARITY P16: this job's log level (Log.Level.<Job>: Off / Normal / Verbose); warnings and errors are always kept
 $script:__logLevel = if ($Job -in $script:EpsLogFeatures) { Get-EpsLogLevel -ConnectionString $ConnectionString -Feature $Job } else { 'Normal' }
 
@@ -159,6 +162,7 @@ WHERE q.RequestId = @id AND q.Job = 'CAPolicyAnalyzer' AND q.Status = 'Dispatche
     }
     if ($Job -eq 'TamperMonitor') {
         # a restore the GUI asked for (one click on the Tamper page): the engine writes the tag back - signed first
+        Say 'requests from the GUI (test mail, restore)'
         while ($q = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
 UPDATE TOP (1) q SET Status = 'Running', UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
 OUTPUT INSERTED.RequestId, INSERTED.Mode, INSERTED.Scope, INSERTED.RequestedBy, DELETED.SignedToken, INSERTED.SignedVerifiedAtUtc, INSERTED.CorrelationId
@@ -193,6 +197,7 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
         # every 15 min a delta; the daily full compare when the last one is more than 24 h old (DESIGN §5.7a)
         $lastFull = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.MonitorState WHERE Name = 'fullCompare'"
         $full = -not $lastFull -or ([datetime]::UtcNow - [datetime]::Parse($lastFull, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)).TotalHours -ge 24
+        Say "monitor: $(if ($full) { 'full compare' } else { 'delta' })"
         $m = Invoke-EpsTamperMonitor -ConnectionString $ConnectionString -Mode $(if ($full) { 'Full' } else { 'Delta' })
         if ($full) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = [datetime]::UtcNow.ToString('o') } -Query "MERGE eps.MonitorState AS d USING (SELECT 'fullCompare' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES ('fullCompare', @v);" | Out-Null }
         $open = @($m.Events | Where-Object Status -eq 'Open')

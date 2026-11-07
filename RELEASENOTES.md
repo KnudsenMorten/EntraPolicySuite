@@ -4,6 +4,19 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.91 - Updates that do not get stuck
+- An update that had to wait for a running job now reads the release again before it downloads. Before, a long wait
+  could leave it with an expired download link, and the update stopped (nothing was changed) until the next night.
+- A job execution that has been running for hours without starting its run is now stopped by the updater (it is
+  logged and reported), instead of holding the update back. The tamper check, a job of seconds, now times out after
+  one hour instead of seven days, so one stuck check can no longer block the next checks.
+- Every job prints a first line when it starts, and the tamper check prints each stage, so a job that stops is easy
+  to place in its log.
+- Adding the hybrid worker's database user no longer has to wait for the jobs to finish: it changes only users and
+  roles, never a table. Anything else the database setup does still waits until no job runs.
+- Pro: the MCP server's tool names are now lower-case with underscores (for example get_rules_object_type_id), the
+  form MCP clients and invardia.com expect, and each tool says whether it only reads.
+
 ## 2.0.90 - Pro: the API for your scripts and an MCP server for AI assistants
 - Pro: your own scripts reach Entra Policy Suite through its API, and AI assistants through its MCP server - always as
   the signed-in person, with that person's own role (Reader, Admin or SuperAdmin). There is no key to hand out and no
