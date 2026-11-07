@@ -245,7 +245,9 @@ function Invoke-EpsTick {
         Start-EpsAcaJob in the install's subscription and
         resource group (EPS_SUBSCRIPTION_ID / EPS_RESOURCE_GROUP). A test passes its own.
     #>
-    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow, [scriptblock]$Starter, [int]$RunLimitDays = 7)
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow, [scriptblock]$Starter, [int]$RunLimitDays = 7,
+          # UPD-03 (2.0.97): { param($AlreadyStarted) } -> the "update now" check (Invoke-EpsUpdateExpediteCheck); a test passes its own
+          [scriptblock]$UpdateNow)
     if (-not $Starter) {
         # 2.0.9 (SEC-AUDIT-1 S4): a message on the job's queue, never an ARM start (2.0.10: the tick has no start right)
         $sa = $env:EPS_STORAGE_ACCOUNT
@@ -380,6 +382,40 @@ function Invoke-EpsTick {
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $mon.Name; s = "$($d.Action): $($d.Reason)"; old = $mon.LastStartedUtc; ok = ($d.Action -eq 'Started') } `
                 -Query 'UPDATE eps.CaMonitor SET LastStartResult = @s, LastStartedUtc = CASE WHEN @ok = 1 THEN LastStartedUtc ELSE @old END WHERE Name = @n' | Out-Null
             $d.Job = $label; $decisions.Add($d)
+        }
+        # 4. UPD-03 (2.0.97, framework §8.18 "update now"): every 15 minutes Invardia is asked whether this install should
+        # update NOW; yes = the update job starts at once (its own queue message, as the nightly start), ONCE per version -
+        # an earlier tick's record of it (UpdateNow, "update now for <version>:") is the guard. Off when the update job is off or held
+        # back by the usual reasons; never fails the tick.
+        if (-not (@($decisions | Where-Object { $_.Job -eq 'Update' -and $_.Action -eq 'Started' }).Count) -and $byJob['Update']) {
+            $already = {
+                param($v)
+                # only a STARTED update-now decision carries this text (a skipped one says "... (update now waits)")
+                $p = '%"Reason":"update now for ' + ($v -replace '[\[\]%_]', '') + ':%'
+                [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ p = $p } -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = 'Tick' AND SummaryJson LIKE @p") -gt 0
+            }
+            $un = $null
+            try {
+                if ($UpdateNow) { $un = & $UpdateNow $already }
+                elseif (Get-Command Invoke-EpsUpdateExpediteCheck -ErrorAction SilentlyContinue) {
+                    $vf = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'VERSION'
+                    $iv = if (Test-Path -LiteralPath $vf) { (Get-Content -LiteralPath $vf -Raw).Trim() } else { '' }
+                    $un = Invoke-EpsUpdateExpediteCheck -ConnectionString $ConnectionString -InstalledVersion $iv -NowUtc $NowUtc -AlreadyStarted $already
+                }
+            } catch { $un = $null }
+            if ($un -and $un.Checked) {
+                if (-not $un.Start) { $decisions.Add(@{ Job = 'UpdateNow'; Action = 'NotDue'; Reason = "$($un.Reason)" }) }
+                else {
+                    $why = & $blocked 'Update'
+                    if ($why) { $decisions.Add(@{ Job = 'UpdateNow'; Action = 'Skipped'; Reason = "$why ($($un.Version): update now waits)" }) }
+                    else {
+                        $d = & $start 'Update' "update now for $($un.Version): $($un.Reason)" $false
+                        $d.Job = 'UpdateNow'
+                        if ($d.Action -eq 'Started') { $d.Reason = "update now for $($un.Version): $($un.Reason)" }
+                        $decisions.Add($d)
+                    }
+                }
+            }
         }
         $failed = @($decisions | Where-Object { $_.Action -eq 'StartFailed' }).Count
         $status = if ($failed) { 'PartlyFailed' } else { 'Succeeded' }

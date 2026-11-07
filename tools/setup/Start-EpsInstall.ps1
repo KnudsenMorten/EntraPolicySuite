@@ -325,7 +325,7 @@ function Test-InvardiaArchiveFile {
     return @{ ok = $true; bytes = $len; reason = '' }
 }
 # <<< INLINE <<<
-Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Start-EpsInstall when EPS is public there (DOC-LINKS)
+Write-Host $(if ($script:EpsInstallChannel -eq 'pro') { 'Entra Policy Suite Pro: the signed Pro package from Invardia. Documentation: https://invardia.com/docs/eps/scripts/Start-EpsInstall' } else { 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme' })   # INS-05 (2.0.97): the Pro copy names its own source
 # -WhatIf is for the INSTALLER (its plan, nothing changed in Azure); the download, the check and the unpack into a temp
 # folder are real, or there is nothing to run (2026-10-30: the preference reached New-Item / Copy-Item and nothing was
 # downloaded)

@@ -83,18 +83,79 @@ function Get-EpsUpdateHead {
     #>
     param([AllowEmptyString()][string]$InstallKey, [Parameter(Mandatory)][ValidateRange(0, 3)][int]$Ring, [scriptblock]$Http, [string]$BaseUrl = $script:EpsUpdateBase,
           # INSTALL-PRO: a Pro install asks for its Pro channel (kind 'code') with the licence in the body (PIM / SI's head)
-          [AllowEmptyString()][string]$LicenceText = '')
+          [AllowEmptyString()][string]$LicenceText = '',
+          # UPD-03 (2.0.97): the tick asks without the licence, for its channel ('code' / 'community') as PIM's tick does
+          [ValidateSet('', 'code', 'community')][string]$Kind = '')
     if (-not "$InstallKey".Trim()) { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'no install key: "update now" is not asked' } }
     if ("$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') { return @{ Status = 0; Version = ''; Expedite = $null; Reason = 'the install key is not in the expected format: "update now" is not asked' } }
     $url = "$("$BaseUrl".Trim().TrimEnd('/'))/api/updates/$($script:EpsUpdateProduct)/head"
     $h = @{ 'X-Invardia-Install-Key' = "$InstallKey".Trim() }
-    $b = if ("$LicenceText".Trim()) { [ordered]@{ ring = $Ring; kind = 'code'; licence = "$LicenceText" } } else { [ordered]@{ ring = $Ring; kind = $script:EpsUpdateKind } }
+    $b = if ("$LicenceText".Trim()) { [ordered]@{ ring = $Ring; kind = 'code'; licence = "$LicenceText" } } else { [ordered]@{ ring = $Ring; kind = $(if ($Kind) { $Kind } else { $script:EpsUpdateKind }) } }
     $r = if ($Http) { & $Http 'POST' $url $b $h } else { Invoke-EpsUpdateHttp -Method POST -Url $url -Body $b -Headers $h }
     $st = 0; try { $st = [int]$r.status } catch { $st = 0 }
     if ($st -ne 200) { return @{ Status = $st; Version = ''; Expedite = $null; Reason = $(if ($st -eq 403 -and $r.body.ringOnRecord -ne $null) { "Invardia has this install on ring $($r.body.ringOnRecord), not ring $Ring" } else { Get-InvardiaPullReason -Status $st -Body $r.body -ErrorText "$($r.error)" }) } }
     $ex = $null
     if ($r.body.expedite -and "$($r.body.expedite.apply)" -in 'now', 'window') { $ex = @{ Apply = "$($r.body.expedite.apply)"; Until = "$($r.body.expedite.until)"; Reason = "$($r.body.expedite.reason)" } }
     return @{ Status = 200; Version = "$($r.body.version)"; Expedite = $ex; Reason = $(if ($ex) { "update now asked ($($ex.Apply)): $($ex.Reason)" } else { 'no "update now" for this install' }) }
+}
+
+$script:EpsUpdateHeadSetting = 'update-head-check'   # written by the update job, read by the tick (UPD-03)
+
+function Get-EpsUpdateExpediteDecision {
+    <#
+      PURE (UPD-03, 2.0.97; PIM's 15-minute expedite check). Invardia's head answer (Get-EpsUpdateHead) -> @{ Start;
+      Version; Reason }. Start only when: HTTP 200, expedite.apply = 'now', the head's version is NEWER than the installed
+      one, 'until' has not passed, and no "update now" start was made for that version before (-AlreadyStarted).
+      'window' = the nightly run takes it.
+    #>
+    param([AllowNull()][object]$Head, [string]$InstalledVersion = '', [bool]$AlreadyStarted = $false, [datetime]$NowUtc = [datetime]::UtcNow)
+    $no = { param($why, $v) @{ Start = $false; Version = "$v"; Reason = "$why" } }
+    if (-not $Head -or [int]$Head.Status -ne 200) { return (& $no "no answer to read$(if ($Head -and $Head.Reason) { ": $($Head.Reason)" })" '') }
+    $v = "$($Head.Version)".Trim()
+    if (-not $Head.Expedite) { return (& $no 'no "update now" for this install' $v) }
+    if ("$($Head.Expedite.Apply)" -eq 'window') { return (& $no '"update now" within the agreed hours: the nightly run takes it' $v) }
+    if ("$($Head.Expedite.Apply)" -ne 'now') { return (& $no 'an "update now" mark that cannot be read' $v) }
+    $a = $null; $b = $null
+    if (-not [version]::TryParse($v, [ref]$a) -or -not [version]::TryParse("$InstalledVersion".Trim(), [ref]$b)) { return (& $no 'a version that cannot be read' $v) }
+    if ($a -le $b) { return (& $no "this install runs $InstalledVersion (the head is $v)" $v) }
+    $u = "$($Head.Expedite.Until)".Trim()
+    if ($u) {
+        $until = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($u, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$until)) { return (& $no "the mark's end ('$u') cannot be read" $v) }
+        if ($NowUtc.ToUniversalTime() -gt $until.UtcDateTime) { return (& $no 'the "update now" mark has run out' $v) }
+    }
+    if ($AlreadyStarted) { return (& $no "an update was already started for $v by update now" $v) }
+    $why = ("$($Head.Expedite.Reason)" -replace '\s+', ' ').Trim(); if ($why.Length -gt 200) { $why = $why.Substring(0, 197) + '...' }
+    @{ Start = $true; Version = $v; Reason = $(if ($why) { $why } else { 'no reason given' }) }
+}
+
+function Invoke-EpsUpdateExpediteCheck {
+    <#
+      UPD-03 (Invardia review 2026-11-07, framework §8.18 "update now"): the TICK asks Invardia's head call once every 15
+      minutes (the tick that runs in minutes 0-4, 15-19, 30-34, 45-49) and says whether the update job should start now.
+      The ring, the channel and the Key Vault come from the setting the update job writes on every run (update-head-check);
+      the install key from the Key Vault as the uplink reads it. Read only - never writes; the caller starts the job and
+      records it in its run. Off (Checked = $false) when not due, without the setting, the key or a readable version.
+      Never throws. -Http / -GetKey / -AlreadyStarted { param($v) } are seams. @{ Checked; Start; Version; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$InstalledVersion, [datetime]$NowUtc = [datetime]::UtcNow,
+          [scriptblock]$Http, [scriptblock]$GetKey, [scriptblock]$AlreadyStarted)
+    $off = { param($why) @{ Checked = $false; Start = $false; Version = ''; Reason = "$why" } }
+    try {
+        if (($NowUtc.ToUniversalTime().Minute % 15) -ge 5) { return (& $off 'not due (every 15 minutes)') }
+        $raw = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $script:EpsUpdateHeadSetting } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'
+        if (-not "$raw".Trim()) { return (& $off 'the update job has not run on this release yet (no update-head-check)') }
+        $hc = "$raw" | ConvertFrom-Json
+        $ring = "$($hc.ring)"; $kind = "$($hc.kind)"
+        if ($ring -notmatch '^[0-3]$' -or $kind -notin 'code', 'community') { return (& $off 'update-head-check cannot be read') }
+        $k = if ($GetKey) { & $GetKey "$($hc.vault)" } else { Get-EpsUplinkKey -VaultName $(if ("$($hc.vault)" -match '^[A-Za-z0-9-]{3,24}$') { "$($hc.vault)" } else { Get-EpsUplinkVaultName }) }
+        if (-not "$($k.Key)") { return (& $off "no install key ($($k.Reason))") }
+        $h = Get-EpsUpdateHead -InstallKey "$($k.Key)" -Ring ([int]$ring) -Kind $kind -Http $Http
+        $done = $false
+        if ($h.Status -eq 200 -and "$($h.Version)" -and $AlreadyStarted) { $done = [bool](& $AlreadyStarted "$($h.Version)") }
+        $d = Get-EpsUpdateExpediteDecision -Head $h -InstalledVersion $InstalledVersion -AlreadyStarted $done -NowUtc $NowUtc
+        @{ Checked = $true; Start = [bool]$d.Start; Version = "$($d.Version)"; Reason = "$($d.Reason)" }
+    } catch { return (& $off "the check failed: $((("$($_.Exception.Message)") -split "`n")[0])") }
 }
 
 function Get-EpsUpdateRunGate {
@@ -290,6 +351,16 @@ function Invoke-EpsUpdateCheck {
         }
     }
     $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http -LicenceText $proLicence
+    # UPD-03 (2.0.97): what the tick needs to ask "update now" every 15 minutes - the ring, the channel, the vault (no key,
+    # no licence: the tick reads the key from the vault itself). Never fails the update.
+    try {
+        $hcv = [ordered]@{ ring = $ringN; kind = $(if ($proEdition -ne 'community') { 'code' } else { 'community' }); vault = "$(Get-EpsUplinkVaultName)" } | ConvertTo-Json -Compress
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsUpdateHeadSetting; v = $hcv } -Query @'
+MERGE eps.Setting AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name
+WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)'
+WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Update', @v, N'engine (update job)');
+'@ | Out-Null
+    } catch { & $Log 'Warning' "update now: the tick's check could not be prepared ($((("$($_.Exception.Message)") -split "`n")[0]))" }
     # always said (found live 2026-11-04: a silent skip hid why no head call was made)
     & $Log $(if ($InstallKey -and $h.Status -ne 200) { 'Warning' } else { 'Info' }) "update now: $($h.Reason)$(if ($h.Status) { " (HTTP $($h.Status))" })"
     $g = Get-EpsUpdateRunGate -ConnectionString $ConnectionString

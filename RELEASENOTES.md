@@ -4,6 +4,14 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.97 - "Update now" works within minutes
+- When Invardia marks a release "update now" for your ring, Entra Policy Suite now starts its update within about 15
+  minutes instead of waiting for the nightly update. It starts once per version, only when updates are switched on, and
+  it waits for the usual reasons (for example while another update is running). The nightly update stays as before.
+- The Pro install script now says that it downloads the signed Pro package from Invardia.
+- The setup scripts on invardia.com now run the Entra Policy Suite version they were published for by default, instead
+  of the newest release (-EpsVersion still picks another).
+
 ## 2.0.96 - A smaller Pro package
 - The Pro package now carries only what an installation runs and updates from (the engine, the database files, the
   setup and worker scripts, the sign-in front and the Pro features), plus the readme and these release notes. Our own
