@@ -336,19 +336,26 @@ function Invoke-EpsRegistrationOwnerHandoff {
     $lines = [System.Collections.Generic.List[string]]::new()
     $upd = "$($Ctx.Identities.UpdaterIdentity.PrincipalId)"; $un = "$($Ctx.Names.UpdaterIdentity)"
     if (-not $upd -or -not $Ctx.Web -or -not $Ctx.Web.AppObjectId) { $lines.Add("registration owner: no $un or no registration yet - left as it is"); return @($lines) }
-    $caller = if ("$($Ctx.Person.PrincipalType)" -eq 'ServicePrincipal') { "$($Ctx.Person.ObjectId)" } else { '' }
+    # the calling APP: 'ServicePrincipal', or 'Application' as the setup run names it for the SQL admin (live, internal
+    # 2026-11-07 on 2.0.94: 'Application' was not recognised and the Support app stayed owner)
+    $caller = if ("$($Ctx.Person.PrincipalType)" -in 'ServicePrincipal', 'Application') { "$($Ctx.Person.ObjectId)" } else { '' }
     foreach ($t in @(@{ What = 'app registration'; Path = "v1.0/applications/$($Ctx.Web.AppObjectId)" }, @{ What = 'enterprise application'; Path = "v1.0/servicePrincipals/$($Ctx.Web.SpId)" })) {
         if ($t.Path -match '/$') { continue }
         try {
             $read = { @(Invoke-EpsGraph -Path "$($t.Path)/owners?`$select=id" -All | ForEach-Object { "$($_.id)".ToLowerInvariant() }) }
             $p = Get-EpsRegistrationOwnerPlan -Owners (& $read) -UpdaterId $upd -CallerId $caller
             if ($p.Add) { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method POST -Path "$($t.Path)/owners/`$ref" -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$upd" }) } }
+            # Graph replicas: an owner just added can read back a while later (live, internal 2026-11-07: the enterprise
+            # application's add read back only after the run) - a few waits before it counts as not done
             $now = & $read
+            foreach ($w in 10, 20, 30) { if ($now -contains $upd.ToLowerInvariant()) { break }; Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { $w }); $now = & $read }
             if ($now -notcontains $upd.ToLowerInvariant()) { $lines.Add("WARNING: $($t.What): $un is not an owner after the add - the calling app stays owner"); continue }
             if ($p.Add) { $lines.Add("$($t.What): $un is an owner (read back)") }
             if ($p.Remove) {
                 [void](Invoke-EpsGraph -Method DELETE -Path "$($t.Path)/owners/$caller/`$ref")
-                if ((& $read) -contains $caller.ToLowerInvariant()) { $lines.Add("WARNING: $($t.What): the calling app is still an owner after the removal") }
+                $after = & $read
+                foreach ($w in 10, 20, 30) { if ($after -notcontains $caller.ToLowerInvariant()) { break }; Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { $w }); $after = & $read }
+                if ($after -contains $caller.ToLowerInvariant()) { $lines.Add("WARNING: $($t.What): the calling app is still an owner after the removal") }
                 else { $lines.Add("$($t.What): the calling app (this install run) is no longer an owner (read back)") }
             }
         } catch { $lines.Add("WARNING: $($t.What): the owners could not be set ($((("$($_.Exception.Message)") -split "`n")[0])) - the next install run tries again") }

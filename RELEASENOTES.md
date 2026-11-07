@@ -4,6 +4,13 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.95 - The ownership handover completes
+- Fixed: when Invardia's Support app ran the install, 2.0.94 added the update identity as owner of the sign-in
+  registration but did not remove the Support app, because it did not recognise how the setup run names the Support app.
+  It is now removed (after the update identity is in place, as before).
+- The install now waits a little for Entra to show a new owner before it judges the change, instead of reporting a
+  warning for an owner that was in fact added.
+
 ## 2.0.94 - The web app's sign-in registration is owned by the installation itself
 - The web app's sign-in registration in Entra is now owned by the installation's own update identity, not by whoever
   ran the install. When Invardia's Support app ran the install, it removes itself as owner at the end of the run (after
