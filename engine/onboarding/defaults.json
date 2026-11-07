@@ -1,12 +1,14 @@
 {
   "_": "GET-STARTED (DESIGN §5.10): what v1's scripts set up before anything ran (Entra-ConditionalAccess-Management.ps1), as data the wizard checks the tenant against. The engine's Graph roles are the install's list (tests/Test-EpsOnboarding.ps1 keeps them equal to EPS-Install.ps1).",
-  "engineGraphRoles": ["User.ReadWrite.All", "Device.ReadWrite.All", "GroupMember.Read.All", "Organization.Read.All", "AuditLog.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "DeviceManagementManagedDevices.Read.All", "Application.Read.All", "Policy.ReadWrite.ConditionalAccess", "Group.ReadWrite.All", "AdministrativeUnit.ReadWrite.All", "Policy.ReadWrite.AuthenticationMethod"],
+  "engineGraphRoles": ["User.Read.All", "Device.Read.All", "GroupMember.Read.All", "Organization.Read.All", "AuditLog.Read.All", "Policy.Read.All", "RoleManagement.Read.Directory", "DeviceManagementManagedDevices.Read.All", "Application.Read.All", "Policy.ReadWrite.ConditionalAccess", "Group.ReadWrite.All", "AdministrativeUnit.ReadWrite.All", "Policy.ReadWrite.AuthenticationMethod"],
+  "engineGraphWriteRoles": ["User.ReadWrite.All", "Device.ReadWrite.All"],
   "roleSince": {
-    "User.ReadWrite.All": "2.0.0", "Device.ReadWrite.All": "2.0.0", "GroupMember.Read.All": "2.0.0", "Organization.Read.All": "2.0.0", "AuditLog.Read.All": "2.0.0",
+    "User.Read.All": "2.0.99", "Device.Read.All": "2.0.99", "User.ReadWrite.All": "2.0.0", "Device.ReadWrite.All": "2.0.0", "GroupMember.Read.All": "2.0.0", "Organization.Read.All": "2.0.0", "AuditLog.Read.All": "2.0.0",
     "RoleManagement.Read.Directory": "2.0.1", "Policy.Read.All": "2.0.1", "DeviceManagementManagedDevices.Read.All": "2.0.6", "Application.Read.All": "2.0.14", "Policy.ReadWrite.ConditionalAccess": "2.0.27", "Group.ReadWrite.All": "2.0.81", "AdministrativeUnit.ReadWrite.All": "2.0.81", "Policy.ReadWrite.AuthenticationMethod": "2.0.82"
   },
   "roleFor": {
-    "User.ReadWrite.All": "user tagging (write the tag attributes)", "Device.ReadWrite.All": "device tagging", "GroupMember.Read.All": "group conditions, the wizard's group checks",
+    "User.Read.All": "reading users (the identity report, the CA Policy Analyzer, the tamper monitor, the checks)", "Device.Read.All": "reading devices (the identity report, the checks)",
+    "User.ReadWrite.All": "user tagging, the tamper monitor's restore (write the tag attributes) and Pro's stale clean-up disable - only while one of them is on", "Device.ReadWrite.All": "device tagging (write the tag attributes) - only while it is on", "GroupMember.Read.All": "group conditions, the wizard's group checks",
     "Organization.Read.All": "licences (Teams Rooms, the identity report)", "AuditLog.Read.All": "the tamper monitor's 'who', the CA Policy Analyzer's sign-ins",
     "Policy.Read.All": "reading the Conditional Access policies, strengths and named locations", "RoleManagement.Read.Directory": "role names, the break-glass role check",
     "DeviceManagementManagedDevices.Read.All": "the identity report's Intune devices", "Application.Read.All": "application names in the CA documentation, this check of the engine's own rights",

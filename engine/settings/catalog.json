@@ -908,6 +908,24 @@
       }
     },
     {
+      "key": "ProStale.DisableEnabled",
+      "group": "ProStale",
+      "proFeature": "stale-identities",
+      "label": "Allow the clean-up to disable approved accounts",
+      "type": "boolean",
+      "default": "false",
+      "role": "SuperAdmin",
+      "info": {
+        "what": "Pro. When on, a SuperAdmin's approval disables the marked accounts (and Enable again undoes it). The engine then needs the Microsoft Graph permission User.ReadWrite.All; the install grants it while this is on and removes it when nothing that writes users is on.",
+        "enabled": "Approved accounts are disabled by the engine, read back and recorded. After switching it on, run the install once (or Grant-EpsEnginePermissions -GraphPermission User.ReadWrite.All) so the engine holds the permission.",
+        "disabled": "The stale identities list is shown and marked as before, but nothing is disabled or enabled again.",
+        "risk": "Disabling stops the account signing in. Each account needs an Admin's mark and a SuperAdmin's approval; break-glass and AD-synced accounts are never changed; reversible with Enable again.",
+        "requires": "SuperAdmin and a Pro licence.",
+        "recommended": "On while you clean up, with a review of the list first.",
+        "docUrl": "https://invardia.com/docs/eps/settings/ProStale.DisableEnabled/"
+      }
+    },
+    {
       "key": "HybridWorker.StaleMinutes",
       "group": "HybridWorker",
       "label": "A worker is late after (minutes)",

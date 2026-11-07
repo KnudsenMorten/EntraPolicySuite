@@ -46,7 +46,10 @@ function Grant-EpsUplinkKeyAccess {
     @{ Granted = $true; Reason = "$($n.EngineIdentity)$(if ($Ctx.Identities.DbInitIdentity.PrincipalId) { " and $($n.DbInitIdentity)" }) may read the secret $($script:EpsUplinkSecret) (and nothing else in the vault)" }
 }
 # the engine's rights (the security pack lists the same): Graph app roles by VALUE (ids resolved from the tenant)
-$script:EpsEngineGraphRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')   # Policy.ReadWrite.AuthenticationMethod: GET-STARTED phase 2 (2.0.82, V1-PARITY P7), the two authentication strengths v1 creates - on a SuperAdmin's request only (owner 2026-11-05 'No, always grant', framework §4.3 owner exception). Group.ReadWrite.All + AdministrativeUnit.ReadWrite.All: CA-GROUPS (2.0.81), the groups the policies use and their administrative units - created and changed only from a SuperAdmin's request, applied by the engine (owner 2026-11-05: 'Yes, Group.ReadWrite.All')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
+# SEC-02-GRAPH (owner e48f195e, 2026-11-07, 2.0.99): READ users and devices always; the WRITE rights only while a feature
+# that writes is on ($script:EpsEngineGraphWriteRoles, Get-EpsGraphWriteNeed) - granted / removed by the install's graph step
+$script:EpsEngineGraphWriteRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All')
+$script:EpsEngineGraphRoles = @('User.Read.All', 'Device.Read.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')   # Policy.ReadWrite.AuthenticationMethod: GET-STARTED phase 2 (2.0.82, V1-PARITY P7), the two authentication strengths v1 creates - on a SuperAdmin's request only (owner 2026-11-05 'No, always grant', framework §4.3 owner exception). Group.ReadWrite.All + AdministrativeUnit.ReadWrite.All: CA-GROUPS (2.0.81), the groups the policies use and their administrative units - created and changed only from a SuperAdmin's request, applied by the engine (owner 2026-11-05: 'Yes, Group.ReadWrite.All')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
 # framework §4.5 SQL-ADMIN-GROUP G5 (Invardia, DECIDED 2026-11-05; the owner: "both setup and upd"): the UPDATER identity's
 # Graph application roles - exactly these three, granted by THIS setup code, kept by the update job (it converges and
 # renews the database setup identity's membership of the role-assignable SQL admin group through PIM for Groups, G2-G4).
@@ -85,6 +88,104 @@ function Get-EpsRegionCheckTemplate {
         @{ type = 'Microsoft.ContainerRegistry/registries'; apiVersion = '2023-07-01'; name = "acrepsrc$x"; location = $Location; sku = @{ name = 'Basic' }; properties = @{} }
         @{ type = 'Microsoft.Sql/servers'; apiVersion = '2023-08-01-preview'; name = "sql-eps-rc-$x"; location = $(if ($SqlLocation) { $SqlLocation } else { $Location })
            properties = @{ minimalTlsVersion = '1.2'; administrators = @{ administratorType = 'ActiveDirectory'; azureADOnlyAuthentication = $true; principalType = 'Group'; login = 'eps-region-check'; sid = '00000000-0000-0000-0000-000000000001'; tenantId = $TenantId } } }) }
+}
+
+# INS-06 / INS-07 (Invardia review 2026-11-07, 2.0.99): before anything is made, the person's roles and the region's
+# quotas. A DEFINITE miss stops the install (all of them in one list, nothing made); a value that cannot be read is a
+# note and the install goes on (Azure / Graph decide then) - never a stop on a guess.
+$script:EpsAzureOwnerRole = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'
+$script:EpsAzureUaaRole = '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9'
+$script:EpsAzureRbacAdminRole = 'f58310d9-a9f6-439a-9e8d-f62e7b41a168'
+$script:EpsAzureContributorRole = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+$script:EpsEntraGlobalAdmin = '62e90394-69f5-4237-9190-012177145e10'
+$script:EpsEntraPrivRoleAdmin = 'e8611ab8-c189-46e8-94e1-60213ab1f814'
+
+function Get-EpsInstallRoleVerdict {
+    <# PURE. The role definition ids the person holds at the install's scope + the Entra role template ids (active) ->
+       @{ Azure = ok | missing | unknown; Entra = ok | missing | unknown | n/a; Missing = @(); Notes = @() }.
+       Azure: Owner, or Contributor + (User Access Administrator or Role Based Access Control Administrator) - the install
+       creates resources AND role assignments. Entra: Global Administrator or Privileged Role Administrator, ACTIVE (a
+       PIM-eligible role must be activated first) - it grants application permissions. An application (the Support app)
+       has no Entra role: its Graph permissions decide (n/a). $null = not readable. #>
+    param([AllowNull()][string[]]$AzureRoles, [AllowNull()][string[]]$EntraRoles, [string]$Scope = 'the subscription', [bool]$IsApplication = $false)
+    $out = @{ Azure = 'unknown'; Entra = 'unknown'; Missing = [System.Collections.Generic.List[string]]::new(); Notes = [System.Collections.Generic.List[string]]::new() }
+    $ids = { param($x) @($x | ForEach-Object { ("$_" -split '/')[-1].ToLowerInvariant() }) }
+    if ($null -eq $AzureRoles) { $out.Notes.Add("your Azure roles on $Scope could not be read - the install goes on; Azure refuses a step you may not do") }
+    else {
+        $a = & $ids $AzureRoles
+        $ok = ($a -contains $script:EpsAzureOwnerRole) -or (($a -contains $script:EpsAzureContributorRole) -and (($a -contains $script:EpsAzureUaaRole) -or ($a -contains $script:EpsAzureRbacAdminRole)))
+        $out.Azure = if ($ok) { 'ok' } else { 'missing' }
+        $msg = "Owner on $Scope (or Contributor + User Access Administrator): the install creates resources and gives its identities their roles"
+        # an application (the Support app) may hold a custom role that covers it: a note, never a stop
+        if (-not $ok) { if ($IsApplication) { $out.Notes.Add("the application has none of the standard roles for: $msg - the install goes on; Azure refuses a step it may not do") } else { $out.Missing.Add($msg) } }
+    }
+    if ($IsApplication) { $out.Entra = 'n/a'; $out.Notes.Add('signed in as an application: its Graph permissions decide what it may grant (no Entra role is checked)') }
+    elseif ($null -eq $EntraRoles) { $out.Notes.Add('your Entra roles could not be read - the install goes on; Entra refuses a grant you may not make') }
+    else {
+        $e = & $ids $EntraRoles
+        $ok = ($e -contains $script:EpsEntraGlobalAdmin) -or ($e -contains $script:EpsEntraPrivRoleAdmin)
+        $out.Entra = if ($ok) { 'ok' } else { 'missing' }
+        if (-not $ok) { $out.Missing.Add('Global Administrator or Privileged Role Administrator in Entra, ACTIVE (activate it in PIM first if it is eligible): the install grants its identities their Microsoft Graph permissions') }
+    }
+    $out
+}
+
+function Get-EpsInstallQuotaVerdict {
+    <# PURE. Usage rows @(@{ What; Current; Limit; Needed }) -> @{ Missing; Notes }. A row whose numbers cannot be read is
+       a note; Current + Needed above Limit is a miss with the numbers. #>
+    param([AllowNull()][object[]]$Rows, [string]$Location = '')
+    $out = @{ Missing = [System.Collections.Generic.List[string]]::new(); Notes = [System.Collections.Generic.List[string]]::new() }
+    foreach ($r in @($Rows | Where-Object { $_ })) {
+        $c = 0.0; $l = 0.0
+        if (-not [double]::TryParse("$($r.Current)", [ref]$c) -or -not [double]::TryParse("$($r.Limit)", [ref]$l) -or $l -le 0) { $out.Notes.Add("$($r.What) in $Location could not be read - the install goes on"); continue }
+        $n = if ($r.Needed) { [double]$r.Needed } else { 1 }
+        if ($c + $n -gt $l) { $out.Missing.Add("$($r.What) in $Location`: $c of $l used, the install needs $n more - ask Microsoft for a higher quota or choose another region") }
+    }
+    $out
+}
+
+function Test-EpsInstallPreflight {
+    <# The person's roles and the region's quotas, read now (Test-EpsInstallPreflight -Ctx). Seams: -Arm { param($Path, $Api) },
+       -Graph { param($Path) }. Read only. @{ Missing; Notes } - the caller stops on Missing. #>
+    param([Parameter(Mandatory)]$Ctx, [bool]$RgOnly = $false, [string]$ResourceGroup = '', [scriptblock]$Arm, [scriptblock]$Graph)
+    if (-not $Arm) { $Arm = { param($p, $v) Invoke-EpsArm -Path $p -ApiVersion $v -AllowNotFound -MaxRetry 1 } }   # a check: one retry, then a note
+    if (-not $Graph) { $Graph = { param($p) @(Invoke-EpsGraph -Path $p -All -MaxRetry 1) } }
+    $sub = "/subscriptions/$($Ctx.SubscriptionId)"
+    $scopePath = if ($RgOnly -and $ResourceGroup) { "$sub/resourceGroups/$ResourceGroup" } else { $sub }
+    $oid = "$($Ctx.Person.ObjectId)"
+    $isApp = "$($Ctx.Person.PrincipalType)" -in 'ServicePrincipal', 'Application'
+    $az = $null
+    if ($oid -match '^[0-9a-fA-F-]{36}$') {
+        try {
+            $ra = & $Arm "$scopePath/providers/Microsoft.Authorization/roleAssignments?`$filter=assignedTo('$oid')" '2022-04-01'
+            # no answer (404 / not readable) = unknown, never "no roles"
+            $hasV = $ra -and (($ra -is [System.Collections.IDictionary] -and $ra.Contains('value')) -or $ra.PSObject.Properties['value'])
+            $az = if ($hasV) { @($ra.value | ForEach-Object { "$($_.properties.roleDefinitionId)" }) } else { $null }
+        } catch { $az = $null }
+    }
+    $en = $null
+    if (-not $isApp) { try { $en = @(& $Graph 'v1.0/me/transitiveMemberOf/microsoft.graph.directoryRole?$select=roleTemplateId' | ForEach-Object { "$($_.roleTemplateId)" }) } catch { $en = $null } }
+    $rv = Get-EpsInstallRoleVerdict -AzureRoles $az -EntraRoles $en -Scope $(if ($RgOnly) { "resource group $ResourceGroup" } else { 'the subscription' }) -IsApplication $isApp
+    # quotas: only for what this run would CREATE (an existing environment / server needs none)
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $n = $Ctx.Names; $rgp = "$sub/resourceGroups/$ResourceGroup"
+    $envThere = try { [bool](& $Arm "$rgp/providers/Microsoft.App/managedEnvironments/$($n.Environment)" '2024-03-01') } catch { $false }
+    if (-not $envThere) {
+        try {
+            $u = @((& $Arm "$sub/providers/Microsoft.App/locations/$($Ctx.Location)/usages" '2024-03-01').value | Where-Object { "$($_.name.value)" -match '(?i)ManagedEnvironmentCount' })[0]
+            $rows.Add(@{ What = 'Container Apps environments'; Current = $(if ($u) { $u.currentValue }); Limit = $(if ($u) { $u.limit }); Needed = 1 })
+        } catch { $rows.Add(@{ What = 'Container Apps environments'; Current = $null; Limit = $null }) }
+    }
+    $sqlLoc = if ($Ctx.SqlLocation) { $Ctx.SqlLocation } else { $Ctx.Location }
+    $sqlThere = try { [bool](& $Arm "$rgp/providers/Microsoft.Sql/servers/$($n.SqlServer)" '2023-08-01-preview') } catch { $false }
+    if (-not $sqlThere) {
+        try {
+            $q = @((& $Arm "$sub/providers/Microsoft.Sql/locations/$sqlLoc/usages" '2021-11-01').value | Where-Object { "$($_.name)" -match '(?i)^ServerQuota$' })[0]
+            $rows.Add(@{ What = 'SQL servers'; Current = $(if ($q) { $q.properties.currentValue }); Limit = $(if ($q) { $q.properties.limit }); Needed = 1 })
+        } catch { $rows.Add(@{ What = 'SQL servers'; Current = $null; Limit = $null }) }
+    }
+    $qv = Get-EpsInstallQuotaVerdict -Rows $rows -Location $Ctx.Location
+    @{ Missing = @($rv.Missing) + @($qv.Missing); Notes = @($rv.Notes) + @($qv.Notes); Azure = $rv.Azure; Entra = $rv.Entra }
 }
 
 function Test-EpsRegionAccepts {
@@ -883,6 +984,33 @@ function Invoke-EpsInstallStep {
         }
         'graph'    {
             & $loadMi; [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles (Get-EpsEngineGraphRoles -Ctx $Ctx))
+            # SEC-02-GRAPH (owner e48f195e, 2.0.99): the READ rights above first (granted + read back), THEN each write right
+            # only while a feature that writes is on - granted when needed, REMOVED when not (read back), left as it is when
+            # the settings cannot be read (never on a guess). A database this run created has every feature off.
+            $wn = $null
+            if ($Ctx.NewDatabase -eq $true -and (Get-Command Get-EpsGraphWriteNeed -ErrorAction SilentlyContinue)) { $wn = Get-EpsGraphWriteNeed -Row ([pscustomobject]@{ UserTagging = 'false'; TamperMonitor = 'false'; DeviceTagging = 'false' }) }
+            elseif (Get-Command Get-EpsGraphWriteNeed -ErrorAction SilentlyContinue) {
+                try {
+                    $r = Invoke-EpsSetupSql -Ctx $Ctx -Script $script:EpsGraphWriteNeedSql -Rows
+                    $rows = if ($r -and $r.PSObject.Properties['Rows']) { @($r.Rows) } else { @($r) }
+                    $wn = Get-EpsGraphWriteNeed -Row @($rows | Where-Object { $_ -and $_ -isnot [string] })[0]
+                } catch { $wn = @{ Known = $false; Roles = @{}; Why = "the settings could not be read: $($_.Exception.Message)" } }
+            }
+            $Ctx.GraphWriteNeed = $wn
+            $eng = $Ctx.Identities.EngineIdentity.PrincipalId
+            if (-not $Ctx.Renamed) { $Ctx.Renamed = [System.Collections.Generic.List[string]]::new() }
+            foreach ($wr in $script:EpsEngineGraphWriteRoles) {
+                if (@($Ctx.ExcludeGraphRoles) -contains $wr) { continue }
+                $nd = if ($wn -and $wn.Known) { $wn.Roles[$wr] } else { $null }
+                if (-not $nd) { Write-Host "  note     $wr left as it is: $(if ($wn) { $wn.Why } else { 'the need check is not loaded' })" -ForegroundColor Yellow; continue }
+                if ($nd.Needed) { [void](Grant-EpsAppRoles -PrincipalId $eng -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles @($wr)); continue }
+                if (Get-Command Invoke-EpsEnginePermissionPlan -ErrorAction SilentlyContinue) {
+                    foreach ($x in @(Invoke-EpsEnginePermissionPlan -EngineObjectId $eng -Request (Get-EpsEnginePermissionRequest -GraphPermission $wr -Remove))) {
+                        if ($x.Status -eq 'removed') { $Ctx.Renamed.Add("removed (not needed: $($nd.Why)): $($x.What)") }
+                        elseif ($x.Status -eq 'refused') { Write-Host "  note     $($x.What) is not needed ($($nd.Why)) but was not removed: $($x.Reason) - the next run tries again" -ForegroundColor Yellow }
+                    }
+                }
+            }
             # framework §4.5 G5: the updater's three PIM-for-Groups roles, granted here (setup) and read back
             if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles @($script:EpsUpdaterGraphRoles + $script:EpsUpdaterOwnerGraphRole)) }
         }

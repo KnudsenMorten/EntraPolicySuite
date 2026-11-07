@@ -12,8 +12,10 @@ function Get-EpsEnginePermissionRequest {
     #   Kind: appRole (Resource = the API's application id, Value = the permission) | directoryRole (Value = the role template id)
     param([string[]]$GraphPermission = @(), [switch]$Exchange, [switch]$Remove)
     $asked = @($GraphPermission | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
-    $unknown = @($asked | Where-Object { $script:EpsEngineGraphRoles -cnotcontains $_ })
-    if ($unknown.Count) { return @{ Ok = $false; Reason = "not a Graph permission Entra Policy Suite declares for its engine: $($unknown -join ', ') (declared: $($script:EpsEngineGraphRoles -join ', '))" } }
+    # SEC-02-GRAPH (2.0.99): the write rights are declared too, asked for BY NAME only (a feature that writes is on)
+    $declared = @($script:EpsEngineGraphRoles) + @($script:EpsEngineGraphWriteRoles)
+    $unknown = @($asked | Where-Object { $declared -cnotcontains $_ })
+    if ($unknown.Count) { return @{ Ok = $false; Reason = "not a Graph permission Entra Policy Suite declares for its engine: $($unknown -join ', ') (declared: $($declared -join ', '))" } }
     if ($Remove -and -not $asked.Count -and -not $Exchange) { return @{ Ok = $false; Reason = '-Remove needs the rights to take away: -GraphPermission <name> and/or -Exchange (it never removes everything at once)' } }
     # none asked and no -Exchange: every Graph permission the engine needs (a catch-up after an install that could not grant)
     if (-not $asked.Count -and -not $Exchange) { $asked = @($script:EpsEngineGraphRoles) }
@@ -23,6 +25,20 @@ function Get-EpsEnginePermissionRequest {
         $items += @{ Kind = 'directoryRole'; What = 'Entra role Exchange Recipient Administrator'; Value = $script:EpsExchangeRecipientAdminRole }
     }
     @{ Ok = $true; Reason = ''; Remove = [bool]$Remove; Items = $items }
+}
+
+function Get-EpsUpdaterPermissionRequest {
+    # PURE (PRM-02, Invardia review 2026-11-07; 2.0.99): the UPDATER identity's Graph roles - exactly the declared ones
+    # ($script:EpsUpdaterGraphRoles, framework §4.5 G5, + Application.ReadWrite.OwnedBy, SECAUDIT-1a). Never
+    # RoleManagement.ReadWrite.Directory (G5) or anything else. Same shape as Get-EpsEnginePermissionRequest.
+    param([string[]]$GraphPermission = @(), [switch]$Remove)
+    $declared = @($script:EpsUpdaterGraphRoles) + @($script:EpsUpdaterOwnerGraphRole)
+    $asked = @($GraphPermission | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+    $unknown = @($asked | Where-Object { $declared -cnotcontains $_ })
+    if ($unknown.Count) { return @{ Ok = $false; Reason = "not a Graph permission Entra Policy Suite declares for its updater: $($unknown -join ', ') (declared: $($declared -join ', '))" } }
+    if ($Remove -and -not $asked.Count) { return @{ Ok = $false; Reason = '-Remove needs the rights to take away: -GraphPermission <name> (it never removes everything at once)' } }
+    if (-not $asked.Count) { $asked = $declared }
+    @{ Ok = $true; Reason = ''; Remove = [bool]$Remove; Items = @(foreach ($p in $asked) { @{ Kind = 'appRole'; What = "Graph $p"; Resource = '00000003-0000-0000-c000-000000000000'; Value = $p } }) }
 }
 
 function Invoke-EpsEnginePermissionPlan {

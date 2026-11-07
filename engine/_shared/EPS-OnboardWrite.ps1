@@ -117,7 +117,10 @@ function Invoke-EpsOnboardChangeItems {
                     # E-CM L197-209 (EntraUser -Create): forceChangePasswordNextSignIn, the password only in this request
                     $body = [ordered]@{}; foreach ($k in $it.body.Keys) { $body[$k] = $it.body[$k] }
                     $body.passwordProfile = [ordered]@{ forceChangePasswordNextSignIn = $true; password = (New-EpsBreakGlassPassword) }
-                    [void](Invoke-EpsGraph -Method POST -Path 'v1.0/users' -Body $body)
+                    # SEC-02-GRAPH (2.0.99): User.ReadWrite.All is held only while a feature that writes users is on - a create
+                    # refused for that says the right and the grant line, never a bare 403
+                    try { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/users' -Body $body) }
+                    catch { if ("$($_.Exception.Message)" -match '-> 403|Authorization_RequestDenied|Insufficient privileges') { throw 'the engine may not create users now - it holds User.ReadWrite.All only while user tagging, the tamper monitor or (Pro) the stale identity clean-up''s disable action is on. Grant it once with Grant-EpsEnginePermissions -GraphPermission User.ReadWrite.All (a Global Administrator), then run this again' }; throw }
                     $body.passwordProfile = $null; $body = $null
                     $u = Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString("$($it.body.userPrincipalName)"))?`$select=id,userPrincipalName,accountEnabled"
                     if (-not $u.id -or -not $u.accountEnabled) { throw 'read back: not there, or not enabled' }
@@ -126,7 +129,7 @@ function Invoke-EpsOnboardChangeItems {
                 }
             }
         } catch {
-            $r.result = 'failed'; $r.error = (("$($_.Exception.Message)" -split '->')[-1]).Trim()
+            $r.result = 'failed'; $r.error = $(if ("$($_.Exception.Message)" -match '^the engine may not create users now') { "$($_.Exception.Message)" } else { (("$($_.Exception.Message)" -split '->')[-1]).Trim() })
             if ($r.error -match '(?i)403|Authorization_RequestDenied|privilege') { $r.error += " (the engine needs $(switch ($Plan.action) { 'strengths' { 'Policy.ReadWrite.AuthenticationMethod' } 'breakglass' { 'User.ReadWrite.All' } default { 'Policy.ReadWrite.ConditionalAccess' } }) - run the install again to grant it)" }
         }
         & $Log $(if ($r.result -eq 'failed') { 'Warning' } else { 'Info' }) "  $($Plan.action) $($it.do) $($it.name): $($r.result)$(if ($r.error) { " - $($r.error)" })"

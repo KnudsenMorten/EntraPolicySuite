@@ -275,6 +275,11 @@ if ($reg.Accepts -eq $false) {
     $ok = @($script:EpsRegionAlternatives | Where-Object { $_ -ne $Location } | Where-Object { (Test-EpsRegionAccepts -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Location $_ -TenantId $TenantId -ResourceGroupExists:$rgExists).Accepts -eq $true } | Select-Object -First 3)
     Finish 2 ("`nAzure does not accept new resources in $Location for this subscription (the region is not taking new customers). Choose another region, for example $(if ($ok.Count) { $ok -join ', ' } else { 'northeurope or swedencentral' })." + $(if ($rgExists) { "`nResource group $ResourceGroup is in ${Location}: use another resource group (-ResourceGroup) with the new -Location." }) + "`nNOTHING was created.")
 }if ($null -eq $reg.Accepts) { Write-Host "Region $Location`: $($reg.Reason) - the install goes on." -ForegroundColor DarkYellow }
+# INS-06 / INS-07 (2.0.99): your roles and the region's quotas, read BEFORE anything is made - every definite miss in one
+# list (nothing made, also with -WhatIf); what cannot be read is said and the install goes on
+$pf = Test-EpsInstallPreflight -Ctx $ctx -RgOnly $rgOnly -ResourceGroup $ResourceGroup
+foreach ($x in @($pf.Notes)) { if ($x) { Write-Host "Note: $x" -ForegroundColor DarkYellow } }
+if (@($pf.Missing).Count) { Finish 2 ("`nNot ready to install - NOTHING was created. Missing ($(@($pf.Missing).Count)):`n" + ((@($pf.Missing) | ForEach-Object { "  - $_" }) -join "`n") + "`nFix these and run the same command again.") }
 # Installer rule 8 (framework §0, a real install 2026-11-03): every prerequisite of the chosen network options, checked
 # BEFORE anything is created - ALL missing ones in one list, and nothing made (also with -WhatIf, so the plan shows it)
 if ($netPlan.Private) {

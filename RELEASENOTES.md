@@ -4,6 +4,22 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.99 - Fewer standing rights, and the install checks you first
+- The engine now reads users and devices with read-only permissions (`User.Read.All`, `Device.Read.All`). It holds the
+  write permissions only while a feature that writes is switched on: `User.ReadWrite.All` while user tagging, the
+  tamper monitor or (Pro) the stale identity clean-up's disable action is on, `Device.ReadWrite.All` while device
+  tagging is on. The install grants a write permission when a feature needs it and removes it when none does. The
+  setup checks show which one is needed and the command that grants it.
+- Pro: the stale identity clean-up disables approved accounts only while the new SuperAdmin setting "Allow the clean-up
+  to disable approved accounts" is on (off by default). Reviewing and marking the list works as before.
+- Creating a break-glass account without the write permission now stops with the permission named and the command that
+  grants it.
+- Before it creates anything, the install now checks that you hold Owner on the subscription (or Contributor and User
+  Access Administrator) and an active Global Administrator or Privileged Role Administrator role, and that the region
+  has room for a Container Apps environment and a SQL server. It lists everything missing at once.
+- New script Grant-EpsUpdaterPermissions.ps1: gives the update identity a Microsoft Graph permission it is missing (only
+  the ones Entra Policy Suite declares for it), read back.
+
 ## 2.0.98 - "Update now" for Pro installations
 - Fixed: on a Pro installation the 15-minute "update now" check from 2.0.97 was refused by Invardia, because it did
   not send the installation's licence. It now sends it, so "update now" works for Pro as it does for Community. (To

@@ -64,7 +64,7 @@ function Get-EpsEngineRightsState {
     $sp = @($g.Value.value)[0]
     $byId = @{}; foreach ($r in @($sp.appRoles)) { $byId["$($r.id)"] = "$($r.value)" }
     $have = @($a.Value | Where-Object { "$($_.resourceId)" -eq "$($sp.id)" } | ForEach-Object { $byId["$($_.appRoleId)"] })
-    $granted = [ordered]@{}; foreach ($r in @($d.engineGraphRoles)) { $granted[$r] = $have -contains $r }
+    $granted = [ordered]@{}; foreach ($r in @($d.engineGraphRoles) + @($d.engineGraphWriteRoles)) { $granted[$r] = $have -contains $r }
     $x = Invoke-EpsOnboardingGraph -Path "v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$oid'" -All
     $ex = if ($x.Ok) { [bool](@($x.Value | Where-Object { "$($_.roleDefinitionId)" -eq $d.exchangeRole.templateId }).Count) } else { $null }
     @{ Ok = $true; Granted = $granted; Exchange = $ex; ObjectId = $oid }
@@ -94,6 +94,33 @@ function Get-EpsExchangeNeed {
     @{ Known = $true; Needed = [bool]$why.Count; Why = $(if ($why.Count) { $why -join ', ' } else { 'no feature that uses Exchange is on' }) }
 }
 
+# SEC-02-GRAPH (owner e48f195e, 2026-11-07, 2.0.99): the engine's Graph WRITE rights only while a feature that writes is
+# on - User.ReadWrite.All for user tagging and the tamper monitor's restore, Device.ReadWrite.All for device tagging
+# (reading is User.Read.All / Device.Read.All, always granted). One row, read as is.
+$script:EpsGraphWriteNeedSql = @'
+SELECT (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'UserTagging.Enabled') AS UserTagging,
+       (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'TamperMonitor.Enabled') AS TamperMonitor,
+       (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'DeviceTagging.Enabled') AS DeviceTagging,
+       (SELECT MAX(Value) FROM eps.Setting WHERE Name = 'ProStale.DisableEnabled') AS ProStaleDisable
+'@
+
+function Get-EpsGraphWriteNeed {
+    <# PURE. The row of $script:EpsGraphWriteNeedSql -> @{ Known; Roles = @{ <role> = @{ Needed; Why } } }. No row = not
+       Known: nothing is granted or removed on a guess. A switch is on only when 'true' is stored. #>
+    param($Row)
+    if ($null -eq $Row) { return @{ Known = $false; Roles = @{}; Why = 'the settings could not be read' } }
+    $g = { param($n) if ($Row -is [System.Collections.IDictionary]) { $Row[$n] } else { $p = $Row.PSObject.Properties[$n]; if ($p) { $p.Value } } }
+    $on = { param($n) "$(& $g $n)".Trim() -eq 'true' }
+    $u = @(); if (& $on 'UserTagging') { $u += 'user tagging is on' }; if (& $on 'TamperMonitor') { $u += 'the tamper monitor is on (it restores tags)' }
+    # Pro's stale identity clean-up disables (and enables again) an account a SuperAdmin approved (the one place that does it is EPS-ProStaleWrite) -
+    # only while its disable action is switched on (Invardia ruling 2026-11-07: the feature switch, never "a licence")
+    if (& $on 'ProStaleDisable') { $u += 'the stale identity clean-up may disable accounts (ProStale.DisableEnabled)' }
+    $d = @(); if (& $on 'DeviceTagging') { $d += 'device tagging is on' }
+    @{ Known = $true; Why = ''
+       Roles = [ordered]@{ 'User.ReadWrite.All' = @{ Needed = [bool]$u.Count; Why = $(if ($u.Count) { $u -join ', ' } else { 'none of user tagging, the tamper monitor or the stale identity clean-up''s disable action is on' }) }
+                           'Device.ReadWrite.All' = @{ Needed = [bool]$d.Count; Why = $(if ($d.Count) { $d -join ', ' } else { 'device tagging is off' }) } } }
+}
+
 function Get-EpsSetupSteps {
     <#
       FLEET-STEPS (owner 2026-11-03, via Invardia: "it must be consistent across all"): the one-time steps of this install,
@@ -103,7 +130,8 @@ function Get-EpsSetupSteps {
     # -ExchangeNeed: Get-EpsExchangeNeed (OPEN-09) - not given = the step as before (needed)
     # -DbJob: eps.UplinkState setup.dbjob (the version whose database setup job last read every principal back; $null =
     # not readable). -UpdateRun: the last update run's summary ($null = not readable, '' = none yet).
-    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null)
+    # -GraphWriteNeed: Get-EpsGraphWriteNeed (SEC-02-GRAPH, 2.0.99) - not given = the write rights reported as needed
+    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null, $GraphWriteNeed = $null)
     $d = Get-EpsOnboardingDefaults
     $at = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $out = [System.Collections.Generic.List[object]]::new()
@@ -111,6 +139,17 @@ function Get-EpsSetupSteps {
         $st = if (-not $Rights -or -not $Rights.Ok) { 'unknown' } elseif ($Rights.Granted[$r]) { 'ok' } else { 'missing' }
         $out.Add([ordered]@{ key = "graph-$($r.ToLowerInvariant().Replace('.', '-'))"; title = "Engine has the Graph permission $r"; state = $st; since = "$($d.roleSince[$r])"; how = 'customer'; checkedAt = $at
                              detail = $(if ($st -eq 'unknown') { "$($Rights.Reason)" } else { "for $($d.roleFor[$r])" }) })
+    }
+    # SEC-02-GRAPH: a write right is needed only while a feature that writes is on - otherwise n/a (and one still held is extra)
+    foreach ($r in @($d.engineGraphWriteRoles)) {
+        $st = if (-not $Rights -or -not $Rights.Ok) { 'unknown' } elseif ($Rights.Granted[$r]) { 'ok' } else { 'missing' }
+        $detail = if ($st -eq 'unknown') { "$($Rights.Reason)" } else { "for $($d.roleFor[$r])" }
+        $need = if ($GraphWriteNeed -and $GraphWriteNeed.Known) { $GraphWriteNeed.Roles[$r] } else { $null }
+        if ($need -and -not $need.Needed) {
+            $detail = if ($st -eq 'ok') { "not needed ($($need.Why)) but still granted: the next install run removes it (or Grant-EpsEnginePermissions -GraphPermission $r -Remove)" } else { "not needed: $($need.Why)" }
+            $st = 'n/a'
+        } elseif ($need -and $need.Needed -and $st -eq 'missing') { $detail = "needed ($($need.Why)): grant it with Grant-EpsEnginePermissions -GraphPermission $r" }
+        $out.Add([ordered]@{ key = "graph-$($r.ToLowerInvariant().Replace('.', '-'))"; title = "Engine has the Graph permission $r"; state = $st; since = "$($d.roleSince[$r])"; how = 'customer'; checkedAt = $at; detail = $detail })
     }
     $ex = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights.Exchange) { 'unknown' } elseif ($Rights.Exchange) { 'ok' } else { 'missing' }
     $exDetail = "for $($d.exchangeRole.for)"

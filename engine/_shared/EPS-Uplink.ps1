@@ -503,7 +503,9 @@ function Get-EpsUplinkHeartbeatFacts {
             # update run said about its updater identity - both real records, never a remembered value
             $dbj = try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'setup.dbjob'")" } catch { $null }
             $upd = try { "$(& $q "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = N'Update' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")" } catch { $null }
-            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd) } catch { @() } })
+            # SEC-02-GRAPH (2.0.99): whether the Graph write rights are needed, from the features that are on
+            $gwn = if (Get-Command Get-EpsGraphWriteNeed -ErrorAction SilentlyContinue) { try { Get-EpsGraphWriteNeed -Row @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsGraphWriteNeedSql)[0] } catch { $null } }
+            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd -GraphWriteNeed $gwn) } catch { @() } })
     }
 }
 
