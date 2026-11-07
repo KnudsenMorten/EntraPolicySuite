@@ -139,7 +139,9 @@ function Invoke-EpsUpdateExpediteCheck {
       Never throws. -Http / -GetKey / -AlreadyStarted { param($v) } are seams. @{ Checked; Start; Version; Reason }.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$InstalledVersion, [datetime]$NowUtc = [datetime]::UtcNow,
-          [scriptblock]$Http, [scriptblock]$GetKey, [scriptblock]$AlreadyStarted)
+          [scriptblock]$Http, [scriptblock]$GetKey, [scriptblock]$AlreadyStarted,
+          # { } -> the stored licence text (the tick passes its own reader - its role reads only that column)
+          [scriptblock]$GetLicence)
     $off = { param($why) @{ Checked = $false; Start = $false; Version = ''; Reason = "$why" } }
     try {
         if (($NowUtc.ToUniversalTime().Minute % 15) -ge 5) { return (& $off 'not due (every 15 minutes)') }
@@ -150,7 +152,14 @@ function Invoke-EpsUpdateExpediteCheck {
         if ($ring -notmatch '^[0-3]$' -or $kind -notin 'code', 'community') { return (& $off 'update-head-check cannot be read') }
         $k = if ($GetKey) { & $GetKey "$($hc.vault)" } else { Get-EpsUplinkKey -VaultName $(if ("$($hc.vault)" -match '^[A-Za-z0-9-]{3,24}$') { "$($hc.vault)" } else { Get-EpsUplinkVaultName }) }
         if (-not "$($k.Key)") { return (& $off "no install key ($($k.Reason))") }
-        $h = Get-EpsUpdateHead -InstallKey "$($k.Key)" -Ring ([int]$ring) -Kind $kind -Http $Http
+        # a Pro install's head needs its licence (found live 2026-11-07 22:15Z: kind 'code' without it = "Invardia refused the
+        # licence (unreadable)"); the tick reads only the licence TEXT (2.0.98 grant: SELECT(Id, LicenceText) on eps.License)
+        $lic = ''
+        if ($kind -eq 'code') {
+            $lic = if ($GetLicence) { "$(& $GetLicence)".Trim() } else { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query 'SELECT LicenceText FROM eps.License WHERE Id = 1')".Trim() }
+            if (-not $lic) { return (& $off 'a Pro install without a stored licence (the update job asks for it)') }
+        }
+        $h = if ($lic) { Get-EpsUpdateHead -InstallKey "$($k.Key)" -Ring ([int]$ring) -LicenceText $lic -Http $Http } else { Get-EpsUpdateHead -InstallKey "$($k.Key)" -Ring ([int]$ring) -Kind $kind -Http $Http }
         $done = $false
         if ($h.Status -eq 200 -and "$($h.Version)" -and $AlreadyStarted) { $done = [bool](& $AlreadyStarted "$($h.Version)") }
         $d = Get-EpsUpdateExpediteDecision -Head $h -InstalledVersion $InstalledVersion -AlreadyStarted $done -NowUtc $NowUtc

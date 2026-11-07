@@ -400,7 +400,9 @@ function Invoke-EpsTick {
                 elseif (Get-Command Invoke-EpsUpdateExpediteCheck -ErrorAction SilentlyContinue) {
                     $vf = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'VERSION'
                     $iv = if (Test-Path -LiteralPath $vf) { (Get-Content -LiteralPath $vf -Raw).Trim() } else { '' }
-                    $un = Invoke-EpsUpdateExpediteCheck -ConnectionString $ConnectionString -InstalledVersion $iv -NowUtc $NowUtc -AlreadyStarted $already
+                    # a Pro install's check sends its licence: the tick reads only its text (eps_tick: SELECT(Id, LicenceText), 2.0.98)
+                    $licRead = { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query 'SELECT LicenceText FROM eps.License WHERE Id = 1' }
+                    $un = Invoke-EpsUpdateExpediteCheck -ConnectionString $ConnectionString -InstalledVersion $iv -NowUtc $NowUtc -AlreadyStarted $already -GetLicence $licRead
                 }
             } catch { $un = $null }
             if ($un -and $un.Checked) {

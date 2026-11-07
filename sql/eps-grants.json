@@ -81,6 +81,7 @@
         "CaMonitor": ["SELECT", "UPDATE"],
         "JobRequest": ["SELECT(RequestId, Job, Mode, RequestedBy, Status, RequestedAtUtc, UpdatedAtUtc)", "UPDATE(Status, StatusText, UpdatedAtUtc)"],
         "JobSchedule": ["SELECT", "INSERT", "UPDATE"],
+        "License": ["SELECT(Id, LicenceText)"],
         "Run": ["SELECT", "INSERT", "UPDATE"],
         "Setting": ["SELECT"]
       }

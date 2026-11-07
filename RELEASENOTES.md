@@ -4,6 +4,11 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.98 - "Update now" for Pro installations
+- Fixed: on a Pro installation the 15-minute "update now" check from 2.0.97 was refused by Invardia, because it did
+  not send the installation's licence. It now sends it, so "update now" works for Pro as it does for Community. (To
+  do this, the scheduler may now read the stored licence text - nothing else of the licence.)
+
 ## 2.0.97 - "Update now" works within minutes
 - When Invardia marks a release "update now" for your ring, Entra Policy Suite now starts its update within about 15
   minutes instead of waiting for the nightly update. It starts once per version, only when updates are switched on, and
