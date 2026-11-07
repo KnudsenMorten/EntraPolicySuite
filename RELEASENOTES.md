@@ -4,6 +4,11 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.96 - A smaller Pro package
+- The Pro package now carries only what an installation runs and updates from (the engine, the database files, the
+  setup and worker scripts, the sign-in front and the Pro features), plus the readme and these release notes. Our own
+  development notes are no longer included. Nothing changes in how Entra Policy Suite works.
+
 ## 2.0.95 - The ownership handover completes
 - Fixed: when Invardia's Support app ran the install, 2.0.94 added the update identity as owner of the sign-in
   registration but did not remove the Support app, because it did not recognise how the setup run names the Support app.
