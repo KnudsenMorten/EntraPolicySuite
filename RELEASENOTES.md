@@ -4,6 +4,10 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.92 - The tamper check's one-hour limit reaches every installation
+- The update now also sets the tamper check's one-hour time limit (2.0.91 set it only on an install run), so an
+  installation gets it with its next update. Nothing else in a job's settings is changed.
+
 ## 2.0.91 - Updates that do not get stuck
 - An update that had to wait for a running job now reads the release again before it downloads. Before, a long wait
   could leave it with an expired download link, and the update stopped (nothing was changed) until the next night.

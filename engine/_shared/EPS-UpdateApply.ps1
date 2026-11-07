@@ -68,6 +68,23 @@ function Set-EpsEpsContainerImage {
     @{ Template = $t; From = $from; Changed = $changed }
 }
 
+function Get-EpsJobTimeoutPatch {
+    <#
+      PURE. UPD-STUCK-RUN (found live 2026-11-07 at internal: caj-eps-tamper still 604800 s after the update to 2.0.91 - only
+      an install run set it): the job's configuration with replicaTimeout set to the schedule's own TimeoutSeconds, or
+      $null when the job has none of its own or already has it. Without 'secrets' (an ARM read carries no values; PATCH
+      keeps what is there). Returns @{ Configuration; From; To } or $null.
+    #>
+    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][string]$Key)
+    $d = @(Get-EpsDefaultJobSchedule | Where-Object { "$($_.AcaJobName)" -eq $Key -and $_.PSObject.Properties['TimeoutSeconds'] -and [int]$_.TimeoutSeconds -gt 0 })[0]
+    if (-not $d -or -not $Job.properties.configuration) { return $null }
+    $from = [int]"0$($Job.properties.configuration.replicaTimeout)"
+    if ($from -eq [int]$d.TimeoutSeconds) { return $null }
+    $c = $Job.properties.configuration | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30 -AsHashtable
+    $c.Remove('secrets'); $c.replicaTimeout = [int]$d.TimeoutSeconds
+    @{ Configuration = $c; From = $from; To = [int]$d.TimeoutSeconds }
+}
+
 function Get-EpsUpdateFacts {
     <#
       What the apply needs, read from Azure as the updater: the names (an older install keeps its names), the update job
@@ -138,15 +155,18 @@ function Invoke-EpsUpdateApply {
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
         $rolled = [System.Collections.Generic.List[string]]::new(); $left = [System.Collections.Generic.List[string]]::new()
         $roll = {
-            param($path, $api, $template, $label)
+            param($path, $api, $template, $label, $cfg)
             $s = Set-EpsEpsContainerImage -Template $template -Image $image
-            if ($s.Changed) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = @{ template = $s.Template } } -PollSeconds $PollSeconds) }
+            $props = @{}; if ($s.Changed) { $props.template = $s.Template }
+            # a job's own timeout converges here too (the tamper job: 1 h, never 7 days) - in the same PATCH as its image
+            if ($cfg) { $props.configuration = $cfg.Configuration; & $Log 'Info' "$label`: replicaTimeout $($cfg.From) -> $($cfg.To) s" }
+            if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds) }
             $back = Invoke-EpsArm -Path $path -ApiVersion $api
             $now = "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
             if ($now -eq $image) { $rolled.Add($label) } else { $left.Add("$label ($now)") }
         }
         $others = @($f.Jobs | Where-Object { "$($_.name)" -notin $f.SelfName, $n.DbInitJob, $n.InsideCheckJob })
-        foreach ($x in $others) { & $roll "$rg/providers/Microsoft.App/jobs/$($x.name)" $script:EpsApi.acajob $x.properties.template $x.name }
+        foreach ($x in $others) { & $roll "$rg/providers/Microsoft.App/jobs/$($x.name)" $script:EpsApi.acajob $x.properties.template $x.name (Get-EpsJobTimeoutPatch -Job $x -Key "$($x.name)") }
         if ($f.Web) { & $roll "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca $f.Web.properties.template $n.WebApp }
         # the update job itself LAST: this execution goes on in the old image; the next run is the new one
         & $roll "$rg/providers/Microsoft.App/jobs/$($f.SelfName)" $script:EpsApi.acajob $f.Self.properties.template $f.SelfName
