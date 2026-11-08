@@ -58,11 +58,13 @@ $script:EpsUplinkLists = @{
     MailJob         = @('present', 'missing')
     MailRestriction = @('verified', 'not-verified', 'failed')
     SignInLayer     = @('signin-front', 'easyauth', 'none')
-    AlertId         = @('eps.tamper.foreign-change', 'eps.tamper.high', 'eps.ca.drift', 'eps.ca.policy-deleted', 'eps.ca.breakglass-exclusion-missing', 'eps.worker.silent')
+    # gaps (a) / (b) of the deterministic-failure lesson (Invardia 2026-11-08): eps.job.repeat-failure, eps.uplink.refused -
+    # the same words must be in Invardia's ALERT_CATALOG.entrapolicysuite (packages/core/src/uplinkalert.ts)
+    AlertId         = @('eps.tamper.foreign-change', 'eps.tamper.high', 'eps.ca.drift', 'eps.ca.policy-deleted', 'eps.ca.breakglass-exclusion-missing', 'eps.worker.silent', 'eps.job.repeat-failure', 'eps.uplink.refused')
     Severity        = @('critical', 'warning')
-    Area            = @('tamper', 'ca', 'worker')
-    AlertJob        = @('tampermonitor', 'caanalyzer', 'tick')
-    MeasuredKey     = @('events', 'high', 'policies', 'accounts', 'minutesSilent')
+    Area            = @('tamper', 'ca', 'worker', 'job', 'uplink')
+    AlertJob        = @('tampermonitor', 'caanalyzer', 'tick', 'usertagging', 'devicetagging', 'identityreport', 'namedlocations', 'capolicyanalyzer', 'config', 'update', 'backup', 'caoptions', 'supportread', 'supportaccess', 'dbinit', 'engine', 'uplink')
+    MeasuredKey     = @('events', 'high', 'policies', 'accounts', 'minutesSilent', 'runs', 'records')
     SetupState      = @('ok', 'missing', 'n/a', 'unknown')       # FLEET-STEPS (owner 2026-11-03 via Invardia, the field shared by SI, PIM and EPS)
     SetupHow        = @('updater', 'support-app', 'customer')
     EndpointKind    = @('webapp', 'api')                         # DELIVERY-CONTRACT A (framework §0.1 / §8.9): every address a person or Invardia opens
@@ -412,8 +414,8 @@ function Get-EpsUplinkSignInLayer {
     <#
       §8.17 SignIn, read from the RUNNING web app (never a config file): the container app ca-eps-web through ARM - a
       container named signin-front = 'signin-front' + its image tag up to the first '-'; else Easy Auth on = 'easyauth';
-      else 'none'. $null (the field omitted) when the read is refused or fails - the engine identity holds no ARM role
-      by default (owner's call, UPLINK-1).
+      else 'none'. $null (the field omitted) when the read is refused or fails. The install grants the engine Reader on
+      that one container app (owner 6479e15b 2026-11-06); before that install run the database fallback answers.
     #>
     param([string]$SubscriptionId = $env:EPS_SUBSCRIPTION_ID, [string]$ResourceGroup = $env:EPS_RESOURCE_GROUP, [string]$WebApp = 'ca-eps-web')
     if (-not $SubscriptionId -or -not $ResourceGroup) { return $null }
@@ -595,13 +597,14 @@ function Get-EpsUplinkRunPlan {
     <#
       PURE. The finished runs due, oldest first: a run counts when it ended after ITS job's watermark (-Watermarks
       @{ 'eps-<job>' = <datetime> }), else after -DefaultSinceUtc. One watermark PER JOB: a cycle cut short by the rate
-      limit or a refusal sends some jobs' runs and not others' - nothing is skipped, nothing sent twice. The tick's
-      successful runs (every 5 minutes) and the uplink job's own runs are not reported (the heartbeat says both).
+      limit or a refusal sends some jobs' runs and not others' - nothing is skipped, nothing sent twice. The successful
+      runs of the two every-5-minutes jobs (the tick, and the support access job since gap (6)) and the uplink job's own
+      runs are not reported (the heartbeat says them); their failures are.
     #>
     param([object[]]$Runs, [hashtable]$Watermarks = @{}, [Parameter(Mandatory)][datetime]$DefaultSinceUtc)
     $due = @($Runs | Where-Object {
         $_ -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] -and "$($_.Status)" -ne 'Running' -and "$($_.Job)" -ne 'Uplink' -and
-        -not ("$($_.Job)" -eq 'Tick' -and "$($_.Status)" -eq 'Succeeded') -and
+        -not ("$($_.Job)" -in 'Tick', 'SupportAccess' -and "$($_.Status)" -eq 'Succeeded') -and
         ([datetime]$_.EndedAtUtc) -gt $(if ($Watermarks.ContainsKey((Get-EpsUplinkJobId "$($_.Job)"))) { [datetime]$Watermarks[(Get-EpsUplinkJobId "$($_.Job)")] } else { $DefaultSinceUtc })
     } | Sort-Object { [datetime]$_.EndedAtUtc })
     # framework §8.4 (Invardia 2026-11-05): a job that holds an Update run or a run that did not succeed goes FIRST -
@@ -643,9 +646,26 @@ function Get-EpsUplinkAlerts {
         eps.ca.policy-deleted (warning)      adopted policies gone         Measured policies
         eps.ca.breakglass-exclusion-missing (critical) break glass not excluded  Measured policies
         eps.worker.silent (warning)          a worker that reported before, silent > 60 min   Measured minutesSilent
+        eps.job.repeat-failure (warning)     a job whose last 3+ runs did not complete         Measured runs
+        eps.uplink.refused (warning)         uplink records skipped after 3 refusals (24 h)    Measured records
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
     $out = [System.Collections.Generic.List[object]]::new()
+    # gap (b): the worst job whose last runs did not complete, 3+ in a row (each job's last 10 finished runs, 14 days)
+    try {
+        $rf = Get-EpsRepeatFailureAlert -Rows @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
+SELECT Job, Status, HeldReason, EndedAtUtc FROM (
+  SELECT Job, Status, HeldReason, EndedAtUtc, ROW_NUMBER() OVER (PARTITION BY Job ORDER BY EndedAtUtc DESC) AS rn
+  FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND Status <> 'Running' AND Job <> 'Uplink' AND EndedAtUtc > DATEADD(DAY, -14, SYSUTCDATETIME())) x
+WHERE rn <= 10 ORDER BY Job, EndedAtUtc DESC
+'@)
+        if ($rf) { $out.Add($rf) }
+    } catch { }
+    # gap (a): records skipped after 3 refusals in a row - open for 24 h after the last skip
+    try {
+        $sk = Get-EpsUplinkSkippedAlert -Value "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.UplinkState WHERE Name = N'uplink.skipped'")" -NowUtc $NowUtc
+        if ($sk) { $out.Add($sk) }
+    } catch { }
     $t = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT COUNT(*) AS N, SUM(CASE WHEN Severity = 'High' THEN 1 ELSE 0 END) AS H, MIN(FoundAtUtc) AS F, MIN(CASE WHEN Severity = 'High' THEN FoundAtUtc END) AS FH FROM eps.TamperEvent WHERE Status = 'Open'")[0]
     $n = [int]$t.N; $h = if ($t.H -is [DBNull] -or $null -eq $t.H) { 0 } else { [int]$t.H }
     if ($n -gt 0) {
@@ -674,6 +694,47 @@ function Get-EpsUplinkAlerts {
         }
     }
     @($out)
+}
+
+function Get-EpsRepeatFailureAlert {
+    <# PURE. Each job's last finished runs (newest first per job: Job, Status, HeldReason, EndedAtUtc) -> ONE alert for the
+       job with the longest streak of runs that did not complete, when it is EpsRepeatFailureRuns or more; $null otherwise.
+       A permission the customer must give (customer-config) is a setup step, never this alert. #>
+    param([object[]]$Rows = @())
+    $worst = $null
+    foreach ($g in @($Rows | Where-Object { $_ } | Group-Object { "$($_.Job)" })) {
+        $runs = @($g.Group | Sort-Object { [datetime]$_.EndedAtUtc } -Descending)
+        $n = Get-EpsRunStreak -Runs $runs
+        if ($n -lt $script:EpsRepeatFailureRuns) { continue }
+        $cls = Get-EpsUplinkErrorClass -Status "$($runs[0].Status)" -Text "$($runs[0].HeldReason)" -Job "$($g.Name)"
+        if ($cls.FixKind -eq 'customer-config') { continue }
+        if (-not $worst -or $n -gt $worst.N) { $worst = @{ Job = "$($g.Name)"; N = $n; First = $runs[$n - 1].EndedAtUtc; Class = $(if ($cls.ErrorClass) { $cls.ErrorClass } else { 'gave up' }) } }
+    }
+    if (-not $worst) { return $null }
+    $jid = (Get-EpsUplinkJobId $worst.Job) -replace '^eps-', ''
+    if ($script:EpsUplinkLists.AlertJob -notcontains $jid) { $jid = 'engine' }
+    @{ AlertId = 'eps.job.repeat-failure'; Severity = 'warning'; Area = 'job'; Job = $jid; Measured = [ordered]@{ runs = [int]$worst.N }; FirstSeenUtc = $worst.First; Page = 'runs'
+       ActionText = "The $($worst.Job) job did not complete its last $($worst.N) runs (last: $($worst.Class)). Invardia treats this as a product fault; open Jobs & runs for the log. The alert ends when a run completes." }
+}
+function Get-EpsUplinkSkippedAlert {
+    <# PURE. The 'uplink.skipped' state ({ n; firstUtc; lastUtc }) -> the alert while the last skip is under 24 h old. #>
+    param([string]$Value, [datetime]$NowUtc = [datetime]::UtcNow)
+    if (-not $Value) { return $null }
+    $s = try { $Value | ConvertFrom-Json } catch { $null }
+    $last = if ($s) { ConvertFrom-EpsUplinkTime "$($s.lastUtc)" }
+    if (-not $last -or ($NowUtc - $last).TotalHours -ge 24 -or [int]$s.n -lt 1) { return $null }
+    @{ AlertId = 'eps.uplink.refused'; Severity = 'warning'; Area = 'uplink'; Job = 'uplink'; Measured = [ordered]@{ records = [int]$s.n }; FirstSeenUtc = (ConvertFrom-EpsUplinkTime "$($s.firstUtc)"); Page = 'runs'
+       ActionText = "Invardia refused $([int]$s.n) record(s) from this install $($script:EpsUplinkRefusedMax) times in a row, so they were skipped and the records after them went on. Invardia uses this alert to find the cause." }
+}
+function Add-EpsUplinkSkip {
+    <# One more skipped record: the episode count (a skip more than 24 h after the last one starts a new episode). #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [datetime]$NowUtc = [datetime]::UtcNow)
+    $s = if ($State['uplink.skipped']) { try { $State['uplink.skipped'] | ConvertFrom-Json } catch { $null } }
+    $last = if ($s) { ConvertFrom-EpsUplinkTime "$($s.lastUtc)" }
+    $now = ConvertTo-EpsUplinkIso $NowUtc
+    $v = if ($last -and ($NowUtc - $last).TotalHours -lt 24) { @{ n = [int]$s.n + 1; firstUtc = "$($s.firstUtc)"; lastUtc = $now } } else { @{ n = 1; firstUtc = $now; lastUtc = $now } }
+    $j = $v | ConvertTo-Json -Compress
+    Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'uplink.skipped' -Value $j; $State['uplink.skipped'] = $j
 }
 
 function New-EpsUplinkAlertRecord {
@@ -995,7 +1056,7 @@ function Invoke-EpsUplinkCycle {
                     # refused the same way $script:EpsUplinkRefusedMax cycles in a row: treated as sent for this repeat window
                     # (never resent every cycle), and the run records after it still go
                     Set-EpsUplinkState -ConnectionString $ConnectionString -Name "alert:$($a.AlertId)" -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0; refused = $true } | ConvertTo-Json -Compress)
-                    $res.Skipped++
+                    $res.Skipped++; Add-EpsUplinkSkip -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc
                     & $say 'Warning' "uplink: alert $($a.AlertId) refused $($script:EpsUplinkRefusedMax) cycles in a row ($($r.Reason)) - SKIPPED until it is due again"
                     continue
                 }
@@ -1028,7 +1089,7 @@ function Invoke-EpsUplinkCycle {
                 # blocks another job (the cycle goes on); its own job waits. After EpsUplinkRefusedMax cycles in a row of
                 # refusals for that job, a refused record is SKIPPED (the watermark moves on) - never resent forever.
                 if (Step-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:run:$jid" -Result $r) {
-                    $res.Skipped++
+                    $res.Skipped++; Add-EpsUplinkSkip -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc
                     & $say 'Warning' "uplink: run record $jid ($($run.Status), ended $(ConvertTo-EpsUplinkIso $run.EndedAtUtc)) refused ($($r.Reason)) - $($script:EpsUplinkRefusedMax) cycles in a row for this job: SKIPPED, the runs after it go on"
                     Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$jid" -Value $endIso
                     continue

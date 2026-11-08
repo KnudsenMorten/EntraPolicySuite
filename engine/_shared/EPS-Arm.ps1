@@ -29,7 +29,9 @@ function Invoke-EpsArm {
         if (($r.Status -eq 429 -or $r.Status -ge 500) -and $try -lt $MaxRetry) {
             $try++; $wait = 0
             if (-not [int]::TryParse([string](Get-EpsHeader $r 'Retry-After'), [ref]$wait)) { $wait = [math]::Min(60, [math]::Pow(2, $try)) }
-            Start-Sleep -Seconds ([math]::Max(1, $wait)); continue
+            # $script:EpsRetrySeconds: a test against a fake waits no real time (as Invoke-EpsWithRetry) - 2+4+8+16+32+60 s
+            # per refused call made one suite take 2 minutes on the runner (framework 12.1 rule 10)
+            Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { [math]::Max(1, $wait) }); continue
         }
         break
     }

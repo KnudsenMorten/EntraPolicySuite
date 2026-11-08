@@ -97,7 +97,7 @@ function Write-EpsTagChanges {
     try {
         Open-EpsSqlConnection $conn
         $bcType = ($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type]
-        $bc = $bcType::new($conn); $bc.DestinationTableName = 'eps.TagChange'; $bc.BatchSize = 5000; $bc.BulkCopyTimeout = 600
+        $bc = $bcType::new($conn); $bc.DestinationTableName = 'eps.TagChange'; $bc.BatchSize = (Get-EpsShrunkSize -Base 5000 -Min 100); $bc.BulkCopyTimeout = 600
         foreach ($col in $dt.Columns) { [void]$bc.ColumnMappings.Add($col.ColumnName, $col.ColumnName) }
         $bc.WriteToServer($dt)
     } finally { $conn.Dispose() }
@@ -139,7 +139,7 @@ function Write-EpsRuleHits {
         try {
             Open-EpsSqlConnection $conn
             $bcType = ($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type]
-            $bc = $bcType::new($conn); $bc.DestinationTableName = 'eps.TagRuleHit'; $bc.BatchSize = 5000; $bc.BulkCopyTimeout = 600
+            $bc = $bcType::new($conn); $bc.DestinationTableName = 'eps.TagRuleHit'; $bc.BatchSize = (Get-EpsShrunkSize -Base 5000 -Min 100); $bc.BulkCopyTimeout = 600
             foreach ($col in $dt.Columns) { [void]$bc.ColumnMappings.Add($col.ColumnName, $col.ColumnName) }
             $bc.WriteToServer($dt)
         } finally { $conn.Dispose() }

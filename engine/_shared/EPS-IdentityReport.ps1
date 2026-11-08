@@ -76,7 +76,7 @@ function Read-EpsIdentitySources {
     #>
     param([Parameter(Mandatory)][string]$TenantId, [hashtable]$AdUsers, [scriptblock]$Log = { param($l, $m) })
     & $Log 'Info' 'reading users (Graph)'
-    $users = @(Invoke-EpsGraph -Path "v1.0/users?`$select=$((Get-EpsIdentityUserSelect) -join ',')&`$top=999" -All)
+    $users = @(Invoke-EpsGraph -Path "v1.0/users?`$select=$((Get-EpsIdentityUserSelect) -join ',')&`$top=$(Get-EpsGraphPageSize)" -All)
     & $Log 'Info' "$($users.Count) user(s); reading the MFA registration details"
     $reg = @(Invoke-EpsGraph -Path 'v1.0/reports/authenticationMethods/userRegistrationDetails?$top=999' -All)
     & $Log 'Info' "$($reg.Count) registration row(s); reading the Intune managed devices"
@@ -607,7 +607,7 @@ function Write-EpsBulk {
         # CheckConstraints: the tables have CHECK / FOREIGN KEY constraints - without the option SQL wants ALTER TABLE on them
         # (found live 2026-10-31: the engine role has INSERT only, as it should)
         $bcType = ($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type]
-        $bc = $bcType::new($conn, [Enum]::ToObject((($bcType.FullName + 'Options') -as [type]), 2), $null); $bc.BatchSize = 2000; $bc.BulkCopyTimeout = 600   # 2 = CheckConstraints
+        $bc = $bcType::new($conn, [Enum]::ToObject((($bcType.FullName + 'Options') -as [type]), 2), $null); $bc.BatchSize = (Get-EpsShrunkSize -Base 2000 -Min 100); $bc.BulkCopyTimeout = 600   # 2 = CheckConstraints; gap (4): smaller after repeated failed runs
         if ($Table -eq 'eps.IdentityRow') { $bc.DestinationTableName = 'eps.IdentityRow' } else { $bc.DestinationTableName = 'eps.IdentityViewMember' }
         foreach ($c in $Data.Columns) { [void]$bc.ColumnMappings.Add($c.ColumnName, $c.ColumnName) }
         $bc.WriteToServer($Data)

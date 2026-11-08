@@ -141,11 +141,23 @@ function ConvertFrom-EpsFileTime($v) {
     try { [datetime]::FromFileTimeUtc($n) } catch { $null }
 }
 
+function ConvertFrom-EpsSidBytes {
+    # objectSid bytes -> 'S-1-5-21-...'. Pure and on every platform ([Security.Principal.SecurityIdentifier] is
+    # Windows-only). Layout: revision, sub-authority count, a 48-bit big-endian authority, then 32-bit little-endian
+    # sub-authorities.
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+    if ($Bytes.Length -lt 8 -or $Bytes.Length -lt 8 + 4 * $Bytes[1]) { throw 'not a SID (too short)' }
+    [long]$auth = 0; for ($i = 2; $i -lt 8; $i++) { $auth = ($auth -shl 8) -bor $Bytes[$i] }
+    $parts = [System.Collections.Generic.List[string]]::new(); $parts.Add("S-$($Bytes[0])-$auth")
+    for ($k = 0; $k -lt $Bytes[1]; $k++) { $parts.Add([string][BitConverter]::ToUInt32($Bytes, 8 + 4 * $k)) }
+    $parts -join '-'
+}
+
 function ConvertFrom-EpsAdUserProperties {
     # one AD search result (lower-case property names, as DirectorySearcher returns them) -> the snapshot row. Pure.
     param([Parameter(Mandatory)][hashtable]$P)
     $uac = [int]$(if ($null -ne $P['useraccountcontrol']) { $P['useraccountcontrol'] } else { 0 })
-    $sid = $P['objectsid']; if ($sid -is [byte[]]) { $sid = [Security.Principal.SecurityIdentifier]::new($sid, 0).Value }
+    $sid = $P['objectsid']; if ($sid -is [byte[]]) { $sid = ConvertFrom-EpsSidBytes -Bytes $sid }
     $desc = [string]$P['description']; if ($desc.Length -gt 1024) { $desc = $desc.Substring(0, 1024) }
     [pscustomobject]@{
         Sid = [string]$sid; SamAccountName = [string]$P['samaccountname']; UserPrincipalName = [string]$P['userprincipalname']

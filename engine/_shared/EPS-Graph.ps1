@@ -78,17 +78,22 @@ function Invoke-EpsGraph {
     $items.ToArray()
 }
 
+function Get-EpsGraphPageSize {
+    # gap (4): 999 (Graph's maximum) - smaller after repeated failed runs of the job (Get-EpsShrunkSize, EPS-SqlStore)
+    if (Get-Command Get-EpsShrunkSize -ErrorAction SilentlyContinue) { Get-EpsShrunkSize -Base 999 -Min 100 } else { 999 }
+}
+
 function Get-EpsUsers {
-    # Every user with the given fields, 999 per page (Graph's maximum for users).
+    # Every user with the given fields, 999 per page (Graph's maximum for users; smaller after repeated failed runs).
     param([Parameter(Mandatory)][string[]]$Select, [string]$Filter)
-    $q = "v1.0/users?`$select=$($Select -join ',')&`$top=999"
+    $q = "v1.0/users?`$select=$($Select -join ',')&`$top=$(Get-EpsGraphPageSize)"
     if ($Filter) { $q += "&`$filter=$([uri]::EscapeDataString($Filter))&`$count=true" }
     Invoke-EpsGraph -Path $q -All -Eventual:([bool]$Filter)
 }
 
 function Get-EpsDevices {
     param([Parameter(Mandatory)][string[]]$Select, [string]$Filter)
-    $q = "v1.0/devices?`$select=$($Select -join ',')&`$top=999"
+    $q = "v1.0/devices?`$select=$($Select -join ',')&`$top=$(Get-EpsGraphPageSize)"
     if ($Filter) { $q += "&`$filter=$([uri]::EscapeDataString($Filter))&`$count=true" }
     Invoke-EpsGraph -Path $q -All -Eventual:([bool]$Filter)
 }

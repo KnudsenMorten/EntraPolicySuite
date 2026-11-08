@@ -81,7 +81,7 @@
         "AuditEvent": ["SELECT", "INSERT"],
         "JobSchedule": ["SELECT"],
         "License": ["SELECT(Id, ClaimAction, ClaimMessage, ClaimAtUtc, RequestStatus, RequestAtUtc, NextPollUtc, SupersededBy, UsersInScope, UsageState)"],
-        "Run": ["SELECT"],
+        "Run": ["SELECT", "INSERT"],
         "Setting": ["SELECT"],
         "WorkerHeartbeat": ["SELECT"]
       }

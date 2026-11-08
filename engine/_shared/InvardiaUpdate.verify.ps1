@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 <#
 .SYNOPSIS
   The product-NEUTRAL half of an Invardia update client: verify a signed update manifest and the archive it names.

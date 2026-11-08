@@ -30,7 +30,9 @@ function ConvertTo-EpsBackupFileName {
     # policy, named after the policy, \ and / turned into - . Anything else a file name cannot hold is turned into - too.
     param([string]$Name)
     $n = "$Name".Replace('\', '-').Replace('/', '-')
-    foreach ($c in [IO.Path]::GetInvalidFileNameChars()) { $n = $n.Replace([string]$c, '-') }
+    # Windows' set, fixed - not [IO.Path]::GetInvalidFileNameChars(): on Linux (the engine's container) that is only NUL
+    # and '/', so 'x:y?' kept a name an admin cannot save on Windows (found on the Linux test runner 2026-11-08)
+    $n = [regex]::Replace($n, '[<>:"/\\|?*\x00-\x1F]', '-')
     $n = $n.Trim().TrimEnd('.')
     if (-not $n) { $n = 'policy' }
     if ($n.Length -gt 180) { $n = $n.Substring(0, 180) }

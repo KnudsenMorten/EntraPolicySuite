@@ -4,6 +4,20 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.105 - Every job reports its runs, and a failing job retries with smaller batches
+- Backups are saved under file names that are valid on every system. A policy name with a character such as ':' or '?'
+  no longer gives a backup file that Windows cannot open.
+- The identity report reads the on-premises security identifier (objectSid) of AD users correctly in the Linux
+  container, without a Windows-only component.
+- Every job now records its runs: the database setup, the support access check, the support reads and the configuration
+  changes appear under Jobs & runs and are reported to Invardia like every other job.
+- A job whose last runs did not complete runs with smaller batches and pages: half the size after each failed run, at
+  most eight times smaller. A size that keeps timing out is no longer retried unchanged.
+- Two new alerts to Invardia: a job that has not completed its last three runs, and records Invardia had to skip. Both
+  close by themselves when the cause is gone.
+- The engine may read the web app (and nothing else in Azure) to report which version of the sign-in front it runs. A new
+  install gets this right; an existing install gets it on its next install run.
+
 ## 2.0.104 - A failure that repeats is reported as one, never retried forever
 - A job that does not complete three runs in a row is now reported to Invardia as a repeated failure, with how many runs
   and the last kind of error. Invardia opens a fix request for it. This covers every job that records its runs. It also

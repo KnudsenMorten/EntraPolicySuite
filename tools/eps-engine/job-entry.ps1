@@ -26,6 +26,19 @@ if (Test-Path -LiteralPath $proEngine) { foreach ($pf in @(Get-ChildItem -Litera
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 function Say($m) { Write-Host "[$([datetime]::UtcNow.ToString('u'))] [eps $version $Job] $m" }
 
+# Deterministic-failure gap (6) (Invardia 2026-11-08: "every job reports"): the jobs without their own run row (DbInit,
+# SupportAccess, Config) write ONE finished eps.Run row at their end, so the uplink reports them and their streak counts.
+# A failed write never fails the job (DbInit's first run may find no schema before it has made it).
+function Write-EpsFinishedRunRow {
+    param([Parameter(Mandatory)][string]$RunJob, [Parameter(Mandatory)][datetime]$StartedUtc, [Parameter(Mandatory)][ValidateSet('Succeeded', 'PartlyFailed', 'Failed')][string]$Status, [string]$Text, [int]$Applied = 0, [int]$Failed = 0, [int]$Skipped = 0)
+    $h = if ($Text) { if ($Text.Length -gt 1000) { $Text.Substring(0, 997) + '...' } else { $Text } } else { $null }
+    try {
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]::NewGuid(); j = $RunJob; t = $StartedUtc; s = $Status; h = $h; a = $Applied; f = $Failed; k = $Skipped } `
+            -Query "INSERT INTO eps.Run (RunId, Job, Mode, StartedAtUtc, EndedAtUtc, Status, HeldReason, Applied, Failed, Skipped) VALUES (@id, @j, 'Apply', @t, SYSUTCDATETIME(), @s, @h, @a, @f, @k)" | Out-Null
+    } catch { Say "could not record the run: $((("$($_.Exception.Message)") -split "`n")[0])" }
+}
+$script:__started = [datetime]::UtcNow
+
 if (-not $Job) { Say 'EPS_JOB is not set'; exit 2 }
 if (-not $ConnectionString) { Say 'EPS_SQL_CONNECTION is not set'; exit 2 }
 # UPD-STUCK-RUN (internal 2026-11-06): caj-eps-tamper-4w76v ran 5.5 h and printed NOTHING - every job says it started, so
@@ -33,6 +46,13 @@ if (-not $ConnectionString) { Say 'EPS_SQL_CONNECTION is not set'; exit 2 }
 Say "start$(if ($env:CONTAINER_APP_REPLICA_NAME) { " ($env:CONTAINER_APP_REPLICA_NAME)" })"
 # V1-PARITY P16: this job's log level (Log.Level.<Job>: Off / Normal / Verbose); warnings and errors are always kept
 $script:__logLevel = if ($Job -in $script:EpsLogFeatures) { Get-EpsLogLevel -ConnectionString $ConnectionString -Feature $Job } else { 'Normal' }
+# gap (4): the jobs that page through Graph and bulk-copy run with smaller sizes after repeated failed runs (halved per run in
+# a row that did not complete, at most 8x) - a size that keeps timing out is not retried unchanged
+if ($Job -in 'UserTagging', 'DeviceTagging', 'IdentityReport', 'CAPolicyAnalyzer') {
+    $streak = Get-EpsJobRunStreak -ConnectionString $ConnectionString -Job $Job -EndedAtUtc ([datetime]::UtcNow)
+    $f = Set-EpsSizeShrink -Streak $streak
+    if ($f -gt 1) { Say "the last $streak run(s) did not complete: batches and pages are $f times smaller this run (Graph pages $(Get-EpsGraphPageSize), bulk copies $(Get-EpsShrunkSize -Base 5000 -Min 100))" }
+}
 
 try {
     if ($Job -eq 'Tick') {
@@ -48,13 +68,19 @@ try {
         # admin group) - started by the installer / the updater, never by the tick and never from a queue. Its decisions
         # are in EPS-DbInit.ps1; exit 0 only when every principal is read back.
         . (Join-Path $sol 'engine\_shared\EPS-Install.ps1')   # with EPS-InstallWeb (the front's state SQL) and EPS-DbInit
-        exit (Invoke-EpsDbInit -ConnectionString $ConnectionString -SolutionRoot $sol -Log { param($m) Say $m })
+        $script:__last = ''
+        $rc = Invoke-EpsDbInit -ConnectionString $ConnectionString -SolutionRoot $sol -Log { param($m) $script:__last = "$m"; Say $m }
+        Write-EpsFinishedRunRow -RunJob 'DbInit' -StartedUtc $script:__started -Status $(if ($rc -eq 0) { 'Succeeded' } else { 'Failed' }) -Text $(if ($rc -ne 0) { "exit $rc`: $($script:__last)" })
+        exit $rc
     }
     if ($Job -eq 'SupportAccess') {
         # OPEN-01 (framework SUPPORT ACCESS): caj-eps-support, every 5 minutes, as id-eps-dbinit - reads the customer's
         # consent from Invardia ITSELF and converges the Support app's database user (EPS-SupportAccess.ps1)
         foreach ($f in 'EPS-Install', 'EPS-SupportAccess') { . (Join-Path $sol "engine\_shared\$f.ps1") }
-        exit (Invoke-EpsSupportAccess -ConnectionString $ConnectionString -Log { param($m) Say $m })
+        $script:__last = ''
+        $rc = Invoke-EpsSupportAccess -ConnectionString $ConnectionString -Log { param($m) $script:__last = "$m"; Say $m }
+        Write-EpsFinishedRunRow -RunJob 'SupportAccess' -StartedUtc $script:__started -Status $(if ($rc -eq 0) { 'Succeeded' } else { 'Failed' }) -Text $(if ($rc -ne 0) { "exit $rc`: $($script:__last)" })
+        exit $rc
     }
     if ($Job -eq 'SupportRead') {
         # SUP-02 (2.0.101): caj-eps-supportread as id-eps-support - ONE named read from the shipped allow-list, asked for by
@@ -231,7 +257,7 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
     if ($Job -eq 'Config') {
         # SEC-AUDIT-1 S1: configuration is written by the ENGINE only - from the requester's signed request, which must
         # verify (whatever Security.SignedRequests says: there is no observe for a configuration change)
-        $n = 0
+        $n = 0; $cDone = 0; $cFailed = 0; $cRefused = 0; $cLast = ''
         try { $b = Update-EpsWebAccessObjectIds -ConnectionString $ConnectionString; if ($b) { Say "bound $b access grant(s) to the person's object id" } } catch { Say "could not bind access grants to object ids: $($_.Exception.Message)" }
         while ($q = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
 UPDATE TOP (1) q SET Status = 'Running', UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
@@ -250,10 +276,17 @@ WHERE q.Job = 'Config' AND q.Status = 'Dispatched'
             } else { $txt = "REFUSED (a configuration change must carry a verified signature): $($gate.Text)" }
             if ($txt.Length -gt 1000) { $txt = $txt.Substring(0, 997) + '...' }
             Say "request $($q.RequestId) by $($q.RequestedBy): $st - $txt"
+            switch ($st) { 'Done' { $cDone++ } 'Failed' { $cFailed++; $cLast = $txt } default { $cRefused++ } }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $st; t = $txt } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null
         }
         if ($n) { [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) Say $m }) }   # framework §12.27 SQL-STATS (an import, many rules), warn-only
         Say "configuration: $n request(s)"
+        # gap (6): a run that took requests is recorded (none taken = another execution had them: nothing to report). A
+        # refused request (a wrong signature, a 4xx answer) is the check doing its job - counted, never a failure
+        if ($n) {
+            $cst = if (-not $cFailed) { 'Succeeded' } elseif ($cDone) { 'PartlyFailed' } else { 'Failed' }
+            Write-EpsFinishedRunRow -RunJob 'Config' -StartedUtc $script:__started -Status $cst -Applied $cDone -Failed $cFailed -Skipped $cRefused -Text $(if ($cFailed) { "$cFailed of $n request(s) failed; last: $cLast" })
+        }
         exit 0
     }
     if ($Job -eq 'Backup') {

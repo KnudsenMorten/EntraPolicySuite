@@ -9,6 +9,25 @@
 
 Set-StrictMode -Off
 
+# ---- deterministic-failure gap (4) (Invardia 2026-11-08: "next release, not later") ---------------------------------------
+# A job whose previous runs did not complete N times in a row runs with SMALLER batches and pages: halved per failed run, at
+# most 8 times smaller, never below a floor - a size that times out or is throttled is not retried unchanged for ever. The job
+# entry sets the factor once at the start from the job's streak (Set-EpsSizeShrink); every bulk copy and Graph page reads it.
+$script:EpsSizeShrink = 1
+function Get-EpsShrinkFactor {
+    # PURE. The streak (runs in a row not complete) -> 1, 2, 4, 8.
+    param([int]$Streak)
+    if ($Streak -le 0) { return 1 }
+    [int][math]::Pow(2, [math]::Min($Streak, 3))
+}
+function Set-EpsSizeShrink { param([int]$Streak) $script:EpsSizeShrink = Get-EpsShrinkFactor -Streak $Streak; $script:EpsSizeShrink }
+function Get-EpsShrunkSize {
+    # PURE given the factor. -Base at factor 1; never below -Min.
+    param([Parameter(Mandatory)][int]$Base, [int]$Min = 50)
+    $f = [math]::Max(1, [int]$script:EpsSizeShrink)
+    [int][math]::Max([math]::Min($Min, $Base), [math]::Floor($Base / $f))
+}
+
 function Resolve-EpsSqlClientType {
     if ($script:EpsSqlClientType) { return $script:EpsSqlClientType }
     $t = ('Microsoft.Data.SqlClient.SqlConnection' -as [type])

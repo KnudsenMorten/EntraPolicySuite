@@ -623,7 +623,7 @@ function Get-EpsCaScopedUsers {
     $keep = { param($u) ($IncludeGuests -or "$($u.userType)" -eq 'Member') -and ($IncludeDisabled -or $u.accountEnabled -ne $false) }
     if ($Targeting.All -or (-not @($Targeting.IncludeUsers | Where-Object { $_ -ne 'None' }).Count -and -not $Targeting.IncludeGroups.Count -and -not $Targeting.IncludeRoles.Count)) {
         $f = @(); if (-not $IncludeGuests) { $f += "userType eq 'Member'" }; if (-not $IncludeDisabled) { $f += 'accountEnabled eq true' }
-        $q = "v1.0/users?`$select=$sel&`$top=999" + $(if ($f) { '&$filter=' + [uri]::EscapeDataString($f -join ' and ') })
+        $q = "v1.0/users?`$select=$sel&`$top=$(Get-EpsGraphPageSize)" + $(if ($f) { '&$filter=' + [uri]::EscapeDataString($f -join ' and ') })
         $all = @(Invoke-EpsGraph -Path $q -All -Eventual)
         $ex = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         foreach ($u in $Targeting.ExcludeUsers) { if ($u -match $script:EpsCaGuid) { [void]$ex.Add($u) } }
@@ -1052,7 +1052,7 @@ VALUES (@a, @r, @p, @n, @s, @m, @ws, @we, @i, @im, @ni, @e, @b, @c, @u, @w, @mo)
     $conn = New-EpsSqlConnection -ConnectionString $ConnectionString
     try {
         Open-EpsSqlConnection $conn
-        $bc = (($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type])::new($conn); $bc.DestinationTableName = 'eps.CaAnalysisResult'; $bc.BatchSize = 5000; $bc.BulkCopyTimeout = 600
+        $bc = (($conn.GetType().FullName -replace 'SqlConnection$', 'SqlBulkCopy') -as [type])::new($conn); $bc.DestinationTableName = 'eps.CaAnalysisResult'; $bc.BatchSize = (Get-EpsShrunkSize -Base 5000 -Min 100); $bc.BulkCopyTimeout = 600
         foreach ($c in $t.Columns) { [void]$bc.ColumnMappings.Add($c.ColumnName, $c.ColumnName) }
         $bc.WriteToServer($t)
     } finally { $conn.Dispose() }

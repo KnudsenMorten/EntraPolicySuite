@@ -93,20 +93,40 @@ function Invoke-EpsSupportReadJob {
         [void](& $script:EpsHttp 'DELETE' "$base/$id`?popreceipt=$([uri]::EscapeDataString([System.Net.WebUtility]::HtmlDecode($pop)))" $h $null)
         $Message = try { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($txt)) | ConvertFrom-Json -AsHashtable } catch { $null }
     }
+    $started = [datetime]::UtcNow
     $chk = Test-EpsSupportReadRequest -Message $Message -NowUtc $NowUtc
     $audit = { param($outcome, $text)
         [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'support.read' -Actor $(if ($chk.Who) { "Invardia Support ($($chk.Who))" } else { 'Invardia Support' }) -ActorSource 'job' -Target "support-read|$(if ($chk.Read) { $chk.Read } else { 'refused' })" -Reason $chk.Why -Outcome $outcome -OutcomeText $text) }
-    if (-not $chk.Ok) { & $Say "refused: $($chk.Reason) - nothing was read"; & $audit 'refused' $chk.Reason; return @{ Outcome = 'refused'; Read = ''; Text = $chk.Reason } }
-    try {
-        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsSupportReads[$chk.Read].Query)
-        $out = Format-EpsSupportReadResult -Rows $rows -Read $chk.Read
-        & $Say "for $($chk.Who) ($($chk.Why)): $($script:EpsSupportReads[$chk.Read].What)"
-        & $Say $out
-        & $audit 'ok' "$(@($rows).Count) row(s)"
-        @{ Outcome = 'ok'; Read = $chk.Read; Text = $out }
-    } catch {
-        $e = (("$($_.Exception.Message)") -split "`n")[0]
-        & $Say "the read failed: $e"; & $audit 'error' $e
-        @{ Outcome = 'error'; Read = $chk.Read; Text = $e }
+    $res = if (-not $chk.Ok) { & $Say "refused: $($chk.Reason) - nothing was read"; & $audit 'refused' $chk.Reason; @{ Outcome = 'refused'; Read = ''; Text = $chk.Reason } }
+    else {
+        try {
+            $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsSupportReads[$chk.Read].Query)
+            $out = Format-EpsSupportReadResult -Rows $rows -Read $chk.Read
+            & $Say "for $($chk.Who) ($($chk.Why)): $($script:EpsSupportReads[$chk.Read].What)"
+            & $Say $out
+            & $audit 'ok' "$(@($rows).Count) row(s)"
+            @{ Outcome = 'ok'; Read = $chk.Read; Text = $out }
+        } catch {
+            $e = (("$($_.Exception.Message)") -split "`n")[0]
+            & $Say "the read failed: $e"; & $audit 'error' $e
+            @{ Outcome = 'error'; Read = $chk.Read; Text = $e }
+        }
     }
+    Write-EpsSupportReadRun -ConnectionString $ConnectionString -Result $res -StartedUtc $started -Say $Say
+    $res
+}
+
+function Write-EpsSupportReadRun {
+    <# Deterministic-failure gap (6) (Invardia 2026-11-08: "every job reports"): ONE finished eps.Run row per support read
+       (INSERT only - the role may not change a run): ok = Succeeded, refused = Held (the check did its job), error = Failed.
+       The read's result is never in it - only which read and the outcome. A failed write never fails the read. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Result, [datetime]$StartedUtc = [datetime]::UtcNow, [scriptblock]$Say = { param($m) Write-Host $m })
+    $st = switch ("$($Result.Outcome)") { 'ok' { 'Succeeded' } 'refused' { 'Held' } 'error' { 'Failed' } default { $null } }
+    if (-not $st) { return }
+    $h = if ($st -eq 'Succeeded') { "read $($Result.Read)" } else { "$($Result.Text)" }
+    if ($h.Length -gt 1000) { $h = $h.Substring(0, 997) + '...' }
+    try {
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]::NewGuid(); t = $StartedUtc; s = $st; h = $h; a = $(if ($st -eq 'Succeeded') { 1 } else { 0 }); f = $(if ($st -eq 'Failed') { 1 } else { 0 }) } `
+            -Query "INSERT INTO eps.Run (RunId, Job, Mode, StartedAtUtc, EndedAtUtc, Status, HeldReason, Applied, Failed) VALUES (@id, 'SupportRead', 'Preview', @t, SYSUTCDATETIME(), @s, @h, @a, @f)" | Out-Null
+    } catch { & $Say "could not record the run: $((("$($_.Exception.Message)") -split "`n")[0])" }
 }

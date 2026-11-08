@@ -428,8 +428,14 @@ function Invoke-EpsWebAppStep {
     }
     $Ctx.Web.Fqdn = $fqdn
     $Ctx.Web.Url = "https://$fqdn/"
+    # OPEN-15 (owner 6479e15b 2026-11-06 "Yes, Reader on that one app"): the engine may READ this one container app, so the
+    # heartbeat reports the sign-in front it really runs (Get-EpsUplinkSignInLayer) - scope = the app, never the group
+    if ($Ctx.Identities.EngineIdentity.PrincipalId) {
+        $sub = "/subscriptions/$($Ctx.SubscriptionId)"
+        Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.Reader)" -PrincipalId $Ctx.Identities.EngineIdentity.PrincipalId }
+    }
     # OPEN-15 (framework §12.11g): the sign-in front the web app RUNS - its image as ARM returned it after the deploy - goes
-    # into the database at every install, so the heartbeat reports it although the engine holds no Azure right
+    # into the database at every install, so the heartbeat reports it even where the engine cannot read the app
     $fi = "$(@($app.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
     $fv = (($fi -split ':')[-1] -split '-')[0]
     if ($fi -and $fv -match '^[0-9A-Za-z.+]{1,50}$') {

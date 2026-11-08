@@ -17,7 +17,10 @@ $script:EpsRole = @{ AcrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
     # UPLINK-1 (owner 2026-11-01 "Install's Key Vault"): the engine reads the ONE secret uplink-key, scoped to that secret
     KvSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
     # UPDATER-1 phase 2: the updater identity on its own resource group (owner 2026-11-03 "Contributor, like SI/PIM")
-    Contributor = 'b24988ac-6180-42a0-ab88-20f7382dd24c' }
+    Contributor = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+    # OPEN-15 (owner 6479e15b 2026-11-06 "Yes, Reader on that one app"): the engine reads the RUNNING web app ca-eps-web
+    # (which sign-in front it runs) for the heartbeat - Reader on that one container app, nothing else in Azure
+    Reader = 'acdd72a7-3385-48ef-bd42-f606fba81ae7' }
 $script:EpsUplinkSecret = 'uplink-key'
 
 function Grant-EpsUplinkKeyAccess {
