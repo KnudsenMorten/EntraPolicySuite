@@ -170,6 +170,7 @@
         "AdGroupSnapshotInfo": ["SELECT", "INSERT", "UPDATE"],
         "AdUserSnapshot": ["SELECT", "INSERT", "DELETE"],
         "AdUserSnapshotInfo": ["SELECT", "UPDATE"],
+        "Setting": ["SELECT"],
         "TagChange": ["SELECT", "UPDATE(Status, Error, Via, AtUtc)"],
         "WorkerHeartbeat": ["SELECT", "INSERT", "UPDATE"],
         "WorkPackage": ["SELECT", "UPDATE(Status, ClaimedBy, ClaimedAtUtc, Attempts, Error, DoneAtUtc, Result)"]

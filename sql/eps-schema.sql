@@ -1312,3 +1312,15 @@ CREATE TABLE eps.ProPolicyCodeSync (
 GO
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 35)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (35, '2.0.86');
+
+GO
+-- v36 (2.0.102, WORKER-UPD - framework §5.5, Invardia 2026-11-08): the hybrid worker updates itself once a day (a task as
+-- SYSTEM, Invardia's signed Community release of the version this install runs) and reports the outcome here - the page
+-- and the support read show it beside the worker's heartbeat.
+IF COL_LENGTH('eps.WorkerHeartbeat', 'UpdateResult') IS NULL
+ALTER TABLE eps.WorkerHeartbeat ADD
+    UpdateResult   NVARCHAR(1000) NULL,             -- the last daily update: updated | current | waiting | refused | switched back | failed + why
+    UpdateAtUtc    DATETIME2      NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 36)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (36, '2.0.102');

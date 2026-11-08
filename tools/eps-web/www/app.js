@@ -4414,7 +4414,10 @@ function schedPicker(current, job) {
         { key: 'taskNextRunUtc', label: 'Next run', type: 'date' },
         { key: 'version', label: 'Version', cls: function (w) { return w.behind ? 'c-warning' : ''; }, render: function (w) { return w.version + (w.behind ? ' (behind ' + j.release + ')' : ''); } },
         { key: 'lastSeenUtc', label: 'Last report', type: 'date', cls: function (w) { return w.stale ? 'c-danger' : 'c-good'; } },
-        { key: 'lastResult', label: 'Last cycle', wrap: true }], { empty: 'No hybrid worker has reported.' }));
+        { key: 'lastResult', label: 'Last cycle', wrap: true },
+        // WORKER-UPD (2.0.102): the worker's daily update (a task as SYSTEM; follows the version this install runs)
+        { key: 'updateResult', label: 'Daily update', wrap: true, cls: function (w) { return /^(refused|switched back|failed)/.test(w.updateResult || '') ? 'c-danger' : ''; },
+          render: function (w) { return w.updateResult ? w.updateResult + (w.updateAtUtc ? ' (' + fmtTime(w.updateAtUtc) + ')' : '') : 'Not set up yet - run Install-EpsHybridWorker.ps1 once on the worker to add its daily update'; } }], { empty: 'No hybrid worker has reported.' }));
       // the queue
       p.appendChild(el('h3', { text: 'AD changes for the worker' }));
       var by = {}; (j.counts || []).forEach(function (c) { by[c.status] = (by[c.status] || 0) + c.count; });

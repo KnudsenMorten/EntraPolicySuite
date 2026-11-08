@@ -55,6 +55,8 @@ function Get-EpsWorkerPage {
             taskState = "$($w.TaskState)"; taskEnabled = $(if ($w.TaskEnabled -is [DBNull] -or $null -eq $w.TaskEnabled) { $null } else { [bool]$w.TaskEnabled })
             taskLastRunUtc = $(if ($w.TaskLastRunUtc -is [DBNull] -or $null -eq $w.TaskLastRunUtc) { $null } else { ([datetime]$w.TaskLastRunUtc).ToString('o') }); taskLastResult = "$($w.TaskLastResult)"
             taskNextRunUtc = $(if ($w.TaskNextRunUtc -is [DBNull] -or $null -eq $w.TaskNextRunUtc) { $null } else { ([datetime]$w.TaskNextRunUtc).ToString('o') })
+            # WORKER-UPD (2.0.102): the worker's last daily update (Update-EpsHybridWorker.ps1, as SYSTEM)
+            updateResult = "$($w.UpdateResult)"; updateAtUtc = $(if ($w.UpdateAtUtc -is [DBNull] -or $null -eq $w.UpdateAtUtc) { $null } else { ([datetime]$w.UpdateAtUtc).ToString('o') })
             stale = ($seen -lt $NowUtc.AddMinutes(-$stale)); minutesSinceSeen = [int][math]::Floor(($NowUtc - $seen).TotalMinutes)
             behind = [bool]($rel -and $v -and $v -lt $rel); ahead = [bool]($rel -and $v -and $v -gt $rel)
             taskProblem = ("$($w.TaskState)" -in 'Disabled', 'Missing' -or ($w.TaskEnabled -isnot [DBNull] -and $null -ne $w.TaskEnabled -and -not [bool]$w.TaskEnabled)) } })

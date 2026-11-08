@@ -3,15 +3,16 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Install the Entra Policy Suite hybrid worker on a domain-joined server",
-  "purpose": "Installs the worker that writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It talks to Entra Policy Suite only through its SQL database with the machine's managed identity, and writes AD as the gMSA you name. Nothing inbound, no password, no gallery module.",
-  "whenToRun": "Once on the worker (an Azure VM or an Azure Arc-enabled server), after Initialize-EpsHybridWorkerAd.ps1 and Grant-EpsHybridWorkerAccess.ps1. Again with -Remove to take it away.",
+  "purpose": "Installs the worker that writes the tags of AD-synced users in on-premises AD and reads AD group membership for the rules. It talks to Entra Policy Suite only through its SQL database with the machine's managed identity, and writes AD as the gMSA you name. Nothing inbound, no password, no gallery module. From 2.0.102 the worker updates itself once a day to the version the install runs, only from Invardia's signed release, and switches back to the previous version when the new one fails its self-test.",
+  "whenToRun": "Once on the worker (an Azure VM or an Azure Arc-enabled server), after Initialize-EpsHybridWorkerAd.ps1 and Grant-EpsHybridWorkerAccess.ps1. Run it once again on a worker installed before 2.0.102, to add its daily update. Again with -Remove to take it away.",
   "runAs": [ { "kind": "other", "name": "local Administrator on the worker", "scope": "the worker machine", "why": "copies the code, sets ACLs, user rights and a scheduled task" } ],
   "changes": [
-    { "target": "the worker", "action": "create", "object": "C:\\EntraPolicySuite\\app (the worker code), C:\\EntraPolicySuite\\worker.json (the database, the worker name - no secret), C:\\EntraPolicySuite\\logs", "scope": "the worker machine", "why": "the worker runs from there", "undo": "-Remove (deletes app; the logs stay)" },
+    { "target": "the worker", "action": "create", "object": "C:\\EntraPolicySuite\\versions\\<version> (the worker code; the current and the previous version), the junction C:\\EntraPolicySuite\\app pointing at the current one, C:\\EntraPolicySuite\\worker.json (the database, the worker name, the gMSA - no secret), C:\\EntraPolicySuite\\logs", "scope": "the worker machine", "why": "the worker runs from there; the daily update switches the junction", "undo": "-Remove (deletes app and versions; the logs stay)" },
     { "target": "the worker", "action": "update", "object": "the ACL of C:\\EntraPolicySuite", "permission": "SYSTEM + Administrators full control; the gMSA read + execute, modify on logs only", "scope": "C:\\EntraPolicySuite", "why": "only administrators may change the code the gMSA runs", "undo": "delete the folder" },
     { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "Log on as a batch job", "scope": "the worker machine", "why": "the scheduled task runs as the gMSA", "undo": "remove it from the local security policy" },
     { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "member of the local group 'Hybrid agent extension applications' (Azure Arc only)", "scope": "the worker machine", "why": "it reads the Arc agent's identity key to get the machine's token", "undo": "-Remove" },
-    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker' (every 5 minutes, as the gMSA)", "scope": "the worker machine", "why": "one worker cycle every 5 minutes", "undo": "-Remove" }
+    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker' (every 5 minutes, as the gMSA)", "scope": "the worker machine", "why": "one worker cycle every 5 minutes", "undo": "-Remove" },
+    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker Update' (daily 05:30, as SYSTEM)", "scope": "the worker machine", "why": "the worker follows the version the install runs: Invardia's signed release is checked (signature, sequence, SHA-256, size, version) before anything is switched; a failed self-test switches back", "undo": "-Remove" }
   ],
   "parameters": [
     { "name": "GmsaName", "required": true, "default": null, "help": "DOMAIN\\name$ of the gMSA the worker writes AD as" },
@@ -25,8 +26,8 @@
     { "name": "Remove", "required": false, "default": false, "help": "take the worker away" }
   ],
   "readsOnly": [ "the release folder it installs from" ],
-  "network": [ "<server>.database.windows.net (the worker, every cycle)", "the domain controllers (LDAP, the worker)" ],
+  "network": [ "<server>.database.windows.net (the worker, every cycle)", "the domain controllers (LDAP, the worker)", "https://invardia.com and the release download it names (the daily update, HTTPS outbound)" ],
   "whatIf": "Every step it would take; nothing is copied, granted or registered.",
-  "undo": "-Remove: the task, the group membership and the code; then Initialize-EpsHybridWorkerAd.ps1 -Remove and Grant-EpsHybridWorkerAccess.ps1 -Remove.",
+  "undo": "-Remove: both tasks, the group membership and the code; then Initialize-EpsHybridWorkerAd.ps1 -Remove and Grant-EpsHybridWorkerAccess.ps1 -Remove.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Install-EpsHybridWorker"
 }

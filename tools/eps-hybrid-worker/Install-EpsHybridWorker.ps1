@@ -11,12 +11,14 @@
     owner-approved for the hybrid worker). AD is written AS THE gMSA you give (create it and delegate it first:
     Initialize-EpsHybridWorkerAd.ps1), and the worker's identity is given access to the database with
     Grant-EpsHybridWorkerAccess.ps1.
-    It: copies the code to <Root>\app; locks <Root> down (only SYSTEM and Administrators write the code the gMSA runs,
+    It: copies the worker's code to <Root>\versions\<version> and points the junction <Root>\app at it (2.0.102); locks <Root> down (only SYSTEM and Administrators write the code the gMSA runs,
     the gMSA reads it and writes only <Root>\logs); writes <Root>\worker.json (the database, the worker's name - no
     secret); on an Arc server adds the gMSA to the local group 'Hybrid agent extension applications' (it reads the Arc
     agent's identity key); grants the gMSA 'Log on as a batch job'; registers the task 'EntraPolicySuite Hybrid Worker'
-    (every 5 minutes, as the gMSA) and runs it once.
-    -WhatIf: every step it would take, nothing changed. -Remove: the task, the group membership and <Root>\app go
+    (every 5 minutes, as the gMSA) and runs it once; registers the task 'EntraPolicySuite Hybrid Worker Update' (daily 05:30, as
+    SYSTEM: Update-EpsHybridWorker.ps1 - the worker follows the version the install runs, only from Invardia's signed
+    release, switched back automatically when the new version fails its self-test).
+    -WhatIf: every step it would take, nothing changed. -Remove: the two tasks, the group membership, <Root>\app and <Root>\versions go
     (the logs stay; the gMSA, the machine and its domain membership are not touched).
     -AsGuestOf pim (owner 2026-10-30: "we must support both, in internal we reuse the pim hybrid worker"; framework
     §12.26 SHARED-WORKER): on PIM's worker HOST, never under PIM's identity - Entra Policy Suite's own gMSA, its own task (task folder
@@ -57,11 +59,17 @@ $isArc = if ($HostType -eq 'Auto') { [bool](Get-Service -Name himds -ErrorAction
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 function Step($text, [scriptblock]$do) { if ($what) { Write-Host "  WhatIf: $text" } else { Write-Host "  $text"; & $do } }
 
+$updTask = 'EntraPolicySuite Hybrid Worker Update'   # WORKER-UPD (2.0.102): daily, as SYSTEM
 if ($Remove) {
     Step "unregister the scheduled task '$taskPath$task'" { Unregister-ScheduledTask -TaskName $task -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName $task -TaskPath '\' -Confirm:$false -ErrorAction SilentlyContinue }
+    Step "unregister the scheduled task '$taskPath$updTask'" { Unregister-ScheduledTask -TaskName $updTask -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $guestFile) { Step "delete the guest registration $guestFile (the host may then be removed)" { Remove-Item -LiteralPath $guestFile -Force } }
     if ($isArc) { Step "remove $GmsaName from the local group '$arcGroup'" { Remove-LocalGroupMember -Group $arcGroup -Member $GmsaName -ErrorAction SilentlyContinue } }
-    Step "delete $Root\app (the logs stay)" { Remove-Item -LiteralPath (Join-Path $Root 'app') -Recurse -Force -ErrorAction SilentlyContinue }
+    Step "delete $Root\app and $Root\versions (the logs stay)" {
+        $a = Join-Path $Root 'app'
+        if (Test-Path -LiteralPath $a) { $i = Get-Item -LiteralPath $a -Force; if ($i.LinkType) { $i.Delete() } else { Remove-Item -LiteralPath $a -Recurse -Force -ErrorAction SilentlyContinue } }
+        Remove-Item -LiteralPath (Join-Path $Root 'versions') -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Write-Host 'Removed. The gMSA, its AD delegation and the database user are not touched (Initialize-EpsHybridWorkerAd.ps1 -Remove, Grant-EpsHybridWorkerAccess.ps1 -Remove).'
     return
 }
@@ -75,24 +83,28 @@ if (-not $SqlServer) { throw '-SqlServer is required (the Entra Policy Suite SQL
 if ($SqlServer -notmatch '^[a-z0-9-]{1,63}\.database\.windows\.net$') { throw "-SqlServer '$SqlServer': give <name>.database.windows.net" }
 $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 if (-not $pwsh) { throw 'PowerShell 7 (pwsh.exe) is required on the worker' }
-foreach ($need in 'engine\_shared\EPS-SqlStore.ps1', 'engine\_shared\EPS-AdDirectory.ps1', 'engine\_shared\EPS-HybridWorker.ps1', 'tools\eps-hybrid-worker\Start-EpsHybridWorker.ps1', 'VERSION') {
-    if (-not (Test-Path -LiteralPath (Join-Path $SourcePath $need))) { throw "-SourcePath $SourcePath has no $need (point it at the Entra Policy Suite release folder)" }
-}
+if (-not (Test-Path -LiteralPath (Join-Path $SourcePath 'engine\_shared\EPS-WorkerUpdate.ps1'))) { throw "-SourcePath $SourcePath has no engine\_shared\EPS-WorkerUpdate.ps1 (point it at the Entra Policy Suite release folder)" }
+. (Join-Path $SourcePath 'engine\_shared\EPS-WorkerUpdate.ps1')
+# the worker's parts only, every required file there, nothing under pro\ (framework §5.5: the worker runs the Community files)
+$fl = Test-EpsWorkerFileList -Names @(Get-EpsWorkerFileList -Tree $SourcePath)
+if (-not $fl.Ok) { throw "-SourcePath $SourcePath`: $($fl.Reason)" }
+$srcVersion = (Get-Content -LiteralPath (Join-Path $SourcePath 'VERSION') -Raw).Trim()
 Write-Host "Entra Policy Suite hybrid worker '$WorkerName' on $env:COMPUTERNAME ($(if ($isArc) { 'Azure Arc' } else { 'Azure VM' })), AD as $GmsaName, SQL $SqlServer/$Database" -ForegroundColor Cyan
 
 $appDir = Join-Path $Root 'app'
-Step "copy the worker code to $appDir" {
-    New-Item -ItemType Directory -Force -Path $appDir, (Join-Path $appDir 'engine'), (Join-Path $appDir 'tools') | Out-Null
-    Copy-Item -LiteralPath (Join-Path $SourcePath 'engine\_shared') -Destination (Join-Path $appDir 'engine') -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $SourcePath 'tools\eps-hybrid-worker') -Destination (Join-Path $appDir 'tools') -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $SourcePath 'VERSION') -Destination $appDir -Force
+$verDir = Join-Path $Root "versions\$srcVersion"
+Step "copy the worker code $srcVersion to $verDir and point $appDir at it (a junction; an older install's $appDir folder is kept as the previous version)" {
+    New-Item -ItemType Directory -Force -Path $Root | Out-Null
+    if ((Test-Path -LiteralPath $verDir) -and (Get-EpsWorkerAppTarget -Root $Root).Path.TrimEnd('\') -ne $verDir) { Remove-Item -LiteralPath $verDir -Recurse -Force }
+    Copy-EpsWorkerParts -Tree $SourcePath -Destination $verDir
+    if ((Get-EpsWorkerAppTarget -Root $Root).Path.TrimEnd('\') -ne $verDir) { [void](Set-EpsWorkerAppLink -Root $Root -Target $verDir) }
 }
 Step "lock $Root down: SYSTEM + Administrators full; $GmsaName read + execute, modify only on logs" {
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'logs') | Out-Null
     & icacls $Root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "${GmsaName}:(OI)(CI)RX" | Out-Null
     & icacls (Join-Path $Root 'logs') /grant "${GmsaName}:(OI)(CI)M" | Out-Null
 }
-$cfg = [ordered]@{ WorkerName = $WorkerName; AdServer = $AdServer; ManagedIdentityClientId = $ManagedIdentityClientId; Environment = $Environment; HostType = $(if ($isArc) { 'Arc' } else { 'AzureVm' })
+$cfg = [ordered]@{ WorkerName = $WorkerName; Gmsa = $GmsaName; AdServer = $AdServer; ManagedIdentityClientId = $ManagedIdentityClientId; Environment = $Environment; HostType = $(if ($isArc) { 'Arc' } else { 'AzureVm' })
                    ConnectionString = "Server=tcp:$SqlServer,1433;Database=$Database;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30" }
 Step "write $Root\worker.json (the database and the worker's name - no secret)" { $cfg | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'worker.json') -Encoding utf8 }
 if ($isArc) { Step "add $GmsaName to the local group '$arcGroup' (it reads the Arc agent's identity key)" { if (-not (Get-LocalGroupMember -Group $arcGroup -ErrorAction SilentlyContinue | Where-Object Name -eq $GmsaName)) { Add-LocalGroupMember -Group $arcGroup -Member $GmsaName } } }
@@ -117,6 +129,13 @@ Step "register the task '$task': every 5 minutes as $GmsaName" {
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4) -StartWhenAvailable
     Register-ScheduledTask -TaskName $task -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker (DESIGN §6): AD tags + AD group snapshots, through SQL' -Force | Out-Null
 }
+Step "register the task '$updTask': daily 05:30 as SYSTEM (the worker follows the install's version, only from Invardia's signed release)" {
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -NonInteractive -File `"$appDir\tools\eps-hybrid-worker\Update-EpsHybridWorker.ps1`" -Root `"$Root`""
+    $trigger = New-ScheduledTaskTrigger -Daily -At '05:30'
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1) -StartWhenAvailable
+    Register-ScheduledTask -TaskName $updTask -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker daily update (framework 5.5): the version the install runs, from Invardia''s signed release; switched back when it fails its self-test' -Force | Out-Null
+}
 Step "run the task once and show its result" {
     Start-ScheduledTask -TaskName $task -TaskPath $taskPath
     Start-Sleep -Seconds 45
@@ -126,7 +145,7 @@ Step "run the task once and show its result" {
 if ($AsGuestOf) {
     Step "register as a guest of $AsGuestOf's worker host: $guestFile" {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $guestFile) | Out-Null
-        [ordered]@{ product = 'entrapolicysuite'; root = $Root; taskPath = $taskPath; tasks = @($task); gmsa = $GmsaName; uamiClientId = $ManagedIdentityClientId
+        [ordered]@{ product = 'entrapolicysuite'; root = $Root; taskPath = $taskPath; tasks = @($task, $updTask); gmsa = $GmsaName; uamiClientId = $ManagedIdentityClientId
                     version = (Get-Content -LiteralPath (Join-Path $SourcePath 'VERSION') -Raw).Trim(); installedUtc = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $guestFile -Encoding utf8
     }
 }

@@ -362,8 +362,9 @@ function Invoke-EpsUpdateCheck {
     $h = Get-EpsUpdateHead -InstallKey $InstallKey -Ring $ringN -Http $Http -LicenceText $proLicence
     # UPD-03 (2.0.97): what the tick needs to ask "update now" every 15 minutes - the ring, the channel, the vault (no key,
     # no licence: the tick reads the key from the vault itself). Never fails the update.
+    # WORKER-UPD (2.0.102, framework §5.5): + the version this install RUNS - the hybrid worker's daily update follows it
     try {
-        $hcv = [ordered]@{ ring = $ringN; kind = $(if ($proEdition -ne 'community') { 'code' } else { 'community' }); vault = "$(Get-EpsUplinkVaultName)" } | ConvertTo-Json -Compress
+        $hcv = [ordered]@{ ring = $ringN; kind = $(if ($proEdition -ne 'community') { 'code' } else { 'community' }); vault = "$(Get-EpsUplinkVaultName)"; version = "$Version" } | ConvertTo-Json -Compress
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsUpdateHeadSetting; v = $hcv } -Query @'
 MERGE eps.Setting AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name
 WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)'

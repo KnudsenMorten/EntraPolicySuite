@@ -4,6 +4,22 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.102 - The hybrid worker updates itself
+- The hybrid worker now updates itself once a day. A new scheduled task on the worker server runs as SYSTEM and moves
+  the worker to the version your Entra Policy Suite installation runs. It never runs ahead of it, and never goes back.
+- It takes only a release Invardia signed. Before anything changes it checks the signature, that the release is not
+  older than one it already installed, and the download's SHA-256, size and version. A release that fails a check is
+  refused and the worker keeps running.
+- The new version is unpacked next to the running one, then the worker switches over. The previous version is kept.
+  The new version then tests itself, and if that test fails the worker switches back by itself.
+- The worker runs only the Community files, also for a Pro installation. A release with Pro code among the worker's
+  files is refused.
+- The Hybrid worker page shows each worker's last daily update.
+- To add the daily update to a worker installed before 2.0.102, run `Install-EpsHybridWorker.ps1` on it once more. The
+  worker server needs outbound HTTPS to invardia.com and to the release download.
+- An install run done through Invardia's Support app now reads which features are switched on before it changes the
+  engine's write permissions.
+
 ## 2.0.101 - Support can read a private installation, safely
 - A private installation can now be read by Invardia support without opening anything: a new job inside your network
   runs ONE read from a short list this release ships (recent runs, job schedules, settings, the licence state without

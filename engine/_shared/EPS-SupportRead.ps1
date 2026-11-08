@@ -24,8 +24,8 @@ $script:EpsSupportReads = [ordered]@{
                             Query = 'SELECT Name, Feature, LEFT(ISNULL(Value, N''''), 200) AS Value, UpdatedAtUtc, UpdatedBy FROM eps.Setting ORDER BY Name' }
     'licence-state'    = @{ What = 'The licence claim and request state (never the licence text)'
                             Query = 'SELECT ClaimAction, ClaimMessage, ClaimAtUtc, RequestStatus, RequestAtUtc, NextPollUtc, SupersededBy, UsersInScope, UsageState FROM eps.License WHERE Id = 1' }
-    'worker-heartbeat' = @{ What = 'The hybrid workers: machine, version, last seen, last result'
-                            Query = 'SELECT WorkerName, Machine, Version, LastSeenUtc, LEFT(ISNULL(LastResult, N''''), 300) AS LastResult FROM eps.WorkerHeartbeat ORDER BY LastSeenUtc DESC' }
+    'worker-heartbeat' = @{ What = 'The hybrid workers: machine, version, last seen, last result, last daily update'
+                            Query = 'SELECT WorkerName, Machine, Version, LastSeenUtc, LEFT(ISNULL(LastResult, N''''), 300) AS LastResult, LEFT(ISNULL(UpdateResult, N''''), 300) AS UpdateResult, UpdateAtUtc FROM eps.WorkerHeartbeat ORDER BY LastSeenUtc DESC' }
     'update-state'     = @{ What = 'The last 20 update runs and what each said'
                             Query = "SELECT TOP (20) Status, StartedAtUtc, EndedAtUtc, LEFT(ISNULL(HeldReason, ''), 400) AS Summary FROM eps.Run WHERE Job = 'Update' ORDER BY StartedAtUtc DESC" }
     'setup-steps'      = @{ What = 'The update-now check and the setup markers the engine keeps'
