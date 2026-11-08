@@ -329,7 +329,8 @@ function Get-EpsDbInitPrincipals {
     param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)]$GrantList)
     $n = $Ctx.Names
     $roleOf = @{}; foreach ($r in $GrantList.roles.Keys) { $roleOf["$($GrantList.roles[$r].identity)"] = $r }
-    @(foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity') {
+    # SUP-02 (2.0.101): + the support read identity (eps_supportread) - only when the install has made it
+    @(foreach ($k in @('EngineIdentity', 'TickIdentity', 'WebIdentity') + @(if ($Ctx.Identities.SupportReadIdentity.ClientId) { 'SupportReadIdentity' })) {
         if (-not $Ctx.Identities[$k].ClientId) { throw "the client id of $($n[$k]) is not known - run the identities step" }
         [ordered]@{ name = $n[$k]; clientId = "$($Ctx.Identities[$k].ClientId)"; role = $roleOf[$k] }
     })

@@ -4,6 +4,17 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.101 - Support can read a private installation, safely
+- A private installation can now be read by Invardia support without opening anything: a new job inside your network
+  runs ONE read from a short list this release ships (recent runs, job schedules, settings, the licence state without
+  the licence itself, the hybrid workers, the update runs) when Invardia support asks for it. It never runs a query or
+  script sent to it, refuses a request older than 15 minutes, writes the result only to its own log, and every request
+  is recorded in the audit.
+- The job has its own identity that can only read those tables and write the audit. Invardia's Support app may only
+  put a request on that job's queue, and only if you gave the install its id. It holds no right on the job, the database
+  or the network.
+- An install run adds the job, its queue and its identity. The update alone does not.
+
 ## 2.0.100 - The Entra Policy Suite logo
 - The web app's header shows the Invardia Entra Policy Suite logo - the Community or Pro logo, depending on your
   licence - and the browser tab shows the Entra Policy Suite app icon.

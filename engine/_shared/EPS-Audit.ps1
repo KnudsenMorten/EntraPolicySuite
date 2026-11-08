@@ -8,7 +8,8 @@ Set-StrictMode -Off
 # the closed list (AUDIT-1.1): a new action is added HERE, or the writer refuses it (and the suite fails)
 $script:EpsAuditActions = @(
     'auth.request.refused'          # a request whose token did not verify (web)
-    'access.grant', 'access.revoke' # eps.WebAccess (SuperAdmin)
+    'support.read'                  # SUP-02 (2.0.101): Invardia's Support app asked for ONE named read in the install (or was refused)
+    'access.grant', 'access.revoke' # the WebAccess table (SuperAdmin)
     'job.run.request'               # Run now / Preview / Apply from the GUI (a signed JobRequest)
     'job.test.request', 'job.golive.request'   # TAG-TEST (2.0.82): a tagging test run on the people picked (Test or Apply to that scope); Go live = ONE Apply on everyone with the tested rules (SuperAdmin)
     'config.request'                # a configuration change queued as a signed Config request (2.0.8; was missing from
@@ -16,16 +17,16 @@ $script:EpsAuditActions = @(
     'job.schedule.change'           # the schedule and on / off of a job, on the Jobs page (journaled)
     'queue.stage', 'queue.commit', 'queue.discard', 'queue.discard-all'   # the commit queue (owner 2026-10-31, PIM's setup)
     'mail.test.request'             # "Send a test mail" (the engine sends it as its own identity)
-    'setting.change'                # a setting saved (or refused) on the Settings page; the journal row is eps.ConfigChange
+    'setting.change'                # a setting saved (or refused) on the Settings page; the journal row is in the ConfigChange table
     'license.claim.again'           # INSTALL-PRO (2.0.86): a SuperAdmin's "Claim again" on the Licence page (the licence is written by the update job only)
-    'rule.create', 'rule.update', 'rule.delete', 'rule.move'   # rule cards (journal: eps.ConfigChange)
+    'rule.create', 'rule.update', 'rule.delete', 'rule.move'   # rule cards (journal: the ConfigChange table)
     'rule.batch', 'rule.batch.check', 'rule.import.plan', 'rules.export'   # the grid (RULES-GRID): a batch of card changes, its check, an import plan, the CSV export
     'tagtype.change', 'tagtype.delete', 'tagvalue.change', 'tagvalue.remove'   # tag types and their allowed values
     'condition.change', 'condition.delete'   # the customer's own property condition types
     'scope.change', 'scope.delete'  # saved scopes ("pilot users")
     'ca.analyze.request', 'ca.export', 'ca.monitor.change', 'ca.monitor.delete'   # the CA Policy Analyzer (read only towards the tenant)
     'ca.template.take'              # Template updates (TEMPLATE-UPDATES, 2.0.26): a newer library's persona changes taken / template changes marked seen - no policy is written
-    'ca.persona.change', 'ca.persona.delete'   # the analyzer's personas (CA-PERSONA, 2.0.24): create / edit / rename, delete (journal: eps.ConfigChange)
+    'ca.persona.change', 'ca.persona.delete'   # the analyzer's personas (CA-PERSONA, 2.0.24): create / edit / rename, delete (journal: the ConfigChange table)
     'ca.policy.adopt', 'ca.policy.release'   # Conditional Access: the operator RECORDS that he adopts / releases a policy - nothing in the tenant changes
     'identity.action.set'           # ID-ACTIONS (2.0.30): the follow-up fields set on users (EPS data only)
     'onboarding.check', 'breakglass.change'   # GET-STARTED (2.0.28): the engine checks the onboarding steps (reads only); the break-glass list edited (EPS data)

@@ -75,6 +75,17 @@
         "WorkPackage": ["SELECT", "INSERT"]
       }
     },
+    "eps_supportread": {
+      "identity": "SupportReadIdentity",
+      "grants": {
+        "AuditEvent": ["SELECT", "INSERT"],
+        "JobSchedule": ["SELECT"],
+        "License": ["SELECT(Id, ClaimAction, ClaimMessage, ClaimAtUtc, RequestStatus, RequestAtUtc, NextPollUtc, SupersededBy, UsersInScope, UsageState)"],
+        "Run": ["SELECT"],
+        "Setting": ["SELECT"],
+        "WorkerHeartbeat": ["SELECT"]
+      }
+    },
     "eps_tick": {
       "identity": "TickIdentity",
       "grants": {

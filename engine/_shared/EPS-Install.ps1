@@ -329,6 +329,9 @@ function Get-EpsInstallNames {
         # UPDATER-1 phase 2: the update job's own identity - Contributor on the resource group + AcrPull (owner 2026-11-03
         # "Contributor, like SI/PIM"); the engine identity keeps no Azure right
         UpdaterIdentity = 'id-eps-updater'
+        # SUP-02 (Invardia 2026-11-07, framework §5.5 'support'): Invardia support's read path into a private install - a fixed
+        # job from its own queue, its own identity (SQL read of what the named reads use + the audit; nothing else)
+        SupportReadIdentity = 'id-eps-support'; SupportReadJob = 'caj-eps-supportread'
     }
 }
 
@@ -566,6 +569,8 @@ function Get-EpsJobBodies {
     }
     # the tick is short; a work job may run up to the 7-day limit (framework JOB-RUN-LIMIT) and holds 200,000 users
     # in memory (2.2 GB measured 2026-10-30), so it gets 4 GiB
+    # SUP-02 (2.0.101): the support read job - from its own queue (the Support app may only send there), 10 minutes at most
+    @(& $mk $n.SupportReadJob 'SupportRead' 'SupportReadIdentity' 'Event' 600 '0.25' '0.5Gi' $false 'caj-eps-supportread') +
     @(& $mk $n.TickJob 'Tick' 'TickIdentity' 'Schedule' 1800 '0.25' '0.5Gi') +
     @(foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) { & $mk (Get-EpsAcaJobResourceName -Names $n -Key $d.AcaJobName) $d.Job 'EngineIdentity' 'Event' $(if ($d.PSObject.Properties['TimeoutSeconds'] -and [int]$d.TimeoutSeconds -gt 0) { [int]$d.TimeoutSeconds } else { 604800 }) '2.0' '4Gi' ([bool]$d.Parallel) $d.AcaJobName })
 }
@@ -698,7 +703,7 @@ function Test-EpsInstallStep {
     if ($Ctx.Network.Private) { $p = Test-EpsPrivateInstallStep -Id $Id -Ctx $Ctx; if ($p) { return $p } }
     switch ($Id) {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
-        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity, $n.UpdaterIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
+        'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity, $n.UpdaterIdentity, $n.SupportReadIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
         'sqladmins'     { @{ Action = 'run'; Detail = "$(if ($Ctx.ReplaceSqlAdminGroup) { (Get-EpsSqlAdminReplacePlan -Ctx $Ctx) + '; then: ' })an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
         'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
@@ -729,9 +734,11 @@ function Invoke-EpsInstallStep {
     $tags = @{ product = 'EntraPolicySuite'; version = $Ctx.Version }
     $priv = [bool]$Ctx.Network.Private   # NET-1: the private network install (the public install never sets it)
     $loadMi = {
-        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') {
+        foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity', 'SupportReadIdentity') {
             if ($Ctx.Identities[$k]) { continue }   # only what this run does not know yet (a resume, an identity added by a newer release)
-            $m = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi
+            # SUP-02 (2.0.101): the support read identity is new - an install made before it has none until its identities step
+            $m = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi -AllowNotFound:($k -eq 'SupportReadIdentity')
+            if (-not $m) { continue }
             $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
         }
     }
@@ -770,7 +777,7 @@ function Invoke-EpsInstallStep {
             [void](Invoke-EpsArm -Method PUT -Path $rg -ApiVersion $script:EpsApi.rg -Body @{ location = $(if ($old) { $old.location } else { $Ctx.Location }); tags = $t })
         }
         'identities' {
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') {
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity', 'SupportReadIdentity') {
                 $m = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n[$k])" -ApiVersion $script:EpsApi.mi -Body @{ location = $Ctx.Location; tags = $tags }
                 $Ctx.Identities[$k] = @{ Id = $m.id; ClientId = $m.properties.clientId; PrincipalId = $m.properties.principalId }
             }
@@ -788,7 +795,7 @@ function Invoke-EpsInstallStep {
                 $acrBody.properties.networkRuleBypassOptions = if ($old) { if ("$($old.properties.networkRuleBypassOptions)") { "$($old.properties.networkRuleBypassOptions)" } else { 'AzureServices' } } else { 'None' }
             }
             $acr = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr -Body $acrBody
-            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity') { Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
+            foreach ($k in 'EngineIdentity', 'TickIdentity', 'WebIdentity', 'DbInitIdentity', 'UpdaterIdentity', 'SupportReadIdentity') { if (-not $Ctx.Identities[$k].PrincipalId) { continue }; Add-EpsRoleAssignment -Scope $acr.id -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.AcrPull)" -PrincipalId $Ctx.Identities[$k].PrincipalId }
         }
         'image' {
             $ctxFile = New-EpsBuildContext -SolutionRoot $Ctx.SolutionRoot
@@ -923,6 +930,19 @@ function Invoke-EpsInstallStep {
             $sw = [Diagnostics.Stopwatch]::StartNew()
             do { $sa = Invoke-EpsArm -Path $st -ApiVersion $script:EpsApi.st; if ("$($sa.properties.provisioningState)" -eq 'Succeeded') { break }; Start-Sleep -Seconds ($Ctx.PollSeconds ?? 5) } while ($sw.Elapsed.TotalSeconds -lt 300)
             if ($sa.properties.allowSharedKeyAccess -ne $false) { throw "the storage account $($n.Storage) allows shared keys - refused (Entra only)" }
+            # SUP-02 (2.0.101): the support read job's own queue - id-eps-support reads + deletes it (and KEDA counts with it);
+            # the Invardia Support app may ONLY send to it, and only when the customer gave the install its id (-SupportAppId)
+            if ($Ctx.Identities.SupportReadIdentity.PrincipalId) {
+            $sq = "$st/queueServices/default/queues/$(Get-EpsJobQueueName 'caj-eps-supportread')"
+            [void](Invoke-EpsArm -Method PUT -Path $sq -ApiVersion $script:EpsApi.st -Body @{ properties = @{} })
+            Add-EpsRoleAssignment -Scope $sq -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.QueueProcessor)" -PrincipalId $Ctx.Identities.SupportReadIdentity.PrincipalId
+            Add-EpsRoleAssignment -Scope $sq -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.QueueReader)" -PrincipalId $Ctx.Identities.SupportReadIdentity.PrincipalId
+            if ($Ctx.SupportSeed -and "$($Ctx.SupportSeed.AppId)" -match '^[0-9a-f-]{36}$') {
+                $ssp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($Ctx.SupportSeed.AppId)'&`$select=id" -All)[0]
+                if ($ssp.id) { Add-EpsRoleAssignment -Scope $sq -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsRole.QueueSender)" -PrincipalId "$($ssp.id)" }
+                else { Write-Host "  note     the Invardia Support app is not in this tenant - it cannot ask for a support read until it is" -ForegroundColor Yellow }
+            }
+            }
             foreach ($d in Get-EpsDefaultJobSchedule | Where-Object Implemented) {
                 $qp = "$st/queueServices/default/queues/$(Get-EpsJobQueueName $d.AcaJobName)"
                 [void](Invoke-EpsArm -Method PUT -Path $qp -ApiVersion $script:EpsApi.st -Body @{ properties = @{} })

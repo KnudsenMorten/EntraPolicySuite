@@ -19,7 +19,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 # EPS PRO: the Pro package's modules (pro/engine/*.ps1, their engine-only writes included); absent without the Pro package
 $proEngine = Join-Path $sol 'pro\engine'
 if (Test-Path -LiteralPath $proEngine) { foreach ($pf in @(Get-ChildItem -LiteralPath $proEngine -Filter '*.ps1' -File | Sort-Object Name)) { . $pf.FullName } }
@@ -55,6 +55,13 @@ try {
         # consent from Invardia ITSELF and converges the Support app's database user (EPS-SupportAccess.ps1)
         foreach ($f in 'EPS-Install', 'EPS-SupportAccess') { . (Join-Path $sol "engine\_shared\$f.ps1") }
         exit (Invoke-EpsSupportAccess -ConnectionString $ConnectionString -Log { param($m) Say $m })
+    }
+    if ($Job -eq 'SupportRead') {
+        # SUP-02 (2.0.101): caj-eps-supportread as id-eps-support - ONE named read from the shipped allow-list, asked for by
+        # a message on its own queue (Invardia's Support app may only send there); the result to this console, audited
+        . (Join-Path $sol 'engine\_shared\EPS-SupportRead.ps1')
+        $sr = Invoke-EpsSupportReadJob -ConnectionString $ConnectionString -Say { param($m) Say $m }
+        exit $(if ($sr.Outcome -eq 'error') { 1 } else { 0 })
     }
     if ($Job -eq 'Web') {
         # the GUI (DESIGN §2): behind the shared sign-in front, on 127.0.0.1 only - it never returns
