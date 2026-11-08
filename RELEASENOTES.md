@@ -4,6 +4,12 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.103 - Every change to this repository is scanned for secrets
+- This GitHub repository now checks every push and pull request for secrets (keys, tokens, passwords) with gitleaks,
+  in addition to GitHub's own secret scanning. A finding fails the check. The scanner is a pinned version whose
+  download is verified before it runs, and it never prints a found value.
+- Nothing changes in the product itself: an installation updated to 2.0.103 runs the same code as 2.0.102.
+
 ## 2.0.102 - The hybrid worker updates itself
 - The hybrid worker now updates itself once a day. A new scheduled task on the worker server runs as SYSTEM and moves
   the worker to the version your Entra Policy Suite installation runs. It never runs ahead of it, and never goes back.

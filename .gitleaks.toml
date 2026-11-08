@@ -1,0 +1,28 @@
+# gitleaks configuration: the default rules plus narrow allowlists for values that are public by design. Each allowlist`n# matches the SHAPE of a value, never a path or a whole rule, so a real secret in the same file is still found.`ntitle = "Entra Policy Suite secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "a bare GUID: Microsoft's built-in role / permission ids (Key Vault Secrets User, User Access Administrator, offline_access ...) are public"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''']
+
+[[allowlists]]
+description = "an RSA PUBLIC key (SubjectPublicKeyInfo, e.g. a browser extension manifest's 'key') - public by design"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA[A-Za-z0-9+/=]+$''']
+
+[[allowlists]]
+description = "a dotted storage / setting NAME (e.g. 'app.viewState.v1') - an identifier, not a value"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^[a-z][a-zA-Z0-9]*(\.[a-zA-Z0-9]+){1,4}$''']
+
+[[allowlists]]
+description = "PowerShell code that BUILDS a PEM at run time (the header string followed by `n and +) - no key in the source"
+targetRules = ["private-key"]
+regexTarget = "line"
+regexes = ['''"-----BEGIN PRIVATE KEY-----`n"\s*\+''']
