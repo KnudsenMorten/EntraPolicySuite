@@ -214,6 +214,12 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
         # the alert at once (DESIGN §5.7a): one mail for the events not alerted yet - before anything restores them
         $al = Send-EpsTamperAlert -ConnectionString $ConnectionString -Version $version
         if ($al.Events) { Say "  alert: $($al.Events) event(s), $(if ($al.Sent) { "mailed ($($al.Reason))" } else { "NOT mailed - $($al.Reason); tried again next run" })" }
+        # framework lesson 2026-11-08 (2.0.104): an alert mail that could not be sent while mail IS set up makes this run
+        # PartlyFailed - so 3 runs in a row become a repeat-failure (a fix-request cause) instead of a retry forever
+        if ($al.Events -and -not $al.Sent -and $m.RunId -and "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Mail.Mode' -Default 'none')" -ne 'none') {
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $m.RunId; h = "the tamper alert mail was not sent: $("$($al.Reason)".Substring(0, [Math]::Min(300, "$($al.Reason)".Length)))" } `
+                -Query "UPDATE eps.Run SET Status = 'PartlyFailed', HeldReason = @h WHERE RunId = @id AND Status = 'Succeeded'" | Out-Null
+        }
         if ($open -and "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'TamperMonitor.AutoRestore' -Default 'false')" -eq 'true') {
             foreach ($e in @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $m.RunId } -Query "SELECT EventId FROM eps.TamperEvent WHERE RunId = @r AND Status = 'Open'")) {
                 $x = Restore-EpsTamperEvent -ConnectionString $ConnectionString -EventId $e.EventId -By 'auto-restore (TamperMonitor.AutoRestore)'

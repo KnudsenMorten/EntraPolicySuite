@@ -4,7 +4,18 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.104 - A failure that repeats is reported as one, never retried forever
+- A job that does not complete three runs in a row is now reported to Invardia as a repeated failure, with how many runs
+  and the last kind of error. Invardia opens a fix request for it. This covers every job that records its runs. It also
+  covers the update job when it has to give up for the night three nights in a row, and the tamper monitor when its
+  alert mail cannot be sent while mail is set up. A missing permission stays a step for you, never a product fault.
+- The report to Invardia no longer gets stuck on one record. A run record that Invardia refuses for its content no
+  longer holds back the records of other jobs, and after three refusals in a row it is skipped. A refused alert no longer
+  stops the run records either.
+
 ## 2.0.103 - Every change to this repository is scanned for secrets
+- 2.0.103 contains everything in 2.0.102 (the hybrid worker updates itself) plus only this: the public repository's
+  secret scan. There is no product change.
 - This GitHub repository now checks every push and pull request for secrets (keys, tokens, passwords) with gitleaks,
   in addition to GitHub's own secret scanning. A finding fails the check. The scanner is a pinned version whose
   download is verified before it runs, and it never prints a found value.

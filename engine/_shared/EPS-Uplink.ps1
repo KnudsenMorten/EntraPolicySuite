@@ -52,7 +52,7 @@ $script:EpsUplinkLists = @{
     Hosting         = @('container', 'vm', 'arc')
     RuntimeIdentity = @('mi-container', 'mi-vm', 'mi-arc', 'spn-certificate', 'spn-secret')
     FixKind         = @('customer-config', 'product-defect')
-    ErrorClass      = @('held-guard', 'partly-failed', 'queue-start-timeout', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified')
+    ErrorClass      = @('held-guard', 'partly-failed', 'queue-start-timeout', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified', 'repeat-failure')
     JobResult       = @('succeeded', 'failed', 'stopped', 'running')
     UpdaterResult   = @('succeeded', 'failed', 'nothing-to-do')
     MailJob         = @('present', 'missing')
@@ -509,6 +509,33 @@ function Get-EpsUplinkHeartbeatFacts {
     }
 }
 
+# ---------------------------------------------------------------------------------------------------- repeat failures
+# framework lesson 2026-11-08 (SI #1155, Invardia: approved for 2.0.104): a job that does not complete EpsRepeatFailureRuns
+# runs in a row is a deterministic failure - its run record says so (ErrorClass repeat-failure, FixKind product-defect: a
+# fix-request cause on Invardia) and an alert eps.job.repeat-failure is raised, until a run completes again.
+$script:EpsRepeatFailureRuns = 3
+function Test-EpsRunIncomplete {
+    <# PURE. Did this run NOT complete? Failed / PartlyFailed; and an Update run that gave up for the night (it ends
+       Succeeded with its reason - "... retries next night" / "the next night tries again"). A Held run (the guard did its
+       job) and a Running one are not incomplete. #>
+    param([string]$Job, [string]$Status, [string]$HeldReason)
+    if ($Status -in 'Failed', 'PartlyFailed') { return $true }
+    if ($Job -eq 'Update' -and $Status -eq 'Succeeded' -and "$HeldReason" -match '(?i)retries next night|the next night tries again') { return $true }
+    $false
+}
+function Get-EpsRunStreak {
+    <# PURE. Runs of ONE job, NEWEST FIRST -> how many in a row (from the newest) did not complete. #>
+    param([object[]]$Runs = @())
+    $n = 0
+    foreach ($r in $Runs) { if (Test-EpsRunIncomplete -Job "$($r.Job)" -Status "$($r.Status)" -HeldReason "$($r.HeldReason)") { $n++ } else { break } }
+    $n
+}
+function Get-EpsJobRunStreak {
+    <# The streak of -Job up to and including the run that ended at -EndedAtUtc (the last 10 finished runs read). #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Job, [Parameter(Mandatory)][datetime]$EndedAtUtc)
+    try { Get-EpsRunStreak -Runs @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $Job; e = $EndedAtUtc } -Query "SELECT TOP (10) Job, Status, HeldReason FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND EndedAtUtc <= @e AND Status <> 'Running' ORDER BY EndedAtUtc DESC") } catch { 0 }
+}
+
 # ---------------------------------------------------------------------------------------------------- run records
 function Get-EpsUplinkErrorClass {
     # PURE. eps.Run -> @{ Outcome; ErrorClass; FixKind } (closed lists). A held run is a warning (the guard did its job).
@@ -539,7 +566,8 @@ function Get-EpsUplinkErrorClass {
 
 function New-EpsUplinkRunRecord {
     # PURE. One finished eps.Run as a run record (job id eps-<job>; the counts; the reason redacted, only when not ok)
-    param([Parameter(Mandatory)]$Run, [string]$Version, [string]$TenantId, [string]$Key, [datetime]$NowUtc = [datetime]::UtcNow)
+    # -Streak (2.0.104): how many runs of this job in a row did not complete, this one included (Get-EpsJobRunStreak)
+    param([Parameter(Mandatory)]$Run, [string]$Version, [string]$TenantId, [string]$Key, [datetime]$NowUtc = [datetime]::UtcNow, [int]$Streak = 0)
     $o = New-EpsUplinkEnvelope -Kind 'run' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
     $o.Job = Get-EpsUplinkJobId "$($Run.Job)"
     $cls = Get-EpsUplinkErrorClass -Status "$($Run.Status)" -Text "$($Run.HeldReason)" -Job "$($Run.Job)"
@@ -550,7 +578,14 @@ function New-EpsUplinkRunRecord {
     }
     $o.ErrorClass = Select-EpsUplinkEnum $cls.ErrorClass 'ErrorClass'
     $o.FixKind = Select-EpsUplinkEnum $cls.FixKind 'FixKind'
-    if ($o.Outcome -ne 'ok') { $o.ErrorText = ConvertTo-EpsUplinkRedacted -Text "$($Run.HeldReason)" -Key $Key -Max 2000 }
+    # framework lesson 2026-11-08: N runs in a row not complete = deterministic - a fix-request cause (product-defect),
+    # never for a permission the customer must give (customer-config stays)
+    if ($Streak -ge $script:EpsRepeatFailureRuns -and $cls.FixKind -ne 'customer-config') {
+        $last = if ($cls.ErrorClass) { $cls.ErrorClass } else { 'gave up' }
+        if ($o.Outcome -eq 'ok') { $o.Outcome = 'warning' }   # an update that gave up for the night N times
+        $o.ErrorClass = 'repeat-failure'; $o.FixKind = 'product-defect'
+        $o.ErrorText = ConvertTo-EpsUplinkRedacted -Text "failed $Streak runs in a row (job $($o.Job), last class $last): $($Run.HeldReason)" -Key $Key -Max 2000
+    } elseif ($o.Outcome -ne 'ok') { $o.ErrorText = ConvertTo-EpsUplinkRedacted -Text "$($Run.HeldReason)" -Key $Key -Max 2000 }
     $c = Limit-EpsUplinkCounts ([ordered]@{ objects = $Run.Objects; planned = $Run.Planned; overwrites = $Run.Overwrites; applied = $Run.Applied; failed = $Run.Failed; skipped = $Run.Skipped })
     if ($c.Count) { $o.Counts = $c }
     Select-EpsUplinkRecord $o
@@ -823,6 +858,34 @@ function Set-EpsUplinkState {
 }
 function ConvertFrom-EpsUplinkTime { param([string]$Text) try { [datetime]::Parse($Text, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } catch { $null } }
 
+# ---------------------------------------------------------------------------------------------------- refused records
+# framework lesson 2026-11-08 (SI #1155): "a failure that repeats on the SAME input every run is deterministic - after the
+# retries change the input or escalate, never retry forever". A record Invardia refuses for what it IS (400 / 409 / 413 /
+# 422) is resent on the next cycles; after EpsUplinkRefusedMax refusals in a row it is skipped. A refusal of the CALL (401 /
+# 403 the key, 429 the rate, 5xx / network) is never counted: those stop the cycle and the record goes next time.
+$script:EpsUplinkRefusedMax = 3
+function Test-EpsUplinkRecordRefusal {
+    <# PURE. Is this answer a refusal of the record itself (the same record will be refused again)? #>
+    param($Result)
+    [bool]($Result -and -not $Result.Ok -and -not $Result.Budget -and [int]$Result.Status -in 400, 409, 413, 422)
+}
+function Step-EpsUplinkRefusal {
+    <# Counts one more refusal of the record -Name (kept in eps.UplinkState); $true = refused EpsUplinkRefusedMax times in
+       a row: skip it (the count stays at the limit until a success clears it). A refusal of the call (not of the record) counts nothing: $false. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [Parameter(Mandatory)][string]$Name, $Result)
+    if (-not (Test-EpsUplinkRecordRefusal $Result)) { return $false }
+    $n = 0; [void][int]::TryParse("$($State[$Name])", [ref]$n); $n++
+    # at the limit it STAYS at the limit (every further refused record of this job is skipped at once) until a success clears it
+    if ($n -ge $script:EpsUplinkRefusedMax) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name $Name -Value "$($script:EpsUplinkRefusedMax)"; $State[$Name] = "$($script:EpsUplinkRefusedMax)"; return $true }
+    Set-EpsUplinkState -ConnectionString $ConnectionString -Name $Name -Value "$n"; $State[$Name] = "$n"
+    $false
+}
+function Clear-EpsUplinkRefusal {
+    <# A record that went through: its refusal count (if any) is cleared. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [hashtable]$State = @{}, [Parameter(Mandatory)][string]$Name)
+    if ($State.ContainsKey($Name)) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name $Name -Value $null; $State.Remove($Name) }
+}
+
 # ---------------------------------------------------------------------------------------------------- the cycle
 function ConvertFrom-EpsUplinkSupersededBy {
     <# PURE. The heartbeat answer's `supersededBy` (a licence id: letters, digits, . _ -), or '' (none / not a plain id). #>
@@ -842,7 +905,7 @@ function Invoke-EpsUplinkCycle {
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version, [string]$TenantId = $env:EPS_TENANT_ID, [datetime]$NowUtc = [datetime]::UtcNow,
           [int]$PauseMs = $script:EpsUplinkPauseMs, [int]$RoundWaitMs = $script:EpsUplinkRoundWaitMs, [string]$WebUrl = $env:EPS_WEB_URL, [string]$Endpoint = $script:EpsUplinkEndpoint, [scriptblock]$Log = { param($l, $m) })
-    $res = @{ Mode = 'disabled'; Posts = 0; Rounds = 1; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
+    $res = @{ Mode = 'disabled'; Posts = 0; Rounds = 1; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Skipped = 0; Refused = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
     $say = { param($l, $m) $res.Lines.Add($m); & $Log $l $m }
     $finish = { param($line) try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'last' -Value "$(ConvertTo-EpsUplinkIso $NowUtc) $line" } catch { }; $res }
     try {
@@ -928,7 +991,22 @@ function Invoke-EpsUplinkCycle {
                 $rec = New-EpsUplinkAlertRecord -Alert $a -Count $seen -WebUrl $WebUrl -Version $Version -TenantId $TenantId -Key $key -NowUtc $NowUtc
                 if (-not $rec) { continue }
                 $r = & $post $rec
+                if (-not $r.Ok -and -not $r.Budget -and (Step-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:alert:$($a.AlertId)" -Result $r)) {
+                    # refused the same way $script:EpsUplinkRefusedMax cycles in a row: treated as sent for this repeat window
+                    # (never resent every cycle), and the run records after it still go
+                    Set-EpsUplinkState -ConnectionString $ConnectionString -Name "alert:$($a.AlertId)" -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0; refused = $true } | ConvertTo-Json -Compress)
+                    $res.Skipped++
+                    & $say 'Warning' "uplink: alert $($a.AlertId) refused $($script:EpsUplinkRefusedMax) cycles in a row ($($r.Reason)) - SKIPPED until it is due again"
+                    continue
+                }
+                if (-not $r.Ok -and (Test-EpsUplinkRecordRefusal $r)) {
+                    # refused for what it IS: resent next cycle, but it never stops the cycle - the run records still go
+                    $res.Refused++
+                    & $say 'Warning' "uplink: alert $($a.AlertId) refused ($($r.Reason)) - refusal $($st["refused:alert:$($a.AlertId)"]) of $($script:EpsUplinkRefusedMax) in a row; the run records still go"
+                    continue
+                }
                 if (-not $r.Ok) { if ($r.Budget) { $res.Stopped = 'budget' } else { & $fail "alert $($a.AlertId)" $r }; return (& $finish "identified: heartbeat $($res.Heartbeat), $($res.Alerts) alert(s), stopped ($($res.Stopped))") }
+                Clear-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:alert:$($a.AlertId)"
                 Set-EpsUplinkState -ConnectionString $ConnectionString -Name "alert:$($a.AlertId)" -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0 } | ConvertTo-Json -Compress)
                 $sentNow++; $res.Alerts++
             }
@@ -936,15 +1014,34 @@ function Invoke-EpsUplinkCycle {
         }
 
         # 3. the run records, one watermark per job
+        $held = @{}   # jobs whose oldest due record was refused this cycle: their later records wait (the watermark is per job)
         foreach ($run in (Get-EpsUplinkDueRuns -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc)) {
-            $r = & $post (New-EpsUplinkRunRecord -Run $run -Version $Version -TenantId $TenantId -Key $key -NowUtc $NowUtc)
+            $jid = Get-EpsUplinkJobId $run.Job
+            if ($held.ContainsKey($jid)) { continue }
+            $endIso = [datetime]::SpecifyKind([datetime]$run.EndedAtUtc, 'Utc').ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            $streak = if (Test-EpsRunIncomplete -Job "$($run.Job)" -Status "$($run.Status)" -HeldReason "$($run.HeldReason)") { Get-EpsJobRunStreak -ConnectionString $ConnectionString -Job "$($run.Job)" -EndedAtUtc ([datetime]$run.EndedAtUtc) } else { 0 }
+            $r = & $post (New-EpsUplinkRunRecord -Run $run -Version $Version -TenantId $TenantId -Key $key -NowUtc $NowUtc -Streak $streak)
             if (-not $r.Ok) {
-                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "uplink: $($script:EpsUplinkMaxPosts) POSTs this cycle ($($script:EpsUplinkMaxRounds) rounds) - the rest of the runs go next cycle" } else { & $fail "run record $(Get-EpsUplinkJobId $run.Job)" $r }
-                break
+                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "uplink: $($script:EpsUplinkMaxPosts) POSTs this cycle ($($script:EpsUplinkMaxRounds) rounds) - the rest of the runs go next cycle"; break }
+                if (-not (Test-EpsUplinkRecordRefusal $r)) { & $fail "run record $jid" $r; break }   # the CALL failed (key, rate, 5xx, network): stop, all go next cycle
+                # framework lesson (2026-11-08, SI #1155): a refusal of the RECORD repeats on the same input every cycle. It never
+                # blocks another job (the cycle goes on); its own job waits. After EpsUplinkRefusedMax cycles in a row of
+                # refusals for that job, a refused record is SKIPPED (the watermark moves on) - never resent forever.
+                if (Step-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:run:$jid" -Result $r) {
+                    $res.Skipped++
+                    & $say 'Warning' "uplink: run record $jid ($($run.Status), ended $(ConvertTo-EpsUplinkIso $run.EndedAtUtc)) refused ($($r.Reason)) - $($script:EpsUplinkRefusedMax) cycles in a row for this job: SKIPPED, the runs after it go on"
+                    Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$jid" -Value $endIso
+                    continue
+                }
+                $held[$jid] = $true; $res.Refused++
+                & $say 'Warning' "uplink: run record $jid refused ($($r.Reason)) - refusal $($st["refused:run:$jid"]) of $($script:EpsUplinkRefusedMax) in a row; its job's runs wait, every other job goes on"
+                continue
             }
-            Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$(Get-EpsUplinkJobId $run.Job)" -Value ([datetime]::SpecifyKind([datetime]$run.EndedAtUtc, 'Utc').ToString('o', [Globalization.CultureInfo]::InvariantCulture))
+            Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$jid" -Value $endIso
             $res.Runs++
+            Clear-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:run:$jid"
         }
+        if (($res.Skipped -or $res.Refused) -and -not $res.Stopped) { $res.Stopped = "refused by Invardia: $($res.Refused) record(s) waiting, $($res.Skipped) skipped after $($script:EpsUplinkRefusedMax) cycles in a row" }
         if ($res.Runs) { & $say 'Info' "uplink: $($res.Runs) run record(s) sent in $($res.Rounds) round(s)" }
         & $finish "identified: heartbeat $($res.Heartbeat), $($res.Alerts) alert(s), $($res.Runs) run(s)$(if ($res.Stopped) { ", stopped ($($res.Stopped))" })"
     } catch {
