@@ -28,7 +28,11 @@ code { background:var(--code-bg); padding:1px 4px; border-radius:3px; }
 
 /* header (BRAND-2.2): brand-ink in both themes */
 #brand { background:var(--brand-ink); color:var(--on-ink); padding:8px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-bottom:1px solid var(--brand-blue); }
-#brand h1 { margin:0; font-size:17px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--on-ink); }
+#brand h1 { margin:0; font-size:17px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--on-ink); display:flex; align-items:center; }
+/* BRAND-3: the logo (reversed - the header is brand-ink in both themes), PIM Manager's height */
+#brand h1 .brand-logo { height:36px; width:auto; display:block; }
+#brand h1 .brand-logo[hidden] { display:none; }
+.brand-sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 #versionBadge { font-weight:600; font-size:11px; color:#fff; background:rgba(255,255,255,.25); border:1px solid rgba(255,255,255,.55); padding:2px 8px; border-radius:10px; }
 .brand-sub { font-size:11px; opacity:.85; }
 #brandRight { margin-left:auto; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }

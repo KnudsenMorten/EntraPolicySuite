@@ -1,3 +1,5 @@
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://invardia.com/brand/Invardia-EntraPolicySuite-Community-logo/horizontal/invardia-entrapolicysuite-community-horizontal-reversed.svg"><img alt="Invardia Entra Policy Suite Community" src="https://invardia.com/brand/Invardia-EntraPolicySuite-Community-logo/horizontal/invardia-entrapolicysuite-community-horizontal-colour.svg" width="460"></picture></p>
+
 # Entra Policy Suite 2.0
 
 Conditional Access management, user and device tagging, and identity reporting for Microsoft Entra ID - running in

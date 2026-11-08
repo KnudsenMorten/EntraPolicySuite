@@ -7,11 +7,17 @@
 <!-- the theme before first paint (BRAND-2.5); a same-origin file, not inline: the sign-in front's CSP allows no inline script -->
 <script src="theme.js"></script>
 <link rel="stylesheet" href="app.css">
+<!-- BRAND-3 (owner via Invardia 2026-11-08): the Entra Policy Suite app tile from the logo pack (icon/) -->
+<link rel="icon" type="image/png" sizes="32x32" href="brand/app-tile-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="brand/app-tile-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="brand/app-tile-180.png">
 </head>
 <body>
 <div id="app">
   <header id="brand">
-    <h1><span class="brand-name">EPS</span> <span class="brand-long">Entra Policy Suite</span></h1>
+    <!-- BRAND-3: the Invardia Entra Policy Suite logo, reversed (the header is brand-ink in both themes): plain until the
+         licence is read, then Community or Pro (PIM Manager's way); the name stays as text for screen readers -->
+    <h1 id="brandTitle" data-edition="plain"><img class="brand-logo" data-ed="plain" src="brand/eps-plain-horizontal-reversed.svg" alt=""><img class="brand-logo" data-ed="community" src="brand/eps-community-horizontal-reversed.svg" alt="" hidden><img class="brand-logo" data-ed="pro" src="brand/eps-pro-horizontal-reversed.svg" alt="" hidden><span class="brand-sr">Entra Policy Suite</span></h1>
     <span id="versionBadge">v{{VERSION}}</span>
     <span id="edition" class="brand-sub">Community</span>
     <div id="brandRight">

@@ -10,6 +10,8 @@
 
 Set-StrictMode -Off
 $script:EpsProductName = 'Entra Policy Suite'
+# BRAND-3: the mail header's logo (reversed, on brand-ink) - Invardia's brand page, https only, no tracking parameter
+$script:EpsMailLogoUrl = 'https://invardia.com/brand/Invardia-EntraPolicySuite-logo/horizontal/invardia-entrapolicysuite-horizontal-reversed-512w.png'
 
 function New-EpsMailSubject {
     # MAIL-3. -Severity: Failed | Warning | 'Action needed' | '' (none on a normal mail).
@@ -43,9 +45,10 @@ function New-EpsMailBody {
           [string]$SummaryHtml)
     $sb = [Text.StringBuilder]::new()
     [void]$sb.Append("<html><body style=""font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1b1b1b"">")
-    # BRAND-2.1: the brand-ink header, the wordmark in brand-wordmark, the 1 px brand-blue line under it (text, not an
-    # image: mail clients block images by default)
-    [void]$sb.Append("<div style=""background:#0B1633;border-bottom:1px solid #1B4FE4;padding:10px 16px""><span style=""color:#9FC3FF;font-size:18px;font-weight:600"">$script:EpsProductName</span></div>")
+    # BRAND-2.1 + BRAND-3 (owner via Invardia 2026-11-08): the brand-ink header with the Invardia Entra Policy Suite logo
+    # (reversed, served by invardia.com/brand) and the 1 px brand-blue line under it. Mail clients block images by default,
+    # so the product name is the image's alt text, in brand-wordmark - a blocked image still reads "Entra Policy Suite".
+    [void]$sb.Append("<div style=""background:#0B1633;border-bottom:1px solid #1B4FE4;padding:10px 16px""><img src=""$script:EpsMailLogoUrl"" alt=""$script:EpsProductName"" height=""32"" style=""display:block;height:32px;width:auto;border:0;color:#9FC3FF;font-size:18px;font-weight:600""></div>")
     [void]$sb.Append("<p>$(ConvertTo-EpsHtml $Summary)</p>")
     # -SummaryHtml: markup the CALLER built and encoded (e.g. a list); never a value from outside unencoded
     if ($SummaryHtml) { [void]$sb.Append($SummaryHtml) }

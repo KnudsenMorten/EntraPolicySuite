@@ -4987,6 +4987,13 @@ function schedPicker(current, job) {
       document.getElementById('noSuperAdmin').hidden = !m.noSuperAdmin;
       // ADMIN-WALK Pro (2026-11-06): the header names the edition the verified license gives (it said "Community" always)
       if (m.edition) document.getElementById('edition').textContent = m.edition;
+      // BRAND-3: the logo of the edition the verified licence gives (Pro for every Pro edition and the trial)
+      (function () {
+        var h = document.getElementById('brandTitle'); if (!h) return;
+        var ed = !m.edition ? 'plain' : (/^Pro\b/.test(String(m.edition)) ? 'pro' : 'community');
+        h.setAttribute('data-edition', ed);
+        Array.prototype.forEach.call(h.querySelectorAll('.brand-logo'), function (x) { x.hidden = x.getAttribute('data-ed') !== ed; });
+      })();
       addProMenu(m);
       loadProFeatures(m);
       render();
