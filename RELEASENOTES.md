@@ -4,7 +4,16 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.107 - An install run never removes a Graph permission
+Builds on the owner's decision: "i have not approved any removal of graph rights ... this is not a job about removing permissions now ... then we can talk about clean-up later" (2026-11-09, relayed by Invardia, written in docs/REQUIREMENTS.md §0).
+- An install run no longer removes a Graph permission the engine or the updater holds outside its list (2.0.106 would
+  have). It adds what is missing and only names an extra permission; nothing is taken away.
+- The setup step "Engine Graph permissions beyond its list" is now a report only: it stays green and names any extra
+  permission as kept.
+- The write permissions are still granted only while a feature that writes is on, as before (unchanged since 2.0.99).
+
 ## 2.0.106 - The engine and the updater keep exactly the Graph permissions they need
+Builds on the owner's decision: "you need to get in control with all these identity chg. it is chaos" (2026-11-09, Invardia framework/REQUIREMENTS.md IDENTITY-MOVE-1, line 2 "exactly the role-need map").
 - A Graph permission the engine or the updater no longer needs is now removed by the next install run, and read back.
   Before, a permission that was granted once and later dropped from the list stayed for good.
 - Getting started and the setup steps now show a step "Engine holds no Graph permission beyond its list". It names any

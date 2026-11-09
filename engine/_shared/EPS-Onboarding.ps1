@@ -154,10 +154,11 @@ function Get-EpsSetupSteps {
         } elseif ($need -and $need.Needed -and $st -eq 'missing') { $detail = "needed ($($need.Why)): grant it with Grant-EpsEnginePermissions -GraphPermission $r" }
         $out.Add([ordered]@{ key = "graph-$($r.ToLowerInvariant().Replace('.', '-'))"; title = "Engine has the Graph permission $r"; state = $st; since = "$($d.roleSince[$r])"; how = 'customer'; checkedAt = $at; detail = $detail })
     }
-    # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09): no Graph role beyond the list (a leftover the install never asked for)
-    $xs = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights['Extra']) { 'unknown' } elseif (@($Rights.Extra).Count) { 'missing' } else { 'ok' }
-    $out.Add([ordered]@{ key = 'graph-no-extra'; title = 'Engine holds no Graph permission beyond its list'; state = $xs; since = '2.0.106'; how = 'customer'; checkedAt = $at
-        detail = $(if ($xs -eq 'unknown') { "$(if ($Rights) { $Rights.Reason } else { 'not read' })" } elseif ($xs -eq 'missing') { "extra: $(@($Rights.Extra) -join ', ') - the next install run removes it" } else { 'exactly the permissions listed above' }) })
+    # IDENTITY-MOVE-1 line 2: a Graph role beyond the list is REPORTED only - kept, never removed (owner 2026-11-09: "i have
+    # not approved any removal of graph rights"), so the step stays ok and names it
+    $xs = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights['Extra']) { 'unknown' } else { 'ok' }
+    $out.Add([ordered]@{ key = 'graph-no-extra'; title = 'Engine Graph permissions beyond its list (reported only)'; state = $xs; since = '2.0.106'; how = 'customer'; checkedAt = $at
+        detail = $(if ($xs -eq 'unknown') { "$(if ($Rights) { $Rights.Reason } else { 'not read' })" } elseif (@($Rights.Extra).Count) { "also holds: $(@($Rights.Extra) -join ', ') - kept; nothing is removed" } else { 'none - exactly the permissions listed above' }) })
     $ex = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights.Exchange) { 'unknown' } elseif ($Rights.Exchange) { 'ok' } else { 'missing' }
     $exDetail = "for $($d.exchangeRole.for)"
     # OPEN-09: needed only while a feature that uses Exchange is on - otherwise n/a, and a role still held is said to be extra

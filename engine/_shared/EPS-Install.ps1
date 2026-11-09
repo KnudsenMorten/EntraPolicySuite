@@ -52,7 +52,7 @@ function Grant-EpsUplinkKeyAccess {
 # SEC-02-GRAPH (owner e48f195e, 2026-11-07, 2.0.99): READ users and devices always; the WRITE rights only while a feature
 # that writes is on ($script:EpsEngineGraphWriteRoles, Get-EpsGraphWriteNeed) - granted / removed by the install's graph step
 $script:EpsEngineGraphWriteRoles = @('User.ReadWrite.All', 'Device.ReadWrite.All')
-$script:EpsEngineGraphRoles = @('User.Read.All', 'Device.Read.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')   # Policy.ReadWrite.AuthenticationMethod: GET-STARTED phase 2 (2.0.82, V1-PARITY P7), the two authentication strengths v1 creates - on a SuperAdmin's request only (owner 2026-11-05 'No, always grant', framework §4.3 owner exception). Group.ReadWrite.All + AdministrativeUnit.ReadWrite.All: CA-GROUPS (2.0.81), the groups the policies use and their administrative units - created and changed only from a SuperAdmin's request, applied by the engine (owner 2026-11-05: 'Yes, Group.ReadWrite.All')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
+$script:EpsEngineGraphRoles = @('User.Read.All', 'Device.Read.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')   # Policy.ReadWrite.AuthenticationMethod: GET-STARTED phase 2 (2.0.82, V1-PARITY P7), the two authentication strengths v1 creates - on a SuperAdmin's request only (owner 2026-11-05 ~14:25Z 'Yes, grant it', framework §4.3 owner exception). Group.ReadWrite.All + AdministrativeUnit.ReadWrite.All: CA-GROUPS (2.0.81), the groups the policies use and their administrative units - created and changed only from a SuperAdmin's request, applied by the engine (owner 2026-11-05: 'Yes, Group.ReadWrite.All')   # Policy.ReadWrite.ConditionalAccess: CA-LIFECYCLE, the stage buttons - a SuperAdmin moves ONE adopted policy ONE stage, applied by the engine from his request; nothing else writes a policy (owner 2026-11-03: 'Write on approval')   # Application.Read.All: application names in the CA documentation, READ ONLY (owner 2026-11-01: "Grant Application.Read.All")   # Policy + RoleManagement: the CA Policy Analyzer, READ ONLY (it never writes a policy); DeviceManagementManagedDevices: the identity report's Intune devices, read only (owner 2026-10-31: "Yes, add both")   # AuditLog: the tamper monitor's "who"
 # framework §4.5 SQL-ADMIN-GROUP G5 (Invardia, DECIDED 2026-11-05; the owner: "both setup and upd"): the UPDATER identity's
 # Graph application roles - exactly these three, granted by THIS setup code, kept by the update job (it converges and
 # renews the database setup identity's membership of the role-assignable SQL admin group through PIM for Groups, G2-G4).
@@ -615,32 +615,17 @@ function Grant-EpsAppRoles {
     $added
 }
 
-function Remove-EpsUndeclaredAppRoles {
-    # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09: "converge Graph app roles to EXACTLY the role-need map"): every app
-    # role of ONE resource app the identity holds outside -Keep is removed, then read back (Graph is eventually
-    # consistent). Grant-EpsAppRoles only adds - a role granted once and dropped from the list later stayed for good
-    # (found live at internal: Policy.Read.ConditionalAccess, 9 days after Policy.Read.All replaced it). Other resource
-    # apps are never touched. Returns the removed role names.
+function Get-EpsUndeclaredAppRoles {
+    # READ ONLY. The app roles of ONE resource app the identity holds outside -Keep (IDENTITY-MOVE-1 line 2). They are
+    # REPORTED, never removed: owner 2026-11-09 "i have not approved any removal of graph rights ... this is not a job
+    # about removing permissions now ... then we can talk about clean-up later" (via Invardia; 2.0.106's removal withdrawn
+    # in 2.0.107). Returns the role names.
     param([Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string]$ResourceAppId, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Keep)
     $sp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$ResourceAppId'&`$select=id,appRoles" -All)[0]
     if (-not $sp) { throw "the tenant has no service principal for $ResourceAppId" }
     $byId = @{}; foreach ($r in $sp.appRoles) { $byId[[string]$r.id] = [string]$r.value }
-    $read = { @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$PrincipalId/appRoleAssignments" -All | Where-Object { $_.resourceId -eq $sp.id }) }
-    $extra = @(& $read | Where-Object { $Keep -notcontains $byId[[string]$_.appRoleId] })
-    $removed = @()
-    foreach ($a in $extra) {
-        $name = $byId[[string]$a.appRoleId]; if (-not $name) { $name = "app role $($a.appRoleId)" }
-        [void](Invoke-EpsGraph -Method DELETE -Path "v1.0/servicePrincipals/$PrincipalId/appRoleAssignments/$($a.id)")
-        $removed += $name
-    }
-    if (-not $removed.Count) { return @() }
-    for ($try = 0; $try -lt 9; $try++) {
-        $left = @(& $read | Where-Object { $Keep -notcontains $byId[[string]$_.appRoleId] })
-        if (-not $left.Count) { break }
-        Start-Sleep -Seconds $(if ($script:EpsGraphReadBackSeconds -ne $null) { $script:EpsGraphReadBackSeconds } else { 15 })
-    }
-    if ($left.Count) { throw "still held after the removal: $(@($left | ForEach-Object { $byId[[string]$_.appRoleId] }) -join ', ')" }
-    $removed
+    @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$PrincipalId/appRoleAssignments" -All | Where-Object { $_.resourceId -eq $sp.id -and $Keep -notcontains $byId[[string]$_.appRoleId] } |
+        ForEach-Object { $n = $byId[[string]$_.appRoleId]; if ($n) { $n } else { "app role $($_.appRoleId)" } })
 }
 
 function ConvertTo-EpsSqlSid([string]$AppId) { '0x' + (-join (([guid]$AppId).ToByteArray() | ForEach-Object { $_.ToString('X2') })) }
@@ -1064,13 +1049,13 @@ function Invoke-EpsInstallStep {
             }
             # framework §4.5 G5: the updater's three PIM-for-Groups roles, granted here (setup) and read back
             if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles @($script:EpsUpdaterGraphRoles + $script:EpsUpdaterOwnerGraphRole)) }
-            # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09): EXACTLY the role-need map - a Graph role outside the declared
-            # list is removed and read back (the write rights stay with the need logic above; a role the person left out
-            # at install is in the list, so it is never removed here)
+            # IDENTITY-MOVE-1 line 2: a Graph role outside the list is REPORTED, never removed (owner 2026-11-09: "i have
+            # not approved any removal of graph rights" - ADD-ONLY; clean-up is a later, separate owner decision)
             foreach ($who in @(@{ Id = $eng; Name = $n.EngineIdentity; Keep = @($script:EpsEngineGraphRoles) + @($script:EpsEngineGraphWriteRoles) }
                                @{ Id = $Ctx.Identities.UpdaterIdentity.PrincipalId; Name = $n.UpdaterIdentity; Keep = @($script:EpsUpdaterGraphRoles) + @($script:EpsUpdaterOwnerGraphRole) })) {
                 if (-not $who.Id) { continue }
-                foreach ($x in @(Remove-EpsUndeclaredAppRoles -PrincipalId $who.Id -ResourceAppId '00000003-0000-0000-c000-000000000000' -Keep $who.Keep)) { $Ctx.Renamed.Add("removed (not in the role-need map): the Graph permission $x of $($who.Name)") }
+                $ex = @(Get-EpsUndeclaredAppRoles -PrincipalId $who.Id -ResourceAppId '00000003-0000-0000-c000-000000000000' -Keep $who.Keep)
+                if ($ex.Count) { Write-Host "  note     $($who.Name) also holds $($ex -join ', ') (not in its list; kept - nothing is removed)" -ForegroundColor Yellow }
             }
         }
         'exchange' {
