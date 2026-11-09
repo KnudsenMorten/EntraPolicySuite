@@ -65,9 +65,12 @@ function Get-EpsEngineRightsState {
     $byId = @{}; foreach ($r in @($sp.appRoles)) { $byId["$($r.id)"] = "$($r.value)" }
     $have = @($a.Value | Where-Object { "$($_.resourceId)" -eq "$($sp.id)" } | ForEach-Object { $byId["$($_.appRoleId)"] })
     $granted = [ordered]@{}; foreach ($r in @($d.engineGraphRoles) + @($d.engineGraphWriteRoles)) { $granted[$r] = $have -contains $r }
+    # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09): EXACTLY the role-need map - a Graph role outside it is extra
+    $declared = @($d.engineGraphRoles) + @($d.engineGraphWriteRoles)
+    $extra = @($have | Where-Object { $_ -and $declared -notcontains $_ } | Sort-Object -Unique)
     $x = Invoke-EpsOnboardingGraph -Path "v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$oid'" -All
     $ex = if ($x.Ok) { [bool](@($x.Value | Where-Object { "$($_.roleDefinitionId)" -eq $d.exchangeRole.templateId }).Count) } else { $null }
-    @{ Ok = $true; Granted = $granted; Exchange = $ex; ObjectId = $oid }
+    @{ Ok = $true; Granted = $granted; Extra = $extra; Exchange = $ex; ObjectId = $oid }
 }
 
 # OPEN-09 / SEC-02 (framework §4.3-4.4, Invardia 2026-11-04): the engine's Exchange rights (Exchange.ManageAsApp + the
@@ -151,6 +154,10 @@ function Get-EpsSetupSteps {
         } elseif ($need -and $need.Needed -and $st -eq 'missing') { $detail = "needed ($($need.Why)): grant it with Grant-EpsEnginePermissions -GraphPermission $r" }
         $out.Add([ordered]@{ key = "graph-$($r.ToLowerInvariant().Replace('.', '-'))"; title = "Engine has the Graph permission $r"; state = $st; since = "$($d.roleSince[$r])"; how = 'customer'; checkedAt = $at; detail = $detail })
     }
+    # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09): no Graph role beyond the list (a leftover the install never asked for)
+    $xs = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights['Extra']) { 'unknown' } elseif (@($Rights.Extra).Count) { 'missing' } else { 'ok' }
+    $out.Add([ordered]@{ key = 'graph-no-extra'; title = 'Engine holds no Graph permission beyond its list'; state = $xs; since = '2.0.106'; how = 'customer'; checkedAt = $at
+        detail = $(if ($xs -eq 'unknown') { "$(if ($Rights) { $Rights.Reason } else { 'not read' })" } elseif ($xs -eq 'missing') { "extra: $(@($Rights.Extra) -join ', ') - the next install run removes it" } else { 'exactly the permissions listed above' }) })
     $ex = if (-not $Rights -or -not $Rights.Ok -or $null -eq $Rights.Exchange) { 'unknown' } elseif ($Rights.Exchange) { 'ok' } else { 'missing' }
     $exDetail = "for $($d.exchangeRole.for)"
     # OPEN-09: needed only while a feature that uses Exchange is on - otherwise n/a, and a role still held is said to be extra

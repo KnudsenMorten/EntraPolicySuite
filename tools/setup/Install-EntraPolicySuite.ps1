@@ -9,8 +9,8 @@
     database and its schema, a Container Apps environment, the job queues and the jobs (the engine checks its schedules
     every 5 minutes; user and device tagging and the other jobs start from their own queues), the web app, and grants
     the engine identity exactly the rights it needs (Graph: User.ReadWrite.All, Device.ReadWrite.All and read-only
-    rights; Exchange.ManageAsApp + the Entra role Exchange Recipient Administrator) and the scheduler identity only the
-    right to put a run request on the job queues. Then it runs the engine's schedule check once.
+    rights; Exchange.ManageAsApp + the Entra role Exchange Recipient Administrator). The engine identity also runs the
+    schedule check and puts the run requests on the job queues. Then it runs the engine's schedule check once.
     Every feature is OFF after the install, and a scheduled run only previews until you switch it to Apply.
     -WhatIf shows every step and what it would create, and changes nothing. A failed install resumes where it stopped. Exit code: 0 done, 1 a step failed, 2 a check failed (nothing was created), 4 waiting for a step of yours (DNS records, a check from inside your network) - run the same command again when it is done.
 

@@ -615,6 +615,34 @@ function Grant-EpsAppRoles {
     $added
 }
 
+function Remove-EpsUndeclaredAppRoles {
+    # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09: "converge Graph app roles to EXACTLY the role-need map"): every app
+    # role of ONE resource app the identity holds outside -Keep is removed, then read back (Graph is eventually
+    # consistent). Grant-EpsAppRoles only adds - a role granted once and dropped from the list later stayed for good
+    # (found live at internal: Policy.Read.ConditionalAccess, 9 days after Policy.Read.All replaced it). Other resource
+    # apps are never touched. Returns the removed role names.
+    param([Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string]$ResourceAppId, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Keep)
+    $sp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$ResourceAppId'&`$select=id,appRoles" -All)[0]
+    if (-not $sp) { throw "the tenant has no service principal for $ResourceAppId" }
+    $byId = @{}; foreach ($r in $sp.appRoles) { $byId[[string]$r.id] = [string]$r.value }
+    $read = { @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$PrincipalId/appRoleAssignments" -All | Where-Object { $_.resourceId -eq $sp.id }) }
+    $extra = @(& $read | Where-Object { $Keep -notcontains $byId[[string]$_.appRoleId] })
+    $removed = @()
+    foreach ($a in $extra) {
+        $name = $byId[[string]$a.appRoleId]; if (-not $name) { $name = "app role $($a.appRoleId)" }
+        [void](Invoke-EpsGraph -Method DELETE -Path "v1.0/servicePrincipals/$PrincipalId/appRoleAssignments/$($a.id)")
+        $removed += $name
+    }
+    if (-not $removed.Count) { return @() }
+    for ($try = 0; $try -lt 9; $try++) {
+        $left = @(& $read | Where-Object { $Keep -notcontains $byId[[string]$_.appRoleId] })
+        if (-not $left.Count) { break }
+        Start-Sleep -Seconds $(if ($script:EpsGraphReadBackSeconds -ne $null) { $script:EpsGraphReadBackSeconds } else { 15 })
+    }
+    if ($left.Count) { throw "still held after the removal: $(@($left | ForEach-Object { $byId[[string]$_.appRoleId] }) -join ', ')" }
+    $removed
+}
+
 function ConvertTo-EpsSqlSid([string]$AppId) { '0x' + (-join (([guid]$AppId).ToByteArray() | ForEach-Object { $_.ToString('X2') })) }
 
 function Get-EpsSqlUserScript {
@@ -1036,6 +1064,14 @@ function Invoke-EpsInstallStep {
             }
             # framework §4.5 G5: the updater's three PIM-for-Groups roles, granted here (setup) and read back
             if ($Ctx.Identities.UpdaterIdentity.PrincipalId) { [void](Grant-EpsAppRoles -PrincipalId $Ctx.Identities.UpdaterIdentity.PrincipalId -ResourceAppId '00000003-0000-0000-c000-000000000000' -Roles @($script:EpsUpdaterGraphRoles + $script:EpsUpdaterOwnerGraphRole)) }
+            # IDENTITY-MOVE-1 line 2 (Invardia 2026-11-09): EXACTLY the role-need map - a Graph role outside the declared
+            # list is removed and read back (the write rights stay with the need logic above; a role the person left out
+            # at install is in the list, so it is never removed here)
+            foreach ($who in @(@{ Id = $eng; Name = $n.EngineIdentity; Keep = @($script:EpsEngineGraphRoles) + @($script:EpsEngineGraphWriteRoles) }
+                               @{ Id = $Ctx.Identities.UpdaterIdentity.PrincipalId; Name = $n.UpdaterIdentity; Keep = @($script:EpsUpdaterGraphRoles) + @($script:EpsUpdaterOwnerGraphRole) })) {
+                if (-not $who.Id) { continue }
+                foreach ($x in @(Remove-EpsUndeclaredAppRoles -PrincipalId $who.Id -ResourceAppId '00000003-0000-0000-c000-000000000000' -Keep $who.Keep)) { $Ctx.Renamed.Add("removed (not in the role-need map): the Graph permission $x of $($who.Name)") }
+            }
         }
         'exchange' {
             & $loadMi

@@ -4,6 +4,16 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.106 - The engine and the updater keep exactly the Graph permissions they need
+- A Graph permission the engine or the updater no longer needs is now removed by the next install run, and read back.
+  Before, a permission that was granted once and later dropped from the list stayed for good.
+- Getting started and the setup steps now show a step "Engine holds no Graph permission beyond its list". It names any
+  extra permission, and the install run that removes it.
+- The security pack and the install help no longer describe a separate scheduler identity: the engine identity runs the
+  schedule check (as it has since 2.0.56).
+- The hybrid worker guide names Entra Policy Suite's own identity id-eps-worker for a server that also runs another
+  product's worker.
+
 ## 2.0.105 - Every job reports its runs, and a failing job retries with smaller batches
 - Backups are saved under file names that are valid on every system. A policy name with a character such as ':' or '?'
   no longer gives a backup file that Windows cannot open.
