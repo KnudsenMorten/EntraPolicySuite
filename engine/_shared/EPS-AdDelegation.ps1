@@ -11,48 +11,76 @@
 Set-StrictMode -Off
 . (Join-Path $PSScriptRoot 'EPS-AdDirectory.ps1')   # ConvertTo-EpsLdapFilterValue
 $script:EpsUserClassGuid = [guid]'bf967aba-0de6-11d0-a285-00aa003049e2'   # schemaIDGUID of the 'user' class (well-known)
+$script:EpsComputerClassGuid = [guid]'bf967a86-0de6-11d0-a285-00aa003049e2'   # schemaIDGUID of the 'computer' class (well-known; device tags)
+
+function Get-EpsAdPermissionGroupName {
+    # PURE. framework HYBRID-AD-1 (owner 2026-11-09): every AD right goes to "<gMSA>-PermissionGroup" (the gMSA its only member)
+    param([Parameter(Mandatory)][string]$Gmsa)
+    "$($Gmsa.Split('\')[-1].TrimEnd('$'))-PermissionGroup"
+}
 
 function Get-EpsAdDelegationPlan {
-    param([Parameter(Mandatory)]$Directory, [Parameter(Mandatory)][string]$GmsaName, [Parameter(Mandatory)][string[]]$OrganizationalUnit,
-          [Parameter(Mandatory)][string[]]$Attributes, [switch]$Remove, [string]$ProtectedHolderDn, [string]$GroupName)
-    # -GroupName (PIM's pattern, 2026-10-30): the rights go to an EPS GROUP the gMSA is a member of, so each product
-    # takes away its own principal cleanly (AdminSDHolder is shared with PIM)
-    if ($GroupName) {
-        $sid = $Directory.GetGroupSid($GroupName)
-        if (-not $sid) { throw "no group '$GroupName' in AD - your AD admin creates it first (and makes the gMSA its member)" }
-    } else {
-        $sid = $Directory.GetSid($GmsaName)
-        if (-not $sid) { throw "no gMSA '$GmsaName' in AD - your AD admin creates it first" }
-    }
+    <#
+      framework HYBRID-AD-1 (owner 2026-11-09: "permissions to chg tags must be ad domain root, otherwise you will not
+      catch all users or devices. and extensions are individual per customer"):
+      - the principal is <gMSA>-PermissionGroup (the gMSA its ONLY member) - never the gMSA itself; a missing group is a
+        step of the plan ('creategroup'), a group with another member is refused;
+      - one inheritable Allow ACE per attribute and object class: WriteProperty on that attribute, for descendant objects
+        of that class (user; computer for device tags), at the DOMAIN ROOT (-Scope; default the domain's naming context);
+      - only the attributes the customer chose (extensionAttribute1-15; anything else refused);
+      - AdminSDHolder (the object itself) only with -ProtectedHolderDn (the opt-in switch).
+    #>
+    param([Parameter(Mandatory)]$Directory, [Parameter(Mandatory)][string]$Gmsa, [Parameter(Mandatory)][string[]]$Attributes,
+          [ValidateSet('user', 'computer')][string[]]$ObjectClasses = @('user'), [string]$Scope, [switch]$Remove, [string]$ProtectedHolderDn)
     foreach ($a in $Attributes) { if ($a -notmatch '^extensionAttribute([1-9]|1[0-5])$') { throw "refused: '$a' is not an extensionAttribute (the worker writes the tag attributes only)" } }
-    foreach ($ou in $OrganizationalUnit) {
-        $rules = @($Directory.GetRules($ou))
+    $gmsaSid = $Directory.GetSid($Gmsa)
+    if (-not $gmsaSid) { throw "no gMSA '$Gmsa' in AD - your AD admin creates it first (with its <gMSA>-PrincipalsAllowedAccess group)" }
+    $groupName = Get-EpsAdPermissionGroupName -Gmsa $Gmsa
+    $sid = $Directory.GetGroupSid($groupName)
+    if ($sid) {
+        $others = @($Directory.GetGroupMemberSids($groupName) | Where-Object { $_ -ne $gmsaSid })
+        if ($others.Count) { throw "refused: $groupName has other members than the gMSA ($($others.Count)) - it must hold the gMSA only (HYBRID-AD-1)" }
+        if (-not $Remove -and -not @($Directory.GetGroupMemberSids($groupName) | Where-Object { $_ -eq $gmsaSid }).Count) { [pscustomobject]@{ OU = $groupName; Attribute = '(member)'; AttributeGuid = [guid]::Empty; Sid = $gmsaSid; Action = 'addmember'; Kind = 'Group'; ObjectClass = '' } }
+    } elseif ($Remove) { return } else {
+        [pscustomobject]@{ OU = $groupName; Attribute = '(group)'; AttributeGuid = [guid]::Empty; Sid = $gmsaSid; Action = 'creategroup'; Kind = 'Group'; ObjectClass = '' }
+        $sid = "(the new group $groupName)"
+    }
+    if (-not $Scope) { $Scope = $Directory.NamingContext() }
+    $classGuid = @{ user = $script:EpsUserClassGuid; computer = $script:EpsComputerClassGuid }
+    $rules = if ($sid -like '(*') { @() } else { @($Directory.GetRules($Scope)) }
+    foreach ($cls in $ObjectClasses) {
         foreach ($a in $Attributes) {
             $g = [guid]$Directory.GetAttributeGuid($a)
-            $has = [bool]($rules | Where-Object { $_.Allow -and $_.Sid -eq $sid -and $_.Rights -match 'WriteProperty' -and [guid]$_.ObjectType -eq $g -and [guid]$_.InheritedObjectType -eq $script:EpsUserClassGuid })
+            $has = [bool]($rules | Where-Object { $_.Allow -and $_.Sid -eq $sid -and $_.Rights -match 'WriteProperty' -and [guid]$_.ObjectType -eq $g -and [guid]$_.InheritedObjectType -eq $classGuid[$cls] })
             $action = if ($Remove) { if ($has) { 'remove' } else { 'absent' } } else { if ($has) { 'present' } else { 'add' } }
-            [pscustomobject]@{ OU = $ou; Attribute = $a; AttributeGuid = $g; Sid = $sid; Action = $action; Kind = 'Ou' }
+            [pscustomobject]@{ OU = $Scope; Attribute = $a; AttributeGuid = $g; Sid = $sid; Action = $action; Kind = 'Root'; ObjectClass = $cls }
         }
     }
     if ($ProtectedHolderDn) {
-        $rules = @($Directory.GetRules($ProtectedHolderDn))
+        $rules = if ($sid -like '(*') { @() } else { @($Directory.GetRules($ProtectedHolderDn)) }
         foreach ($a in $Attributes) {
             $g = [guid]$Directory.GetAttributeGuid($a)
             $has = [bool]($rules | Where-Object { $_.Allow -and $_.Sid -eq $sid -and $_.Rights -match 'WriteProperty' -and [guid]$_.ObjectType -eq $g -and [guid]$_.InheritedObjectType -eq [guid]::Empty })
             $action = if ($Remove) { if ($has) { 'remove' } else { 'absent' } } else { if ($has) { 'present' } else { 'add' } }
-            [pscustomobject]@{ OU = $ProtectedHolderDn; Attribute = $a; AttributeGuid = $g; Sid = $sid; Action = $action; Kind = 'Protected' }
+            [pscustomobject]@{ OU = $ProtectedHolderDn; Attribute = $a; AttributeGuid = $g; Sid = $sid; Action = $action; Kind = 'Protected'; ObjectClass = '' }
         }
     }
 }
 
 function Invoke-EpsAdDelegationPlan {
-    param([Parameter(Mandatory)]$Directory, [object[]]$Plan = @())
+    # Applies the rows in order (the group first). The group is made in the gMSA's own container, the gMSA its only member.
+    param([Parameter(Mandatory)]$Directory, [Parameter(Mandatory)][string]$Gmsa, [object[]]$Plan = @())
+    $groupName = Get-EpsAdPermissionGroupName -Gmsa $Gmsa
+    $sid = $null
     foreach ($p in $Plan) {
-        if ($p.Action -eq 'add') { $Directory.AddRule($p.OU, $p.Sid, $p.AttributeGuid, $p.Kind) }
-        elseif ($p.Action -eq 'remove') { $Directory.RemoveRule($p.OU, $p.Sid, $p.AttributeGuid, $p.Kind) }
+        switch ($p.Action) {
+            'creategroup' { $Directory.NewGroup($groupName, $Gmsa); $sid = $Directory.GetGroupSid($groupName); if (-not $sid) { throw "the group $groupName could not be read back after it was made" } }
+            'addmember'   { $Directory.AddGroupMember($groupName, $Gmsa) }
+            'add'         { $Directory.AddRule($p.OU, $(if ("$($p.Sid)" -like '(*') { $sid } else { $p.Sid }), $p.AttributeGuid, $p.Kind, $p.ObjectClass) }
+            'remove'      { $Directory.RemoveRule($p.OU, $p.Sid, $p.AttributeGuid, $p.Kind, $p.ObjectClass) }
+        }
     }
 }
-
 function New-EpsAdDelegationDirectory {
     param([string]$Server)
     if (-not $IsWindows) { throw 'AD delegation runs on a Windows domain machine' }
@@ -74,7 +102,7 @@ function New-EpsAdDelegationDirectory {
     $d | Add-Member ScriptMethod SearchRoot { $this.Entry($this.NamingContext()) }
     $d | Add-Member ScriptMethod GetSid {
         param([string]$Name)
-        $n = $Name.TrimEnd('$') + '$'
+        $n = $Name.Split('\')[-1].TrimEnd('$') + '$'
         $ds = [System.DirectoryServices.DirectorySearcher]::new($this.SearchRoot())
         $ds.Filter = "(&(objectClass=msDS-GroupManagedServiceAccount)(sAMAccountName=$(ConvertTo-EpsLdapFilterValue $n)))"
         [void]$ds.PropertiesToLoad.Add('objectSid')
@@ -105,15 +133,46 @@ function New-EpsAdDelegationDirectory {
             [pscustomobject]@{ Sid = $r.IdentityReference.Value; Rights = [string]$r.ActiveDirectoryRights; ObjectType = $r.ObjectType; InheritedObjectType = $r.InheritedObjectType; Allow = $r.AccessControlType -eq 'Allow' }
         }
     }
-    $mk = { param($sid, $g, $kind)
+    $mk = { param($sid, $g, $kind, $cls)
         if ($kind -eq 'Protected') {   # AdminSDHolder: for the object itself - SDProp copies it onto every protected account
             return [System.DirectoryServices.ActiveDirectoryAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty,
                 [Security.AccessControl.AccessControlType]::Allow, [guid]$g, [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None) }
+        $classGuid = if ($cls -eq 'computer') { $script:EpsComputerClassGuid } else { $script:EpsUserClassGuid }
         [System.DirectoryServices.ActiveDirectoryAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty,
-                [Security.AccessControl.AccessControlType]::Allow, [guid]$g, [System.DirectoryServices.ActiveDirectorySecurityInheritance]::Descendents, $script:EpsUserClassGuid) }
+                [Security.AccessControl.AccessControlType]::Allow, [guid]$g, [System.DirectoryServices.ActiveDirectorySecurityInheritance]::Descendents, $classGuid) }
     $d | Add-Member NoteProperty MakeRule $mk
-    $d | Add-Member ScriptMethod AddRule { param($Ou, $Sid, $Guid, $Kind) $e = $this.Entry($Ou); $e.ObjectSecurity.AddAccessRule((& $this.MakeRule $Sid $Guid $Kind)); $e.CommitChanges() }
-    $d | Add-Member ScriptMethod RemoveRule { param($Ou, $Sid, $Guid, $Kind) $e = $this.Entry($Ou); [void]$e.ObjectSecurity.RemoveAccessRule((& $this.MakeRule $Sid $Guid $Kind)); $e.CommitChanges() }
+    $d | Add-Member ScriptMethod AddRule { param($Ou, $Sid, $Guid, $Kind, $Cls) $e = $this.Entry($Ou); $e.ObjectSecurity.AddAccessRule((& $this.MakeRule $Sid $Guid $Kind $Cls)); $e.CommitChanges() }
+    $d | Add-Member ScriptMethod RemoveRule { param($Ou, $Sid, $Guid, $Kind, $Cls) $e = $this.Entry($Ou); [void]$e.ObjectSecurity.RemoveAccessRule((& $this.MakeRule $Sid $Guid $Kind $Cls)); $e.CommitChanges() }
+    # HYBRID-AD-1: the gMSA's <gMSA>-PermissionGroup - its members (SIDs), made in the gMSA's own container, the gMSA added
+    $d | Add-Member ScriptMethod FindDn {
+        param([string]$Filter)
+        $ds = [System.DirectoryServices.DirectorySearcher]::new($this.SearchRoot()); $ds.Filter = $Filter; [void]$ds.PropertiesToLoad.Add('distinguishedName')
+        $r = $ds.FindOne(); if ($r) { [string]$r.Properties['distinguishedname'][0] }
+    }
+    $d | Add-Member ScriptMethod GetGroupMemberSids {
+        param([string]$Name)
+        $dn = $this.FindDn("(&(objectClass=group)(sAMAccountName=$(ConvertTo-EpsLdapFilterValue $Name)))"); if (-not $dn) { return @() }
+        $e = $this.Entry($dn); $e.RefreshCache(@('member'))
+        @(foreach ($m in @($e.Properties['member'])) { $me = $this.Entry($m); $me.RefreshCache(@('objectSid')); ([Security.Principal.SecurityIdentifier]::new([byte[]]$me.Properties['objectSid'][0], 0)).Value })
+    }
+    $d | Add-Member ScriptMethod NewGroup {
+        param([string]$Name, [string]$Gmsa)
+        $gdn = $this.FindDn("(&(objectClass=msDS-GroupManagedServiceAccount)(sAMAccountName=$(ConvertTo-EpsLdapFilterValue ($Gmsa.Split('\')[-1].TrimEnd('$') + '$'))))")
+        if (-not $gdn) { throw "no gMSA '$Gmsa' in AD" }
+        $parent = $gdn.Substring($gdn.IndexOf(',') + 1)
+        $g = $this.Entry($parent).Children.Add("CN=$Name", 'group')
+        [void]$g.Properties['sAMAccountName'].Add($Name)
+        [void]$g.Properties['groupType'].Add([int](0x80000000 -bor 0x2))   # a global security group
+        [void]$g.Properties['description'].Add("Permission group for $($Gmsa.Split('\')[-1]) (Entra Policy Suite hybrid worker): every AD right of the worker is granted to this group; the gMSA is its only member")
+        $g.CommitChanges()
+        $this.AddGroupMember($Name, $Gmsa)
+    }
+    $d | Add-Member ScriptMethod AddGroupMember {
+        param([string]$Name, [string]$Gmsa)
+        $gdn = $this.FindDn("(&(objectClass=group)(sAMAccountName=$(ConvertTo-EpsLdapFilterValue $Name)))")
+        $mdn = $this.FindDn("(&(objectClass=msDS-GroupManagedServiceAccount)(sAMAccountName=$(ConvertTo-EpsLdapFilterValue ($Gmsa.Split('\')[-1].TrimEnd('$') + '$'))))")
+        $e = $this.Entry($gdn); [void]$e.Properties['member'].Add($mdn); $e.CommitChanges()
+    }
     $d | Add-Member ScriptMethod GetAdminSdHolderDn { "CN=AdminSDHolder,CN=System,$($this.NamingContext())" }
     $d
 }

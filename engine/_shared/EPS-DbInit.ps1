@@ -29,14 +29,16 @@ function Read-EpsDbInitInput {
       not one of the principals, a drop that names a principal the list keeps, a SuperAdmin that is not "<upn>|<guid>".
     #>
     # -FrontVersion: per execution, the sign-in front the web app RUNS (OPEN-15) - recorded for the heartbeat
-    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion)
+    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion,
+          # a role renamed in the grant list (renamedFrom): a job set up before the rename still names the old one
+          [hashtable]$RoleAliases = @{})
     $no = { param($r) @{ Ok = $false; Reason = $r } }
     if (-not "$PrincipalsJson".Trim()) { return (& $no 'EPS_DBINIT_PRINCIPALS is not set') }
     $list = try { @($PrincipalsJson | ConvertFrom-Json -Depth 5) } catch { return (& $no "EPS_DBINIT_PRINCIPALS is not JSON: $($_.Exception.Message)") }
     if (-not $list.Count) { return (& $no 'EPS_DBINIT_PRINCIPALS lists nobody') }
     $p = [System.Collections.Generic.List[object]]::new()
     foreach ($x in $list) {
-        $name = "$($x.name)"; $cid = "$($x.clientId)"; $role = "$($x.role)"
+        $name = "$($x.name)"; $cid = "$($x.clientId)"; $role = "$($x.role)"; if ($RoleAliases.ContainsKey($role)) { $role = $RoleAliases[$role] }
         if ($name -notmatch $script:EpsDbInitNamePattern) { return (& $no "unsafe database user name '$name'") }
         $g = [guid]::Empty
         if (-not [guid]::TryParse($cid, [ref]$g) -or $g -eq [guid]::Empty) { return (& $no "the client id of $name is not a GUID") }
@@ -220,7 +222,7 @@ function Invoke-EpsDbInit {
     $e = { param($k) if ($Env.ContainsKey($k)) { "$($Env[$k])" } else { [Environment]::GetEnvironmentVariable($k) } }
     $gl = Get-EpsGrantList -SolutionRoot $SolutionRoot
     $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
-    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
+    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -RoleAliases $($al = @{}; foreach ($k in $gl.roles.Keys) { if ($gl.roles[$k].renamedFrom) { $al["$($gl.roles[$k].renamedFrom)"] = $k } }; $al) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
     # SEC-08 row 7: per execution, the hybrid worker's identity as the database user eps-hybrid-worker in eps_worker
     # (EPS_DBINIT_WORKER = its client id), or 'remove' - the person who adds a worker needs no SQL right
@@ -325,7 +327,7 @@ function Write-EpsDbInitAudit {
 
 function Get-EpsDbInitPrincipals {
     # PURE. The users the job makes: each install identity in the role the grant list gives it (the scheduler runs as
-    # the engine identity, so id-eps-engine gets eps_engine AND eps_tick).
+    # the engine identity, so id-eps-engine gets eps_engine AND eps_schedule).
     param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)]$GrantList)
     $n = $Ctx.Names
     $roleOf = @{}; foreach ($r in $GrantList.roles.Keys) { $roleOf["$($GrantList.roles[$r].identity)"] = $r }

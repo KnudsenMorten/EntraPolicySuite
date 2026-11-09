@@ -7,6 +7,7 @@
 Set-StrictMode -Off
 . (Join-Path $PSScriptRoot 'EPS-InstallWeb.ps1')   # the web app's steps (the sign-in front)
 . (Join-Path $PSScriptRoot 'EPS-InstallNetwork.ps1')   # the private network install (NET-1) - used only with -PrivateNetwork
+. (Join-Path $PSScriptRoot 'EPS-JobRename.ps1')   # NAMING-PROGRAMME-1: an older install's two jobs to the standard names (-RenameJobs)
 . (Join-Path $PSScriptRoot 'EPS-DbInit.ps1')   # SEC-08: the database setup job caj-eps-dbinit (the job's run + the installer's side)
 $script:EpsApi = @{ rg = '2021-04-01'; mi = '2023-01-31'; law = '2022-10-01'; acr = '2023-07-01'; sql = '2021-11-01'; aca = '2024-03-01'; acajob = '2025-01-01'; st = '2023-05-01'; rbac = '2022-04-01'; prov = '2021-04-01'; sub = '2022-12-01' }
 $script:EpsRole = @{ AcrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -273,7 +274,15 @@ function Resolve-EpsInstallNames {
     param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private)
     $old = "acreps$(Get-EpsLegacySuffix -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup)"
     $legacy = [bool](Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ContainerRegistry/registries/$old" -ApiVersion '2023-07-01' -AllowNotFound)
-    Get-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Private:$Private -Legacy:$legacy
+    # NAMING-PROGRAMME-1: after the job rename (the old scheduler job gone, the new one there) the jobs have the standard names
+    $std = $false
+    if ($legacy) {
+        $jp = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/jobs"
+        # the old job is deleted after the move (owner 2026-11-09: "it is approved to delete the old jobs and identities once the new are working"); a Manual old job also counts as moved
+        $oldTick = Invoke-EpsArm -Path "$jp/caj-eps-tick" -ApiVersion '2025-01-01' -AllowNotFound
+        $std = [bool](Invoke-EpsArm -Path "$jp/caj-eps-engine" -ApiVersion '2025-01-01' -AllowNotFound) -and (-not $oldTick -or "$($oldTick.properties.configuration.triggerType)" -eq 'Manual')
+    }
+    Get-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Private:$Private -Legacy:$legacy -StandardJobs:$std
 }
 
 function Resolve-EpsResourceGroup {
@@ -298,7 +307,9 @@ function Get-EpsInstallNames {
     # -Private (NET-1): the environment inside the network is cae-eps-vnet - a Container Apps environment cannot move
     # into a network, so a public install converted to private gets a NEW one (the public cae-eps is removed after the
     # inside check), and a new private install uses the same name, so both read the same afterwards.
-    param([string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private, [switch]$Legacy)
+    param([string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [switch]$Private, [switch]$Legacy,
+          # NAMING-PROGRAMME-1: an older install whose two jobs were moved to the standard names keeps its other names (-Legacy)
+          [switch]$StandardJobs)
     if ($Legacy) { $s = Get-EpsLegacySuffix -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; $iid = '' }
     else {
         if (-not "$TenantId".Trim()) { throw 'Get-EpsInstallNames: -TenantId is needed for the names of a new install (or -Legacy for one made before 2.0.55)' }
@@ -308,7 +319,7 @@ function Get-EpsInstallNames {
         ResourceGroup = $ResourceGroup; Suffix = $s; InstallId = $iid; Legacy = [bool]$Legacy
         EngineIdentity = 'id-eps-engine'; WebIdentity = 'id-eps-web'
         # framework §5.5 (owner 2026-11-04 "do it the same way as pim"): the scheduler IS the engine - caj-eps-engine signs in
-        # as id-eps-engine (PIM: one job, the engine's identity). The tick's SQL role (eps_tick) and its queue Sender role
+        # as id-eps-engine (PIM: one job, the engine's identity). The tick's SQL role (eps_schedule) and its queue Sender role
         # go to the engine identity.
         # 2.0.56 (THE IDENTITY MOVE, Invardia 2026-11-04): an older install's tick moves to the engine identity too; its old
         # id-eps-tick is removed by the step 'retiretick' only after verify proved the tick runs as the engine
@@ -318,7 +329,7 @@ function Get-EpsInstallNames {
         Environment = $(if ($Private) { 'cae-eps-vnet' } else { 'cae-eps' }); PublicEnvironment = 'cae-eps'; Storage = "steps$s"
         # framework §5.5 THE AGREED LIST: the scheduler job is caj-eps-engine, the update job caj-eps-updater (an install made
         # before 2.0.55 keeps caj-eps-tick / caj-eps-update - Azure cannot rename a job)
-        TickJob = $(if ($Legacy) { 'caj-eps-tick' } else { 'caj-eps-engine' }); UpdateJob = $(if ($Legacy) { 'caj-eps-update' } else { 'caj-eps-updater' })
+        TickJob = $(if ($Legacy -and -not $StandardJobs) { 'caj-eps-tick' } else { 'caj-eps-engine' }); UpdateJob = $(if ($Legacy -and -not $StandardJobs) { 'caj-eps-update' } else { 'caj-eps-updater' })
         AgentPool = 'epspool'; InsideCheckJob = 'caj-eps-insidecheck'
         JobStarterRole = "EntraPolicySuite job starter ($ResourceGroup)"
         WebApp = 'ca-eps-web'; KeyVault = "kv-eps-$s"
@@ -431,6 +442,7 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'webapp';        Title = 'The web app: the sign-in front + the GUI in one revision' }
         [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
         [pscustomobject]@{ Id = 'retiretick';    Title = "An older install's separate scheduler identity removed - the scheduler runs as the engine" }
+        [pscustomobject]@{ Id = 'renamejobs';    Title = "An older install's scheduler and update jobs moved to the standard names (only with -RenameJobs)" }
     )
 }
 
@@ -487,6 +499,7 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'insidecheck'      'Inside check: from inside the network - private DNS, the web app, every job queue'
         & $mk 'retireoldenv'     'Public -> private: the old public environment removed (after the inside check)'
         & $mk 'retiretick'
+        & $mk 'renamejobs'       "An older install's scheduler and update jobs moved to the standard names (only with -RenameJobs)"
         & $mk 'lockdown'         'Lockdown: public access read back as Disabled on SQL, Key Vault, storage and the registry'
     )
 }
@@ -633,7 +646,7 @@ function ConvertTo-EpsSqlSid([string]$AppId) { '0x' + (-join (([guid]$AppId).ToB
 function Get-EpsSqlUserScript {
     # A managed identity as a contained database user WITHOUT 'FROM EXTERNAL PROVIDER' (that makes SQL look the name up
     # in Graph as the server's identity - PIM found it fails): the user's SID is its app (client) id.
-    # Framework §12.23 P3: the user is a member of ITS component role only (eps_engine / eps_tick / eps_web / eps_worker,
+    # Framework §12.23 P3: the user is a member of ITS component role only (eps_engine / eps_schedule / eps_web / eps_worker,
     # sql/eps-grants.json) - never db_datareader / db_datawriter / db_owner; a re-run takes those away if a user has them.
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$ClientId, [Parameter(Mandatory)][string]$Role)
     if ($Name -notmatch '^[A-Za-z0-9-]{1,128}$') { throw "unsafe database user name '$Name'" }
@@ -666,6 +679,10 @@ function Get-EpsGrantScript {
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($role in $GrantList.roles.Keys | Sort-Object) {
         if ($role -notmatch '^eps_[a-z]{2,20}$') { throw "unsafe role name '$role'" }
+        # NAMING-PROGRAMME-1 (owner 2026-11-09: no '-tick'): a role renamed in the list is renamed IN PLACE - its members and
+        # grants carry over - before the create (the scheduler's old role -> eps_schedule)
+        $was = "$($GrantList.roles[$role].renamedFrom)"
+        if ($was) { if ($was -notmatch '^eps_[a-z]{2,20}$') { throw "unsafe role name '$was'" }; $lines.Add("IF DATABASE_PRINCIPAL_ID(N'$was') IS NOT NULL AND DATABASE_PRINCIPAL_ID(N'$role') IS NULL EXEC(N'ALTER ROLE [$was] WITH NAME = [$role]');") }   # dynamic: SQL Server refuses an ALTER of a missing role at compile time, even under the IF
         $lines.Add("IF DATABASE_PRINCIPAL_ID(N'$role') IS NULL CREATE ROLE [$role];")
         $want = [System.Collections.Generic.List[string]]::new()
         $grants = [System.Collections.Generic.List[string]]::new()
@@ -721,7 +738,7 @@ function Test-EpsInstallStep {
         'resourcegroup' { if (& $has $rg $script:EpsApi.rg) { @{ Action = 'exists'; Detail = $n.ResourceGroup } } else { @{ Action = 'create'; Detail = "$($n.ResourceGroup) in $($Ctx.Location)" } } }
         'identities'    { $m = @($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity, $n.DbInitIdentity, $n.UpdaterIdentity, $n.SupportReadIdentity | Select-Object -Unique | Where-Object { -not (& $has "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$_" $script:EpsApi.mi) }); if ($m) { @{ Action = 'create'; Detail = $m -join ', ' } } else { @{ Action = 'exists'; Detail = 'all of them' } } }
         'sqladmins'     { @{ Action = 'run'; Detail = "$(if ($Ctx.ReplaceSqlAdminGroup) { (Get-EpsSqlAdminReplacePlan -Ctx $Ctx) + '; then: ' })an existing server keeps its admin (a group gets $($n.DbInitIdentity) added); a new one gets $(if ($Ctx.SqlAdminGroup.ObjectId) { $Ctx.SqlAdminGroup.Name } else { "$($n.SqlAdminGroup) (found or created)" }) with $($n.DbInitIdentity) in it - read back" } }
-        'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_tick, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
+        'database'      { @{ Action = 'run'; Detail = "the job $($n.DbInitJob) as $($n.DbInitIdentity): sql/eps-schema.sql, roles eps_engine, eps_schedule, eps_web, eps_worker (sql/eps-grants.json, object-level), users $(@($n.EngineIdentity, $n.TickIdentity, $n.WebIdentity | Select-Object -Unique) -join ', '), schema signin owned by $($n.WebIdentity)$(if ("$($Ctx.Person.PrincipalType)" -in '', 'User') { ", $($Ctx.Person.Upn) the first SuperAdmin (if there is none)" }) - every principal read back; you need no SQL right" } }
         'logs'          { if (& $has "$rg/providers/Microsoft.OperationalInsights/workspaces/$($n.Logs)" $script:EpsApi.law) { @{ Action = 'exists'; Detail = $n.Logs } } else { @{ Action = 'create'; Detail = $n.Logs } } }
         'registry'      { if (& $has "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" $script:EpsApi.acr) { @{ Action = 'update'; Detail = "$($n.Registry) (AcrPull checked)" } } else { @{ Action = 'create'; Detail = "$($n.Registry) (Basic)" } } }
         'image'         { @{ Action = 'run'; Detail = "build $($n.Image):$($Ctx.Version) in $($n.Registry)" } }
@@ -738,6 +755,7 @@ function Test-EpsInstallStep {
         'frontimage'    { $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot; $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot; @{ Action = $(if ($s.Ok) { 'run' } else { 'blocked' }); Detail = "signin-front:$pin in $($n.Registry) - $($s.Reason)" } }
         'webapp'        { if (& $has "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca) { @{ Action = 'update'; Detail = "$($n.WebApp) (the front + the GUI)" } } else { @{ Action = 'create'; Detail = "$($n.WebApp): signin-front on the ingress (8080), the GUI on 127.0.0.1:8081, as $($n.WebIdentity), scale 0-1" } } }
         'retiretick'    { if ($n.LegacyTickIdentity) { @{ Action = 'run'; Detail = "remove $($n.LegacyTickIdentity) after verify ran the tick as $($n.EngineIdentity): its role assignments, its database user, the identity - each read back" } } else { @{ Action = 'exists'; Detail = 'nothing to remove (the scheduler runs as the engine identity)' } } }
+        'renamejobs'    { $rows = @(try { Get-EpsJobRenamePlan -Ctx $Ctx } catch { @() }); $todo = @($rows | Where-Object { $_.Action -in 'rename', 'finish' }); if (-not $todo.Count) { @{ Action = 'exists'; Detail = 'nothing to move (the jobs have the standard names)' } } else { @{ Action = $(if ($Ctx.RenameJobs) { 'run' } else { 'skip' }); Detail = "$(($todo | ForEach-Object { "$($_.Old) -> $($_.New) ($($_.Action), $($_.Trigger) trigger, runs as $($_.Identities -join '+')$(if (@($_.AlertRulesNamingOld).Count) { '; alert rules naming it: ' + ($_.AlertRulesNamingOld -join ', ') })$(if (@($_.JobScopedRoleAssignments).Count) { '; job-scoped roles copied: ' + @($_.JobScopedRoleAssignments).Count })$(if (@($_.RunningExecutions).Count) { '; waits for ' + ($_.RunningExecutions -join ', ') }))" }) -join '; ')$(if (-not $Ctx.RenameJobs) { ' - PLAN ONLY: run with -RenameJobs once Invardia approved this install''s plan' })" } } }
         'verify'        { @{ Action = 'run'; Detail = 'read back every resource and grant; start the tick once and wait for its run record; the web app answers and sends a page without a session to the Entra sign-in' } }
         default         { throw "unknown install step '$Id'" }
     }
@@ -1127,6 +1145,7 @@ function Invoke-EpsInstallStep {
         'insidecheck'      { & $loadMi; & $loadWeb; [void](Invoke-EpsInsideCheckStep -Ctx $Ctx) }
         'retireoldenv'     { & $loadWeb; [void](Invoke-EpsRetireOldEnvStep -Ctx $Ctx) }
         'retiretick'       { Invoke-EpsRetireTickStep -Ctx $Ctx }
+        'renamejobs'       { Invoke-EpsRenameJobsStep -Ctx $Ctx }
         'lockdown'         { [void](Invoke-EpsLockdownStep -Ctx $Ctx) }
         'verify' {
             $r = Confirm-EpsInstall -Ctx $Ctx -PollSeconds ($Ctx.PollSeconds ?? 15)

@@ -1,37 +1,45 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Delegates the Entra Policy Suite hybrid worker's gMSA in Active Directory: the right to write EXACTLY the tag
-    attributes on user objects below the OUs you name - nothing else (DESIGN §6). Run by an AD admin on a domain machine.
+    Delegates the Entra Policy Suite hybrid worker in Active Directory: the right to write EXACTLY the tag attributes
+    you choose on user (and, for device tags, computer) objects - nothing else (DESIGN §6). Run once by a domain admin on
+    a domain machine.
 .DESCRIPTION
-    For each OU and each attribute (default: extensionAttribute5-9, the v1 tag types; give -Attributes to match yours)
-    it adds one inheritable Allow ACE: WriteProperty on that attribute, for descendant user objects, for the gMSA. Plan
-    first: without -Apply it shows every ACE it would add (and the ones already there) and changes nothing.
-    -Remove takes exactly these ACEs away again. No module: .NET System.DirectoryServices.
-    The gMSA itself is created beforehand by your AD admin (a group managed service account the worker computer may
-    use; it needs the domain's KDS root key) - this script only finds it by name.
+    The same way for every hybrid worker (framework HYBRID-AD-1):
+    - every right goes to the group "<gMSA>-PermissionGroup" (the gMSA its ONLY member) - never to the gMSA itself; the
+      group is made in the gMSA's own container when it is missing;
+    - at the DOMAIN ROOT, inherited by descendant objects of the classes you name (users are spread over many OUs): one
+      Allow ACE per attribute and class, WriteProperty on that attribute;
+    - only the attributes you list (extensionAttribute1-15 - your tag attributes; anything else is refused);
+    - protected accounts (Domain Admins and the like) only with -IncludeProtectedAccounts: the same right on AdminSDHolder.
+    Plan first: without -Apply it shows every step and changes nothing. With -Apply it makes the changes and reads them back.
+    -Remove takes exactly these rights away again (the group stays). No module: .NET System.DirectoryServices.
+    The gMSA itself (and its <gMSA>-PrincipalsAllowedAccess group, the worker computers that may use it) is made
+    beforehand by your AD admin; this script finds it by name.
 .EXAMPLE
-    .\Initialize-EpsHybridWorkerAd.ps1 -GmsaName 'gmsa-eps' -OrganizationalUnit 'OU=Users,OU=Corp,DC=corp,DC=example'
+    .\Initialize-EpsHybridWorkerAd.ps1 -Gmsa 'gMSA-EPS-L1-T0' -Attributes extensionAttribute6, extensionAttribute7
 .EXAMPLE
-    .\Initialize-EpsHybridWorkerAd.ps1 -GmsaName 'gmsa-eps' -OrganizationalUnit 'OU=Users,OU=Corp,DC=corp,DC=example' -Apply
+    .\Initialize-EpsHybridWorkerAd.ps1 -Gmsa 'gMSA-EPS-L1-T0' -Attributes extensionAttribute6, extensionAttribute7 -ObjectClasses user, computer -Apply
 .EXAMPLE
-    .\Initialize-EpsHybridWorkerAd.ps1 -GmsaName 'gmsa-eps' -OrganizationalUnit 'OU=Users,OU=Corp,DC=corp,DC=example' -IncludeProtectedAccounts -Apply
-    Also protected admins (Domain Admins and the like): the same right on AdminSDHolder - a Tier 0 decision.
+    .\Initialize-EpsHybridWorkerAd.ps1 -Gmsa 'gMSA-EPS-L1-T0' -Attributes extensionAttribute6 -IncludeProtectedAccounts -Apply
+    Also protected admins: the same right on AdminSDHolder - a Tier 0 decision.
 .LINK
     https://invardia.com/docs/eps/scripts/Initialize-EpsHybridWorkerAd
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9._-]{1,15}\$?$')][string]$GmsaName,
-    [Parameter(Mandatory)][string[]]$OrganizationalUnit,
-    [ValidatePattern('^extensionAttribute([1-9]|1[0-5])$')][string[]]$Attributes = @('extensionAttribute5', 'extensionAttribute6', 'extensionAttribute7', 'extensionAttribute8', 'extensionAttribute9'),
+    # the worker's gMSA (name, or DOMAIN\name$)
+    [Parameter(Mandatory)][ValidatePattern('^([A-Za-z0-9._-]{1,15}\\)?[A-Za-z0-9._-]{1,15}\$?$')][string]$Gmsa,
+    # YOUR tag attributes - customer-specific, no default (owner 2026-11-09: "extensions are individual per customer")
+    [Parameter(Mandatory)][ValidatePattern('^extensionAttribute([1-9]|1[0-5])$')][string[]]$Attributes,
+    # user objects (user tags); add computer for device tags
+    [ValidateSet('user', 'computer')][string[]]$ObjectClasses = @('user'),
+    # the shared parameter of HYBRID-AD-1 for objects a product OWNS - Entra Policy Suite owns no AD objects, so it is not used
+    [string]$ProductOu,
     [string]$Server,
     # owner 2026-10-30 "New gMSA + protected admins": the same narrow right on AdminSDHolder, so protected admins (Domain
-    # Admins and the like, who do not inherit OU rights) are tagged too - this makes the gMSA Tier 0 sensitive
+    # Admins and the like, who do not inherit domain rights) are tagged too - this makes the worker Tier 0 sensitive
     [switch]$IncludeProtectedAccounts,
-    # give the rights to this EPS group (the gMSA its member) instead of the gMSA itself - recommended next to PIM, so
-    # each product removes its own principal cleanly
-    [ValidatePattern('^[A-Za-z0-9 ._-]{1,64}$')][string]$GroupName,
     [switch]$Apply,
     [switch]$Remove
 )
@@ -40,12 +48,18 @@ Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#rea
 . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'engine\_shared\EPS-AdDelegation.ps1')
 $write = $Apply -and -not $WhatIfPreference
 $WhatIfPreference = $false
+if ("$ProductOu".Trim()) { Write-Host '-ProductOu is not used: Entra Policy Suite owns no AD objects (it writes tag attributes on your users and computers only).' -ForegroundColor DarkGray }
 $dir = New-EpsAdDelegationDirectory -Server $Server
 $holder = if ($IncludeProtectedAccounts) { $dir.GetAdminSdHolderDn() }
-if ($holder) { Write-Host "Protected accounts: the right also goes on $holder - AD copies it onto every protected account (Domain Admins and the like) within about 60 minutes. The gMSA can then change an ADMIN's tags, and with them his Conditional Access policies: treat it as a Tier 0 account." -ForegroundColor Yellow }
-$plan = Get-EpsAdDelegationPlan -Directory $dir -GmsaName $GmsaName -OrganizationalUnit $OrganizationalUnit -Attributes $Attributes -Remove:$Remove -ProtectedHolderDn $holder -GroupName $GroupName
-foreach ($p in $plan) { Write-Host ("  {0,-8} {1} on {2}" -f $p.Action, $p.Attribute, $p.OU) -ForegroundColor $(if ($p.Action -in 'add', 'remove') { 'Yellow' } else { 'DarkGray' }) }
-$todo = @($plan | Where-Object { $_.Action -in 'add', 'remove' })
-if (-not $write) { Write-Host "`n$($todo.Count) ACE(s) to $(if ($Remove) { 'remove' } else { 'add' }). Nothing changed - run again with -Apply." -ForegroundColor Cyan; return }
-Invoke-EpsAdDelegationPlan -Directory $dir -Plan $todo
-Write-Host "`nDone: $($todo.Count) ACE(s) $(if ($Remove) { 'removed' } else { 'added' })." -ForegroundColor Green
+if ($holder) { Write-Host "Protected accounts: the right also goes on $holder - AD copies it onto every protected account (Domain Admins and the like) within about 60 minutes. The worker can then change an ADMIN's tags, and with them his Conditional Access policies: treat it as a Tier 0 account." -ForegroundColor Yellow }
+$args1 = @{ Directory = $dir; Gmsa = $Gmsa; Attributes = $Attributes; ObjectClasses = $ObjectClasses; Remove = $Remove; ProtectedHolderDn = $holder }
+$plan = @(Get-EpsAdDelegationPlan @args1)
+Write-Host "Rights to: $(Get-EpsAdPermissionGroupName -Gmsa $Gmsa) (the gMSA its only member), at $($dir.NamingContext())" -ForegroundColor Cyan
+foreach ($p in $plan) { Write-Host ("  {0,-11} {1,-20} {2,-9} on {3}" -f $p.Action, $p.Attribute, $p.ObjectClass, $p.OU) -ForegroundColor $(if ($p.Action -in 'add', 'remove', 'creategroup', 'addmember') { 'Yellow' } else { 'DarkGray' }) }
+$todo = @($plan | Where-Object { $_.Action -in 'add', 'remove', 'creategroup', 'addmember' })
+if (-not $write) { Write-Host "`n$($todo.Count) change(s) planned. Nothing changed - run again with -Apply." -ForegroundColor Cyan; return }
+Invoke-EpsAdDelegationPlan -Directory $dir -Gmsa $Gmsa -Plan $todo
+# read back: a new plan has nothing left to do
+$left = @(Get-EpsAdDelegationPlan @args1 | Where-Object { $_.Action -in 'add', 'remove', 'creategroup', 'addmember' })
+if ($left.Count) { throw "read back: $($left.Count) change(s) still not in AD ($(@($left | ForEach-Object { "$($_.Action) $($_.Attribute) $($_.ObjectClass)" }) -join '; '))" }
+Write-Host "`nDone and read back: $($todo.Count) change(s) $(if ($Remove) { 'removed' } else { 'made' })." -ForegroundColor Green

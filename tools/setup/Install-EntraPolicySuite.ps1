@@ -52,6 +52,11 @@
     server gets the group grp-eps-sql-admins (found, else created). Either way the install adds the database setup job's
     identity id-eps-dbinit to the group and the job does the database work - you need no SQL right. An EXISTING server
     always keeps the admin it has - a re-run never changes it (a group admin gets id-eps-dbinit added).
+.PARAMETER RenameJobs
+    On an install made before 2.0.55: move the scheduler job and the update job to the standard job names - only when
+    you give this switch. Each new job is made from the old one's own settings, proven with one run, and only then is the
+    old one deleted and the schedule moved; the identities, their rights and the web address do not change. Without the
+    switch the step only shows its plan.
 .PARAMETER ReplaceSqlAdminGroup
     Replace an existing SQL admin group that is NOT role-assignable (framework §4.5 G1 / G3a) - only when you give this
     switch; a run never does it by itself. The old group is renamed '<name>-old' and kept; a new role-assignable
@@ -142,6 +147,9 @@ param(
     # a run by itself (old renamed '<name>-old' and kept, members copied, the admin moved only after 24 h, moved back if
     # the setup job cannot sign in)
     [switch]$ReplaceSqlAdminGroup,
+    # NAMING-PROGRAMME-1: move an older install's scheduler and update jobs to the standard names (caj-eps-engine,
+    # caj-eps-updater) - a step the operator starts once the install's plan is approved; without it the plan is shown only
+    [switch]$RenameJobs,
     # the update ring (framework §3; TEL-01: the heartbeat's Ring) - empty = keep the install's, or none
     [ValidatePattern('^$|^([0-9]|10)$')][string]$Ring = '',
     # a Graph role of the engine that the approver did not approve: never granted (the feature that needs it then
@@ -232,7 +240,7 @@ if (-not $netPlan.Private) {
     $pe = try { Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/managedEnvironments/$privEnv" -ApiVersion '2024-03-01' -AllowNotFound } catch { $null }
     if ($pe -and "$($pe.name)" -eq $privEnv) { Finish 2 "$ResourceGroup holds a PRIVATE install ($privEnv): run the same command with -PrivateNetwork (and its network parameters)." }
 }
-$ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); Ring = $Ring; SqlLocation = $SqlLocation
+$ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location = $Location; Names = $names; Version = $version; SolutionRoot = $sol; Person = $person; Identities = @{}; ExcludeGraphRoles = @($ExcludeGraphRole); RenameJobs = [bool]$RenameJobs; Ring = $Ring; SqlLocation = $SqlLocation
     SqlAdminGroup = $(if ($SqlAdminGroupId) { @{ ObjectId = $SqlAdminGroupId.ToLowerInvariant(); Name = $(if ($SqlAdminGroupName) { $SqlAdminGroupName } else { "group $SqlAdminGroupId" }) } })
     ReplaceSqlAdminGroup = [bool]$ReplaceSqlAdminGroup
     # INSTALL-PRO (2.0.86): the Pro launcher (invardia.com/support/eps/, its INSTALL-CHANNEL line says 'pro') runs this

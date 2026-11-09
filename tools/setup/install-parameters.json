@@ -113,6 +113,14 @@
       "help": "Replace an existing SQL admin group that is not role-assignable with a new role-assignable one: the old group is renamed '<name>-old' and kept, its members are copied, and the server's admin moves to the new group only once its members have been in it for 24 hours and the database setup job signs in through it - run the install with this switch again after that time. Never done without this switch. Plan it first with -WhatIf."
     },
     {
+      "key": "renameJobs",
+      "parameter": "-RenameJobs",
+      "page": "database",
+      "type": "bool",
+      "default": false,
+      "help": "On an install made before 2.0.55: move the scheduler job and the update job to the standard job names. Each new job is made from the old one's own settings, proven with one run, and the old one is deleted; the identities, rights and web address do not change. Never done without this switch. Plan it first with -WhatIf."
+    },
+    {
       "key": "ring",
       "parameter": "-Ring",
       "page": "advanced",

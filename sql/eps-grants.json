@@ -86,7 +86,8 @@
         "WorkerHeartbeat": ["SELECT"]
       }
     },
-    "eps_tick": {
+    "eps_schedule": {
+      "renamedFrom": "eps_tick",
       "identity": "TickIdentity",
       "grants": {
         "CaMonitor": ["SELECT", "UPDATE"],
