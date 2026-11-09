@@ -1005,7 +1005,8 @@ function Invoke-EpsInstallStep {
             }
             # INSTALL-PRO: a re-run with the Community launcher keeps a Pro install Pro (the update job's EPS_INSTALL_EDITION)
             if ("$($Ctx.Edition)" -ne 'pro') {
-                $upj = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(@(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+                # the update job's Azure name differs per install (caj-eps-updater on 2.0.55+ and after -RenameJobs): map its key
+                $upj = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(Get-EpsAcaJobResourceName -Names $n -Key @(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
                 if (@(@($upj.properties.template.containers | ForEach-Object { $_.env }) | Where-Object { $_.name -eq 'EPS_INSTALL_EDITION' -and "$($_.value)" -eq 'pro' }).Count) { $Ctx.Edition = 'pro' }
             }
             # the jobs on 2025-01-01: the first version that takes an identity on a scale rule (2.0.9, S4)
@@ -1155,7 +1156,7 @@ function Invoke-EpsInstallStep {
             # update job once now - it asks Invardia for the licence (the trial is answered at once) and claims the key.
             # Best effort: the nightly run asks anyway.
             if ("$($Ctx.Edition)" -eq 'pro') {
-                $uj = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/jobs/$(@(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)"
+                $uj = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/jobs/$(Get-EpsAcaJobResourceName -Names $n -Key @(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)"
                 try { [void](Invoke-EpsArm -Method POST -Path "$uj/start" -ApiVersion $script:EpsApi.acajob -Body @{}); Write-Host 'Pro: the update job was started - it asks Invardia for the licence now (Administration > Licence shows it).' -ForegroundColor Cyan }
                 catch { Write-Host "Pro: the update job could not be started now ($((("$($_.Exception.Message)") -split "`n")[0])) - it asks for the licence on its nightly run." -ForegroundColor Yellow }
             }

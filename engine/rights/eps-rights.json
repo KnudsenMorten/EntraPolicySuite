@@ -29,9 +29,7 @@
         "caj-eps-caoptions"
       ],
       "oldNames": {
-        "jobs": [
-          "caj-eps-tick"
-        ],
+        "jobs": [],
         "identities": [
           "id-eps-tick"
         ]
@@ -380,9 +378,7 @@
         "caj-eps-updater"
       ],
       "oldNames": {
-        "jobs": [
-          "caj-eps-update"
-        ],
+        "jobs": [],
         "identities": []
       },
       "rights": [
@@ -516,7 +512,7 @@
       "role": "worker",
       "identity": "id-eps-worker",
       "jobs": [],
-      "note": "Only for the guest case: EPS's hybrid worker on a server that also runs another product's worker; otherwise the server's own managed identity holds these rights. The AD writes are made by the worker's gMSA (delegated on the OUs by Grant-EpsAdDelegation), not by this identity.",
+      "note": "Only for the guest case: EPS's hybrid worker on a server that also runs another product's worker; otherwise the server's own managed identity holds these rights. The AD writes are made by the worker's gMSA (through <gMSA>-PermissionGroup at the domain root, set up by Initialize-EpsHybridWorkerAd - HYBRID-AD-1), not by this identity.",
       "oldNames": {
         "jobs": [],
         "identities": []

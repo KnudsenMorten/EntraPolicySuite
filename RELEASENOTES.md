@@ -4,6 +4,14 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.109 - An install run finds the update job by its real name
+- An install run now finds the update job under the name it has in your install. Before, on an install made with 2.0.55
+  or later, or after -RenameJobs, a re-run with the Community launcher did not see that the install is Pro, and a new
+  Pro install did not start its first licence request at once (the nightly run still asked).
+- The install guide's naming table no longer lists the old job names; it says how an older install moves to the names
+  shown.
+- The rights list describes the hybrid worker's AD rights as they are now set up: one permission group at the domain
+  root.
 ## 2.0.108 - Standard job names, and the hybrid worker's AD rights at the domain root
 - An install made before 2.0.55 can move its schedule check job and its update job to the standard job names with one
   install run with -RenameJobs. Each new job is made from the old one's settings and proven with one run before the old
