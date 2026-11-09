@@ -4,6 +4,23 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.111 - Easier to read: larger text, clearer buttons
+- The text in the web app is larger (body 14 px, nothing under 12 px) and the buttons are bigger.
+- The main action on a page is the filled button. Actions that write or remove something are red: Discard all in the
+  commit queue, Disable on a policy page, and Apply on a scheduled job. In the commit queue, Commit all is the main
+  button and testing first is the second one.
+- A Conditional Access policy page shows its current stage as a marker, and its stage moves are no longer loud buttons.
+- The panel of the selected rule stays in view while you scroll down the rules.
+- The commit queue names the fields in words (for example "Value for AD-synced users") and a new item no longer looks
+  like a deletion.
+- The tag type list says what its mode means, for example "the first matching rule wins".
+- Conditional Access groups say "not read yet" instead of 0 before the groups were read, and Create shows only on a
+  missing group.
+- Settings: Save stands out once a field is changed; the internal name moved into a tooltip.
+- Long page explanations show two lines and open with "Read more".
+- Smaller wording fixes: "Written to" instead of "Dir", "not reported yet" instead of "?", "open tamper events" on the
+  overview, and the CSV import's delete option says DELETE in red.
+
 ## 2.0.110 - Tag values are picked from a list, and the Tag types page loads again
 - The Tag types page showed "Could not load" as soon as one value was set by two or more rules. It loads again.
 - In the rule editor, a tag type with a list of values now gives a dropdown of exactly those values for AD-synced and
