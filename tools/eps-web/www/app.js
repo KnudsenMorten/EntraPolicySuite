@@ -36,12 +36,7 @@
       else if (k.indexOf('on') === 0) e.addEventListener(k.substring(2), v);
       else e.setAttribute(k, v === true ? '' : String(v));
     });
-    // a child is a node or text, alone or in an array (owner 2026-11-09, Tag types "Could not load: Failed to execute
-    // 'appendChild'": "set by rule #3, #7" passed its ', ' separators as text INSIDE an array, which went in as-is)
-    var add = function (x) { if (x === null || x === undefined || x === false) return; if (Array.isArray(x)) { x.forEach(add); return; } e.appendChild(typeof x === 'string' || typeof x === 'number' ? document.createTextNode(String(x)) : x); };
-    for (var i = 2; i < arguments.length; i++) add(arguments[i]);
-    // a page's long explanation opens on a click (GUI-WALK 2026-11-09; the CSS .guide.clamp, the click handler below)
-    if (e.className === 'guide' && (e.textContent || '').length > 200) e.className = 'guide clamp';
+    for (var i = 2; i < arguments.length; i++) { var c = arguments[i]; if (c === null || c === undefined) continue; if (Array.isArray(c)) c.forEach(function (x) { if (x) e.appendChild(x); }); else e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
     return e;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
@@ -349,7 +344,7 @@
   // ---- pages -------------------------------------------------------------------------------------------------------
   // a count; with href the whole card is a link to what it counts (ADMIN-WALK: "click 3 open tag changes to get to them")
   function card(num, label, alert, href) {
-    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: num === null || num === undefined || num === '' ? '-' : (typeof num === 'number' ? fmtNum(num) : String(num)) }), el('div', { class: 'lbl', text: label }));
+    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: fmtNum(num) }), el('div', { class: 'lbl', text: label }));
     return c;
   }
   function stCell(key) { return function (r) { return 'st-' + r[key]; }; }
@@ -440,8 +435,7 @@
     var now = r.isSet ? r.value : r.default;
     var canEdit = r.editable && isRole(r.role);
     var head = el('div', { class: 'srow' });
-    // GUI-WALK (owner 2026-11-09): the internal key is a tooltip on the label, not a subtitle that pushes the help out
-    var name = el('div', { class: 'sname' }, el('div', { class: 'slabel', text: r.label, title: r.key }));
+    var name = el('div', { class: 'sname' }, el('div', { class: 'slabel', text: r.label }), el('div', { class: 'skey', text: r.key }));
     if (!r.active) name.appendChild(el('span', { class: 'badge', text: 'not used in this release' }));
     head.appendChild(name);
     var ctl = null, read = null;
@@ -480,16 +474,12 @@
       el('button', { type: 'button', class: 'link', text: 'History', onclick: toggle(historyPanel) }));
     if (canEdit) {
       acts.appendChild(document.createTextNode(' '));
-      // GUI-WALK: Save is quiet until the field is changed, then it is the one filled button on the row
-      var saveBtn = el('button', { type: 'button', class: 'secondary', text: 'Save', onclick: function () {
+      acts.appendChild(el('button', { type: 'button', text: 'Save', onclick: function () {
         var next = read();
         var norm = function (v) { return r.type === 'list' ? JSON.stringify(parseList(v)) : String(v === null || v === undefined ? '' : v); };
         if (norm(next) === norm(now)) { status('No change to save for ' + r.label + '.'); return; }
         saveSetting(r, next);
-      } });
-      acts.appendChild(saveBtn);
-      var dirty = function () { var n0 = function (v) { return r.type === 'list' ? JSON.stringify(parseList(v)) : String(v === null || v === undefined ? '' : v); }; saveBtn.className = n0(read()) === n0(now) ? 'secondary' : ''; };
-      if (ctl) { ctl.addEventListener('input', dirty); ctl.addEventListener('change', dirty); }
+      } }));
       if (r.isSet && r.value !== r.default) { acts.appendChild(document.createTextNode(' ')); acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Use default', onclick: function () { saveSetting(r, r.default); } })); }
     }
     head.appendChild(acts);
@@ -509,7 +499,7 @@
     }
     else if (!canEdit) meta.appendChild(document.createTextNode('Changed by a' + (r.role === 'Admin' ? 'n Admin' : ' SuperAdmin') + '. '));
     if (r.isSet && r.updatedAtUtc) { meta.appendChild(document.createTextNode('Changed ')); meta.appendChild(timeEl(r.updatedAtUtc)); if (r.updatedBy) meta.appendChild(document.createTextNode(' by ' + r.updatedBy)); meta.appendChild(document.createTextNode('.')); }
-    else meta.appendChild(document.createTextNode('Default: ' + showValue(r, r.default).replace(/^\((.*)\)$/, '$1') + '.'));
+    else meta.appendChild(document.createTextNode('Default (' + showValue(r, r.default) + ').'));
     return el('div', { class: 'setting' }, head, meta, panel);
   }
 
@@ -583,42 +573,13 @@ function schedPicker(current, job) {
     return k === 'daily' ? 'daily ' + tm : k === 'weekly' ? 'weekly ' + day.value + ' ' + tm : k === 'monthly' ? 'monthly ' + mday.value + ' ' + tm : k === 'minutes' ? 'every ' + mins.value + 'm' : k === 'hours' ? 'every ' + hrs.value + 'h' : 'manual';
   } };
 }
-  // owner 2026-11-09 ("what does first mean ?"): the value mode in words - which matching rule's value is written
-  function valueModeText(m) {
-    return m === 'Last' ? 'the last matching rule wins' : m === 'Multiple' ? 'all matching values, comma-separated' : 'the first matching rule wins';
-  }
   function valueInput(tt, cur, label) {
-    // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type WITH a value list is
-    // picked from that list - nothing to type, so nothing the server refuses. A pattern entry (e.g. v1's Exchange_*)
-    // adds "Other value matching <pattern>", which opens a field for that one value. Only a tag type WITHOUT a list
-    // (free text, e.g. AccountInfo) keeps a text field. A stored value that is no longer on the list stays selectable,
-    // marked, so opening an old rule never changes it silently.
-    var vals = (tt && tt.values) || [];
-    var fixed = vals.filter(function (v) { return !v.isPattern; }), pats = vals.filter(function (v) { return v.isPattern; });
-    var curText = textOf(cur);
-    if (!vals.length) {
-      var inp = el('input', { type: 'text', 'aria-label': label, placeholder: label + ' (free text)', maxlength: 1024 });
-      inp.value = curText;
-      return { node: el('span', null, inp), input: inp };
-    }
-    var OTHER = '\u0000other';
-    var onList = function (x) { return fixed.some(function (v) { return String(v.value).toLowerCase() === String(x).toLowerCase(); }); };
-    var sel = el('select', { 'aria-label': label },
-      el('option', { value: '', text: '- no value -' }),
-      fixed.map(function (v) { return el('option', { value: v.value, text: v.value + (v.description ? ' - ' + v.description : '') }); }));
-    if (pats.length) sel.appendChild(el('option', { value: OTHER, text: 'Other value matching ' + pats.map(function (v) { return v.value; }).join(' or ') + '...' }));
-    var other = el('input', { type: 'text', 'aria-label': label + ' (matching ' + pats.map(function (v) { return v.value; }).join(', ') + ')', placeholder: 'a value matching ' + pats.map(function (v) { return v.value; }).join(' or '), maxlength: 1024, hidden: true });
-    if (curText && !onList(curText)) {
-      if (pats.length) { sel.value = OTHER; other.value = curText; other.hidden = false; }
-      else { sel.appendChild(el('option', { value: curText, text: curText + ' (not on the list - pick a listed value)' })); sel.value = curText; }
-    } else {
-      sel.value = curText ? fixed.filter(function (v) { return String(v.value).toLowerCase() === curText.toLowerCase(); })[0].value : '';
-    }
-    sel.addEventListener('change', function () { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); });
-    var hint = el('div', { class: 'smeta', text: 'The values of this tag type - add one on the Tag types page.' });
-    // the caller reads .input.value: the picked value, or the typed one for "Other value matching ..."
-    var proxy = {}; Object.defineProperty(proxy, 'value', { get: function () { return sel.value === OTHER ? other.value : sel.value; } });
-    return { node: el('span', null, sel, other, hint), input: proxy };
+    // the tag type's allowed values as suggestions; the server refuses a value that is not on the list
+    var id = 'vals-' + Math.random().toString(36).substring(2);
+    var dl = el('datalist', { id: id }, ((tt && tt.values) || []).map(function (v) { return el('option', { value: v.value, label: v.description || (v.isPattern ? 'pattern' : '') }); }));
+    var inp = el('input', { type: 'text', list: id, 'aria-label': label, placeholder: label, maxlength: 1024 });
+    inp.value = textOf(cur);
+    return { node: el('span', null, inp, dl), input: inp };
   }
   function ruleEditor(ot, j, card, opts) {
     // card = an existing card (edit), a copy (duplicate) or {} (new); opts = { insertAfter, title, onDone }
@@ -626,7 +587,7 @@ function schedPicker(current, job) {
     box.appendChild(el('h3', { text: opts.title }));
     var errs = el('div', { class: 'errors', hidden: true });
     var types = j.tagTypes.filter(function (t) { return t.enabled || t.name === card.TagType; });
-    var tsel = el('select', { 'aria-label': 'Tag type' }, el('option', { value: '', text: '- tag type -' }), types.map(function (t) { return el('option', { value: t.name, text: t.name + ' (' + t.attribute + ') - ' + valueModeText(t.valueMode) + (t.enabled ? '' : ' - switched off') }); }));
+    var tsel = el('select', { 'aria-label': 'Tag type' }, el('option', { value: '', text: '- tag type -' }), types.map(function (t) { return el('option', { value: t.name, text: t.name + ' (' + t.attribute + ', ' + t.valueMode + ')' + (t.enabled ? '' : ' - switched off') }); }));
     tsel.value = textOf(card.TagType);
     // ADMIN-WALK: the persona offers the ones the rules already use (a new one can still be typed)
     var pid = 'personas-' + Math.random().toString(36).substring(2);
@@ -717,11 +678,6 @@ function schedPicker(current, job) {
   function prettyJson(s) { if (!s) return ''; try { var o = JSON.parse(s); delete o.reason; delete o.expected; return JSON.stringify(o, null, 1); } catch (e) { return textOf(s); } }
   // ADMIN-WALK-2: a staged change as a FIELD diff - the fields that change, before -> after, highlighted; the rest folded
   var QD_SKIP = { reason: 1, expected: 1, ruleId: 1, ruleSet: 1, order: 1, updatedAtUtc: 1, UpdatedAtUtc: 1 };
-  // owner 2026-11-09 (the commit queue showed "tagValueAD" / "tagValueCloud"): the field names in words, keyed lower-case
-  var QD_LABEL = { tagvaluead: 'Value for AD-synced users', tagvaluecloud: 'Value for cloud users', tagvalue: 'Value', tagtype: 'Tag type',
-    persona: 'Persona', enabled: 'Runs (enabled)', notes: 'Notes', conditions: 'Conditions', attribute: 'Attribute', valuemode: 'Which rule wins',
-    allowmultiple: 'Allows several values', fallbackad: 'Fallback for AD-synced users', fallbackcloud: 'Fallback for cloud users', description: 'Description',
-    value: 'Value', ispattern: 'A pattern', name: 'Name', insertafter: 'Placed after rule' };
   function qdVal(v) {
     if (v === null || v === undefined || v === '') return '(empty)';
     if (Array.isArray(v)) return v.length ? v.map(function (x) { return x && typeof x === 'object' ? (x.conditionType || x.ConditionType ? (x.conditionType || x.ConditionType) + ' = ' + textOf(x.target !== undefined ? x.target : x.Target) : JSON.stringify(x)) : String(x); }).join('\n') : '(none)';
@@ -740,8 +696,7 @@ function schedPicker(current, job) {
     keys.forEach(function (k) {
       var bk = b.hasOwnProperty(k) ? k : lc[k.toLowerCase()];
       var bv = r.Op === 'Create' || !r.BeforeJson ? undefined : b[bk], av = r.Op === 'Delete' ? undefined : a[k];
-      // a Create has no Before: an empty, plain cell (a struck-out "(new)" made a new rule look like a deletion)
-      var row = el('tr', null, el('th', { text: QD_LABEL[k.toLowerCase()] || k }), el('td', { class: r.Op === 'Create' ? 'qd-none' : 'qd-before', text: r.Op === 'Create' ? '' : qdVal(bv) }), el('td', { class: 'qd-after', text: r.Op === 'Delete' ? '(deleted)' : qdVal(av) }));
+      var row = el('tr', null, el('th', { text: k }), el('td', { class: 'qd-before', text: r.Op === 'Create' ? '(new)' : qdVal(bv) }), el('td', { class: 'qd-after', text: r.Op === 'Delete' ? '(deleted)' : qdVal(av) }));
       (r.Op === 'Create' || r.Op === 'Delete' || qdVal(bv) !== qdVal(av) ? changed : same).push(row);
     });
     var t = el('table', { class: 'qd' }, el('thead', null, el('tr', null, el('th', { text: 'Field' }), el('th', { text: 'Before' }), el('th', { text: 'After' }))), el('tbody', null, changed));
@@ -791,13 +746,11 @@ function schedPicker(current, job) {
           withReason('Discard ' + x.length + ' change(s)', 'They are not written; they stay in the list as discarded.', function (reason) { return api('POST', '/api/queue/discard', { ids: x, reason: reason }); }); } }] : [];
       var tools = el('div', { class: 'toolbar' }, el('span', { class: 'count', text: fmtNum(pending.length) + ' change(s) waiting' }));
       if (isRole('Admin') && pending.length) {
-        // owner 2026-11-09 (the commit queue: "impossible to read"): the main action is Commit (the filled button), testing
-        // first is the secondary one, and Discard all is a red danger button - not a plain link that looks harmless
+        var stOts = {}; pending.forEach(function (r) { if (r.ObjectType) stOts[r.ObjectType] = 1; }); Object.keys(stOts).forEach(function (ot) { tools.appendChild(el('a', { href: '#tagtest/' + ot + '/staged', class: 'btn-link', text: 'Test these staged ' + (ot === 'User' ? 'user' : 'device') + ' changes' })); });
         var allMine = twoMen && pending.every(mine);
-        tools.appendChild(el('button', { type: 'button', text: 'Commit all (' + pending.length + ')', disabled: allMine, title: allMine ? 'A second approver is required: another admin commits the changes you staged.' : null, onclick: function () { commit(pending); } }));
-        var stOts = {}; pending.forEach(function (r) { if (r.ObjectType) stOts[r.ObjectType] = 1; }); Object.keys(stOts).forEach(function (ot) { tools.appendChild(el('a', { href: '#tagtest/' + ot + '/staged', class: 'btn-link secondary', text: 'Test the ' + (ot === 'User' ? 'user' : 'device') + ' changes first' })); });
+        tools.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Commit all (' + pending.length + ')', disabled: allMine, title: allMine ? 'A second approver is required: another admin commits the changes you staged.' : null, onclick: function () { commit(pending); } }));
         if (allMine) tools.appendChild(el('span', { class: 'smeta', text: 'Every waiting change is yours: another admin commits them (second approver).' }));
-        if (isRole('SuperAdmin')) tools.appendChild(el('button', { type: 'button', class: 'danger', text: 'Discard all (' + pending.length + ')', onclick: function () {
+        if (isRole('SuperAdmin')) tools.appendChild(el('button', { type: 'button', class: 'link', text: 'Discard ALL', onclick: function () {
           withReason('Discard ALL ' + pending.length + ' waiting change(s)', 'Every waiting change is discarded, also other admins\' changes.', function (reason) { return api('POST', '/api/queue/discard-all', { expectedCount: pending.length, reason: reason }); }); } }));
       }
       p.appendChild(tools);
@@ -948,7 +901,7 @@ function schedPicker(current, job) {
     var fmt = el('select', { 'aria-label': 'Format' }, el('option', { value: 'v2', text: 'This app\'s CSV export (v2)' }), el('option', { value: 'v1', text: 'v1 ' + (ot === 'User' ? 'Identity_Tagging*.csv' : 'Device_Tagging*.csv') + ' (one or more files)' }));
     var file = el('input', { type: 'file', accept: '.csv,text/csv', 'aria-label': 'CSV file' });
     var delMissing = el('input', { type: 'checkbox' }), replace = el('input', { type: 'checkbox' });
-    var opt2 = el('label', { class: 'c-danger' }, delMissing, ' DELETE every rule that is not in the file'), opt1 = el('label', null, replace, ' replace the rules an earlier v1 import made (instead of adding them)');
+    var opt2 = el('label', null, delMissing, ' also delete the rules the file leaves out'), opt1 = el('label', null, replace, ' replace the rules an earlier v1 import made (instead of adding them)');
     var sync = function () { file.multiple = fmt.value === 'v1'; opt2.hidden = fmt.value !== 'v2'; opt1.hidden = fmt.value !== 'v1'; };
     fmt.addEventListener('change', sync); sync();
     var errs = el('div', { class: 'errors', hidden: true });
@@ -1113,14 +1066,6 @@ function schedPicker(current, job) {
       var cur = cellGet(w, c), inp, extra = null;
       if (c.kind === 'bool') { inp = el('select', { 'aria-label': c.label }, el('option', { value: 'TRUE', text: 'TRUE' }), el('option', { value: 'FALSE', text: 'FALSE' })); inp.value = cur; }
       else if (c.kind === 'tagtype') { inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '-' }), j.tagTypes.filter(function (t) { return t.enabled || t.name === cur; }).map(function (t) { return el('option', { value: t.name, text: t.name }); })); inp.value = cur; }
-      else if (c.kind === 'value' && (function () { var t0 = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0]; return t0 && t0.values.length && !t0.values.some(function (v) { return v.isPattern; }); })()) {
-        // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type with a value list is
-        // picked, as in the rule editor; a stored value no longer on the list stays, marked (a pattern list keeps the field)
-        var tv = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0].values;
-        inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '- no value -' }), tv.map(function (v) { return el('option', { value: v.value, text: v.value }); }));
-        if (cur && !tv.some(function (v) { return String(v.value).toLowerCase() === String(cur).toLowerCase(); })) inp.appendChild(el('option', { value: cur, text: cur + ' (not on the list)' }));
-        inp.value = cur;
-      }
       else {
         inp = el('input', { type: 'text', 'aria-label': c.label, maxlength: c.kind === 'conds' ? '20000' : '1024' });
         inp.value = seed !== undefined ? seed : cur;
@@ -1496,7 +1441,7 @@ function schedPicker(current, job) {
         return box;
       };
       var uniq = function (a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }).sort(); };
-      filt.appendChild(facet('Tag type', 'tags', uniq(rows.map(function (r) { return r.tagType; })), function (r, n) { return r.tagType === n; }, function (n) { return n; }));
+      filt.appendChild(facet('Tag type', 'tags', uniq(rows.map(function (r) { return r.tagType; })), function (r, n) { return r.tagType === n; }, function (n) { return n + (attr[n] ? ' (' + attr[n].replace('extensionAttribute', 'ext') + ')' : ''); }));
       filt.appendChild(facet('Show only', 'states', ['staged', 'hint', 'off', 'on'], function (r, n) { return stateOf(r) === n; }, function (n) { return { staged: 'Staged in the queue', hint: 'Has a hint', off: 'Switched off', on: 'On' }[n]; }));
       filt.appendChild(facet('Condition type', 'conds', uniq([].concat.apply([], rows.map(function (r) { return r.conds.map(function (c) { return c.ConditionType; }); }))), function (r, n) { return r.conds.some(function (c) { return c.ConditionType === n; }); }));
       filt.appendChild(el('button', { type: 'button', class: 'link', text: 'Clear filters', onclick: function () { S.q = ''; S.tags = {}; S.states = {}; S.conds = {}; build(queue); } }));
@@ -1536,7 +1481,7 @@ function schedPicker(current, job) {
             var smap = {}, sorder = [];
             grs.forEach(function (r) { var k = keys[1](r); if (!smap[k]) { smap[k] = []; sorder.push(k); } smap[k].push(r); });
             sorder.forEach(function (k) {
-              if (k) body.appendChild(el('div', { class: 'rx-sub' }, el('strong', { text: k + (S.groupBy !== 'tagtype' && attr[k] ? ' (' + attr[k] + ')' : '') }),
+              if (k) body.appendChild(el('div', { class: 'rx-sub' }, el('strong', { text: k + (S.groupBy !== 'tagtype' && attr[k] ? ' (' + attr[k].replace('extensionAttribute', 'ext') + ')' : '') }),
                 smap[k].length > 1 ? el('span', { class: 'smeta', text: smap[k].length + ' alternatives, tried top down - the first that matches wins' }) : null));
               var tb = el('tbody');
               smap[k].forEach(function (r, i) {
@@ -1920,7 +1865,7 @@ function schedPicker(current, job) {
     var ot = el('select', { 'aria-label': 'Object', disabled: !isNew }, el('option', { value: 'User', text: 'users' }), el('option', { value: 'Device', text: 'devices' })); ot.value = t.ObjectType || 'User';
     var name = el('input', { type: 'text', 'aria-label': 'Name', placeholder: 'e.g. Department', maxlength: 60, disabled: !isNew }); name.value = textOf(t.Name);
     var attr = el('select', { 'aria-label': 'Attribute' }); for (var i = 1; i <= 15; i++) attr.appendChild(el('option', { value: 'extensionAttribute' + i, text: 'extensionAttribute' + i })); attr.value = t.Attribute || 'extensionAttribute10';
-    var mode = el('select', { 'aria-label': 'Value mode' }, ['First', 'Last', 'Multiple'].map(function (m) { return el('option', { value: m, text: m + ' - ' + valueModeText(m) }); })); mode.value = t.ValueMode || 'First';
+    var mode = el('select', { 'aria-label': 'Value mode' }, ['First', 'Last', 'Multiple'].map(function (m) { return el('option', { value: m, text: m }); })); mode.value = t.ValueMode || 'First';
     var multi = el('input', { type: 'checkbox' }); multi.checked = !!t.AllowMultiple;
     var en = el('input', { type: 'checkbox' }); en.checked = t.Enabled !== false;
     var desc = el('input', { type: 'text', 'aria-label': 'Description', maxlength: 1000 }); desc.value = textOf(t.Description);
@@ -1973,7 +1918,7 @@ function schedPicker(current, job) {
         if (!t.Shipped) acts.appendChild(el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { withReason('Delete tag type ' + t.Name, 'Only a tag type without rules and values can be deleted.', function (reason) { return api('DELETE', '/api/tagtypes/' + t.ObjectType + '/' + encodeURIComponent(t.Name), { reason: reason }); }); } }));
       }
       p.appendChild(el('div', { class: 'rule' + (t.Enabled ? '' : ' off') },
-        el('div', { class: 'rhead' }, el('span', { class: 'slabel', text: t.Name }), el('span', { class: 'skey', text: t.ObjectType + ' · ' + t.Attribute + ' · ' + valueModeText(t.ValueMode) + ' · ' + fmtNum(t.Rules) + ' rule(s)' }),
+        el('div', { class: 'rhead' }, el('span', { class: 'slabel', text: t.Name }), el('span', { class: 'skey', text: t.ObjectType + ' · ' + t.Attribute + ' · ' + t.ValueMode + ' · ' + fmtNum(t.Rules) + ' rule(s)' }),
           t.Enabled ? null : el('span', { class: 'badge', text: 'off' }), t.Shipped ? el('span', { class: 'badge', text: 'shipped' }) : null),
         t.Description ? el('div', { class: 'smeta', text: t.Description }) : null,
         el('div', { class: 'smeta', text: 'Fallback: AD-synced ' + (textOf(t.FallbackAD) || '-') + ', cloud ' + (textOf(t.FallbackCloud) || '-') }), vals, acts, slot));
@@ -3029,11 +2974,9 @@ function schedPicker(current, job) {
   function capStageBar(r) {
     // the stages as a strip (the current one marked) and a button per move from here
     var strip = el('div', { class: 'rx-seg' });
-    // GUI-WALK (owner 2026-11-09 "impossible to read"): the strip is a "you are here" marker, not greyed-out buttons; each
-    // move changes the LIVE policy, so none is a loud primary - the moves are secondary and Disable is the red danger one
-    CAP_STAGES.forEach(function (s) { strip.appendChild(el('span', { class: 'seg' + (s === r.Stage ? ' on' : ''), title: CAP_STAGE_TEXT[s], 'aria-current': s === r.Stage ? 'step' : null, text: s })); });
+    CAP_STAGES.forEach(function (s) { strip.appendChild(el('button', { type: 'button', class: s === r.Stage ? 'on' : null, disabled: true, title: CAP_STAGE_TEXT[s], text: s })); });
     var bar = el('div', { class: 'toolbar' }, strip);
-    capMoves(r.Stage).forEach(function (to) { bar.appendChild(el('button', { type: 'button', class: to === 'Disabled' ? 'danger' : 'secondary', text: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); });
+    capMoves(r.Stage).forEach(function (to) { bar.appendChild(el('button', { type: 'button', class: to === 'Disabled' ? 'secondary' : null, text: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); });
     if (!capMoves(r.Stage).length) bar.appendChild(el('span', { class: 'count', text: r.Stage === 'Custom' ? 'Not one of the template\'s stages: look at it in the tenant first (Disable is the only move).' : '' }));
     return bar;
   }
@@ -4219,8 +4162,8 @@ function schedPicker(current, job) {
       var rows = j.rows || [];
       var missing = rows.filter(function (r) { return r.inTenant === 'missing' && r.canCreate; }), ruleOff = rows.filter(function (r) { return r.canRule; });
       var readAll = function () { withReason('Read the groups', 'The engine reads the managed groups and administrative units in the tenant. Read only: nothing changes. The page shows the result when the engine is done.', function (reason) { return api('POST', '/api/groups/check', { reason: reason }); }, { readOnly: true }); };
-      p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), (j.checkedAtUtc ? card(missing.length, 'missing', missing.length > 0) : card('-', 'missing: not read yet')),
-        (j.checkedAtUtc ? card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0) : card('-', 'rules: not read yet')), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
+      p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), card(missing.length, 'missing', missing.length > 0),
+        card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
       // not read yet: every row is 'unknown' - say so where it is seen, with the button next to it
       if (!j.checkedAtUtc && rows.length) p.appendChild(el('div', { class: 'bar bar-warn' }, el('span', { text: 'The groups have not been read from the tenant yet, so their state, members and rules show as unknown. ' }), admin ? el('button', { type: 'button', text: 'Read the groups now', onclick: readAll }) : el('span', { text: 'An Admin can read them.' })));
       p.appendChild(el('div', { class: 'toolbar' },
@@ -4239,7 +4182,7 @@ function schedPicker(current, job) {
       var cols = [{ key: '_act', label: 'Actions', render: function (r) {
           var b = [];
           if (admin) b.push(el('button', { type: 'button', class: 'link', text: 'Check', title: 'Read this group in the tenant now (changes nothing)', onclick: function () { grpCheck([r.name], 'Check ' + r.name); } }));
-          if (owner && r.canCreate && r.inTenant !== 'present') b.push(el('button', { type: 'button', class: r.inTenant === 'missing' ? null : 'secondary', text: 'Create', title: r.inTenant === 'unknown' ? 'Not read yet: the engine checks first and skips it when it is there' : 'Create it as v1 does', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
+          if (owner && r.canCreate) b.push(el('button', { type: 'button', text: 'Create', title: r.inTenant === 'unknown' ? 'Not read yet: the engine checks first and skips it when it is there' : 'Create it as v1 does', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
           if (r.canEditRule) b.push(el('button', { type: 'button', class: 'secondary', text: owner ? 'Edit rule' : 'Rule', onclick: function () { grpRule(r); } }));
           if (owner && r.canRule) b.push(el('button', { type: 'button', class: 'secondary', text: 'Set rule', title: 'Set it back to Entra Policy Suite\'s rule' + (r.custom ? ' (yours)' : ' (v1\'s)'), onclick: function () { grpDialog('rule', { names: [r.name] }, 'Set the rule of ' + r.name); } }));
           if (owner && r.canMembers) b.push(el('button', { type: 'button', class: 'secondary', text: 'Members', onclick: function () { grpMembers(r); } }));
@@ -4464,10 +4407,10 @@ function schedPicker(current, job) {
       if (!(j.workers || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'No hybrid worker has reported yet. Tags of AD-synced users wait in the queue below until one runs - add one with the steps further down.' }));
       bad.forEach(function (w) { p.appendChild(el('div', { class: 'bar bar-warn', text: workerLine(w, j.staleMinutes) })); });
       p.appendChild(table(j.workers || [], [
-        { key: 'name', label: 'Worker' }, { key: 'machine', label: 'Machine' }, { key: 'environment', label: 'AD environment', type: 'cat', render: function (w) { return w.environment || 'default'; } },
-        { key: 'adDomain', label: 'AD domain', render: function (w) { return (w.adDomain || 'not reported yet') + (w.adServer ? ' (' + w.adServer + ')' : ''); } },
+        { key: 'name', label: 'Worker' }, { key: 'machine', label: 'Machine' }, { key: 'environment', label: 'AD environment', type: 'cat', render: function (w) { return w.environment || '(the only one)'; } },
+        { key: 'adDomain', label: 'AD domain', render: function (w) { return (w.adDomain || '?') + (w.adServer ? ' (' + w.adServer + ')' : ''); } },
         { key: 'runAs', label: 'Runs as' }, { key: 'hostType', label: 'Host', type: 'cat' },
-        { key: 'taskState', label: 'Scheduled task', type: 'cat', cls: function (w) { return w.taskProblem ? 'c-danger' : ''; }, render: function (w) { return (w.taskState || 'not reported yet') + (w.taskEnabled === false ? ' (disabled)' : '') + (w.taskLastResult ? ' - last result ' + w.taskLastResult : ''); } },
+        { key: 'taskState', label: 'Scheduled task', type: 'cat', cls: function (w) { return w.taskProblem ? 'c-danger' : ''; }, render: function (w) { return (w.taskState || '?') + (w.taskEnabled === false ? ' (disabled)' : '') + (w.taskLastResult ? ' - last result ' + w.taskLastResult : ''); } },
         { key: 'taskNextRunUtc', label: 'Next run', type: 'date' },
         { key: 'version', label: 'Version', cls: function (w) { return w.behind ? 'c-warning' : ''; }, render: function (w) { return w.version + (w.behind ? ' (behind ' + j.release + ')' : ''); } },
         { key: 'lastSeenUtc', label: 'Last report', type: 'date', cls: function (w) { return w.stale ? 'c-danger' : 'c-good'; } },
@@ -4593,7 +4536,7 @@ function schedPicker(current, job) {
       }).catch(function () { /* the overview still shows */ });
       return api('GET', '/api/overview').then(function (o) {
         p.appendChild(el('div', { class: 'cards' },
-          card(o.tamperOpen, 'open tamper events (tag changes not made by the engine)', o.tamperOpen > 0, '#tamper'), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0, '#tamper'),
+          card(o.tamperOpen, 'open tag changes not made by the engine', o.tamperOpen > 0, '#tamper'), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0, '#tamper'),
           card(o.userRules, 'user tag rules enabled', false, '#rules/User'), card(o.deviceRules, 'device tag rules enabled', false, '#rules/Device'),
           card(o.requestsOpen, 'job requests waiting or running', false, '#jobs'), card(o.workPackagesQueued, 'AD changes queued for the worker', false, '#worker')));
         p.appendChild(el('h3', { text: 'The last run of each job' }));
@@ -4669,7 +4612,7 @@ function schedPicker(current, job) {
       if (runPick) p.appendChild(el('div', { class: 'bar bar-info' }, 'The changes of one run. ', el('a', { href: '#run/' + runPick, text: 'The run' }), ' · ', el('a', { href: '#changes', text: 'All changes' })));
       p.appendChild(pagedTable('/api/changes', [{ key: 'q', label: 'Search object, value, persona', value: qPick }, { key: 'status', label: 'Status', options: ['', 'Planned', 'Applied', 'Failed', 'Skipped', 'Queued'] }].concat(runPick ? [{ key: 'runId', hidden: true, value: runPick }] : []), [
         // ADMIN-WALK-2: the date on one line and linked to its run; a device row shows no "persona" (personas are users')
-        { key: 'AtUtc', label: 'When', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open the run that made this change', text: fmtTime(r.AtUtc) }) : fmtTime(r.AtUtc); } }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Written to', type: 'cat' },
+        { key: 'AtUtc', label: 'When', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open the run that made this change', text: fmtTime(r.AtUtc) }) : fmtTime(r.AtUtc); } }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Dir', type: 'cat' },
         { key: 'TagType', label: 'Tag type', type: 'cat' }, { key: 'Attribute', label: 'Attribute', type: 'cat' }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
         { key: 'Reason', label: 'Why', type: 'cat' }, { key: 'Persona', label: 'Persona (users)', render: function (r) { return r.ObjectType === 'Device' ? '' : textOf(r.Persona); } }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Via', label: 'Via', type: 'cat' }, { key: 'Error', label: 'Error', wrap: true }],
         { exportPath: '/api/changes/export' }));
@@ -4750,7 +4693,7 @@ function schedPicker(current, job) {
             if (pick.value.indexOf('saved:') === 0) body.scopeName = pick.value.substring(6); else if (pick.value === 'adhoc') body.scope = adhoc.read();
             var who = pick.value ? 'the objects in the scope' : 'EVERYONE';
             withReason((mode === 'Apply' ? 'Apply' : 'Preview') + ': ' + jobName(r.Job) + (pick.value ? ' (scoped)' : ''), mode === 'Apply' ? 'The job CHANGES the directory for ' + who + ' (the mass-change guard still applies).' : 'The job computes every change for ' + who + ' and writes none.', function (reason) { body.reason = reason; return api('POST', '/api/jobs/' + r.Job + '/run', body); }, { readOnly: mode !== 'Apply' }); }; };
-          return el('span', null, pick, ' ', el('button', { type: 'button', text: 'Preview', title: 'Computes every change and writes none', onclick: run('Preview') }), ' ', el('button', { type: 'button', class: 'danger', text: 'Apply (writes tags)...', title: 'Writes the tags in the directory for the chosen scope', onclick: run('Apply') }), ' ', el('a', { href: '#tagtest/' + otOf[r.Job], text: 'Test runs' }), adhoc.node);
+          return el('span', null, pick, ' ', el('button', { type: 'button', class: 'secondary', text: 'Preview', onclick: run('Preview') }), ' ', el('button', { type: 'button', text: 'Apply', onclick: run('Apply') }), ' ', el('a', { href: '#tagtest/' + otOf[r.Job], text: 'Test runs' }), adhoc.node);
         } });
         p.appendChild(table(rows, cols));
         p.appendChild(el('h3', { text: 'Saved scopes' }));
@@ -4991,8 +4934,6 @@ function schedPicker(current, job) {
     });
   }
   document.addEventListener('click', closeMenus);
-  // a clamped page explanation opens on a click anywhere in it (a link inside it still works as a link)
-  document.addEventListener('click', function (ev) { var g = ev.target && ev.target.closest ? ev.target.closest('.guide.clamp') : null; if (g && !g.classList.contains('open') && !ev.target.closest('a,button')) g.classList.add('open'); });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(); });
   function render() {
     drawTabs();

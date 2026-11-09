@@ -164,9 +164,9 @@ function Get-EpsWorkerSetup {
     $t = if ($TenantId) { $TenantId } else { '<tenant id>' }; $s = if ($SubscriptionId) { $SubscriptionId } else { '<subscription id>' }
     @(
         [ordered]@{ step = 1; script = 'Initialize-EpsHybridWorkerAd'; where = 'An AD admin, on any domain-joined machine'
-            what = 'Gives the worker the right to write EXACTLY the tag attributes you choose on user (and, for device tags, computer) objects, at the domain root - through the group <gMSA>-PermissionGroup (the gMSA its only member), nothing else. Without -Apply it only shows the plan.'
-            needs = 'A gMSA your AD admin created for the worker computer (the domain needs a KDS root key); the tag attributes you use.'
-            command = & $line 'Initialize-EpsHybridWorkerAd' "-Gmsa 'gmsa-eps' -Attributes <extensionAttribute6, extensionAttribute7> -Apply" }
+            what = 'Gives the worker''s gMSA the right to write EXACTLY the tag attributes on user objects below the OUs you name - nothing else. Without -Apply it only shows the plan.'
+            needs = 'A gMSA your AD admin created for the worker computer (the domain needs a KDS root key); the OUs your users are in.'
+            command = & $line 'Initialize-EpsHybridWorkerAd' "-GmsaName 'gmsa-eps' -OrganizationalUnit '<OU=Users,DC=corp,DC=example>' -Apply" }
         [ordered]@{ step = 2; script = 'Install-EpsHybridWorker'; where = 'On the worker: a domain-joined Windows server (an Azure VM or an Azure Arc-enabled server), elevated'
             what = 'Copies the worker, locks its folder down, writes worker.json (the database and the worker''s name - no secret) and registers the scheduled task ''EntraPolicySuite Hybrid Worker'' (every 5 minutes, as the gMSA). -WhatIf shows every step.'
             needs = 'PowerShell 7; the machine''s managed identity (a VM: Identity on; Arc: built in); the gMSA from step 1.'

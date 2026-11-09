@@ -63,7 +63,7 @@ function Get-EpsAzureMonitorRules {
     .PARAMETER Accounts
         The break-glass accounts: @{ Directory = 'Entra'; UserPrincipalName; ObjectId } or @{ Directory = 'AD'; Name; Sid }.
     #>
-    param([object[]]$Accounts = @(), [string[]]$WatchedAttributes = @(), [string]$EngineAppId, [string[]]$AllowList = @(), [string]$TickJobName = 'caj-eps-engine')
+    param([object[]]$Accounts = @(), [string[]]$WatchedAttributes = @(), [string]$EngineAppId, [string[]]$AllowList = @(), [string]$TickJobName = 'caj-eps-tick')
     $entra = @($Accounts | Where-Object { $_.Directory -ne 'AD' }); $ad = @($Accounts | Where-Object { $_.Directory -eq 'AD' })
     $rules = [System.Collections.Generic.List[object]]::new()
     $add = { param($n, $dn, $desc, $sev, $freq, $win, $q, $op, $th) $rules.Add([pscustomobject]@{ Name = "eps-$n"; DisplayName = "Entra Policy Suite - $dn"; Description = $desc; Severity = $sev; Frequency = $freq; Window = $win; Query = $q; Operator = $op; Threshold = $th }) }

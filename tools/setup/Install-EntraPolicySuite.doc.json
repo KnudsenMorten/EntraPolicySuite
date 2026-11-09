@@ -73,15 +73,6 @@
       "undo": "set the server's Entra admin back to the '-old' group"
     },
     {
-      "target": "Azure",
-      "action": "create",
-      "object": "only with -RenameJobs, on an install made before 2.0.55: the scheduler job and the update job under their standard names, each made from the old job's own settings (same identity, image and schedule), proven with one run; then the old job is deleted",
-      "permission": "-",
-      "scope": "the install's resource group",
-      "why": "every install uses the same job names; the jobs keep their identities and rights, and the web address does not change",
-      "undo": "re-create the old job from the record the step writes (the old job's full settings), then delete the new one"
-    },
-    {
       "target": "Entra",
       "action": "grant",
       "object": "id-eps-updater (assigned to the update job only)",
@@ -247,7 +238,7 @@
     {
       "target": "SQL",
       "action": "create",
-      "object": "by the database setup job caj-eps-dbinit (as id-eps-dbinit, every principal read back): the eps schema; the roles eps_engine, eps_schedule, eps_web, eps_worker with object-level grants from sql/eps-grants.json (no db_datareader / db_datawriter); the database users id-eps-engine (roles eps_engine and eps_schedule - it is also the scheduler) and id-eps-web (eps_web)",
+      "object": "by the database setup job caj-eps-dbinit (as id-eps-dbinit, every principal read back): the eps schema; the roles eps_engine, eps_tick, eps_web, eps_worker with object-level grants from sql/eps-grants.json (no db_datareader / db_datawriter); the database users id-eps-engine (roles eps_engine and eps_tick - it is also the scheduler) and id-eps-web (eps_web)",
       "permission": "per role: SELECT / INSERT / UPDATE / DELETE on named tables only (the audit trail INSERT + SELECT only)",
       "scope": "the database eps",
       "why": "each part reads and writes only its own data (least privilege)",

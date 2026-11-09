@@ -3,101 +3,20 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Delegate the Entra Policy Suite hybrid worker's gMSA in Active Directory",
-  "purpose": "Gives the hybrid worker the right to write exactly the tag attributes you choose on user objects (and computer objects for device tags) anywhere in the domain - one inheritable ACE per attribute and object class at the domain root, granted to the group <gMSA>-PermissionGroup (the gMSA its only member), nothing else. Plan first: without -Apply nothing is changed; with -Apply every change is read back.",
-  "whenToRun": "Once before the worker is installed, and again when a tag type moves to another attribute.",
-  "runAs": [
-    {
-      "scope": "the domain root (and AdminSDHolder with -IncludeProtectedAccounts)",
-      "name": "a domain admin",
-      "kind": "other",
-      "why": "makes the permission group if missing and adds the ACEs"
-    }
-  ],
-  "changes": [
-    {
-      "target": "Active Directory",
-      "action": "create",
-      "object": "<gMSA>-PermissionGroup (when missing), in the gMSA's container, the gMSA its only member",
-      "permission": "-",
-      "scope": "one global security group",
-      "why": "every AD right of the worker goes to this group, never to the gMSA (framework HYBRID-AD-1)",
-      "undo": "delete the group after -Remove -Apply"
-    },
-    {
-      "target": "Active Directory",
-      "action": "grant",
-      "object": "<gMSA>-PermissionGroup",
-      "permission": "WriteProperty on each attribute you list, inherited by descendant user (and with -ObjectClasses computer, computer) objects",
-      "scope": "the domain root",
-      "why": "the worker writes the tags of AD-synced users (and devices)",
-      "undo": "-Remove -Apply (the same ACEs, removed)"
-    },
-    {
-      "target": "Active Directory",
-      "action": "grant",
-      "object": "<gMSA>-PermissionGroup",
-      "permission": "WriteProperty on the same attributes, on the object itself",
-      "scope": "CN=AdminSDHolder,CN=System - only with -IncludeProtectedAccounts",
-      "why": "protected admin accounts get their tags too (a Tier 0 decision)",
-      "undo": "-Remove -IncludeProtectedAccounts -Apply"
-    }
-  ],
+  "purpose": "Gives the worker's gMSA the right to write exactly the tag attributes (extensionAttribute5-9 by default) on user objects below the OUs you name - one inheritable ACE per OU and attribute, nothing else. Plan first: without -Apply nothing is changed.",
+  "whenToRun": "Once before the worker is installed, and again when a tag type moves to another attribute or a new OU holds synced users.",
+  "runAs": [ { "kind": "other", "name": "an AD admin who may change the permissions of the OUs", "scope": "the OUs named", "why": "adds the ACEs" } ],
+  "changes": [ { "target": "Active Directory", "action": "grant", "object": "the gMSA", "permission": "WriteProperty on each named extensionAttribute, inherited by descendant user objects", "scope": "each OU named", "why": "the worker writes the tags of AD-synced users", "undo": "-Remove -Apply (the same ACEs, removed)" } ],
   "parameters": [
-    {
-      "name": "Gmsa",
-      "required": true,
-      "default": null,
-      "help": "the worker's gMSA (name, or DOMAIN\\name$)"
-    },
-    {
-      "name": "Attributes",
-      "required": true,
-      "default": null,
-      "help": "your tag attributes (extensionAttribute1-15 only) - no default, they differ per customer"
-    },
-    {
-      "name": "ObjectClasses",
-      "required": false,
-      "default": "user",
-      "help": "user, and computer for device tags"
-    },
-    {
-      "name": "ProductOu",
-      "required": false,
-      "default": null,
-      "help": "not used by Entra Policy Suite (it owns no AD objects); the shared parameter of the hybrid worker scripts"
-    },
-    {
-      "name": "IncludeProtectedAccounts",
-      "required": false,
-      "default": false,
-      "help": "also protected admin accounts (AdminSDHolder) - makes the worker Tier 0"
-    },
-    {
-      "name": "Server",
-      "required": false,
-      "default": "the domain locator",
-      "help": "a domain controller"
-    },
-    {
-      "name": "Apply",
-      "required": false,
-      "default": false,
-      "help": "make the changes and read them back"
-    },
-    {
-      "name": "Remove",
-      "required": false,
-      "default": false,
-      "help": "remove the ACEs instead (the group stays)"
-    }
+    { "name": "GmsaName", "required": true, "default": null, "help": "the gMSA's name (sAMAccountName without or with the $)" },
+    { "name": "OrganizationalUnit", "required": true, "default": null, "help": "the distinguished names of the OUs with the synced users" },
+    { "name": "Attributes", "required": false, "default": "extensionAttribute5-9", "help": "the tag types' attributes (extensionAttribute1-15 only)" },
+    { "name": "Server", "required": false, "default": "the domain locator", "help": "a domain controller" },
+    { "name": "Apply", "required": false, "default": false, "help": "make the change" },
+    { "name": "Remove", "required": false, "default": false, "help": "remove the ACEs instead" }
   ],
-  "readsOnly": [
-    "the gMSA, the schema's attribute ids, the OUs' permissions"
-  ],
-  "network": [
-    "the domain controllers (LDAP)"
-  ],
+  "readsOnly": [ "the gMSA, the schema's attribute ids, the OUs' permissions" ],
+  "network": [ "the domain controllers (LDAP)" ],
   "whatIf": "Without -Apply (or with -WhatIf): every ACE it would add or remove and the ones already there.",
   "undo": "Run again with -Remove -Apply.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Initialize-EpsHybridWorkerAd"
