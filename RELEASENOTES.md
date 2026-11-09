@@ -4,6 +4,12 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.112 - Committing without a reason works again
+- Committing changes in the commit queue without a reason failed with "internal error". A reason is optional, and a
+  commit without one is written again.
+- A run page showed a placeholder word instead of "-" in its number cards when a number was not known; it shows "-"
+  again.
+
 ## 2.0.111 - Easier to read: larger text, clearer buttons
 - The text in the web app is larger (body 14 px, nothing under 12 px) and the buttons are bigger.
 - The main action on a page is the filled button. Actions that write or remove something are red: Discard all in the

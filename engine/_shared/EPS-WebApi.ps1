@@ -1775,7 +1775,7 @@ function Add-EpsPendingChange {
 
 function Invoke-EpsWebReplay {
     # one staged change, through its own route handler as the committer; audited under the route's own action
-    param([Parameter(Mandatory)]$Commit, [Parameter(Mandatory)]$Row, [Parameter(Mandatory)][string]$CommitReason)
+    param([Parameter(Mandatory)]$Commit, [Parameter(Mandatory)]$Row, [AllowEmptyString()][string]$CommitReason = '')   # a reason is optional (2.0.19): an empty one must not fail the commit (internal 2026-11-09)
     $route = $null; $m = $null
     foreach ($r in Get-EpsWebRoutes) { if ($r.Method -eq $Row.Method -and $Row.Path -match $r.Pattern) { $route = $r; $m = $Matches; break } }
     if (-not $route) { return @{ Status = 500; Body = @{ error = "no route for $($Row.Method) $($Row.Path)" } } }
@@ -1796,7 +1796,7 @@ function Invoke-EpsCommitQueue {
     # commits the chosen Pending rows (oldest first); each one Applied or Failed with the save's own answer. Then ONE
     # tagging run per object type that changed, in the job's own mode (owner 2026-10-31: "Job's mode"), signed by the
     # committer. -Ids empty = refused (the GUI's Commit all sends every id it shows).
-    param([Parameter(Mandatory)]$Commit, [long[]]$Ids = @(), [Parameter(Mandatory)][string]$Reason)
+    param([Parameter(Mandatory)]$Commit, [long[]]$Ids = @(), [AllowEmptyString()][string]$Reason = '')   # optional (2.0.19); empty failed every commit without a reason
     $cs = $Commit.Ctx.ConnectionString
     $rows = @(Invoke-EpsSql -ConnectionString $cs -Query "SELECT * FROM eps.PendingChange WHERE Status = 'Pending' ORDER BY Id" | Where-Object { $Ids -contains [long]$_.Id })
     $commitId = [guid]::NewGuid(); $done = [System.Collections.Generic.List[object]]::new(); $types = @{}

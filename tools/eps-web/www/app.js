@@ -349,7 +349,7 @@
   // ---- pages -------------------------------------------------------------------------------------------------------
   // a count; with href the whole card is a link to what it counts (ADMIN-WALK: "click 3 open tag changes to get to them")
   function card(num, label, alert, href) {
-    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: typeof num === 'number' ? fmtNum(num) : String(num) }), el('div', { class: 'lbl', text: label }));
+    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: num === null || num === undefined || num === '' ? '-' : (typeof num === 'number' ? fmtNum(num) : String(num)) }), el('div', { class: 'lbl', text: label }));
     return c;
   }
   function stCell(key) { return function (r) { return 'st-' + r[key]; }; }
