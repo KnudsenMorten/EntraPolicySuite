@@ -4,6 +4,14 @@ v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
 ## Next (not released yet)
 
+## 2.0.110 - Tag values are picked from a list, and the Tag types page loads again
+- The Tag types page showed "Could not load" as soon as one value was set by two or more rules. It loads again.
+- In the rule editor, a tag type with a list of values now gives a dropdown of exactly those values for AD-synced and
+  cloud users, instead of a text field that refused any value not on the list. A tag type without a list keeps a text
+  field. A pattern value (for generated values) adds "Other value matching ...", and a value an older rule holds that is
+  no longer on the list stays visible and marked.
+- Editing a value cell in the rules grid uses the same dropdown.
+
 ## 2.0.109 - An install run finds the update job by its real name
 - An install run now finds the update job under the name it has in your install. Before, on an install made with 2.0.55
   or later, or after -RenameJobs, a re-run with the Community launcher did not see that the install is Pro, and a new

@@ -36,7 +36,10 @@
       else if (k.indexOf('on') === 0) e.addEventListener(k.substring(2), v);
       else e.setAttribute(k, v === true ? '' : String(v));
     });
-    for (var i = 2; i < arguments.length; i++) { var c = arguments[i]; if (c === null || c === undefined) continue; if (Array.isArray(c)) c.forEach(function (x) { if (x) e.appendChild(x); }); else e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
+    // a child is a node or text, alone or in an array (owner 2026-11-09, Tag types "Could not load: Failed to execute
+    // 'appendChild'": "set by rule #3, #7" passed its ', ' separators as text INSIDE an array, which went in as-is)
+    var add = function (x) { if (x === null || x === undefined || x === false) return; if (Array.isArray(x)) { x.forEach(add); return; } e.appendChild(typeof x === 'string' || typeof x === 'number' ? document.createTextNode(String(x)) : x); };
+    for (var i = 2; i < arguments.length; i++) add(arguments[i]);
     return e;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
@@ -574,12 +577,37 @@ function schedPicker(current, job) {
   } };
 }
   function valueInput(tt, cur, label) {
-    // the tag type's allowed values as suggestions; the server refuses a value that is not on the list
-    var id = 'vals-' + Math.random().toString(36).substring(2);
-    var dl = el('datalist', { id: id }, ((tt && tt.values) || []).map(function (v) { return el('option', { value: v.value, label: v.description || (v.isPattern ? 'pattern' : '') }); }));
-    var inp = el('input', { type: 'text', list: id, 'aria-label': label, placeholder: label, maxlength: 1024 });
-    inp.value = textOf(cur);
-    return { node: el('span', null, inp, dl), input: inp };
+    // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type WITH a value list is
+    // picked from that list - nothing to type, so nothing the server refuses. A pattern entry (e.g. v1's Exchange_*)
+    // adds "Other value matching <pattern>", which opens a field for that one value. Only a tag type WITHOUT a list
+    // (free text, e.g. AccountInfo) keeps a text field. A stored value that is no longer on the list stays selectable,
+    // marked, so opening an old rule never changes it silently.
+    var vals = (tt && tt.values) || [];
+    var fixed = vals.filter(function (v) { return !v.isPattern; }), pats = vals.filter(function (v) { return v.isPattern; });
+    var curText = textOf(cur);
+    if (!vals.length) {
+      var inp = el('input', { type: 'text', 'aria-label': label, placeholder: label + ' (free text)', maxlength: 1024 });
+      inp.value = curText;
+      return { node: el('span', null, inp), input: inp };
+    }
+    var OTHER = '\u0000other';
+    var onList = function (x) { return fixed.some(function (v) { return String(v.value).toLowerCase() === String(x).toLowerCase(); }); };
+    var sel = el('select', { 'aria-label': label },
+      el('option', { value: '', text: '- no value -' }),
+      fixed.map(function (v) { return el('option', { value: v.value, text: v.value + (v.description ? ' - ' + v.description : '') }); }));
+    if (pats.length) sel.appendChild(el('option', { value: OTHER, text: 'Other value matching ' + pats.map(function (v) { return v.value; }).join(' or ') + '...' }));
+    var other = el('input', { type: 'text', 'aria-label': label + ' (matching ' + pats.map(function (v) { return v.value; }).join(', ') + ')', placeholder: 'a value matching ' + pats.map(function (v) { return v.value; }).join(' or '), maxlength: 1024, hidden: true });
+    if (curText && !onList(curText)) {
+      if (pats.length) { sel.value = OTHER; other.value = curText; other.hidden = false; }
+      else { sel.appendChild(el('option', { value: curText, text: curText + ' (not on the list - pick a listed value)' })); sel.value = curText; }
+    } else {
+      sel.value = curText ? fixed.filter(function (v) { return String(v.value).toLowerCase() === curText.toLowerCase(); })[0].value : '';
+    }
+    sel.addEventListener('change', function () { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); });
+    var hint = el('div', { class: 'smeta', text: 'The values of this tag type - add one on the Tag types page.' });
+    // the caller reads .input.value: the picked value, or the typed one for "Other value matching ..."
+    var proxy = {}; Object.defineProperty(proxy, 'value', { get: function () { return sel.value === OTHER ? other.value : sel.value; } });
+    return { node: el('span', null, sel, other, hint), input: proxy };
   }
   function ruleEditor(ot, j, card, opts) {
     // card = an existing card (edit), a copy (duplicate) or {} (new); opts = { insertAfter, title, onDone }
@@ -1066,6 +1094,14 @@ function schedPicker(current, job) {
       var cur = cellGet(w, c), inp, extra = null;
       if (c.kind === 'bool') { inp = el('select', { 'aria-label': c.label }, el('option', { value: 'TRUE', text: 'TRUE' }), el('option', { value: 'FALSE', text: 'FALSE' })); inp.value = cur; }
       else if (c.kind === 'tagtype') { inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '-' }), j.tagTypes.filter(function (t) { return t.enabled || t.name === cur; }).map(function (t) { return el('option', { value: t.name, text: t.name }); })); inp.value = cur; }
+      else if (c.kind === 'value' && (function () { var t0 = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0]; return t0 && t0.values.length && !t0.values.some(function (v) { return v.isPattern; }); })()) {
+        // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type with a value list is
+        // picked, as in the rule editor; a stored value no longer on the list stays, marked (a pattern list keeps the field)
+        var tv = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0].values;
+        inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '- no value -' }), tv.map(function (v) { return el('option', { value: v.value, text: v.value }); }));
+        if (cur && !tv.some(function (v) { return String(v.value).toLowerCase() === String(cur).toLowerCase(); })) inp.appendChild(el('option', { value: cur, text: cur + ' (not on the list)' }));
+        inp.value = cur;
+      }
       else {
         inp = el('input', { type: 'text', 'aria-label': c.label, maxlength: c.kind === 'conds' ? '20000' : '1024' });
         inp.value = seed !== undefined ? seed : cur;
