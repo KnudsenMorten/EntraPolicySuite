@@ -843,10 +843,10 @@
       }
     },
     {
-      "key": "Uplink.Enabled", "group": "Uplink", "label": "Invardia support link (send health and run results)", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "key": "Uplink.Enabled", "group": "Uplink", "label": "Invardia support link", "type": "boolean", "default": "true", "role": "SuperAdmin",
       "confirm": [ { "when": "off", "title": "Turn off the Invardia support link?", "body": "Invardia no longer sees that this install runs, which runs failed or the support state - it marks the install silent, and a failure is only found when you report it." } ],
       "info": {
-        "what": "Sends Entra Policy Suite's health and run results to Invardia support, so support can see problems and updates can roll out. Every 4 hours the Invardia support link job tells Invardia that this install runs (a heartbeat with counts and the state of the jobs), and sends one record per finished run. Only with the per-install key Invardia issued, kept in the install's own Key Vault: without that key nothing is ever sent (there is no anonymous telemetry). Numbers and states only - never a user, device, tag value or object name.",
+        "what": "Sends Entra Policy Suite's health and run results to Invardia support, so support can see problems and updates can roll out. Turning it off stops all reports to Invardia support. Every 4 hours the Invardia support link job tells Invardia that this install runs (a heartbeat with counts and the state of the jobs), and sends one record per finished run. Only with the per-install key Invardia issued, kept in the install's own Key Vault: without that key nothing is ever sent (nothing is ever sent anonymously). Numbers and states only - never a user, device, tag value or object name.",
         "enabled": "On (the default): with the key in the Key Vault, the next Invardia support link run sends the heartbeat and the runs since the last one. Without the key it sends nothing and the job says so.",
         "disabled": "Off: the Invardia support link sends nothing. Invardia marks the install silent after about 5 hours.",
         "risk": "Nothing changes in the directory. Off, Invardia cannot see failures or roll out updates from it. A report that cannot be delivered is retried next cycle; you are never mailed about it. Reversible: switch it on again.",

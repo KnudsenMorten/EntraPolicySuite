@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.125 - The Invardia support link name in the run log and the on/off setting
+Builds on the owner's decision: "must go into all solutions" (2026-11-10, the Invardia support link rule)
+- The run log of the Invardia support link now names it that way ("Invardia support link: ..."), not "uplink".
+- Its on/off setting is labelled Invardia support link and says what turning it off means: it stops all reports to
+  Invardia support.
+
 ## 2.0.124 - The Invardia support link: its own name, and no alarm for one missed report
 Builds on the owner's decision: "must go into all solutions" (2026-11-10, the Invardia support link rule)
 - The job that reports to Invardia is now called the Invardia support link on the Jobs page, the overview, the settings

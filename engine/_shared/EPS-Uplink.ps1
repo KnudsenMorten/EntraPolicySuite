@@ -1066,7 +1066,7 @@ function Invoke-EpsUplinkCycle {
     try {
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Enabled' -Default 'true')" -ne 'true') { & $say 'Info' 'uplink: switched off (Uplink.Enabled) - nothing sent'; return (& $finish 'disabled: switched off (Uplink.Enabled)') }
         $k = Get-EpsUplinkKey
-        if (-not $k.Key) { & $say 'Info' "uplink: disabled - $($k.Reason); nothing sent (identified only, never anonymous)"; return (& $finish "disabled: $($k.Reason)") }
+        if (-not $k.Key) { & $say 'Info' "Invardia support link: disabled - $($k.Reason); nothing sent (identified only, never anonymous)"; return (& $finish "disabled: $($k.Reason)") }
         $key = $k.Key; $res.Mode = 'identified'
         # INSTALL-PRO: the licence fields once per cycle (a read failure = community, never a stop)
         $script:EpsUplinkLicenceFields = $null
@@ -1082,7 +1082,7 @@ function Invoke-EpsUplinkCycle {
             $res.Posts++
             Send-EpsUplinkRecord -Record $rec -Key $key -Endpoint $Endpoint
         }
-        $fail = { param($what, $r) $res.Stopped = "$what $($r.Reason)"; & $say 'Warning' "uplink: $what to $host_ (identified) failed: $($r.Reason) - the cycle stops; the rest goes next cycle" }
+        $fail = { param($what, $r) $res.Stopped = "$what $($r.Reason)"; & $say 'Warning' "Invardia support link: $what to $host_ (identified) failed: $($r.Reason) - the cycle stops; the rest goes next cycle" }
 
         # 1. the heartbeat (every 4 h; an interval is sent only on a 2xx)
         $lastHb = if ($st.heartbeat) { ConvertFrom-EpsUplinkTime $st.heartbeat }
@@ -1095,39 +1095,39 @@ function Invoke-EpsUplinkCycle {
                 # refusal that names none (or names something else) - the liveness record only, as before (§8.17)
                 $named = @(@($r.Fields) | ForEach-Object { "$_" } | Where-Object { $_ -match '^[A-Za-z]{1,40}$' })
                 if ($named.Count -and -not @($named | Where-Object { $script:EpsUplinkNewHeartbeatFields -notcontains $_ }).Count) {
-                    & $say 'Warning' "uplink: heartbeat refused ($($r.Reason)) - sent once more without $($named -join ', ') (Invardia named them)"
+                    & $say 'Warning' "Invardia support link: heartbeat refused ($($r.Reason)) - sent once more without $($named -join ', ') (Invardia named them)"
                     $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc -Drop $named)
                     if ($r.Ok) { $res.Heartbeat = "ok (without $($named -join ', '))" }
                 } else {
-                    & $say 'Warning' "uplink: heartbeat refused ($($r.Reason)) - sent once more without the newer fields (§8.17)"
+                    & $say 'Warning' "Invardia support link: heartbeat refused ($($r.Reason)) - sent once more without the newer fields (§8.17)"
                     $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc -WithoutNewFields)
                     if ($r.Ok) { $res.Heartbeat = 'ok (without the newer fields)' }
                 }
             } elseif ($r.Ok) { $res.Heartbeat = 'ok' }
             if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)
-            & $say 'Info' "uplink: heartbeat sent ($($res.Heartbeat))"
+            & $say 'Info' "Invardia support link: heartbeat sent ($($res.Heartbeat))"
             # framework SUPPORT ACCESS point 2: the customer's consent level from THIS identified heartbeat's answer only
             # (TLS + the install key) - kept in eps.UplinkState (the web app may only read it); absent = the last one kept
             $con = ConvertFrom-EpsUplinkConsent -Body $r.Body
-            if ($con) { try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'support.consent' -Value "$($con.Level)|$($con.AppId)"; & $say 'Info' "uplink: support consent $($con.Level)$(if ($con.AppId) { " (Support app $($con.AppId))" }) - kept" } catch { & $say 'Warning' "uplink: the support consent could not be kept: $($_.Exception.Message)" } }
+            if ($con) { try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'support.consent' -Value "$($con.Level)|$($con.AppId)"; & $say 'Info' "Invardia support link: support consent $($con.Level)$(if ($con.AppId) { " (Support app $($con.AppId))" }) - kept" } catch { & $say 'Warning' "Invardia support link: the support consent could not be kept: $($_.Exception.Message)" } }
             $sup = ConvertFrom-EpsUplinkSupportAnswer -Body $r.Body -NowUtc $NowUtc
             # a session can never exceed the consent: with 'none' (or no consent ever received) an open session is recorded as refused
             if ($sup -and $sup.State -eq 'open') { $kept = try { "$((Get-EpsUplinkState -ConnectionString $ConnectionString)['support.consent'])" } catch { '' }; $sup = Test-EpsSupportWithinConsent -State $sup -Consent $kept }
-            if ($sup) { try { $res.Support = Save-EpsSupportState -ConnectionString $ConnectionString -State $sup -NowUtc $NowUtc; & $say 'Info' $res.Support } catch { & $say 'Warning' "uplink: the support state could not be recorded: $($_.Exception.Message)" } }
+            if ($sup) { try { $res.Support = Save-EpsSupportState -ConnectionString $ConnectionString -State $sup -NowUtc $NowUtc; & $say 'Info' $res.Support } catch { & $say 'Warning' "Invardia support link: the support state could not be recorded: $($_.Exception.Message)" } }
             # INSTALL-PRO (§100.39 / framework §12.6b, as PIM-Uplink): Invardia re-issued the licence -> `supersededBy: <licence id>`
             # in the answer; kept for the update job, which knocks for the successor (verified like any delivery)
             $sb = ConvertFrom-EpsUplinkSupersededBy -Body $r.Body
-            if ($sb -and (Get-Command Set-EpsLicenceSupersededBy -ErrorAction SilentlyContinue)) { try { Set-EpsLicenceSupersededBy -ConnectionString $ConnectionString -LicenceId $sb; & $say 'Info' "uplink: Invardia says the licence is superseded by $sb - the update job asks for it" } catch { & $say 'Warning' "uplink: supersededBy not kept: $($_.Exception.Message)" } }
+            if ($sb -and (Get-Command Set-EpsLicenceSupersededBy -ErrorAction SilentlyContinue)) { try { Set-EpsLicenceSupersededBy -ConnectionString $ConnectionString -LicenceId $sb; & $say 'Info' "Invardia support link: Invardia says the licence is superseded by $sb - the update job asks for it" } catch { & $say 'Warning' "Invardia support link: supersededBy not kept: $($_.Exception.Message)" } }
             # NAM-02: Invardia's environment name, read with each heartbeat; only a good answer replaces the kept one
             # (offline / refused = the last good name stays). Not a POST: outside the POST budget.
             $envr = Get-EpsInvardiaEnvironment -Key $key -Endpoint $Endpoint
             if ($envr.Ok) {
                 $v = $envr.Value; $v.at = ConvertTo-EpsUplinkIso $NowUtc
                 Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'environment' -Value ($v | ConvertTo-Json -Compress)
-                $res.Environment = $v.displayName; & $say 'Info' "uplink: environment name from Invardia: $($v.displayName)"
-            } else { & $say 'Info' "uplink: environment name not read ($($envr.Reason)) - the last one kept" }
-        } else { $res.Heartbeat = 'not due'; & $say 'Info' "uplink: heartbeat not due (last $(ConvertTo-EpsUplinkIso $lastHb))" }
+                $res.Environment = $v.displayName; & $say 'Info' "Invardia support link: environment name from Invardia: $($v.displayName)"
+            } else { & $say 'Info' "Invardia support link: environment name not read ($($envr.Reason)) - the last one kept" }
+        } else { $res.Heartbeat = 'not due'; & $say 'Info' "Invardia support link: heartbeat not due (last $(ConvertTo-EpsUplinkIso $lastHb))" }
 
         # 2. the alerts (§8.19) - OFF by default: Invardia does not take the kind yet
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'true')" -eq 'true') {
@@ -1151,13 +1151,13 @@ function Invoke-EpsUplinkCycle {
                     # (never resent every cycle), and the run records after it still go
                     Set-EpsUplinkState -ConnectionString $ConnectionString -Name "alert:$($a.AlertId)" -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0; refused = $true } | ConvertTo-Json -Compress)
                     $res.Skipped++; Add-EpsUplinkSkip -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc
-                    & $say 'Warning' "uplink: alert $($a.AlertId) refused $($script:EpsUplinkRefusedMax) cycles in a row ($($r.Reason)) - SKIPPED until it is due again"
+                    & $say 'Warning' "Invardia support link: alert $($a.AlertId) refused $($script:EpsUplinkRefusedMax) cycles in a row ($($r.Reason)) - SKIPPED until it is due again"
                     continue
                 }
                 if (-not $r.Ok -and (Test-EpsUplinkRecordRefusal $r)) {
                     # refused for what it IS: resent next cycle, but it never stops the cycle - the run records still go
                     $res.Refused++
-                    & $say 'Warning' "uplink: alert $($a.AlertId) refused ($($r.Reason)) - refusal $($st["refused:alert:$($a.AlertId)"]) of $($script:EpsUplinkRefusedMax) in a row; the run records still go"
+                    & $say 'Warning' "Invardia support link: alert $($a.AlertId) refused ($($r.Reason)) - refusal $($st["refused:alert:$($a.AlertId)"]) of $($script:EpsUplinkRefusedMax) in a row; the run records still go"
                     continue
                 }
                 if (-not $r.Ok) { if ($r.Budget) { $res.Stopped = 'budget' } else { & $fail "alert $($a.AlertId)" $r }; return (& $finish "identified: heartbeat $($res.Heartbeat), $($res.Alerts) alert(s), stopped ($($res.Stopped))") }
@@ -1165,7 +1165,7 @@ function Invoke-EpsUplinkCycle {
                 Set-EpsUplinkState -ConnectionString $ConnectionString -Name "alert:$($a.AlertId)" -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0 } | ConvertTo-Json -Compress)
                 $sentNow++; $res.Alerts++
             }
-            if ($res.Alerts) { & $say 'Info' "uplink: $($res.Alerts) alert record(s) sent" }
+            if ($res.Alerts) { & $say 'Info' "Invardia support link: $($res.Alerts) alert record(s) sent" }
         }
 
         # 3. the run records, one watermark per job
@@ -1177,19 +1177,19 @@ function Invoke-EpsUplinkCycle {
             $streak = if (Test-EpsRunIncomplete -Job "$($run.Job)" -Status "$($run.Status)" -HeldReason "$($run.HeldReason)") { Get-EpsJobRunStreak -ConnectionString $ConnectionString -Job "$($run.Job)" -EndedAtUtc ([datetime]$run.EndedAtUtc) } else { 0 }
             $r = & $post (New-EpsUplinkRunRecord -Run $run -Version $Version -TenantId $TenantId -Key $key -NowUtc $NowUtc -Streak $streak)
             if (-not $r.Ok) {
-                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "uplink: $($script:EpsUplinkMaxPosts) POSTs this cycle ($($script:EpsUplinkMaxRounds) rounds) - the rest of the runs go next cycle"; break }
+                if ($r.Budget) { $res.Stopped = 'budget'; & $say 'Info' "Invardia support link: $($script:EpsUplinkMaxPosts) POSTs this cycle ($($script:EpsUplinkMaxRounds) rounds) - the rest of the runs go next cycle"; break }
                 if (-not (Test-EpsUplinkRecordRefusal $r)) { & $fail "run record $jid" $r; break }   # the CALL failed (key, rate, 5xx, network): stop, all go next cycle
                 # framework lesson (2026-11-08, SI #1155): a refusal of the RECORD repeats on the same input every cycle. It never
                 # blocks another job (the cycle goes on); its own job waits. After EpsUplinkRefusedMax cycles in a row of
                 # refusals for that job, a refused record is SKIPPED (the watermark moves on) - never resent forever.
                 if (Step-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:run:$jid" -Result $r) {
                     $res.Skipped++; Add-EpsUplinkSkip -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc
-                    & $say 'Warning' "uplink: run record $jid ($($run.Status), ended $(ConvertTo-EpsUplinkIso $run.EndedAtUtc)) refused ($($r.Reason)) - $($script:EpsUplinkRefusedMax) cycles in a row for this job: SKIPPED, the runs after it go on"
+                    & $say 'Warning' "Invardia support link: run record $jid ($($run.Status), ended $(ConvertTo-EpsUplinkIso $run.EndedAtUtc)) refused ($($r.Reason)) - $($script:EpsUplinkRefusedMax) cycles in a row for this job: SKIPPED, the runs after it go on"
                     Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$jid" -Value $endIso
                     continue
                 }
                 $held[$jid] = $true; $res.Refused++
-                & $say 'Warning' "uplink: run record $jid refused ($($r.Reason)) - refusal $($st["refused:run:$jid"]) of $($script:EpsUplinkRefusedMax) in a row; its job's runs wait, every other job goes on"
+                & $say 'Warning' "Invardia support link: run record $jid refused ($($r.Reason)) - refusal $($st["refused:run:$jid"]) of $($script:EpsUplinkRefusedMax) in a row; its job's runs wait, every other job goes on"
                 continue
             }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name "watermark:$jid" -Value $endIso
@@ -1197,11 +1197,11 @@ function Invoke-EpsUplinkCycle {
             Clear-EpsUplinkRefusal -ConnectionString $ConnectionString -State $st -Name "refused:run:$jid"
         }
         if (($res.Skipped -or $res.Refused) -and -not $res.Stopped) { $res.Stopped = "refused by Invardia: $($res.Refused) record(s) waiting, $($res.Skipped) skipped after $($script:EpsUplinkRefusedMax) cycles in a row" }
-        if ($res.Runs) { & $say 'Info' "uplink: $($res.Runs) run record(s) sent in $($res.Rounds) round(s)" }
+        if ($res.Runs) { & $say 'Info' "Invardia support link: $($res.Runs) run record(s) sent in $($res.Rounds) round(s)" }
         & $finish "identified: heartbeat $($res.Heartbeat), $($res.Alerts) alert(s), $($res.Runs) run(s)$(if ($res.Stopped) { ", stopped ($($res.Stopped))" })"
     } catch {
         $res.Stopped = 'error'
-        & $say 'Warning' "uplink: the cycle failed: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $key -Max 300)"
+        & $say 'Warning' "Invardia support link: the cycle failed: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $key -Max 300)"
         & $finish 'error: the cycle failed - see the job log'
     }
 }
