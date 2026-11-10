@@ -388,6 +388,56 @@ function ConvertTo-EpsUplinkJobResult {
     switch ($Status) { 'Succeeded' { 'succeeded' } 'Failed' { 'failed' } 'PartlyFailed' { 'failed' } 'Held' { 'stopped' } 'Running' { 'running' } default { '' } }
 }
 
+# IDENTITY-MOVE-1 rule 13 (owner 2026-11-09: "things must also work with the customers when they have time"): the AD
+# delegation is checked by the worker itself, whenever the customer's AD admin has done the step. The engine asks on its
+# heartbeat (the attributes the rules write in AD), the worker answers read only; no person watches and nothing else changes.
+function Request-EpsAdDelegationCheck {
+    # one package per AD environment with a live worker, when none is pending: every heartbeat while waiting, daily once ok. Returns how many.
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
+    $environments = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $NowUtc.AddDays(-7) } -Query "SELECT DISTINCT ISNULL(Environment, '') AS E FROM eps.WorkerHeartbeat WHERE LastSeenUtc >= @s")
+    if (-not $environments.Count) { return 0 }
+    $attributes = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT DISTINCT t.Attribute FROM eps.TagType t JOIN eps.UserTagRule r ON r.TagType = t.Name WHERE t.ObjectType = 'User' AND t.Enabled = 1 AND r.Enabled = 1 AND ISNULL(r.TagValueAD, '') <> ''" | ForEach-Object { "$($_.Attribute)" } | Sort-Object)
+    if (-not $attributes.Count) { return 0 }
+    $queued = 0
+    foreach ($row in $environments) {
+        $environment = "$($row.E)"
+        $last = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ e = $environment } -Query "SELECT TOP (1) Status, QueuedAtUtc, JSON_VALUE(Result, '$.state') AS State FROM eps.WorkPackage WHERE Kind = 'AdDelegationCheck' AND ISNULL(Environment, '') = @e ORDER BY PackageId DESC")[0]
+        if ($last) {
+            if ("$($last.Status)" -in 'Queued', 'Claimed') { continue }
+            $everyHours = if ("$($last.State)" -eq 'ok') { 24 } else { 4 }
+            if (([datetime]$last.QueuedAtUtc).AddHours($everyHours).AddMinutes(-10) -gt $NowUtc) { continue }
+        }
+        $payload = @{ attributes = $attributes } | ConvertTo-Json -Compress
+        [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ p = $payload; e = $(if ($environment) { $environment } else { [DBNull]::Value }) } -Query "INSERT INTO eps.WorkPackage (Kind, Payload, Status, Environment, RequestedBy) VALUES ('AdDelegationCheck', @p, 'Queued', @e, 'engine')")
+        $queued++
+    }
+    $queued
+}
+
+function Get-EpsAdDelegationCheckState {
+    # the newest answer per AD environment -> @{ State = ok | missing | unknown; Detail }, $null = nothing asked yet (no worker, or no rule writes AD)
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "WITH a AS (SELECT Status, Result, Error, ISNULL(Environment, '') AS E, ROW_NUMBER() OVER (PARTITION BY ISNULL(Environment, '') ORDER BY PackageId DESC) AS n FROM eps.WorkPackage WHERE Kind = 'AdDelegationCheck' AND Status IN ('Done', 'Failed')) SELECT Status, Result, Error, E FROM a WHERE n = 1")
+    if (-not $rows.Count) {
+        $pending = [int]@(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT COUNT(*) AS n FROM eps.WorkPackage WHERE Kind = 'AdDelegationCheck'")[0].n
+        if ($pending) { return @{ State = 'unknown'; Detail = 'asked; the hybrid worker has not answered yet' } }
+        return $null
+    }
+    $waiting = [System.Collections.Generic.List[string]]::new(); $failed = [System.Collections.Generic.List[string]]::new()
+    foreach ($row in $rows) {
+        $where = if ("$($row.E)") { "AD environment $($row.E): " } else { '' }
+        if ("$($row.Status)" -eq 'Failed') { $failed.Add("$where$($row.Error)"); continue }
+        $answer = "$($row.Result)" | ConvertFrom-Json
+        if ("$($answer.state)" -eq 'ok') { continue }
+        $parts = @(); if (@($answer.missing).Count) { $parts += "missing: $(@($answer.missing) -join '; ')" }
+        if ([int]$answer.oldOuCount) { $parts += "old rights still on $($answer.oldOuCount) OU(s), remove them: $(@($answer.oldOu) -join '; ')" }
+        $waiting.Add("$where$($parts -join '. '). Your AD admin runs: $($answer.command)")
+    }
+    if ($waiting.Count) { return @{ State = 'missing'; Detail = "waiting for the customer's AD admin - $($waiting -join ' | '). It finishes by itself once done." } }
+    if ($failed.Count) { return @{ State = 'unknown'; Detail = "the check could not be made: $($failed -join ' | ')" } }
+    @{ State = 'ok'; Detail = 'read back by the hybrid worker: every right at the domain root, no old right on an OU' }
+}
+
 function Get-EpsUplinkLongRun {
     <#
       DELIVERY-CONTRACT A (framework §0.1, Pipeline.longRun): the run that goes NOW with the largest ratio of its age to
@@ -463,7 +513,7 @@ function Get-EpsUplinkHeartbeatFacts {
         tamperOpenHigh = (& $q "SELECT COUNT(*) FROM eps.TamperEvent WHERE Status = 'Open' AND Severity = 'High'")
         caFindingsOpen = (& $q "SELECT COUNT(*) FROM eps.CaFinding WHERE Status = 'Open'")
         caPoliciesAdopted = (& $q "SELECT COUNT(*) FROM eps.CaAdoption WHERE Status = 'Adopted'")
-        workPackagesQueued = (& $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Status IN ('Queued', 'Claimed')")
+        workPackagesQueued = (& $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Status IN ('Queued', 'Claimed') AND Kind <> 'AdDelegationCheck'")
         workers = (& $q 'SELECT COUNT(*) FROM eps.WorkerHeartbeat')
         sqlUsedMb = (& $q "SELECT CAST(SUM(CAST(FILEPROPERTY(name, 'SpaceUsed') AS BIGINT)) * 8 / 1024 AS BIGINT) FROM sys.database_files WHERE type = 0")
         sqlMaxMb = (& $q "SELECT CAST(CAST(DATABASEPROPERTYEX(DB_NAME(), 'MaxSizeInBytes') AS BIGINT) / 1048576 AS BIGINT)")
@@ -507,7 +557,9 @@ function Get-EpsUplinkHeartbeatFacts {
             $upd = try { "$(& $q "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = N'Update' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")" } catch { $null }
             # SEC-02-GRAPH (2.0.99): whether the Graph write rights are needed, from the features that are on
             $gwn = if (Get-Command Get-EpsGraphWriteNeed -ErrorAction SilentlyContinue) { try { Get-EpsGraphWriteNeed -Row @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsGraphWriteNeedSql)[0] } catch { $null } }
-            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd -GraphWriteNeed $gwn) } catch { @() } })
+            # IDENTITY-MOVE-1 rule 13: the AD delegation, asked of the worker on this heartbeat and read from its last answer
+            $adCheck = if (Get-Command Request-EpsAdDelegationCheck -ErrorAction SilentlyContinue) { try { [void](Request-EpsAdDelegationCheck -ConnectionString $ConnectionString); Get-EpsAdDelegationCheckState -ConnectionString $ConnectionString } catch { $null } }
+            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd -GraphWriteNeed $gwn -AdDelegation $adCheck) } catch { @() } })
     }
 }
 

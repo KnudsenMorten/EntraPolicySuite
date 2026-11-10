@@ -19,7 +19,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-SignInMethods', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 # EPS PRO: the Pro package's modules (pro/engine/*.ps1, their engine-only writes included); absent without the Pro package
 $proEngine = Join-Path $sol 'pro\engine'
 if (Test-Path -LiteralPath $proEngine) { foreach ($pf in @(Get-ChildItem -LiteralPath $proEngine -Filter '*.ps1' -File | Sort-Object Name)) { . $pf.FullName } }
@@ -108,6 +108,13 @@ try {
         }
         elseif ($msg.Refused) { Say $msg.Refused; exit 0 }
         else { foreach ($k in $msg.Keys) { Set-Item "env:$k" $msg[$k] } }
+    }
+    if ($Job -eq 'Wake') {
+        # FAST-START: the web app's wake-up - one normal engine check now (claims, guards and the run record as every tick)
+        $t = Invoke-EpsTick -ConnectionString $ConnectionString
+        foreach ($d in $t.Decisions) { Say ("{0,-15} {1,-11} {2}" -f $d.Job, $d.Action, $d.Reason) }
+        Say "wake-up check $($t.RunId): $($t.Status)"
+        exit $(if ($t.Status -eq 'Failed') { 1 } else { 0 })
     }
     if ($Job -eq 'Uplink') {
         # UPLINK-1 (owner 2026-11-01 "Yes, identified only"): the heartbeat, alert and run records to Invardia - only with
@@ -371,6 +378,32 @@ WHERE q.Job = 'IdentityReport' AND q.Status = 'Dispatched'
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Users + $res.Devices } else { 0 }); p = [int]$(if ($res) { $res.Gaps } else { 0 }) } `
                 -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0 WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$($res.Users) users, $($res.Devices) devices, $($res.Gaps) open gap view(s)" } else { 'the report failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
+        }
+        exit $(if ($ok) { 0 } else { 1 })
+    }
+    if ($Job -eq 'SignInMethods') {
+        # the per-user sign-in methods (EPS-SignInMethods.ps1, SecurityInsight's design): READ ONLY towards the tenant - reads
+        # the users whose change key moved (privileged first), caches them per user; 8 minutes at most, the next run carries on
+        $runId = [guid]::NewGuid()
+        $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
+UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
+OUTPUT INSERTED.RequestId, INSERTED.RequestedBy
+FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE q.Job = 'SignInMethods' AND q.Status = 'Dispatched'
+'@)[0]
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'SignInMethods', 'Preview', NULL)" | Out-Null
+        $script:__seq = 0
+        $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
+        $ok = $false; $res = $null
+        try {
+            & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - read only (nothing in the tenant is changed)"
+            $res = Invoke-EpsSignInMethodsFill -ConnectionString $ConnectionString -Log $log
+            $ok = -not $res.Refused
+        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        finally {
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Read + $res.Unknown } else { 0 }); a = [int]$(if ($res) { $res.Read } else { 0 }); f = [int]$(if ($res) { $res.Unknown } else { 0 }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @o, Applied = @a, Failed = @f WHERE RunId = @id' | Out-Null
+            if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$($res.Read) user(s) read, $($res.Unknown) unknown; $($res.Stopped)" } else { 'the read failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
     }

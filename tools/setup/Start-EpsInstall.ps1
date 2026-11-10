@@ -29,7 +29,10 @@ param(
     [string]$SqlAdminGroupId,
     [string]$SqlAdminGroupName,
     [switch]$ReplaceSqlAdminGroup,
+    [switch]$RenameJobs,
     [string]$Ring,
+    # PUB-9 / PUB-10: a test ring's build is a GitHub PRE-release v<version>-ring<N> (Publish-EpsRingPrerelease) - take that one
+    [ValidatePattern('^$|^ring[0-2]$')][string]$ReleaseTag = '',
     [string[]]$ExcludeGraphRole,
     [switch]$Quiet,
     [string]$SupportAppId,
@@ -333,7 +336,7 @@ $what = [bool]$WhatIfPreference
 $WhatIfPreference = $false
 # the PUBLIC repository the release (the zip and this launcher as assets) comes from (public since 2.0.20)
 $repo = 'KnudsenMorten/EntraPolicySuite'
-if (-not $GetRelease) { $GetRelease = { param($v) Invoke-RestMethod -Uri $(if ($v) { "https://api.github.com/repos/$repo/releases/tags/v$v" } else { "https://api.github.com/repos/$repo/releases?per_page=30" }) -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } } }
+if (-not $GetRelease) { $GetRelease = { param($v) Invoke-RestMethod -Uri $(if ($v) { "https://api.github.com/repos/$repo/releases/tags/v$v$(if ($ReleaseTag) { "-$ReleaseTag" })" } else { "https://api.github.com/repos/$repo/releases?per_page=30" }) -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } } }
 if (-not $Download) { $Download = { param($url, $file) Invoke-WebRequest -Uri $url -OutFile $file -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } } }
 if (-not $RunInstaller) { $RunInstaller = { param($script, $params) & $script @params; $LASTEXITCODE } }
 
@@ -349,8 +352,9 @@ if ($script:EpsInstallChannel -eq 'pro') {
     $env:EPS_INSTALL_CHANNEL = 'pro'   # read by the installer (this process): the update job then asks Invardia for the licence
 } else {
 $rel = & $GetRelease $Version
-# the latest v2 release (the repo's v1.0.x releases stay where they are and are never picked)
-$rel = @($rel | Where-Object { $_.tag_name -match '^v2\.' -and -not $_.draft -and -not $_.prerelease } | Sort-Object { [version]($_.tag_name.TrimStart('v') -replace '[^0-9.].*$', '') } -Descending)[0]
+# the latest v2 release (the repo's v1.0.x releases stay where they are and are never picked); a pre-release ONLY when it is the
+# ring build asked for (-ReleaseTag, PUB-9 / PUB-10)
+$rel = @($rel | Where-Object { $_.tag_name -match '^v2\.' -and -not $_.draft -and (-not $_.prerelease -or ($ReleaseTag -and $_.tag_name -eq "v$Version-$ReleaseTag")) } | Sort-Object { [version]($_.tag_name.TrimStart('v') -replace '[^0-9.].*$', '') } -Descending)[0]
 if (-not $rel) { Write-Host "No Entra Policy Suite v2 release found in $repo$(if ($Version) { " for $Version" })." -ForegroundColor Red; exit 3 }
 $asset = @($rel.assets | Where-Object { $_.name -match '^EntraPolicySuite-v2[0-9A-Za-z.+-]*\.zip$' })[0]
 if (-not $asset) { Write-Host "Release $($rel.tag_name) has no EntraPolicySuite-v2*.zip asset." -ForegroundColor Red; exit 3 }
@@ -374,6 +378,6 @@ if (-not $installer) { Write-Host 'The release has no tools/setup/Install-EntraP
 
 $pass = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId }
 # the installer's parameters as given (the launcher's own - the version and the test seams - stay here)
-foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'TenantId', 'SubscriptionId', 'Version', 'GetRelease', 'Download', 'RunInstaller', 'ProHttp', 'ProToken', 'ProFetch', 'WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable', 'ProgressAction') { $pass[$k] = $PSBoundParameters[$k] } }
+foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'TenantId', 'SubscriptionId', 'Version', 'ReleaseTag', 'GetRelease', 'Download', 'RunInstaller', 'ProHttp', 'ProToken', 'ProFetch', 'WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable', 'ProgressAction') { $pass[$k] = $PSBoundParameters[$k] } }
 if ($what) { $pass.WhatIf = $true }
 exit (& $RunInstaller $installer.FullName $pass)

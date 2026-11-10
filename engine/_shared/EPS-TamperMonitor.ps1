@@ -42,7 +42,7 @@ function Invoke-EpsGraphDelta {
 function Find-EpsAuditInitiator {
     # Who changed the attribute: the newest directory audit entry for the object since -Since that modified it.
     # Returns @{ Who; Kind = user | app | engine | sync | unknown; Unavailable }.
-    param([Parameter(Mandatory)][string]$ObjectId, [Parameter(Mandatory)][string]$Attribute, [Parameter(Mandatory)][datetime]$Since, [string]$EngineAppId)
+    param([Parameter(Mandatory)][string]$ObjectId, [Parameter(Mandatory)][string]$Attribute, [Parameter(Mandatory)][datetime]$Since, [string]$EngineAppId, [string]$EngineObjectId)
     $f = "activityDateTime ge $($Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) and targetResources/any(t:t/id eq '$ObjectId')"
     $rows = try { @(Invoke-EpsGraph -Path "v1.0/auditLogs/directoryAudits?`$filter=$([uri]::EscapeDataString($f))&`$top=50" -All) }
             catch { return @{ Who = $null; Kind = 'unknown'; Unavailable = "the audit log could not be read ($(("$_" -split '->')[-1].Trim())) - Entra ID P1 and AuditLog.Read.All are needed to say who" } }
@@ -51,7 +51,9 @@ function Find-EpsAuditInitiator {
     if (-not $hit) { return @{ Who = $null; Kind = 'unknown'; Unavailable = $null } }
     $app = $hit.initiatedBy.app; $usr = $hit.initiatedBy.user
     if ($app -and ($app.appId -or $app.displayName)) {
-        $kind = if ($EngineAppId -and $app.appId -eq $EngineAppId) { 'engine' } elseif ("$($app.displayName)" -match '(?i)Entra Connect|Azure AD Connect|AAD Connect|Sync') { 'sync' } else { 'app' }
+        # found live 2026-11-09: an entry by the engine's managed identity can come without an appId ("id-eps-engine ()"), so its
+        # own write read as a foreign app. The service principal's object id says it too; a display name never does (any app can carry one)
+        $kind = if (($EngineAppId -and $app.appId -eq $EngineAppId) -or ($EngineObjectId -and "$($app.servicePrincipalId)" -eq $EngineObjectId)) { 'engine' } elseif ("$($app.displayName)" -match '(?i)Entra Connect|Azure AD Connect|AAD Connect|Sync') { 'sync' } else { 'app' }
         return @{ Who = "$($app.displayName) ($($app.appId))"; Kind = $kind; AppId = [string]$app.appId; Unavailable = $null }
     }
     if ($usr) {
@@ -79,7 +81,8 @@ function Invoke-EpsTamperMonitor {
         The engine's managed identity client id (EPS_ManagedIdentityClientId) - its writes in the audit log are its own.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [ValidateSet('Delta', 'Full')][string]$Mode = 'Delta',
-          [string]$EngineAppId = $env:EPS_ManagedIdentityClientId, [datetime]$NowUtc = [datetime]::UtcNow)
+          [string]$EngineAppId = $env:EPS_ManagedIdentityClientId, [datetime]$NowUtc = [datetime]::UtcNow,
+          [string]$EngineObjectId = $(if (Get-Command Get-EpsEngineObjectId -ErrorAction SilentlyContinue) { try { Get-EpsEngineObjectId } catch { '' } }))
     $runId = [guid]::NewGuid()
     Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; t = $NowUtc; m = $(if ($Mode -eq 'Full') { 'Apply' } else { 'Preview' }) } -Query "INSERT INTO eps.Run (RunId, Job, Mode, StartedAtUtc, Scope) VALUES (@id, 'TamperMonitor', @m, @t, NULL)" | Out-Null
     $events = [System.Collections.Generic.List[object]]::new(); $notes = [System.Collections.Generic.List[string]]::new()
@@ -122,7 +125,7 @@ function Invoke-EpsTamperMonitor {
                     $driftFromEngine = $Mode -eq 'Full' -and $engineLast -and -not [string]::Equals([string]$engineLast.NewValue, $cur, [StringComparison]::OrdinalIgnoreCase)
                     if (-not $differs -and -not $driftFromEngine) { continue }
                     $recordSaysEngine = $engineLast -and [string]::Equals([string]$engineLast.NewValue, $cur, [StringComparison]::OrdinalIgnoreCase) -and ([datetime]$engineLast.AtUtc) -ge ([datetime]$prev.SeenAtUtc).AddHours(-1)
-                    $who = Find-EpsAuditInitiator -ObjectId $id -Attribute $wa.Attribute -Since ([datetime]$prev.SeenAtUtc).AddHours(-1) -EngineAppId $EngineAppId
+                    $who = Find-EpsAuditInitiator -ObjectId $id -Attribute $wa.Attribute -Since ([datetime]$prev.SeenAtUtc).AddHours(-1) -EngineAppId $EngineAppId -EngineObjectId $EngineObjectId
                     if ($who.Unavailable -and -not $notes.Contains($who.Unavailable)) { $notes.Add($who.Unavailable) }
                     if ($recordSaysEngine -and $who.Kind -in 'engine', 'unknown', 'sync') { continue }   # the engine's own write (AD-synced: via the worker)
                     # the engine's record does NOT have this value, so an audit entry by the engine is its own EARLIER write,

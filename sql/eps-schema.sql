@@ -1324,3 +1324,31 @@ ALTER TABLE eps.WorkerHeartbeat ADD
 GO
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 36)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (36, '2.0.102');
+
+GO
+-- v37 (2.0.115, the per-user sign-in methods - SecurityInsight's design; owner 2026-11-09 "Both, as SI (Recommended)" /
+-- "remember to do the cachin"): one row per user - the change key the identity report saw (CurrentStamp / CurrentHash),
+-- the key its detail was read under (ReadStamp / ReadHash), when it was read and tried, and the detail (JSON:
+-- every method, the device behind WHfB / Authenticator, a phone number masked). The SignInMethods job fills it; the
+-- report only writes the current key and reads the detail.
+IF OBJECT_ID('eps.UserSignInMethods') IS NULL
+CREATE TABLE eps.UserSignInMethods (
+    UserId         NVARCHAR(64)   NOT NULL PRIMARY KEY,   -- the Entra object id, lower case
+    Upn            NVARCHAR(320)  NULL,
+    Privileged     BIT            NOT NULL CONSTRAINT DF_UserSignInMethods_Priv DEFAULT 0,
+    CurrentStamp   NVARCHAR(64)   NULL,                   -- the registration report's lastUpdatedDateTime (as the report saw it)
+    CurrentHash    NVARCHAR(64)   NULL,                   -- SHA-256 of its registered methods (lower case, sorted, once each)
+    ReadStamp      NVARCHAR(64)   NULL,                   -- the key the detail was read under
+    ReadHash       NVARCHAR(64)   NULL,
+    ReadAtUtc      DATETIME2      NULL,                   -- NULL = never read: unknown, never "no MFA"
+    LastTryAtUtc   DATETIME2      NULL,                   -- a user tried in the last 10 minutes is not picked again
+    SeenAtUtc      DATETIME2      NOT NULL,               -- the last identity report that listed the user
+    DevicesRead    BIT            NULL,
+    Detail         NVARCHAR(MAX)  NULL,                   -- JSON: every method, the device behind WHfB / Authenticator
+    Error          NVARCHAR(1000) NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_UserSignInMethods_Pick' AND object_id = OBJECT_ID('eps.UserSignInMethods'))
+CREATE INDEX IX_UserSignInMethods_Pick ON eps.UserSignInMethods (Privileged DESC, ReadAtUtc, LastTryAtUtc) INCLUDE (SeenAtUtc, CurrentStamp, CurrentHash, ReadStamp, ReadHash, DevicesRead);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 37)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (37, '2.0.115');

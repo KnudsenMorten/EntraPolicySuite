@@ -1,43 +1,306 @@
 {
-  "_about": "Entra Policy Suite - every right of every identity, ONE list (framework RIGHTS-1.6 / NAMING-PROGRAMME-1, owner 2026-11-09: \"each solution must know exactly what is needed for each identity\"). The install grants from it ADD-ONLY (missing -> added, read back; a right outside it is reported, never removed - owner 2026-11-09 \"i have not approved any removal of graph rights ... then we can talk about clean-up later\"); the setup steps verify against it; the security pack prints it; tests/Test-EpsRights.ps1 fails when code grants a right not listed here. SQL object grants per role are in sql/eps-grants.json (tested both ways by Test-EpsSqlGrants) - this file names the role. Scopes: <rg> = the install's resource group; <acr>, <kv>, <st>, <sql> = the install's registry, key vault, storage account, SQL server. 'when': always | a feature switch (granted only while it is on, removed when off).",
+  "_about": "Entra Policy Suite - every right of every identity, ONE list (framework RIGHTS-1.6 / NAMING-PROGRAMME-1, owner 2026-11-09: \"each solution must know exactly what is needed for each identity\"). The install grants from it ADD-ONLY (missing -> added, read back; a right outside it is reported, never removed - owner 2026-11-09 \"i have not approved any removal of graph rights ... then we can talk about clean-up later\"); the setup steps verify against it; the security pack prints it; tests/Test-EpsRights.ps1 fails when code grants a right not listed here. SQL object grants per role are in sql/eps-grants.json (tested both ways by Test-EpsSqlGrants) - this file names the role. Scopes: <rg> = the install's resource group; <acr>, <kv>, <st>, <sql> = the install's registry, key vault, storage account, SQL server. 'when': always | a feature switch (granted when the customer turns it on; turning it off removes nothing - framework RIGHTS-1.7 point 5). 'featureKey': on every conditional right, the optional component it belongs to (machine key; tests/Test-EpsRights.ps1).",
   "version": 1,
   "product": "entrapolicysuite",
   "code": "eps",
   "webApp": "ca-eps-web",
-  "approval": { "status": "draft - for ONE owner review via Invardia (RIGHTS-1.3)", "quote": "", "date": "" },
+  "approval": {
+    "status": "approved",
+    "quote": "i agree to the other listed permissions",
+    "writeRights": "i said it CAN make write chg which is the whole purpose of the tool. to help fix things",
+    "date": "2026-11-09",
+    "where": "Invardia rights review (RIGHTS-1.3), relayed by Invardia"
+  },
   "identities": [
     {
       "role": "engine",
       "identity": "id-eps-engine",
-      "jobs": ["caj-eps-engine", "caj-eps-usertag", "caj-eps-devicetag", "caj-eps-tamper", "caj-eps-caanalyzer", "caj-eps-idreport", "caj-eps-config", "caj-eps-uplink", "caj-eps-namedloc", "caj-eps-backup", "caj-eps-caoptions"],
-      "oldNames": { "jobs": ["caj-eps-tick"], "identities": ["id-eps-tick"] },
+      "jobs": [
+        "caj-eps-engine",
+        "caj-eps-usertag",
+        "caj-eps-devicetag",
+        "caj-eps-tamper",
+        "caj-eps-caanalyzer",
+        "caj-eps-idreport",
+        "caj-eps-signinmethods",
+        "caj-eps-wake",
+        "caj-eps-config",
+        "caj-eps-uplink",
+        "caj-eps-namedloc",
+        "caj-eps-backup",
+        "caj-eps-caoptions"
+      ],
+      "oldNames": {
+        "jobs": [],
+        "identities": [
+          "id-eps-tick"
+        ]
+      },
       "rights": [
-        { "kind": "azure", "right": "AcrPull", "scope": "<acr>", "when": "always", "feature": "pull the engine image" },
-        { "kind": "azure", "right": "Storage Queue Data Message Sender", "scope": "<st>/queues/eps-<job> (each job queue)", "when": "always", "feature": "the schedule check puts a run request on a job's queue" },
-        { "kind": "azure", "right": "Storage Queue Data Message Processor", "scope": "<st>/queues/eps-<job> (each job queue)", "when": "always", "feature": "a job takes its run request" },
-        { "kind": "azure", "right": "Storage Queue Data Reader", "scope": "<st>/queues/eps-<job> (each job queue)", "when": "always", "feature": "a job peeks its queue" },
-        { "kind": "keyVault", "right": "Key Vault Secrets User", "scope": "<kv>/secrets/uplink-key", "when": "always", "feature": "the uplink to Invardia signs with the install's key" },
-        { "kind": "azure", "right": "Reader", "scope": "<rg>/containerApps/ca-eps-web", "when": "always", "feature": "the heartbeat reports the sign-in front version (OPEN-15)" },
-        { "kind": "graph", "right": "User.Read.All", "when": "always", "feature": "tagging, identity report, CA analyzer" },
-        { "kind": "graph", "right": "Device.Read.All", "when": "always", "feature": "device tagging, identity report" },
-        { "kind": "graph", "right": "GroupMember.Read.All", "when": "always", "feature": "rule conditions on group membership" },
-        { "kind": "graph", "right": "Organization.Read.All", "when": "always", "feature": "tenant name and licences" },
-        { "kind": "graph", "right": "AuditLog.Read.All", "when": "always", "feature": "the tamper monitor names who changed a tag; sign-in activity in the identity report" },
-        { "kind": "graph", "right": "Policy.Read.All", "when": "always", "feature": "the CA policy analyzer and the CA documentation (read only)" },
-        { "kind": "graph", "right": "RoleManagement.Read.Directory", "when": "always", "feature": "the CA policy analyzer (role conditions), the setup steps read the engine's own directory role" },
-        { "kind": "graph", "right": "DeviceManagementManagedDevices.Read.All", "when": "always", "feature": "the identity report's Intune devices (read only)" },
-        { "kind": "graph", "right": "Application.Read.All", "when": "always", "feature": "application names in the CA documentation; the engine reads its own rights" },
-        { "kind": "graph", "right": "Policy.ReadWrite.ConditionalAccess", "when": "always", "feature": "CA lifecycle: a SuperAdmin moves one adopted policy one stage, applied by the engine" },
-        { "kind": "graph", "right": "Group.ReadWrite.All", "when": "always", "feature": "CA groups: the groups the policies use, created / changed only on a SuperAdmin's request" },
-        { "kind": "graph", "right": "AdministrativeUnit.ReadWrite.All", "when": "always", "feature": "CA groups: their administrative units, on a SuperAdmin's request" },
-        { "kind": "graph", "right": "Policy.ReadWrite.AuthenticationMethod", "when": "always", "feature": "get started: the two authentication strengths v1 creates, on a SuperAdmin's request" },
-        { "kind": "graph", "right": "User.ReadWrite.All", "when": "UserTagging.Enabled or TamperMonitor.Enabled or ProStale.DisableEnabled", "feature": "write a user's tag; restore a tampered tag; disable an approved stale account (Pro)" },
-        { "kind": "graph", "right": "Device.ReadWrite.All", "when": "DeviceTagging.Enabled", "feature": "write a device's tag" },
-        { "kind": "exchange", "right": "Exchange.ManageAsApp (Office 365 Exchange Online app role)", "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition", "feature": "mailbox tags and mailbox types through Exchange" },
-        { "kind": "directoryRole", "right": "Exchange Recipient Administrator", "scope": "/", "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition", "feature": "as above (Exchange.ManageAsApp needs a role to act)" },
-        { "kind": "exchange", "right": "Application Mail.Send", "scope": "the sender mailbox only (management scope <sender>-SendScope)", "when": "Mail.Mode = sharedMailbox", "feature": "alert and report mails, sent as the shared mailbox (set up once by an Exchange admin: Initialize-EpsMailSender)" },
-        { "kind": "sql", "right": "eps_engine", "scope": "<sql>/eps", "when": "always", "feature": "the jobs' tables (object grants: sql/eps-grants.json)" },
-        { "kind": "sql", "right": "eps_tick", "scope": "<sql>/eps", "when": "always", "feature": "the schedule check's tables (object grants: sql/eps-grants.json)" }
+        {
+          "kind": "azure",
+          "right": "AcrPull",
+          "scope": "<acr>",
+          "when": "always",
+          "feature": "pull the engine image",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Message Sender",
+          "scope": "<st>/queues/eps-<job> (each job queue)",
+          "when": "always",
+          "feature": "the schedule check puts a run request on a job's queue",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (the scheduler, SEC-AUDIT-1 S4 2.0.9-2.0.10)"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Message Processor",
+          "scope": "<st>/queues/eps-<job> (each job queue)",
+          "when": "always",
+          "feature": "a job takes its run request",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (SEC-AUDIT-1 S4, 2.0.9)"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Reader",
+          "scope": "<st>/queues/eps-<job> (each job queue)",
+          "when": "always",
+          "feature": "a job peeks its queue",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (SEC-AUDIT-1 S4, 2.0.9)"
+        },
+        {
+          "kind": "keyVault",
+          "right": "Key Vault Secrets User",
+          "scope": "<kv>/secrets/uplink-key",
+          "when": "always",
+          "feature": "the uplink to Invardia signs with the install's key",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-01: \"Yes, identified only\", \"Install's Key Vault\" (DESIGN)"
+        },
+        {
+          "kind": "azure",
+          "right": "Reader",
+          "scope": "<rg>/containerApps/ca-eps-web",
+          "when": "always",
+          "feature": "the heartbeat reports the sign-in front version (OPEN-15)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-06 (decision 6479e15b): \"Yes, Reader on that one app\"; 2026-11-08 \"Install run after release\""
+        },
+        {
+          "kind": "graph",
+          "right": "User.Read.All",
+          "when": "always",
+          "feature": "tagging, identity report, CA analyzer",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner decision e48f195e + Invardia ruling 2026-11-07 (no quoted words)"
+        },
+        {
+          "kind": "graph",
+          "right": "Device.Read.All",
+          "when": "always",
+          "feature": "device tagging, identity report",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner decision e48f195e + Invardia ruling 2026-11-07 (no quoted words)"
+        },
+        {
+          "kind": "graph",
+          "right": "GroupMember.Read.All",
+          "when": "always",
+          "feature": "rule conditions on group membership",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (granted 2026-10-30 with the install)"
+        },
+        {
+          "kind": "graph",
+          "right": "Organization.Read.All",
+          "when": "always",
+          "feature": "tenant name and licences",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "Invardia 2026-10-30: \"just do it\" (REQUIREMENTS) - no owner words"
+        },
+        {
+          "kind": "graph",
+          "right": "AuditLog.Read.All",
+          "when": "always",
+          "feature": "the tamper monitor names who changed a tag; sign-in activity in the identity report",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-10-31: \"Yes, add both\" (REQUIREMENTS)"
+        },
+        {
+          "kind": "graph",
+          "right": "PrivilegedEligibilitySchedule.Read.AzureADGroup",
+          "when": "always",
+          "feature": "the identity report: users eligible for a role group through PIM for Groups count as admins (nested chains, as SecurityInsight)",
+          "approval": "owner 2026-11-09 (direct): \"Both, as SI (Recommended)\" - read only"
+        },
+        {
+          "kind": "graph",
+          "right": "PrivilegedAssignmentSchedule.Read.AzureADGroup",
+          "when": "always",
+          "feature": "the identity report: users active in a role group through PIM for Groups count as admins",
+          "approval": "owner 2026-11-09 (direct): \"Both, as SI (Recommended)\" - read only"
+        },
+        {
+          "kind": "graph",
+          "right": "UserAuthenticationMethod.Read.All",
+          "when": "always",
+          "feature": "the per-user sign-in methods (the sign-in methods job, cached per user, re-read on change - as SecurityInsight)",
+          "approval": "owner 2026-11-09 (direct): \"Both, as SI (Recommended)\" - read only"
+        },
+        {
+          "kind": "graph",
+          "right": "Policy.Read.All",
+          "when": "always",
+          "feature": "the CA policy analyzer and the CA documentation (read only)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (granted 2026-10-31 for the CA analyzer, read only)"
+        },
+        {
+          "kind": "graph",
+          "right": "RoleManagement.Read.Directory",
+          "when": "always",
+          "feature": "the CA policy analyzer (role conditions), the setup steps read the engine's own directory role",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (granted 2026-10-30)"
+        },
+        {
+          "kind": "graph",
+          "right": "DeviceManagementManagedDevices.Read.All",
+          "when": "always",
+          "feature": "the identity report's Intune devices (read only)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-10-31: \"Yes, add both\" (REQUIREMENTS)"
+        },
+        {
+          "kind": "graph",
+          "right": "Application.Read.All",
+          "when": "always",
+          "feature": "application names in the CA documentation; the engine reads its own rights",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-01: \"Grant Application.Read.All\" (REQUIREMENTS; DESIGN)"
+        },
+        {
+          "kind": "graph",
+          "right": "Policy.ReadWrite.ConditionalAccess",
+          "when": "always",
+          "feature": "CA lifecycle: a SuperAdmin moves one adopted policy one stage, applied by the engine",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-03: \"Write on approval\", \"SuperAdmin only\" (REQUIREMENTS CA-LIFECYCLE; DESIGN)"
+        },
+        {
+          "kind": "graph",
+          "right": "Group.ReadWrite.All",
+          "when": "always",
+          "feature": "CA groups: the groups the policies use, created / changed only on a SuperAdmin's request",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-05: \"Yes, Group.ReadWrite.All\"; gate \"No, always grant\" (REQUIREMENTS CA-GROUPS; framework 1328-1331)"
+        },
+        {
+          "kind": "graph",
+          "right": "AdministrativeUnit.ReadWrite.All",
+          "when": "always",
+          "feature": "CA groups: their administrative units, on a SuperAdmin's request",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-05: \"Yes, tenant-wide\", \"No, always grant\" (REQUIREMENTS CA-GROUPS)"
+        },
+        {
+          "kind": "graph",
+          "right": "Policy.ReadWrite.AuthenticationMethod",
+          "when": "always",
+          "feature": "get started: the two authentication strengths v1 creates, on a SuperAdmin's request",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-05 ~14:25Z: \"Yes, grant it\" (REQUIREMENTS P7)"
+        },
+        {
+          "kind": "graph",
+          "right": "User.ReadWrite.All",
+          "when": "UserTagging.Enabled or TamperMonitor.Enabled or ProStale.DisableEnabled",
+          "featureKey": "userTagging",
+          "feature": "write a user's tag; restore a tampered tag; disable an approved stale account (Pro)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "granted 2026-10-30 with the install (\"owner via Invardia: install YES\", no per-right words); gating: owner 2026-11-07 \"Yes, remove when unused\" (SEC-02-GRAPH)"
+        },
+        {
+          "kind": "graph",
+          "right": "Device.ReadWrite.All",
+          "when": "DeviceTagging.Enabled",
+          "featureKey": "deviceTagging",
+          "feature": "write a device's tag",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as User.ReadWrite.All"
+        },
+        {
+          "kind": "exchange",
+          "right": "Exchange.ManageAsApp (Office 365 Exchange Online app role)",
+          "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition",
+          "featureKey": "exchange",
+          "feature": "mailbox tags and mailbox types through Exchange",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED OWNER APPROVAL (granted 2026-10-30); gating by Invardia 2026-11-04 (OPEN-09 / SEC-02)"
+        },
+        {
+          "kind": "directoryRole",
+          "right": "Exchange Recipient Administrator",
+          "scope": "/",
+          "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition",
+          "featureKey": "exchange",
+          "feature": "as above (Exchange.ManageAsApp needs a role to act)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as Exchange.ManageAsApp"
+        },
+        {
+          "kind": "exchange",
+          "right": "Application Mail.Send",
+          "scope": "the sender mailbox only (management scope <sender>-SendScope)",
+          "when": "Mail.Mode = sharedMailbox",
+          "featureKey": "mailSender",
+          "feature": "alert and report mails, sent as the shared mailbox (set up once by an Exchange admin: Initialize-EpsMailSender)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-10-31: \"use sender EntraPolicySuite\", \"create shared mailbox\", \"including the alerts\"; Invardia decision 4c05da1a (REQUIREMENTS)"
+        },
+        {
+          "kind": "sql",
+          "right": "eps_engine",
+          "scope": "<sql>/eps",
+          "when": "always",
+          "feature": "the jobs' tables (object grants: sql/eps-grants.json)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
+        },
+        {
+          "kind": "sql",
+          "right": "eps_schedule",
+          "scope": "<sql>/eps",
+          "when": "always",
+          "feature": "the schedule check's tables (object grants: sql/eps-grants.json)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
+        },
+        {
+          "kind": "azure",
+          "right": "Monitoring Metrics Publisher",
+          "scope": "the one data collection rule of the identity report",
+          "when": "the customer ran Initialize-EpsLogAnalytics",
+          "featureKey": "logAnalytics",
+          "feature": "the identity report sends its rows to the customer's Log Analytics",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (a customer script, Initialize-EpsLogAnalytics)"
+        },
+        {
+          "kind": "azure",
+          "right": "Log Analytics Reader",
+          "scope": "the one workspace the customer named",
+          "when": "the customer ran Initialize-EpsLogAnalytics",
+          "featureKey": "logAnalytics",
+          "feature": "the identity report checks its upload landed",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (a customer script, Initialize-EpsLogAnalytics)"
+        }
       ]
     },
     {
@@ -45,72 +308,497 @@
       "identity": "id-eps-web",
       "jobs": [],
       "app": "ca-eps-web",
-      "oldNames": { "jobs": [], "identities": [] },
+      "oldNames": {
+        "jobs": [],
+        "identities": []
+      },
       "rights": [
-        { "kind": "azure", "right": "AcrPull", "scope": "<acr>", "when": "always", "feature": "pull the web and sign-in front images" },
-        { "kind": "keyVault", "right": "Key Vault Crypto Service Encryption User", "scope": "<kv>/keys/signin-front", "when": "always", "feature": "the sign-in front wraps its session keys" },
-        { "kind": "federatedCredential", "right": "federated credential on the 'Entra Policy Suite' app registration", "scope": "the registration", "when": "always", "feature": "the sign-in front signs people in without a secret" },
-        { "kind": "sql", "right": "eps_web", "scope": "<sql>/eps", "when": "always", "feature": "the web app's tables (object grants: sql/eps-grants.json)" },
-        { "kind": "sql", "right": "owner of schema signin", "scope": "<sql>/eps", "when": "always", "feature": "the sign-in front's own session tables" }
+        {
+          "kind": "azure",
+          "right": "AcrPull",
+          "scope": "<acr>",
+          "when": "always",
+          "feature": "pull the web and sign-in front images",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Message Sender",
+          "scope": "<st>/queues/eps-wake (that one queue)",
+          "when": "always",
+          "feature": "FAST-START: right after a request is written, wake the engine check (caj-eps-wake) instead of waiting up to 5 minutes",
+          "approval": "owner 2026-11-09 (direct): \"Web may send a wake-up (Recommended)\""
+        },
+        {
+          "kind": "keyVault",
+          "right": "Key Vault Crypto Service Encryption User",
+          "scope": "<kv>/keys/signin-front",
+          "when": "always",
+          "feature": "the sign-in front wraps its session keys",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-10-30: \"Yes, like PIM\" (REQUIREMENTS; DESIGN)"
+        },
+        {
+          "kind": "federatedCredential",
+          "right": "federated credential on the 'Entra Policy Suite' app registration",
+          "scope": "the registration",
+          "when": "always",
+          "feature": "the sign-in front signs people in without a secret",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "sql",
+          "right": "eps_web",
+          "scope": "<sql>/eps",
+          "when": "always",
+          "feature": "the web app's tables (object grants: sql/eps-grants.json)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
+        },
+        {
+          "kind": "sql",
+          "right": "owner of schema signin",
+          "scope": "<sql>/eps",
+          "when": "always",
+          "feature": "the sign-in front's own session tables",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
+        }
       ]
     },
     {
       "role": "dbinit",
       "identity": "id-eps-dbinit",
-      "jobs": ["caj-eps-dbinit", "caj-eps-support"],
-      "oldNames": { "jobs": [], "identities": [] },
+      "jobs": [
+        "caj-eps-dbinit",
+        "caj-eps-support"
+      ],
+      "oldNames": {
+        "jobs": [],
+        "identities": []
+      },
       "rights": [
-        { "kind": "azure", "right": "AcrPull", "scope": "<acr>", "when": "always", "feature": "pull the engine image" },
-        { "kind": "keyVault", "right": "Key Vault Secrets User", "scope": "<kv>/secrets/uplink-key", "when": "always", "feature": "the support access check reads Invardia's consent state" },
-        { "kind": "group", "right": "member of grp-eps-sql-admins (the SQL server's Entra admin)", "scope": "<sql>", "when": "always", "feature": "the database setup job makes the schema and every role; no person needs database admin rights (SEC-08)" }
+        {
+          "kind": "azure",
+          "right": "AcrPull",
+          "scope": "<acr>",
+          "when": "always",
+          "feature": "pull the engine image",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "keyVault",
+          "right": "Key Vault Secrets User",
+          "scope": "<kv>/secrets/uplink-key",
+          "when": "always",
+          "feature": "the support access check reads Invardia's consent state",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL (OPEN-01, the support-access job; covered only by the uplink approval)"
+        },
+        {
+          "kind": "group",
+          "right": "member of grp-eps-sql-admins (the SQL server's Entra admin)",
+          "scope": "<sql>",
+          "when": "always",
+          "feature": "the database setup job makes the schema and every role; no person needs database admin rights (SEC-08)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-05: \"i propose that it is role assign grp\", \"i agree. safer\", \"delegate what is needed\"; Invardia decision (b) (REQUIREMENTS SQL-ADMIN-GROUP)"
+        }
       ]
     },
     {
       "role": "updater",
       "identity": "id-eps-updater",
-      "jobs": ["caj-eps-updater"],
-      "oldNames": { "jobs": ["caj-eps-update"], "identities": [] },
+      "jobs": [
+        "caj-eps-updater"
+      ],
+      "oldNames": {
+        "jobs": [],
+        "identities": []
+      },
       "rights": [
-        { "kind": "azure", "right": "AcrPull", "scope": "<acr>", "when": "always", "feature": "pull the engine image" },
-        { "kind": "azure", "right": "Contributor", "scope": "<rg>", "when": "always", "feature": "install an approved release: build the image, patch the jobs and the web app" },
-        { "kind": "graph", "right": "PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup", "when": "always", "feature": "renew the database job's SQL admin group membership (framework 4.5 G5)" },
-        { "kind": "graph", "right": "PrivilegedAssignmentSchedule.Read.AzureADGroup", "when": "always", "feature": "as above" },
-        { "kind": "graph", "right": "RoleManagementPolicy.Read.AzureADGroup", "when": "always", "feature": "as above" },
-        { "kind": "graph", "right": "GroupMember.Read.All", "when": "always", "feature": "read the membership back" },
-        { "kind": "graph", "right": "Application.Read.All", "when": "always", "feature": "read the web app registration" },
-        { "kind": "graph", "right": "Application.ReadWrite.OwnedBy", "when": "always", "feature": "keep the web app registration it owns current (SECAUDIT-1a)" },
-        { "kind": "owner", "right": "owner of the 'Entra Policy Suite' app registration and its enterprise application", "scope": "the registration", "when": "always", "feature": "SECAUDIT-1a: only the updater owns it" }
+        {
+          "kind": "azure",
+          "right": "AcrPull",
+          "scope": "<acr>",
+          "when": "always",
+          "feature": "pull the engine image",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-03: \"Contributor, like SI/PIM\" (covers it)"
+        },
+        {
+          "kind": "azure",
+          "right": "Contributor",
+          "scope": "<rg>",
+          "when": "always",
+          "feature": "install an approved release: build the image, patch the jobs and the web app",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-03: \"Contributor, like SI/PIM\" (DESIGN)"
+        },
+        {
+          "kind": "graph",
+          "right": "PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup",
+          "when": "always",
+          "feature": "renew the database job's SQL admin group membership (framework 4.5 G5)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-11-05: \"both setup and upd\", \"invardia must control this\"; Invardia a1a10738 (G5)"
+        },
+        {
+          "kind": "graph",
+          "right": "PrivilegedAssignmentSchedule.Read.AzureADGroup",
+          "when": "always",
+          "feature": "as above",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as above"
+        },
+        {
+          "kind": "graph",
+          "right": "RoleManagementPolicy.Read.AzureADGroup",
+          "when": "always",
+          "feature": "as above",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as above"
+        },
+        {
+          "kind": "graph",
+          "right": "GroupMember.Read.All",
+          "when": "always",
+          "feature": "read the membership back",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "Invardia 2026-11-05 ~21:30Z (G5 changed) - no owner words"
+        },
+        {
+          "kind": "graph",
+          "right": "Application.Read.All",
+          "when": "always",
+          "feature": "read the web app registration",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "graph",
+          "right": "Application.ReadWrite.OwnedBy",
+          "when": "always",
+          "feature": "keep the web app registration it owns current (SECAUDIT-1a)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "Invardia ruling 2026-11-07 (SECAUDIT-1a); owner decisions 12f28394 / 13f28394 (no quoted words)"
+        },
+        {
+          "kind": "owner",
+          "right": "owner of the 'Entra Policy Suite' app registration and its enterprise application",
+          "scope": "the registration",
+          "when": "always",
+          "feature": "SECAUDIT-1a: only the updater owns it",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as Application.ReadWrite.OwnedBy"
+        }
       ]
     },
     {
       "role": "support",
       "identity": "id-eps-support",
-      "jobs": ["caj-eps-supportread"],
-      "oldNames": { "jobs": [], "identities": [] },
+      "jobs": [
+        "caj-eps-supportread"
+      ],
+      "oldNames": {
+        "jobs": [],
+        "identities": []
+      },
       "rights": [
-        { "kind": "azure", "right": "AcrPull", "scope": "<acr>", "when": "always", "feature": "pull the engine image" },
-        { "kind": "azure", "right": "Storage Queue Data Message Processor", "scope": "<st>/queues/eps-supportread", "when": "always", "feature": "take Invardia support's named read request" },
-        { "kind": "azure", "right": "Storage Queue Data Reader", "scope": "<st>/queues/eps-supportread", "when": "always", "feature": "as above" },
-        { "kind": "sql", "right": "eps_supportread", "scope": "<sql>/eps", "when": "always", "feature": "the named support reads + the audit (object grants: sql/eps-grants.json)" }
+        {
+          "kind": "azure",
+          "right": "AcrPull",
+          "scope": "<acr>",
+          "when": "always",
+          "feature": "pull the engine image",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "NO RECORDED APPROVAL"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Message Processor",
+          "scope": "<st>/queues/eps-supportread",
+          "when": "always",
+          "feature": "take Invardia support's named read request",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "Invardia 2026-11-07/08 \"agreed\" (SUP-02) - no owner words"
+        },
+        {
+          "kind": "azure",
+          "right": "Storage Queue Data Reader",
+          "scope": "<st>/queues/eps-supportread",
+          "when": "always",
+          "feature": "as above",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "as above"
+        },
+        {
+          "kind": "sql",
+          "right": "eps_supportread",
+          "scope": "<sql>/eps",
+          "when": "always",
+          "feature": "the named support reads + the audit (object grants: sql/eps-grants.json)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "Invardia 2026-11-07 (SUP-02) + framework 12.23"
+        }
       ]
     },
     {
       "role": "worker",
       "identity": "id-eps-worker",
       "jobs": [],
-      "note": "Only for the guest case: EPS's hybrid worker on a server that also runs another product's worker; otherwise the server's own managed identity holds these rights. The AD writes are made by the worker's gMSA (delegated on the OUs by Grant-EpsAdDelegation), not by this identity.",
-      "oldNames": { "jobs": [], "identities": [] },
+      "note": "Only for the guest case: EPS's hybrid worker on a server that also runs another product's worker; otherwise the server's own managed identity holds these rights. The AD writes are made by the worker's gMSA (through <gMSA>-PermissionGroup at the domain root, set up by Initialize-EpsHybridWorkerAd - HYBRID-AD-1), not by this identity.",
+      "oldNames": {
+        "jobs": [],
+        "identities": []
+      },
       "rights": [
-        { "kind": "sql", "right": "eps_worker", "scope": "<sql>/eps", "when": "a hybrid worker is installed", "feature": "the worker takes AD work packages and reports (object grants: sql/eps-grants.json)" }
+        {
+          "kind": "sql",
+          "right": "eps_worker",
+          "scope": "<sql>/eps",
+          "when": "a hybrid worker is installed",
+          "featureKey": "hybridWorker",
+          "feature": "the worker takes AD work packages and reports (object grants: sql/eps-grants.json)",
+          "approval": "owner 2026-11-09, Invardia rights review: approved",
+          "recorded": "owner 2026-10-30: \"Same server, own account\" (framework)"
+        }
       ]
+    }
+  ],
+  "optionalComponents": [
+    {
+      "key": "userTagging",
+      "title": "Writing to users (user tagging, tamper monitor, stale account clean-up)",
+      "what": "Writes a user's tag, restores a tampered tag, disables a stale account a SuperAdmin approved.",
+      "switches": [ { "setting": "UserTagging.Enabled", "on": "true" }, { "setting": "TamperMonitor.Enabled", "on": "true" }, { "setting": "ProStale.DisableEnabled", "on": "true" } ],
+      "script": { "name": "Enable-EpsUserTagging.ps1", "arguments": "" }
+    },
+    {
+      "key": "deviceTagging",
+      "title": "Writing to devices (device tagging)",
+      "what": "Writes a device's tag.",
+      "switches": [ { "setting": "DeviceTagging.Enabled", "on": "true" } ],
+      "script": { "name": "Enable-EpsDeviceTagging.ps1", "arguments": "" }
+    },
+    {
+      "key": "exchange",
+      "title": "Exchange (mailbox tags and mailbox types)",
+      "what": "Reads mailbox types and writes tags on mailbox objects through Exchange.",
+      "switches": [ { "setting": "UserTagging.Enabled", "on": "true" }, { "setting": "IdentityReport.Enabled", "on": "true" } ],
+      "alsoOnWhen": "mailboxRules",
+      "script": { "name": "Enable-EpsExchangeAccess.ps1", "arguments": "" }
+    },
+    {
+      "key": "mailSender",
+      "title": "Alert and report mails",
+      "what": "Sends alert and report mails as one shared mailbox.",
+      "switches": [ { "setting": "Mail.Mode", "on": "sharedMailbox" } ],
+      "script": { "name": "Initialize-EpsMailSender.ps1", "arguments": "" }
+    },
+    {
+      "key": "logAnalytics",
+      "title": "Identity report to Log Analytics",
+      "what": "Sends the identity report's rows to your Log Analytics workspace.",
+      "switches": [ { "setting": "IdentityReport.LogAnalytics.Enabled", "on": "true" } ],
+      "script": { "name": "Initialize-EpsLogAnalytics.ps1", "arguments": "" }
+    },
+    {
+      "key": "hybridWorker",
+      "title": "Hybrid worker",
+      "what": "A small program on a domain-joined server: it takes the AD work and reports back.",
+      "switches": [],
+      "alsoOnWhen": "workerReports",
+      "script": { "name": "Install-EpsHybridWorker.ps1", "arguments": "" }
+    },
+    {
+      "key": "hybridWorker.adWrite",
+      "title": "Hybrid worker: writing tags in Active Directory",
+      "what": "Writes the tag attributes you list on AD-synced users.",
+      "switches": [],
+      "alsoOnWhen": "workerReports",
+      "script": { "name": "Initialize-EpsHybridWorkerAd.ps1", "arguments": "-Gmsa <gMSA name> -Attributes <the attributes you use>" }
+    },
+    {
+      "key": "hybridWorker.protected",
+      "title": "Hybrid worker: tagging protected AD accounts",
+      "what": "Opt-in: also tags protected admin accounts. This makes the worker a Tier 0 system.",
+      "switches": [],
+      "alsoOnWhen": "notReadable",
+      "script": { "name": "Initialize-EpsHybridWorkerAd.ps1", "arguments": "-Gmsa <gMSA name> -Attributes <the attributes you use> -IncludeProtectedAccounts" }
+    },
+    {
+      "key": "supportAccess",
+      "title": "Invardia support access",
+      "what": "What Invardia support may read or change in this install. You decide it.",
+      "switches": [],
+      "alsoOnWhen": "notReadable",
+      "how": "Set in the Invardia customer portal."
     }
   ],
   "invardiaSupportApp": {
     "_note": "Invardia's Support app is not an EPS identity; listed so nothing granted at an install is unexplained.",
     "rights": [
-      { "kind": "azure", "right": "Contributor", "scope": "<rg>", "when": "the customer's support consent", "feature": "Invardia support (framework SUP)" },
-      { "kind": "azure", "right": "Storage Queue Data Message Sender", "scope": "<st>/queues/eps-supportread", "when": "the install was given -SupportAppId", "feature": "Invardia support's named reads (SUP-02)" },
-      { "kind": "sql", "right": "eps_support_read (user invardia-support)", "scope": "<sql>/eps", "when": "the customer's support consent", "feature": "Invardia support's read" }
+      {
+        "kind": "azure",
+        "right": "Contributor",
+        "scope": "<rg>",
+        "when": "the customer's support consent",
+        "featureKey": "supportAccess",
+        "feature": "Invardia support (framework SUP)"
+      },
+      {
+        "kind": "azure",
+        "right": "Storage Queue Data Message Sender",
+        "scope": "<st>/queues/eps-supportread",
+        "when": "the install was given -SupportAppId",
+        "featureKey": "supportAccess",
+        "feature": "Invardia support's named reads (SUP-02)"
+      },
+      {
+        "kind": "sql",
+        "right": "eps_support_read (user invardia-support)",
+        "scope": "<sql>/eps",
+        "when": "the customer's support consent",
+        "featureKey": "supportAccess",
+        "feature": "Invardia support's read"
+      }
+    ]
+  },
+  "extraHeld": {
+    "_note": "Rights an identity HOLDS at an install that are not in its list: REPORTED, never removed (owner 2026-11-09 \"i have not approved any removal of graph rights ... then we can talk about clean-up later\").",
+    "internal": [
+      {
+        "identity": "id-eps-engine",
+        "right": "Policy.Read.ConditionalAccess",
+        "kind": "graph",
+        "since": "2026-10-31",
+        "note": "granted for the CA analyzer, superseded by Policy.Read.All (a 403 on the policy list 25 h after the grant); removed by hand 2026-11-09 08:10Z and RESTORED 08:50Z on the owner's word; kept until the owner decides a clean-up"
+      }
+    ]
+  },
+  "onPremises": {
+    "_about": "The hybrid worker's ON-PREMISES rights (validated in the worker code: engine/_shared/EPS-AdDirectory.ps1, EPS-AdDelegation.ps1, EPS-HybridWorker.ps1, tools/eps-hybrid-worker/*). Nothing is created, deleted or moved in AD: the worker only READS users and group membership and WRITES the tag attributes (extensionAttribute1-15) of user objects. Owner 2026-11-09 (HYBRID-AD-1): \"normally the perm is on the root folder, not the user ou ... extensions are individual per customer ... it must be consistent\".",
+    "identities": [
+      {
+        "role": "worker (AD)",
+        "identity": "<gMSA>-PermissionGroup (the worker's gMSA its ONLY member; internal: gMSA-EPS-L1-T0-PermissionGroup) - every AD right goes to this group, never to the gMSA (framework HYBRID-AD-1)",
+        "runsAs": "the scheduled task 'EntraPolicySuite Hybrid Worker' (every 5 minutes)",
+        "rights": [
+          {
+            "kind": "ad",
+            "right": "Read (Authenticated Users default)",
+            "scope": "user objects in the domain",
+            "when": "always",
+            "feature": "find a user by UPN; read objectSid, sAMAccountName, userPrincipalName, userAccountControl, lockoutTime, lastLogonTimestamp, accountExpires, whenCreated, description (identity report) and the tag attributes",
+            "grantedBy": "nothing (AD default read)",
+            "code": "EPS-AdDirectory.ps1 FindUser / GetAttribute / GetAllUsers",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "ad",
+            "right": "Read (Authenticated Users default)",
+            "scope": "group objects and their members (recursive)",
+            "when": "a rule uses MemberOfGroup for AD-synced users",
+            "featureKey": "hybridWorker",
+            "feature": "the AD group snapshot the rules read",
+            "grantedBy": "nothing (AD default read)",
+            "code": "EPS-AdDirectory.ps1 GetGroupUserMembers; EPS-HybridWorker.ps1",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "ad",
+            "right": "WriteProperty on extensionAttribute<n> (one ACE per attribute and object class), inherited by descendant user objects - and computer objects for device tags (-ObjectClasses computer)",
+            "scope": "the DOMAIN ROOT; only the attributes the customer lists (-Attributes, no default; internal: extensionAttribute6, 7, 8, 9)",
+            "when": "user tagging on (AD-synced users are tagged in AD)",
+            "featureKey": "hybridWorker.adWrite",
+            "feature": "write a user's tag value in AD (it syncs to Entra)",
+            "grantedBy": "tools/eps-hybrid-worker/Initialize-EpsHybridWorkerAd.ps1 -Gmsa -Attributes -ObjectClasses [-IncludeProtectedAccounts] (a domain admin runs it once; it makes <gMSA>-PermissionGroup when missing; -Apply reads back)",
+            "code": "EPS-AdDelegation.ps1 (refuses any attribute that is not extensionAttribute1-15); EPS-HybridWorker.ps1 (refuses the same at write time)",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "ad",
+            "right": "WriteProperty on the same extensionAttribute<n>, on the object itself",
+            "scope": "CN=AdminSDHolder,CN=System (SDProp copies it onto protected accounts: Domain Admins and the like)",
+            "when": "only with -IncludeProtectedAccounts (opt-in; makes the worker Tier 0)",
+            "featureKey": "hybridWorker.protected",
+            "feature": "tag protected admin accounts too",
+            "grantedBy": "Initialize-EpsHybridWorkerAd.ps1 -IncludeProtectedAccounts",
+            "code": "EPS-AdDelegation.ps1",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          }
+        ],
+        "notGranted": "No create / delete / move of users, groups or computers; no password reset; no group membership change; no computer object right; no right outside the named OUs (+ AdminSDHolder when chosen)."
+      },
+      {
+        "role": "worker (local machine)",
+        "identity": "the gMSA + SYSTEM on the worker server",
+        "runsAs": "two scheduled tasks",
+        "rights": [
+          {
+            "kind": "local",
+            "right": "Log on as a batch job (SeBatchLogonRight)",
+            "scope": "the worker server",
+            "who": "the gMSA",
+            "when": "always",
+            "feature": "the worker task runs as the gMSA",
+            "grantedBy": "Install-EpsHybridWorker.ps1 (secedit)",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "local",
+            "right": "member of the local group 'Hybrid agent extension applications'",
+            "scope": "the worker server (Azure Arc only)",
+            "who": "the gMSA",
+            "when": "the server is Azure Arc",
+            "featureKey": "hybridWorker",
+            "feature": "read the Arc agent's identity key to get the managed identity's token for SQL",
+            "grantedBy": "Install-EpsHybridWorker.ps1",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "local",
+            "right": "Read + execute on <Root> (C:\\EntraPolicySuite, guest: C:\\EPS); Modify on <Root>\\logs",
+            "scope": "the worker's folder only (inheritance removed: SYSTEM + Administrators full)",
+            "who": "the gMSA",
+            "when": "always",
+            "feature": "run the worker code, write its logs",
+            "grantedBy": "Install-EpsHybridWorker.ps1 / Update-EpsHybridWorker.ps1 (icacls)",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          },
+          {
+            "kind": "local",
+            "right": "runs as SYSTEM (Highest)",
+            "scope": "the daily update task 'EntraPolicySuite Hybrid Worker update' (05:30)",
+            "who": "SYSTEM",
+            "when": "always",
+            "feature": "download the install's release, verify its signed digest, switch the worker's folder, self-test, switch back on failure",
+            "grantedBy": "Install-EpsHybridWorker.ps1",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          }
+        ]
+      },
+      {
+        "role": "worker (Azure, for SQL)",
+        "identity": "the server's managed identity (system-assigned on an Azure VM / the Arc agent's) - or id-eps-worker in the guest case",
+        "runsAs": "the worker task",
+        "rights": [
+          {
+            "kind": "sql",
+            "right": "eps_worker",
+            "scope": "<sql>/eps",
+            "when": "a hybrid worker is installed",
+            "featureKey": "hybridWorker",
+            "feature": "take AD work packages, write the AD snapshots and its heartbeat (object grants: sql/eps-grants.json)",
+            "grantedBy": "tools/eps-hybrid-worker/Grant-EpsHybridWorkerAccess.ps1 (or the database job via EPS_DBINIT_WORKER)",
+            "approval": "owner 2026-11-09 HYBRID-AD-1 (framework, approved)"
+          }
+        ]
+      }
     ]
   }
 }

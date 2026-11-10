@@ -183,7 +183,7 @@ function New-EpsWebAppBody {
                             SIGNIN_KEYVAULT_KEY_ID = $KeyId; SIGNIN_UPSTREAM_SCOPE = "api://$ClientId/$($script:EpsWeb.Scope)" } }
                     [ordered]@{ name = 'eps'; image = $Image; resources = @{ cpu = 0.5; memory = '1Gi' }
                         env = & $e @{ EPS_JOB = 'Web'; EPS_SQL_CONNECTION = "Server=tcp:$fqdn,1433;Database=$($n.Database);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30"
-                            EPS_TENANT_ID = $Ctx.TenantId; EPS_WEB_CLIENT_ID = $ClientId; EPS_WEB_PORT = $script:EpsWeb.UpstreamPort; EPS_ManagedIdentityClientId = $w.ClientId } }
+                            EPS_TENANT_ID = $Ctx.TenantId; EPS_STORAGE_ACCOUNT = $n.Storage; EPS_WEB_CLIENT_ID = $ClientId; EPS_WEB_PORT = $script:EpsWeb.UpstreamPort; EPS_ManagedIdentityClientId = $w.ClientId } }
                 )
                 scale = @{ minReplicas = 0; maxReplicas = 1 }
             }

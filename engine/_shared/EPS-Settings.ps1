@@ -126,7 +126,7 @@ function Get-EpsSettingsView {
             if (-not $proOn["$($s.proFeature)"]) { continue }
         }
         $r = $stored[$s.key]
-        [ordered]@{ key = $s.key; group = $s.group; label = $s.label; type = $s.type; values = $s.values; min = $s.min; max = $s.max; maxLength = $s.maxLength
+        [ordered]@{ key = $s.key; group = $s.group; label = $s.label; type = $s.type; values = $s.values; valueLabels = $s.valueLabels; min = $s.min; max = $s.max; maxLength = $s.maxLength
             maxItems = $s.maxItems; itemHint = $s.itemHint; default = $s.default; role = $s.role; editable = ($s.editable -ne $false); setBy = $s.setBy; pick = $s.pick
             active = ($s.active -ne $false); confirm = @($s.confirm | Where-Object { $_ }); info = $s.info
             value = $(if ($r) { $r.Value } else { $null }); isSet = [bool]$r; updatedAtUtc = $(if ($r) { & $at $r.UpdatedAtUtc }); updatedBy = $(if ($r) { $r.UpdatedBy }) }

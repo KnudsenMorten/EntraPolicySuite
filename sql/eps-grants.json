@@ -10,6 +10,7 @@
         "AdGroupSnapshotInfo": ["SELECT", "INSERT", "UPDATE"],
         "AdUserSnapshot": ["SELECT"],
         "AdUserSnapshotInfo": ["SELECT", "INSERT", "UPDATE"],
+      "UserSignInMethods": ["SELECT", "INSERT", "UPDATE", "DELETE"],
         "AuditEvent": ["SELECT", "INSERT"],
         "AdminUnit": ["SELECT", "INSERT", "UPDATE"],
         "BreakGlassAccount": ["SELECT", "INSERT", "UPDATE"],
@@ -86,7 +87,8 @@
         "WorkerHeartbeat": ["SELECT"]
       }
     },
-    "eps_tick": {
+    "eps_schedule": {
+      "renamedFrom": "eps_tick",
       "identity": "TickIdentity",
       "grants": {
         "CaMonitor": ["SELECT", "UPDATE"],

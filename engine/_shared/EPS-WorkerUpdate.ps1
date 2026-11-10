@@ -18,7 +18,7 @@
 
 Set-StrictMode -Off
 $script:EpsWorkerParts = @('engine\_shared', 'tools\eps-hybrid-worker', 'VERSION')
-$script:EpsWorkerRequiredFiles = @('VERSION', 'engine\_shared\EPS-SqlStore.ps1', 'engine\_shared\EPS-AdDirectory.ps1', 'engine\_shared\EPS-HybridWorker.ps1',
+$script:EpsWorkerRequiredFiles = @('VERSION', 'engine\_shared\EPS-SqlStore.ps1', 'engine\_shared\EPS-AdDirectory.ps1', 'engine\_shared\EPS-AdDelegation.ps1', 'engine\_shared\EPS-HybridWorker.ps1',
     'engine\_shared\EPS-WorkerUpdate.ps1', 'engine\_shared\EPS-Updater.ps1', 'engine\_shared\InvardiaUpdate.verify.ps1',
     'tools\eps-hybrid-worker\Start-EpsHybridWorker.ps1', 'tools\eps-hybrid-worker\Update-EpsHybridWorker.ps1')
 $script:EpsWorkerUpdateTask = 'EntraPolicySuite Hybrid Worker Update'

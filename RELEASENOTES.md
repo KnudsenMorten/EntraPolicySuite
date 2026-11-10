@@ -2,10 +2,129 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
-## Next (not released yet)
+## 2.0.117 - Optional components, rights are never taken away by themselves, the AD step finishes itself
+Builds on the owner's decision: "i have not approved any removal of graph rights" (2026-11-09, direct; optional components per the rights rule relayed by Invardia 2026-11-09)
+- Turning a feature off no longer takes its rights away: the install reports the right as not needed and keeps it.
+  Nothing is removed by itself; you can take a right away with Grant-EpsEnginePermissions.ps1 -Remove.
+- New page Administration > Optional components: each optional part (writing to users, writing to devices, Exchange,
+  alert mails, Log Analytics, the hybrid worker and its AD writes, support access) with whether it is on, which of its
+  rights are missing and the script that adds exactly those rights. The page only reads.
+- Three new scripts add the rights of one component each: Enable-EpsUserTagging, Enable-EpsDeviceTagging and
+  Enable-EpsExchangeAccess. Run with -WhatIf, each one shows what it would add and changes nothing; the grant is
+  read back.
+- The Active Directory step of the hybrid worker finishes by itself: the worker reads the delegation back, and the step
+  clears once the rights are there. Nobody has to come back and mark it done.
+- The tamper monitor no longer reports the engine's own tag change as a change by someone else when Microsoft's audit
+  entry leaves out the app id: the change is matched on the engine's own identity.
+- The architecture and security pages list every identity by its role and the rights it holds, the optional
+  components, how updates arrive and the newer jobs.
+
+## 2.0.116 - Requests start at once, identity views say what they assume, a clearer GUI
+- A change you commit, a Run now or an analysis you ask for now starts within seconds: the web app wakes the engine
+  check right after it writes the request, instead of waiting for the next 5-minute check. The wake-up runs one normal
+  engine check with all its guards. The web app gets one new right for it: it may put a message on that one queue.
+  If the wake-up cannot be sent, the 5-minute check starts the request as before.
+- Each identity report view lists what it assumes: where each fact comes from (the MFA registration report, Entra and
+  AD sign-ins, the tags, Intune, the hybrid worker's AD read) and who is left out. The list is worked out from the
+  fields the view actually checks, so it cannot drift from it.
+- The audit log says what a request did ("Adopt CA policy 62f1960c…", "Commit the queue") instead of the raw request;
+  the full target is on the hover.
+- The rules page: New rule and Test run are the actions; Test runs, Deleted rules and Condition types sit in one More
+  menu. A rule imported from v1 shows a "from v1" badge, with the v1 rows on its hover.
+- Tamper events and tag changes show the tag (Classification) instead of the attribute it is stored in.
+- Settings: the alert mail choices are in words (Off, from a mailbox of yours, through your SMTP relay).
+- Get started: the v1 import steps are folded until opened.
+- One spelling across the app and the docs: "Analyze".
+
+## 2.0.115 - Per-user sign-in methods, corrected identity report views, red markers for what waits for you
+- A new background job reads each user's sign-in methods one by one (every method, and the device behind Windows Hello
+  for Business and Microsoft Authenticator) and keeps them per user. A user is read again only when the MFA registration
+  report shows a change, or after 90 days; admins are read first; nobody is skipped. Until a user is read, the report
+  says unknown, never 'no MFA'. Off by default (Settings > Per-user sign-in methods).
+- The release flow follows the rule that nothing is public before the rings 2/3 approval: test rings get a pre-release.
+- "Active without MFA" and "No MFA, but a company smartphone" could never list anyone: they read a field Microsoft Graph
+  no longer returns. They now list enabled users who are not registered for MFA.
+- An admin is now anyone who can reach a directory role: active or eligible, directly or through a role group, and
+  through PIM for Groups when the engine may read it (the run says so when it may not). Before, only the registration
+  report's admin flag counted, and admins who get their role through a group were missed.
+- The inactivity and guest views count non-interactive sign-ins too, and the guest view finds every guest account.
+- "SSPR on, not registered" leaves out guests, and "MFA users - not compliant" lists enabled users only.
+- The AD OU views stay empty until an OU pattern is set (before, every AD user counted as in the wrong OU).
+- The licence check knows the Microsoft 365 E5 and E3 bundles without Teams (EEA), so users who hold them are no longer
+  listed as missing a licence.
+- The engine is granted three more read-only rights at its next install run: PIM for Groups eligibility and assignments
+  (so admins through PIM for Groups are seen) and the users' authentication methods (for the per-user sign-in methods
+  that follow). Nothing is removed.
+- The menu shows a red count on an item, and the total on its menu group, when something waits for you or did not
+  complete: changes waiting in the commit queue (or that failed there), jobs whose last run failed, partly failed, was
+  held or is stuck, open tamper events, and a late hybrid worker or a failed AD write. The Overview lists each with a
+  link. Work that runs within its normal time is not counted.
+- The Identity report colours a view's name by its severity only when the view finds something; a check that finds
+  nothing is shown plain.
+- The Actions menu of a row is as wide as its longest action, so no action wraps over two lines.
+- The Conditional Access policy list shows what is happening to each policy right after its stage: the analysis it
+  waits for (requested or running) or had last (impacted of in scope, with a link), and the monitors that cover it.
+  The template comparison follows. A requested analysis shows on its row at once.
+- A monitor name may now hold spaces (for example "int users"); the field says which characters it takes and drops any
+  other as you type, instead of refusing the name on Save.
+- In a Pro install the menu no longer marks its Pro pages "(Pro)"; the mark stays only where a Pro feature is not on.
+- In the rule editor, picking the value for AD-synced users proposes the value for cloud users: its cloud counterpart
+  when the tag type has one (for example Internal_User_AD_Synced_MFA gives Internal_User_Cloud_MFA), else the same value.
+  "Same as AD-synced" and "Use the cloud peer" set it in one click; a value you pick yourself is kept.
+
+## 2.0.112 - Committing without a reason works again
+- Committing changes in the commit queue without a reason failed with "internal error". A reason is optional, and a
+  commit without one is written again.
+- A run page showed a placeholder word instead of "-" in its number cards when a number was not known; it shows "-"
+  again.
+
+## 2.0.111 - Easier to read: larger text, clearer buttons
+- The text in the web app is larger (body 14 px, nothing under 12 px) and the buttons are bigger.
+- The main action on a page is the filled button. Actions that write or remove something are red: Discard all in the
+  commit queue, Disable on a policy page, and Apply on a scheduled job. In the commit queue, Commit all is the main
+  button and testing first is the second one.
+- A Conditional Access policy page shows its current stage as a marker, and its stage moves are no longer loud buttons.
+- The panel of the selected rule stays in view while you scroll down the rules.
+- The commit queue names the fields in words (for example "Value for AD-synced users") and a new item no longer looks
+  like a deletion.
+- The tag type list says what its mode means, for example "the first matching rule wins".
+- Conditional Access groups say "not read yet" instead of 0 before the groups were read, and Create shows only on a
+  missing group.
+- Settings: Save stands out once a field is changed; the internal name moved into a tooltip.
+- Long page explanations show two lines and open with "Read more".
+- Smaller wording fixes: "Written to" instead of "Dir", "not reported yet" instead of "?", "open tamper events" on the
+  overview, and the CSV import's delete option says DELETE in red.
+
+## 2.0.110 - Tag values are picked from a list, and the Tag types page loads again
+- The Tag types page showed "Could not load" as soon as one value was set by two or more rules. It loads again.
+- In the rule editor, a tag type with a list of values now gives a dropdown of exactly those values for AD-synced and
+  cloud users, instead of a text field that refused any value not on the list. A tag type without a list keeps a text
+  field. A pattern value (for generated values) adds "Other value matching ...", and a value an older rule holds that is
+  no longer on the list stays visible and marked.
+- Editing a value cell in the rules grid uses the same dropdown.
+
+## 2.0.109 - An install run finds the update job by its real name
+- An install run now finds the update job under the name it has in your install. Before, on an install made with 2.0.55
+  or later, or after -RenameJobs, a re-run with the Community launcher did not see that the install is Pro, and a new
+  Pro install did not start its first licence request at once (the nightly run still asked).
+- The install guide's naming table no longer lists the old job names; it says how an older install moves to the names
+  shown.
+- The rights list describes the hybrid worker's AD rights as they are now set up: one permission group at the domain
+  root.
+## 2.0.108 - Standard job names, and the hybrid worker's AD rights at the domain root
+- An install made before 2.0.55 can move its schedule check job and its update job to the standard job names with one
+  install run with -RenameJobs. Each new job is made from the old one's settings and proven with one run before the old
+  one is removed. The identities, their rights and the web address do not change. Without the switch the install only
+  shows the plan.
+- The database role of the schedule check is renamed in place to eps_schedule; its members and permissions stay.
+- The AD script of the hybrid worker gives its rights to a permission group with the worker's gMSA as its only member,
+  at the domain root, for the tag attributes you list (users, and computers with -ObjectClasses computer). It reads every
+  change back. You now list your attributes; there is no default.
+- The install guide has one table with the names you will see in Azure and Entra ID; the rest of the documentation
+  names each part by its role.
+- Each identity's rights are listed in one file the install and the tests check against.
 
 ## 2.0.107 - An install run never removes a Graph permission
-Builds on the owner's decision: "i have not approved any removal of graph rights ... this is not a job about removing permissions now ... then we can talk about clean-up later" (2026-11-09, relayed by Invardia, written in docs/REQUIREMENTS.md §0).
 - An install run no longer removes a Graph permission the engine or the updater holds outside its list (2.0.106 would
   have). It adds what is missing and only names an extra permission; nothing is taken away.
 - The setup step "Engine Graph permissions beyond its list" is now a report only: it stays green and names any extra
@@ -13,7 +132,6 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - The write permissions are still granted only while a feature that writes is on, as before (unchanged since 2.0.99).
 
 ## 2.0.106 - The engine and the updater keep exactly the Graph permissions they need
-Builds on the owner's decision: "you need to get in control with all these identity chg. it is chaos" (2026-11-09, Invardia framework/REQUIREMENTS.md IDENTITY-MOVE-1, line 2 "exactly the role-need map").
 - A Graph permission the engine or the updater no longer needs is now removed by the next install run, and read back.
   Before, a permission that was granted once and later dropped from the list stayed for good.
 - Getting started and the setup steps now show a step "Engine holds no Graph permission beyond its list". It names any

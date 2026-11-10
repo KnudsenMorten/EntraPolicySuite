@@ -98,7 +98,67 @@ function Read-EpsIdentitySources {
         $skus[[string]$s.skuId] = [string]$s.skuPartNumber
         foreach ($sp in @($s.servicePlans)) { if ($sp -and $sp.servicePlanId) { $planNames[[string]$sp.servicePlanId] = [string]$sp.servicePlanName } }
     }
-    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; PlanNames = $planNames; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Notes = @($noIntune | Where-Object { $_ }) }
+    $admins = Get-EpsIdentityAdminMap -Log $Log
+    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; PlanNames = $planNames; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Admins = $admins.Map; Notes = @(@($noIntune) + @($admins.Note) | Where-Object { $_ }) }
+}
+
+function Get-EpsIdentityAdminMap {
+    <#
+      IDREPORT-VALIDATE (owner 2026-11-09 "also looks wrong" on Admins without MFA = 0; the live check found the registration
+      report's isAdmin missed 7 admins): who can reach a directory role - active AND eligible role assignments (PIM for
+      Entra roles), a group principal expanded to its members (transitive). Rights the engine holds: RoleManagement.Read.
+      Directory + GroupMember.Read.All. Not covered (said in the run note): members who are only ELIGIBLE for a role group
+      through PIM for Groups - that needs PrivilegedEligibilitySchedule.Read.AzureADGroup (owner decision).
+      Returns @{ Map = @{ userId = 'role, role' }; Note }. A read that fails leaves the map empty and says so.
+    #>
+    param([scriptblock]$Log = { param($l, $m) })
+    $map = @{}; $note = $null
+    try {
+        $names = @{}; foreach ($d in @(Invoke-EpsGraph -Path 'v1.0/roleManagement/directory/roleDefinitions?$select=id,displayName' -All)) { $names[[string]$d.id] = [string]$d.displayName }
+        $rows = @(Invoke-EpsGraph -Path 'v1.0/roleManagement/directory/roleAssignments?$select=principalId,roleDefinitionId' -All) +
+                @(Invoke-EpsGraph -Path 'v1.0/roleManagement/directory/roleEligibilitySchedules?$select=principalId,roleDefinitionId' -All)
+        $add = { param($uid, $role) if (-not $map.ContainsKey($uid)) { $map[$uid] = [System.Collections.Generic.SortedSet[string]]::new() }; [void]$map[$uid].Add($role) }
+        $groupMembers = @{}; $roleGroups = @{}
+        foreach ($r in $rows) {
+            $pid0 = [string]$r.principalId; $role = $(if ($names[[string]$r.roleDefinitionId]) { $names[[string]$r.roleDefinitionId] } else { [string]$r.roleDefinitionId })
+            # a principal is a user, a group (role-assignable) or a service principal: a group's members inherit the role
+            # (cached per principal: each role group is expanded once per run)
+            if (-not $groupMembers.ContainsKey($pid0)) {
+                $groupMembers[$pid0] = try { @(Invoke-EpsGraph -Path "v1.0/groups/$pid0/transitiveMembers/microsoft.graph.user?`$select=id" -All | ForEach-Object { [string]$_.id }) } catch { $null }
+            }
+            if ($null -ne $groupMembers[$pid0]) { if (-not $roleGroups[$pid0]) { $roleGroups[$pid0] = [System.Collections.Generic.List[string]]::new() }; $roleGroups[$pid0].Add($role); foreach ($u in $groupMembers[$pid0]) { & $add $u $role } } else { & $add $pid0 $role }
+        }
+        # PIM for Groups, as SecurityInsight does it (IdentityRoleFetcher.ps1 Get-SIRolesViaPimGroupChain): a user (or a group)
+        # eligible / active for a group through PIM - nested chains walked, loop-safe - reaches the roles of every role group
+        # on the chain. Needs PrivilegedEligibilitySchedule.Read.AzureADGroup + PrivilegedAssignmentSchedule.Read.AzureADGroup;
+        # without them (403) the run says so and the rest stands.
+        $pimNote = $null
+        try {
+            $pim = @{}
+            foreach ($kind in 'eligibilitySchedules', 'assignmentSchedules') {
+                foreach ($s in @(Invoke-EpsGraph -Path "v1.0/identityGovernance/privilegedAccess/group/$($kind)?`$filter=accessId eq 'member'&`$select=principalId,groupId" -All)) {
+                    $p = [string]$s.principalId; if (-not $pim[$p]) { $pim[$p] = [System.Collections.Generic.List[string]]::new() }; $pim[$p].Add([string]$s.groupId)
+                }
+            }
+            $walk = $null
+            $walk = { param([string[]]$gids, $seen, $found) foreach ($g in $gids) { if (-not $seen.Add($g)) { continue }; if ($roleGroups[$g]) { foreach ($x in $roleGroups[$g]) { [void]$found.Add($x) } }; if ($pim[$g]) { & $walk @($pim[$g]) $seen $found } } }
+            $viaPim = 0
+            foreach ($p in @($pim.Keys)) {
+                $found = [System.Collections.Generic.HashSet[string]]::new(); & $walk @($pim[$p]) ([System.Collections.Generic.HashSet[string]]::new()) $found
+                if (-not $found.Count) { continue }
+                # the principal may itself be a group: its members get the chain's roles too
+                $who = if ($groupMembers.ContainsKey($p) -and $null -ne $groupMembers[$p]) { $groupMembers[$p] } else { @(try { @(Invoke-EpsGraph -Path "v1.0/groups/$p/transitiveMembers/microsoft.graph.user?`$select=id" -All | ForEach-Object { [string]$_.id }) } catch { $p }) }
+                foreach ($u in $who) { foreach ($x in $found) { & $add $u "$x (eligible through PIM for Groups)" }; $viaPim++ }
+            }
+            $pimNote = "PIM for Groups read ($viaPim principal(s) reach a role through it)"
+        } catch {
+            $pimNote = $(if ("$_" -match '-> (401|403)') { 'a member who is only eligible for a role group through PIM for Groups is NOT seen: the engine needs PrivilegedEligibilitySchedule.Read.AzureADGroup and PrivilegedAssignmentSchedule.Read.AzureADGroup' } else { "PIM for Groups could not be read ($($_.Exception.Message))" })
+        }
+        & $Log 'Info' "$($map.Count) user(s) can reach a directory role (active or eligible, groups expanded); $pimNote"
+        $note = "Admins: active and eligible directory role assignments, role groups expanded; $pimNote"
+    } catch { $map = @{}; $note = "the directory role assignments could not be read ($($_.Exception.Message)) - Admin falls back to the registration report's isAdmin" }
+    $out = @{}; foreach ($k in $map.Keys) { $out[$k] = (@($map[$k]) -join ', ') }
+    @{ Map = $out; Note = $note }
 }
 
 function Get-EpsLicenseDisplayNames {
@@ -244,9 +304,11 @@ function ConvertTo-EpsIdentityRows {
         }
         foreach ($t in $Config.Tags) { $row[$t.Column] = $tagVal[$t.Column] }
         $row.CompanyName = $u.companyName; $row.Mail = $u.mail; $row.UserType = $u.userType
-        $row.IsAdmin = $a.isAdmin
+        # IDREPORT-VALIDATE: the registration report's isAdmin missed admins (role groups, eligible roles) - an admin is also
+        # anyone who can reach a directory role (Get-EpsIdentityAdminMap, read once per run, cached per principal)
+        $row.IsAdmin = [bool]($a.isAdmin -eq $true -or ($Sources.Admins -and $Sources.Admins.ContainsKey([string]$u.id)))
         $row.MailType = $(if ($Sources.Recipients) { $Sources.Recipients[[string]$u.id] })
-        $row.DefaultMfaMethod = $a.defaultMfaMethod
+        $row.DefaultMfaMethod = $(if ($a.defaultMfaMethod) { $a.defaultMfaMethod } else { $a.userPreferredMethodForSecondaryAuthentication })   # v1.0 has no defaultMfaMethod (IDREPORT-VALIDATE)
         $row.MethodsRegistered = $(if ($a) { @($a.methodsRegistered) -join ',' })
         foreach ($f in 'isMfaCapable', 'isMfaRegistered', 'isPasswordlessCapable', 'isSsprCapable', 'isSsprEnabled', 'isSsprRegistered', 'isSystemPreferredAuthenticationMethodEnabled') { $row[$f.Substring(0, 1).ToUpperInvariant() + $f.Substring(1)] = $a.$f }
         $row.AuthMethodsLastUpdatedDateTime = $(if ($x = ConvertFrom-EpsGraphDate $a.lastUpdatedDateTime) { $x })
@@ -301,10 +363,10 @@ function Get-EpsIdentityViewHelpers {
     $adSynced = 'NonManaged_User_AD_Synced', 'Internal_User_AD_Synced*', 'External_User_AD_Synced*', 'Internal_Developer_AD_Synced*', 'External_Developer_AD_Synced*', 'NonManaged_User_AD_Synced*'
     $isGuest = { param($r) "$($r.UserClassification)" -like '*Guest*' -or $r.UserType -eq 'Guest' }
     $isMailboxOnly = { param($r) $r.MailType -in 'SharedMailbox', 'RoomMailbox', 'EquipmentMailbox' -or "$($r.UserClassification)" -like '*SharedMailbox*' }
-    $quiet = { param($r, $days, $C) $d = $C.Now.AddDays(-$days); (-not $r.AD_LastSignInDateTime -or $r.AD_LastSignInDateTime -lt $d) -and (-not $r.Cloud_LastSignInDateTime -or $r.Cloud_LastSignInDateTime -lt $d) }
+    $quiet = { param($r, $days, $C) $d = $C.Now.AddDays(-$days); foreach ($x in $r.AD_LastSignInDateTime, $r.Cloud_LastSignInDateTime, $r.Cloud_LastNonInteractiveSignInDateTime) { if ($x -and $x -ge $d) { return $false } }; $true }   # IDREPORT-VALIDATE: non-interactive sign-ins count too (tom@ was listed with one 2026-10-09)
     $mfaUser = { param($r) "$($r.UserAuthMethodType)" -like '*MFA' -and "$($r.UserAuthMethodType)" -notlike '*Guest*' }
     $strong = { param($r) $r.MethodsRegistered -match 'microsoftAuthenticatorPush' -or $r.MethodsRegistered -match 'windowsHello' }
-    $noMfaCandidate = { param($r) $x = "$($r.UserAuthMethodType)"; $r.AccountEnabled -and $x -notlike '*Guest*' -and $x -notlike '*_FIDO' -and $x -notlike '*_Pwd' -and $x -notlike '*_WHfB' -and "$($r.DefaultMfaMethod)" -like '*none*' }
+    $noMfaCandidate = { param($r) $x = "$($r.UserAuthMethodType)"; $r.AccountEnabled -and $x -notlike '*Guest*' -and $x -notlike '*_FIDO' -and $x -notlike '*_Pwd' -and $x -notlike '*_WHfB' -and $r.IsMfaRegistered -eq $false }   # IDREPORT-VALIDATE: was DefaultMfaMethod -like '*none*', a field Graph v1.0 never returns - the view could never fire. A user with NO registration row is unknown, never 'no MFA' (as SI)
     @{ act = $act; adSynced = $adSynced; isGuest = $isGuest; isMailboxOnly = $isMailboxOnly; quiet = $quiet; mfaUser = $mfaUser; strong = $strong; noMfaCandidate = $noMfaCandidate }
 }
 function Get-EpsIdentityViewCatalog {
@@ -330,17 +392,17 @@ function Get-EpsIdentityViewCatalog {
         # ---- MFA and authentication ----
         & $V 'Admins_NoMfa' 'MFA and authentication' 'User' 'High' 'Admins without MFA' 'Users with an admin role who are not registered for MFA.' 'Register MFA for each admin now (Temporary Access Pass + a passkey); until then they are one password away from a tenant takeover.' ($u0 + 'IsAdmin', 'IsMfaRegistered', 'MethodsRegistered') { param($r, $C) $r.IsAdmin -eq $true -and $r.AccountEnabled -and $r.IsMfaRegistered -ne $true }
         & $V 'Admins_NotPhishingResistant' 'MFA and authentication' 'User' 'High' 'Admins without phishing-resistant MFA' 'Enabled admins without a passkey, FIDO2 key or Windows Hello for Business.' 'Give every admin a passkey (or FIDO2 key) and require phishing-resistant MFA for admin roles in Conditional Access.' ($u0 + 'IsAdmin', 'MfaStrength', 'MethodsRegistered') { param($r, $C) $r.IsAdmin -eq $true -and $r.AccountEnabled -and $r.MfaStrength -ne 'Phishing-resistant' }
-        & $V 'Active_NoMFA' 'MFA and authentication' 'User' 'High' 'Active without MFA' 'Enabled users (not guests, not FIDO / password-only / WHfB tagged) whose default MFA method is none - except new hires starting after the grace period.' 'Have them register MFA; if they cannot, check their Authentication tag.' ($u0 + 'DefaultMfaMethod', 'HireDate', 'HireDateValid', 'SignInRecency') {
+        & $V 'Active_NoMFA' 'MFA and authentication' 'User' 'High' 'Active without MFA' 'Enabled users (not guests, not FIDO / password-only / WHfB tagged) who are not registered for MFA - except new hires starting after the grace period.' 'Have them register MFA; if they cannot, check their Authentication tag.' ($u0 + 'DefaultMfaMethod', 'HireDate', 'HireDateValid', 'SignInRecency') {
             param($r, $C) if (-not (& $C.H.noMfaCandidate $r)) { return $false }
             $h = if ($r.HireDateValid) { ConvertFrom-EpsGraphDate $r.HireDate }; -not $h -or $h -lt $C.Now.Date.AddDays($C.Config.NewHireGraceDays) } -V1
-        & $V 'ActiveNoMFACorpSmartDevice' 'MFA and authentication' 'User' 'High' 'No MFA, but a company smartphone' 'Enabled users (no mailbox, or a user mailbox / mail user) whose default MFA method is none, with a company iPhone or Android synced in the device window - they can register Authenticator today.' 'Ask them to register the Authenticator app on their company phone.' ($u0 + 'DefaultMfaMethod', 'DeviceCount_iPhone_Corp', 'DeviceCount_Android_Corp') { param($r, $C) $r.AccountEnabled -and (-not $r.MailType -or $r.MailType -in 'MailUser', 'UserMailbox') -and "$($r.DefaultMfaMethod)" -like '*none*' -and $r.Device_SmartPhoneActive_CorpOnly } -V1
+        & $V 'ActiveNoMFACorpSmartDevice' 'MFA and authentication' 'User' 'High' 'No MFA, but a company smartphone' 'Enabled users (no mailbox, or a user mailbox / mail user) who are not registered for MFA, with a company iPhone or Android synced in the device window - they can register Authenticator today.' 'Ask them to register the Authenticator app on their company phone.' ($u0 + 'DefaultMfaMethod', 'DeviceCount_iPhone_Corp', 'DeviceCount_Android_Corp') { param($r, $C) $r.AccountEnabled -and (-not $r.MailType -or $r.MailType -in 'MailUser', 'UserMailbox') -and "$($r.DefaultMfaMethod)" -like '*none*' -and $r.Device_SmartPhoneActive_CorpOnly } -V1
         & $V 'Mfa_WeakMethodsOnly' 'MFA and authentication' 'User' 'Medium' 'MFA by phone or mail only' 'Enabled users whose only registered methods are SMS, voice or e-mail - the methods SIM swap and phishing defeat.' 'Move them to the Authenticator app or a passkey, then disable SMS / voice in the authentication methods policy.' ($u0 + 'MfaStrength', 'MethodsRegistered') { param($r, $C) $r.AccountEnabled -and $r.MfaStrength -eq 'Phone or mail only' }
         & $V 'Mfa_NotCapable' 'MFA and authentication' 'User' 'Medium' 'Cannot do MFA' 'Enabled user accounts (not guests, not shared / room mailboxes) with no method that can satisfy MFA.' 'Register a method, or tag the account for what it is (service account, shared mailbox) so the right policy applies.' ($u0 + 'IsMfaCapable', 'MethodsRegistered', 'MailType') { param($r, $C) $r.AccountEnabled -and $r.IsMfaCapable -eq $false -and -not (& $C.H.isGuest $r) -and -not (& $C.H.isMailboxOnly $r) }
         & $V 'CompliantMFAAuth' 'MFA and authentication' 'User' 'Info' 'MFA users - compliant' 'MFA-tagged users (not guests) registered for MFA and SSPR, with Authenticator push or Windows Hello.' '' ($u0 + 'IsMfaRegistered', 'IsSsprRegistered', 'MethodsRegistered') { param($r, $C) (& $C.H.mfaUser $r) -and $r.IsMfaRegistered -eq $true -and $r.IsSsprRegistered -eq $true -and (& $C.H.strong $r) } -V1
-        & $V 'IncompliantMFAAuth' 'MFA and authentication' 'User' 'Medium' 'MFA users - not compliant' 'MFA-tagged users (not guests) not registered for MFA, not for SSPR, or with neither Authenticator push nor Windows Hello.' 'Have them complete the combined registration (Authenticator + SSPR).' ($u0 + 'IsMfaRegistered', 'IsSsprRegistered', 'MethodsRegistered') { param($r, $C) (& $C.H.mfaUser $r) -and ($r.IsMfaRegistered -ne $true -or $r.IsSsprRegistered -ne $true -or -not (& $C.H.strong $r)) } -V1   # B7
+        & $V 'IncompliantMFAAuth' 'MFA and authentication' 'User' 'Medium' 'MFA users - not compliant' 'MFA-tagged users (not guests) not registered for MFA, not for SSPR, or with neither Authenticator push nor Windows Hello.' 'Have them complete the combined registration (Authenticator + SSPR).' ($u0 + 'IsMfaRegistered', 'IsSsprRegistered', 'MethodsRegistered') { param($r, $C) $r.AccountEnabled -and (& $C.H.mfaUser $r) -and ($r.IsMfaRegistered -ne $true -or $r.IsSsprRegistered -ne $true -or -not (& $C.H.strong $r)) } -V1   # B7
         & $V 'CompliantPasskeysAuth' 'MFA and authentication' 'User' 'Info' 'Passkey users - compliant' 'FIDO-tagged users with a device-bound passkey.' '' ($u0 + 'MethodsRegistered') { param($r, $C) "$($r.UserAuthMethodType)" -like '*FIDO' -and $r.MethodsRegistered -match 'passKeyDeviceBound' } -V1
         & $V 'IncompliantPasskeysAuth' 'MFA and authentication' 'User' 'High' 'Passkey users without a passkey' 'FIDO-tagged users without a device-bound passkey - the policy for them expects one.' 'Issue a Temporary Access Pass and have them register a passkey.' ($u0 + 'MethodsRegistered') { param($r, $C) "$($r.UserAuthMethodType)" -like '*FIDO' -and $r.MethodsRegistered -notmatch 'passKeyDeviceBound' } -V1
-        & $V 'Sspr_NotRegistered' 'MFA and authentication' 'User' 'Low' 'SSPR on, not registered' 'Enabled users who may reset their own password but have not registered for it - they call the help desk instead.' 'Use the registration campaign (or combined registration) to collect it.' ($u0 + 'IsSsprEnabled', 'IsSsprRegistered') { param($r, $C) $r.AccountEnabled -and $r.IsSsprEnabled -eq $true -and $r.IsSsprRegistered -ne $true }
+        & $V 'Sspr_NotRegistered' 'MFA and authentication' 'User' 'Low' 'SSPR on, not registered' 'Enabled users who may reset their own password but have not registered for it - they call the help desk instead.' 'Use the registration campaign (or combined registration) to collect it.' ($u0 + 'IsSsprEnabled', 'IsSsprRegistered') { param($r, $C) $r.AccountEnabled -and -not (& $C.H.isGuest $r) -and $r.IsSsprEnabled -eq $true -and $r.IsSsprRegistered -ne $true }
         & $V 'SystemPreferredMfa_Off' 'MFA and authentication' 'User' 'Low' 'System-preferred MFA off' 'MFA-registered users for whom Entra does not pick the strongest method at sign-in.' 'Enable system-preferred MFA in the authentication methods policy.' ($u0 + 'IsSystemPreferredAuthenticationMethodEnabled', 'DefaultMfaMethod') { param($r, $C) $r.IsMfaRegistered -eq $true -and $r.IsSystemPreferredAuthenticationMethodEnabled -eq $false }
 
         # ---- sign-in and lifecycle ----
@@ -352,7 +414,7 @@ function Get-EpsIdentityViewCatalog {
         & $V 'PasswordNeverExpires' 'Sign-in and lifecycle' 'User' 'Low' 'Password never expires' 'Enabled users whose password never expires, in Entra or in AD.' 'Fine with passwordless / strong MFA; otherwise make sure the password is long and unique, or move the account to a managed identity.' ($u0 + 'Cloud_PasswordPolicies', 'AD_PasswordNeverExpires') { param($r, $C) $r.AccountEnabled -and ("$($r.Cloud_PasswordPolicies)" -match 'DisablePasswordExpiration' -or $r.AD_PasswordNeverExpires -eq $true) }
 
         # ---- guests ----
-        & $V 'GuestsNoSignInLast90Days' 'Guests' 'User' 'Medium' 'Guests without a recent sign-in' 'Enabled guests with no cloud sign-in in the guest inactivity window.' 'Remove them, or run an access review on guests.' ($u0 + 'Cloud_LastSignInDateTime', 'SignInRecency') { param($r, $C) $d = $C.Now.AddDays(-$C.Config.GuestInactiveDays); $r.AccountEnabled -and "$($r.UserClassification)" -like '*Guest*' -and (-not $r.Cloud_LastSignInDateTime -or $r.Cloud_LastSignInDateTime -lt $d) } -V1
+        & $V 'GuestsNoSignInLast90Days' 'Guests' 'User' 'Medium' 'Guests without a recent sign-in' 'Enabled guests with no cloud sign-in in the guest inactivity window.' 'Remove them, or run an access review on guests.' ($u0 + 'Cloud_LastSignInDateTime', 'SignInRecency') { param($r, $C) $d = $C.Now.AddDays(-$C.Config.GuestInactiveDays); $r.AccountEnabled -and (& $C.H.isGuest $r) -and -not @($r.Cloud_LastSignInDateTime, $r.Cloud_LastNonInteractiveSignInDateTime | Where-Object { $_ -and $_ -ge $d }).Count } -V1
         & $V 'Guests_Admin' 'Guests' 'User' 'High' 'Guests with an admin role' 'Guest accounts that hold an admin role - an outside identity you do not manage.' 'Remove the role, or replace the guest with a managed account (or PIM-eligible with approval).' ($u0 + 'IsAdmin', 'MfaStrength') { param($r, $C) (& $C.H.isGuest $r) -and $r.IsAdmin -eq $true }
         & $V 'Guests_Licensed' 'Guests' 'User' 'Low' 'Guests with a licence' 'Guest accounts with an assigned licence.' 'Check it is needed; most guests need none.' ($u0 + 'UserLicenseList') { param($r, $C) (& $C.H.isGuest $r) -and $r.UserLicenseList }
 
@@ -369,12 +431,12 @@ function Get-EpsIdentityViewCatalog {
         & $V 'Ad_DisabledButCloudEnabled' 'AD hygiene' 'User' 'High' 'Disabled in AD, enabled in Entra' 'AD-synced users disabled in AD but still enabled in Entra - the sync has not caught up, or the account was re-enabled in the cloud.' 'Check Entra Connect; disable the cloud account.' ($u0 + 'AD_Enabled', 'ADDN') { param($r, $C) $r.AD_Enabled -eq $false -and $r.AccountEnabled }
         & $V 'Ad_ExpiredButEnabled' 'AD hygiene' 'User' 'High' 'Expired in AD, still enabled' 'AD accounts past their expiry date that are still enabled in Entra - an expiry in AD does not stop a cloud sign-in.' 'Disable the account (Entra and AD).' ($u0 + 'AD_AccountExpirationDate', 'ADDN') { param($r, $C) $r.AD_AccountExpirationDate -and $r.AD_AccountExpirationDate -lt $C.Now -and $r.AccountEnabled }
         & $V 'Ad_LockedOut' 'AD hygiene' 'User' 'Info' 'Locked out in AD' 'AD accounts that are locked out right now - a password spray shows up here first.' 'Look for a pattern (many at once = an attack).' ($u0 + 'AD_LockedOut', 'ADDN') { param($r, $C) $r.AD_LockedOut -eq $true }
-        & $V 'Users_AD_Validated' 'AD hygiene' 'User' 'Info' 'AD users in the right OU' 'AD-synced users (by Authentication tag) whose AD location matches the user OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) (Test-EpsLikeAny "$($r.UserAuthMethodType)" $C.H.adSynced) -and $r.UserIsADValidated } -V1
-        & $V 'Users_AD_NoValidation' 'AD hygiene' 'User' 'Low' 'AD users in the wrong OU' 'AD-synced users (by Authentication tag) whose AD location does not match the user OU pattern - GPOs and delegation meant for users miss them.' 'Move them to the user OU (or fix the pattern in Settings).' ($u0 + 'ADDN') { param($r, $C) (Test-EpsLikeAny "$($r.UserAuthMethodType)" $C.H.adSynced) -and -not $r.UserIsADValidated } -V1
-        & $V 'SharedUsers_AD_Validated' 'AD hygiene' 'User' 'Info' 'Shared device users in the right OU' 'AD-synced shared device users whose AD location matches the user OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Shared_Device_User_AD_Synced*' -and $r.UserIsADValidated } -V1
-        & $V 'SharedUsers_AD_NoValidation' 'AD hygiene' 'User' 'Low' 'Shared device users in the wrong OU' 'AD-synced shared device users whose AD location does not match the user OU pattern.' 'Move them to the right OU.' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Shared_Device_User_AD_Synced*' -and -not $r.UserIsADValidated } -V1
-        & $V 'ServiceAccount_AD_Validated' 'AD hygiene' 'User' 'Info' 'Service accounts in the right OU' 'AD-synced service accounts whose AD location matches the service account OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Service_Account_AD_Synced*' -and $r.ServiceAccountIsADValidated } -V1
-        & $V 'ServiceAccount_AD_NoValidation' 'AD hygiene' 'User' 'Medium' 'Service accounts in the wrong OU' 'AD-synced service accounts outside the service account OU - their hardening GPOs do not apply.' 'Move them to the service account OU.' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Service_Account_AD_Synced*' -and -not $r.ServiceAccountIsADValidated } -V1
+        & $V 'Users_AD_Validated' 'AD hygiene' 'User' 'Info' 'AD users in the right OU' 'AD-synced users (by Authentication tag) whose AD location matches the user OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) (Test-EpsLikeAny "$($r.UserAuthMethodType)" $C.H.adSynced) -and $C.Config.AdOuUser -and $r.UserIsADValidated } -V1
+        & $V 'Users_AD_NoValidation' 'AD hygiene' 'User' 'Low' 'AD users in the wrong OU' 'AD-synced users (by Authentication tag) whose AD location does not match the user OU pattern - GPOs and delegation meant for users miss them.' 'Move them to the user OU (or fix the pattern in Settings).' ($u0 + 'ADDN') { param($r, $C) (Test-EpsLikeAny "$($r.UserAuthMethodType)" $C.H.adSynced) -and $C.Config.AdOuUser -and -not $r.UserIsADValidated } -V1
+        & $V 'SharedUsers_AD_Validated' 'AD hygiene' 'User' 'Info' 'Shared device users in the right OU' 'AD-synced shared device users whose AD location matches the user OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Shared_Device_User_AD_Synced*' -and $C.Config.AdOuUser -and $r.UserIsADValidated } -V1
+        & $V 'SharedUsers_AD_NoValidation' 'AD hygiene' 'User' 'Low' 'Shared device users in the wrong OU' 'AD-synced shared device users whose AD location does not match the user OU pattern.' 'Move them to the right OU.' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Shared_Device_User_AD_Synced*' -and $C.Config.AdOuUser -and -not $r.UserIsADValidated } -V1
+        & $V 'ServiceAccount_AD_Validated' 'AD hygiene' 'User' 'Info' 'Service accounts in the right OU' 'AD-synced service accounts whose AD location matches the service account OU pattern.' '' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Service_Account_AD_Synced*' -and $C.Config.AdOuServiceAccount -and $r.ServiceAccountIsADValidated } -V1
+        & $V 'ServiceAccount_AD_NoValidation' 'AD hygiene' 'User' 'Medium' 'Service accounts in the wrong OU' 'AD-synced service accounts outside the service account OU - their hardening GPOs do not apply.' 'Move them to the service account OU.' ($u0 + 'ADDN') { param($r, $C) "$($r.UserAuthMethodType)" -like 'Service_Account_AD_Synced*' -and $C.Config.AdOuServiceAccount -and -not $r.ServiceAccountIsADValidated } -V1
         & $V 'SharedMailboxSignInEnabled' 'AD hygiene' 'User' 'Medium' 'Shared mailboxes that can sign in' 'Shared mailbox accounts that are enabled - nobody should sign in to a shared mailbox.' 'Block sign-in on the account (the mailbox keeps working).' ($u0 + 'MailType') { param($r, $C) $r.AccountEnabled -and "$($r.UserClassification)" -like '*SharedMailbox*' } -V1
 
         # ---- devices ----
@@ -386,6 +448,34 @@ function Get-EpsIdentityViewCatalog {
         & $V 'Devices_Stale' 'Devices' 'Device' 'Low' 'Stale devices' 'Managed devices that have not synced in the device window.' 'Retire / delete devices not used any more (Intune device clean-up rules).' ($d0) { param($r, $C) $s = ConvertFrom-EpsGraphDate $r.LastSyncDateTime; -not $s -or $s -lt $C.Now.AddDays(-$C.Config.DeviceCountWindowDays) }
         & $V 'Devices_NoPrimaryUser' 'Devices' 'Device' 'Low' 'Devices without a user' 'Managed devices with no primary user.' 'Set the primary user, or confirm it is a shared / kiosk device.' ($d0) { param($r, $C) -not $r.UserPrincipalName }
     )
+}
+
+# IDREPORT-VALIDATE (owner 2026-11-09: "validate ALL views ... maybe add assumptions" / "i dont trust the result"): what a
+# view's answer rests on. DERIVED from the fields and helpers its filter reads (never written per view, so it cannot drift
+# from the filter); each source has ONE sentence, checked against the code that fills it.
+$script:EpsIdentityAssumptions = @(
+    @{ Key = 'admin'; Match = '\bIsAdmin\b'; Text = 'Admin = an active or eligible Entra role: directly, through a role-assignable group, or through PIM for Groups (that part only where the engine may read PIM for Groups).' }
+    @{ Key = 'mfa'; Match = '\b(IsMfaRegistered|IsMfaCapable|MfaStrength|MethodsRegistered|IsSsprRegistered|IsSsprEnabled|IsSystemPreferredAuthenticationMethodEnabled|DefaultMfaMethod)\b|\bH\.(strong|noMfaCandidate)\b'; Text = 'MFA facts come from Entra''s authentication methods registration report, which Microsoft updates with a delay. A user the report does not list is unknown - never counted as "no MFA".' }
+    @{ Key = 'signin'; Match = '\b(SignInRecency|LastSignInAny|AD_LastSignInDateTime|Cloud_LastSignInDateTime|Cloud_LastNonInteractiveSignInDateTime)\b|\bH\.quiet\b'; Text = 'Last sign-in = the newest of Entra''s interactive and non-interactive sign-ins and AD''s lastLogonTimestamp (AD updates that value only every 9-14 days).' }
+    @{ Key = 'tags'; Match = '\b(UserClassification|UserAuthMethodType|UserAccountInfo|UserPilotInfo)\b|\bH\.(mfaUser|noMfaCandidate|act|adSynced)\b'; Text = 'Classification and Authentication are the tags on the user when the report ran (written by user tagging); an untagged user does not match a tag test.' }
+    @{ Key = 'guest'; Match = '\bH\.isGuest\b'; Text = 'Guest = a Guest classification tag or user type Guest.' }
+    @{ Key = 'mailbox'; Match = '\bH\.isMailboxOnly\b'; Text = 'Shared, room and equipment mailboxes are left out.' }
+    @{ Key = 'ad'; Match = '\bAD_(?!LastSignInDateTime)\w+'; Text = 'AD values come from the hybrid worker''s last read of AD; a cloud-only user has none, so an AD test does not match them.' }
+    @{ Key = 'device'; Match = '\b(Device_\w+|DeviceCount_\w+|ComplianceState|LastSyncDateTime|WindowsActiveMalwareCount|JailBroken|IsEncrypted)\b|\bDeviceCountWindowDays\b'; Text = 'Devices come from Intune (managed devices only); a user''s device counts only count devices synced within the device window (Settings).' }
+    @{ Key = 'licence'; Match = '\b(UserLicenseList|IsLicenseOverProvisioned|HasMinimumNeededLicense)\b'; Text = 'Licences = the licences assigned to the user in Entra.' }
+    @{ Key = 'licencerule'; Match = '\b(IsLicenseOverProvisioned|HasMinimumNeededLicense)\b'; Text = 'What a user needs (or has too much of) comes from the licence rules, by the user''s Classification tag: the first rule that matches decides. A user whose Classification no rule matches gets no verdict and is not listed.' }
+    @{ Key = 'deviceuser'; Kind = 'Device'; Match = '\bUserPrincipalName\b'; Text = 'A device''s user is its primary user in Intune.' }
+    @{ Key = 'hire'; Match = '\b(HireDate|HireDateValid|NewHireGraceDays)\b'; Text = 'The hire date is read from the attribute set in Settings; a value that is not a date counts as no hire date.' }
+    @{ Key = 'hr'; Match = '\bUserIsCloudValidated\b'; Text = 'HR data = mobile phone, department and usage location in Entra.' }
+    @{ Key = 'created'; Match = '\bCreatedDateTime\b'; Text = 'Accounts created within the inactive period (Settings) are left out - they have not had the time to sign in.' }
+)
+function Get-EpsIdentityViewAssumptions {
+    param([Parameter(Mandatory)]$View)
+    $src = "$($View.Test)"
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($a in $script:EpsIdentityAssumptions) { if ($a.Kind -and $a.Kind -ne $View.Kind) { continue }; if ($src -match $a.Match) { $out.Add($a.Text) } }
+    $out.Add('As of the report run (its time is shown at the top); anything that changed since shows at the next run.')
+    $out.ToArray()   # callers wrap it in @() - a leading comma here made it a list inside a list
 }
 
 function Get-EpsIdentityViews {
@@ -614,6 +704,43 @@ function Write-EpsBulk {
     } finally { $conn.Dispose() }
 }
 
+function Add-EpsIdentitySignInMethods {
+    <#
+      The per-user sign-in methods (EPS-SignInMethods.ps1, SecurityInsight's design): records every user's change key (the
+      registration report's lastUpdatedDateTime + a hash of its methods; privileged = IsAdmin) for the SignInMethods job, and
+      puts the CACHED detail on each user's row: SignInMethods (the types), SignInMethodsPhishingResistant, SignInMethodsReadAtUtc.
+      No per-user Graph call here. A user not read yet keeps empty columns: unknown, never "no MFA". Never fails the run.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Report, [object[]]$Registration = @(), [scriptblock]$Log = { param($l, $m) })
+    if (-not (Get-Command Update-EpsSignInMethodsKeys -ErrorAction SilentlyContinue)) { return }
+    $reg = @{}; foreach ($e in @($Registration)) { if ($e -and $e.id) { $reg["$($e.id)".ToLowerInvariant()] = $e } }
+    $users = @($Report.Users)
+    $saved = @{}
+    try {
+        for ($i = 0; $i -lt $users.Count; $i += 2000) {
+            $page = @($users[$i..([math]::Min($i + 2000, $users.Count) - 1)])
+            $rows = foreach ($u in $page) {
+                $id = "$($u.Id)".ToLowerInvariant(); if (-not $id) { continue }
+                $k = Get-EpsSignInMethodsChangeKey -Entry $reg[$id]
+                # owner 2026-11-09: "dont skip anything" / "that is the whoe nature of the report so we can catch anyone that is
+                # missing auth details" - EVERY user is read per user: guests, disabled accounts, users with no method too
+                [ordered]@{ u = $id; upn = "$($u.UserPrincipalName)"; p = [bool]($u.IsAdmin -eq $true); s = $(if ($k) { $k.Stamp }); h = $(if ($k) { $k.Hash }) }
+            }
+            foreach ($x in @(Update-EpsSignInMethodsKeys -ConnectionString $ConnectionString -Rows @($rows))) { $saved["$($x.UserId)"] = $x }
+        }
+    } catch { & $Log 'Warn' "the per-user sign-in methods could not be read or recorded this run ($($_.Exception.Message)) - those columns stay empty"; return }
+    $n = 0
+    foreach ($u in $users) {
+        $x = $saved["$($u.Id)".ToLowerInvariant()]
+        $s = if ($x) { Get-EpsSignInMethodsSummary -Detail ([string]$x.Detail) -ReadAtUtc $x.ReadAtUtc }
+        $u | Add-Member -NotePropertyName SignInMethods -NotePropertyValue $(if ($s) { $s.Types } else { $null }) -Force
+        $u | Add-Member -NotePropertyName SignInMethodsPhishingResistant -NotePropertyValue $(if ($s) { $s.Phishing } else { $null }) -Force
+        $u | Add-Member -NotePropertyName SignInMethodsReadAtUtc -NotePropertyValue $(if ($s) { $s.ReadAtUtc } else { $null }) -Force
+        if ($s) { $n++ }
+    }
+    & $Log 'Info' "per-user sign-in methods: $n of $($users.Count) user(s) read so far (the SignInMethods job reads the rest, admins first; a user not read yet is unknown)"
+}
+
 function Invoke-EpsIdentityReportJob {
     <#
     .SYNOPSIS
@@ -629,6 +756,7 @@ function Invoke-EpsIdentityReportJob {
     $src = if ($Sources) { $Sources.AdUsers = $ad; $Sources } else { Read-EpsIdentitySources -TenantId $TenantId -AdUsers $ad -Log $Log }   # -Sources: a test's data
     $rep = ConvertTo-EpsIdentityRows -Sources $src -Config $cfg -NowUtc $NowUtc
     foreach ($n in $rep.Notes) { & $Log 'Warn' $n }
+    Add-EpsIdentitySignInMethods -ConnectionString $ConnectionString -Report $rep -Registration @($src.Registration) -Log $Log
     $views = Get-EpsIdentityViews -Report $rep -Config $cfg -NowUtc $NowUtc
     $pivots = foreach ($p in Get-EpsIdentityPivotCatalog) {
         $f = $p.Filter; $pv = Get-EpsIdentityPivot -Rows @($views[$p.View] | Where-Object { & $f $_ }) -RowKey $p.Rows -ColumnKey $p.Columns

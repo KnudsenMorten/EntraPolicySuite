@@ -15,7 +15,7 @@
 [CmdletBinding()] param([string]$Root = 'C:\EntraPolicySuite', [switch]$Once)
 $ErrorActionPreference = 'Stop'
 $app = Join-Path $Root 'app'
-foreach ($f in 'EPS-SqlStore', 'EPS-AdDirectory', 'EPS-HybridWorker') { . (Join-Path $app "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-AdDirectory', 'EPS-AdDelegation', 'EPS-HybridWorker') { . (Join-Path $app "engine\_shared\$f.ps1") }
 $logDir = Join-Path $Root 'logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir "worker-$([datetime]::UtcNow.ToString('yyyyMMdd')).log"
 function Say($m) { $l = "[$([datetime]::UtcNow.ToString('u'))] $m"; Add-Content -LiteralPath $log -Value $l; Write-Host $l }
@@ -32,7 +32,7 @@ try {
     # WORKER-GUI (2.0.82): the page shows this worker's scheduled task, AD environment (P14) and host type
     $taskFacts = Get-EpsWorkerTaskFacts
     $r = Invoke-EpsHybridWorkerCycle -ConnectionString $cfg.ConnectionString -Ad $ad -WorkerName $cfg.WorkerName -RunAs $runAs -Version $version `
-         -Environment "$($cfg.Environment)" -HostType "$($cfg.HostType)" -TaskFacts $taskFacts
+         -Environment "$($cfg.Environment)" -HostType "$($cfg.HostType)" -TaskFacts $taskFacts -DelegationDirectory (New-EpsAdDelegationDirectory -Server $cfg.AdServer)
     Say "cycle as $runAs`: groups $($r.Groups) (errors $($r.GroupErrors)), packages $($r.Claimed): done $($r.Done), failed $($r.Failed)$(if ($r.AdUsers) { ", AD users read $(if ($r.AdUsers -lt 0) { 'FAILED' } else { $r.AdUsers })" })"
     exit 0
 } catch {

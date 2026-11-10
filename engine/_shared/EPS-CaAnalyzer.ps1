@@ -122,6 +122,8 @@ function ConvertTo-EpsCaNumberText {
 # the seed nothing reads the catalog for personas, monitors or the analyzer; the seed marker records the library version
 # it imported (owner: "templates can be used for updates ... always operator controlled").
 $script:EpsCaPersonaNamePattern = '^[A-Za-z0-9_.-]{1,100}$'
+# a monitor name (owner 2026-11-09 "why is space not allowed"): it may hold spaces; the same shape the job takes as EPS_CA_MONITOR
+$script:EpsCaMonitorNamePattern = '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$'
 $script:EpsCaPersonaSeedMarker = 'CaAnalyzer.PersonasSeeded'
 
 function Get-EpsCaTemplatePersonas {

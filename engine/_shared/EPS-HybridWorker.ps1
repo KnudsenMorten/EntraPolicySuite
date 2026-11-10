@@ -76,7 +76,9 @@ function Invoke-EpsHybridWorkerCycle {
           [int]$GroupRefreshMinutes = 60, [int]$UserSnapshotHours = 12, [datetime]$NowUtc = [datetime]::UtcNow,
           # WORKER-GUI (2.0.82): what the page shows - the worker's AD environment (P14; '' = the only one), its host type
           # and its scheduled task as read on the machine (Get-EpsWorkerTaskFacts)
-          [string]$Environment = '', [string]$HostType = '', [hashtable]$TaskFacts = @{})
+          [string]$Environment = '', [string]$HostType = '', [hashtable]$TaskFacts = @{},
+          # IDENTITY-MOVE-1 rule 13: reads the AD delegation back (New-EpsAdDelegationDirectory); without it the check answers Failed
+          $DelegationDirectory = $null)
     # what the worker is connected to (read only; an AD without Describe - a test's fake - reports nothing)
     $adFacts = $null
     if ($Ad.PSObject.Methods['Describe']) { try { $adFacts = $Ad.Describe() } catch { $adFacts = [pscustomobject]@{ Domain = $null; Server = $null; Error = "$($_.Exception.Message)" } } }
@@ -135,11 +137,25 @@ WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, 
 UPDATE TOP (@n) p SET Status = 'Claimed', ClaimedBy = @w, ClaimedAtUtc = @t, Attempts = Attempts + 1
 OUTPUT INSERTED.PackageId, INSERTED.Kind, INSERTED.ChangeId, INSERTED.Payload, INSERTED.Attempts
 FROM eps.WorkPackage p WITH (READPAST, UPDLOCK, ROWLOCK)
-WHERE p.Kind IN ('AdSetAttribute', 'AdPing') AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
+WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
   AND (p.Environment IS NULL OR p.Environment = @e)
 '@)
     $sum.Claimed = $claimed.Count
     foreach ($p in $claimed) {
+        # IDENTITY-MOVE-1 rule 13: the AD delegation read back (read only), answered once; the engine asks again until it is ok
+        if ("$($p.Kind)" -eq 'AdDelegationCheck') {
+            $checkAnswer = $null; $checkError = $null
+            try {
+                if (-not $DelegationDirectory) { throw 'this worker cannot read the AD delegation yet (update the worker)' }
+                $checkAsk = $p.Payload | ConvertFrom-Json
+                $readBack = Get-EpsAdDelegationReadBack -Directory $DelegationDirectory -Gmsa $RunAs -Attributes @($checkAsk.attributes)
+                $checkAnswer = [ordered]@{ state = $readBack.State; missing = @($readBack.Missing); oldOu = @($readBack.OldOu); oldOuCount = $readBack.OldOuCount; command = $readBack.Command } | ConvertTo-Json -Compress -Depth 3
+                if ($checkAnswer.Length -gt 2000) { $checkAnswer = [ordered]@{ state = $readBack.State; missing = @(); oldOu = @(); oldOuCount = $readBack.OldOuCount; command = $readBack.Command; truncated = $true } | ConvertTo-Json -Compress -Depth 3 }
+            } catch { $checkError = "$($_.Exception.Message)" }
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $p.PackageId; s = $(if ($checkError) { 'Failed' } else { 'Done' }); e = $checkError; r = $checkAnswer; t = $NowUtc } -Query 'UPDATE eps.WorkPackage SET Status = @s, Error = @e, Result = @r, DoneAtUtc = @t WHERE PackageId = @id' | Out-Null
+            if ($checkError) { $sum.Failed++ } else { $sum.Done++ }
+            continue
+        }
         # WORKER-GUI: a connection test (read only) - what this worker is connected to, answered once, never retried
         if ("$($p.Kind)" -eq 'AdPing') {
             $ans = $null; $perr = $null

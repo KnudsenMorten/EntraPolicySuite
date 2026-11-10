@@ -16,6 +16,7 @@
     { "id": "CA", "label": "Conditional Access" },
     { "id": "NamedLocations", "label": "Named locations" },
     { "id": "IdentityReport", "label": "Identity report" },
+    { "id": "SignInMethods", "label": "Per-user sign-in methods" },
     { "id": "Uplink", "label": "Invardia telemetry" },
     { "id": "Update", "label": "Updates" },
     { "id": "Backup", "label": "Backups" },
@@ -404,7 +405,7 @@
       }
     },
     {
-      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox", "smtp"], "default": "none", "role": "SuperAdmin", "dependsOnByValue": { "sharedMailbox": ["Mail.Sender"], "smtp": ["Mail.SmtpServer", "Mail.SmtpFrom"] }, "offValue": "none",
+      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox", "smtp"], "valueLabels": { "none": "Off - no mail", "sharedMailbox": "From a mailbox of yours (Microsoft Graph)", "smtp": "Through your SMTP relay" }, "default": "none", "role": "SuperAdmin", "dependsOnByValue": { "sharedMailbox": ["Mail.Sender"], "smtp": ["Mail.SmtpServer", "Mail.SmtpFrom"] }, "offValue": "none",
       "confirm": [ { "when": "value", "value": "none", "title": "Stop sending alert mail?", "body": "Tamper alerts are then no longer mailed. They stay on the Tamper page, and are mailed once mail is switched on again." } ],
       "info": {
         "what": "Whether the engine mails alerts and reports, and how: as one mailbox of yours that the engine may send as (sharedMailbox), or through your SMTP relay (smtp, as v1 sent its mail).",
@@ -597,6 +598,54 @@
         "requires": "Admin.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/IdentityReport.Enabled/"
+      }
+    },
+    {
+      "key": "SignInMethods.Enabled", "group": "SignInMethods", "label": "Per-user sign-in methods", "type": "boolean", "default": "false", "role": "Admin",
+      "info": {
+        "what": "Reads each user's sign-in methods one by one (every method, and the device behind Windows Hello for Business and Microsoft Authenticator) in the background, every 15 minutes, and keeps them per user. A user is read again only when the MFA registration report shows a change, or after the maximum age - so a large tenant is read once and then only what changes.",
+        "enabled": "From the next scheduler tick the job runs every 15 minutes; admins are read first. The first full read of a large tenant takes several runs; until a user is read, the report says unknown, never 'no MFA'.",
+        "disabled": "Off (the default): the identity report uses the tenant-wide MFA registration report only.",
+        "risk": "Read only. The engine reads the users' authentication methods (UserAuthenticationMethod.Read.All). Microsoft throttles per-user reads; the job stops after its minutes and carries on next run. A phone number is kept masked. Reversible.",
+        "requires": "Admin. The engine identity's right UserAuthenticationMethod.Read.All (given by the install).",
+        "recommended": "On.",
+        "docUrl": "https://invardia.com/docs/eps/settings/SignInMethods.Enabled/"
+      }
+    },
+    {
+      "key": "SignInMethods.Scope", "group": "SignInMethods", "label": "Per-user sign-in methods: whose", "type": "enum", "values": ["all", "privileged"], "default": "all", "role": "Admin",
+      "info": {
+        "what": "Whose sign-in methods the job reads one by one: every user, or only privileged users (anyone who can reach a directory role).",
+        "enabled": "Used from the next run.",
+        "disabled": "all.",
+        "risk": "all reads more users (slower on a large tenant); privileged reads only the admins. Read only either way. Reversible.",
+        "requires": "Admin.",
+        "recommended": "all.",
+        "docUrl": "https://invardia.com/docs/eps/settings/SignInMethods.Scope/"
+      }
+    },
+    {
+      "key": "SignInMethods.MaxAgeDays", "group": "SignInMethods", "label": "Per-user sign-in methods: read again after (days)", "type": "int", "min": 1, "max": 365, "default": "90", "role": "Admin",
+      "info": {
+        "what": "A user whose MFA registration has not changed is read again after this many days anyway (a change is read at the next run).",
+        "enabled": "Used from the next run.",
+        "disabled": "90 days.",
+        "risk": "Fewer days = more reads. Reversible.",
+        "requires": "Admin.",
+        "recommended": "90.",
+        "docUrl": "https://invardia.com/docs/eps/settings/SignInMethods.MaxAgeDays/"
+      }
+    },
+    {
+      "key": "SignInMethods.FillMinutes", "group": "SignInMethods", "label": "Per-user sign-in methods: minutes per run", "type": "int", "min": 1, "max": 25, "default": "8", "role": "Admin",
+      "info": {
+        "what": "How long one run of the job reads before it stops; the next run (15 minutes later) carries on.",
+        "enabled": "Used from the next run.",
+        "disabled": "8 minutes.",
+        "risk": "More minutes reads more users per run and holds the job longer. Reversible.",
+        "requires": "Admin.",
+        "recommended": "8.",
+        "docUrl": "https://invardia.com/docs/eps/settings/SignInMethods.FillMinutes/"
       }
     },
     {

@@ -168,6 +168,12 @@ function Get-EpsWebRoutes {
                 uplink = @{ last = $ul.last; heartbeatUtc = $ul.heartbeat }
                 support = $sup
             }) } }
+        # framework §12.5 PENDING-1 (owner 2026-10-08, extended 2026-11-09: "where is the red marker when things are in the
+        # queue o not completed"): what waits for a person or did not complete - a red count on the menu item and its group,
+        # computed on every page load. A run in progress within its normal time is not counted; informational counts never.
+        @{ Method = 'GET'; Pattern = '^/api/attention$'; Summary = 'What waits for a person or did not complete: the red counts of the menu.'; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m)
+            New-EpsWebResponse -Body (Get-EpsAttentionCounts -ConnectionString $c.Ctx.ConnectionString) } }
         @{ Method = 'GET'; Pattern = '^/api/runs$'; Summary = 'The job runs, newest first, one page at a time.'; Body = 'job, status: filters; page, pageSize (at most 500)'; Public = $true
            Role = 'Reader'; Handler = { param($c, $m)
             $pg = Get-EpsWebPaging $c.Query
@@ -756,8 +762,9 @@ function Get-EpsWebRoutes {
             # save is applied by the engine within 5 minutes - the changes still waiting are listed, so the page can say so
             $pend = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT RequestId, JSON_VALUE(Scope, '$.method') AS Method, SUBSTRING(JSON_VALUE(Scope, '$.path'), 18, 100) AS Name, Status, RequestedBy, RequestedAtUtc FROM eps.JobRequest WHERE Job = 'Config' AND Status IN ('Pending', 'Dispatched', 'Running') AND ISJSON(Scope) = 1 AND JSON_VALUE(Scope, '$.path') LIKE '/api/ca/monitors/%' ORDER BY RequestedAtUtc"))
             New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled, LastStartedUtc, LastStartResult, UpdatedAtUtc FROM eps.CaMonitor ORDER BY Name')); pending = $pend } } }
-        @{ Method = 'PUT'; Pattern = '^/api/ca/monitors/(?<mn>[A-Za-z0-9_.-]{1,100})$'; Summary = 'Create or change a monitor.'; Body = 'definition: the analysis (as for analyze; excludePolicyIds: policies left out of this monitor); schedule; enabled'; Public = $true
+        @{ Method = 'PUT'; Pattern = '^/api/ca/monitors/(?<mn>[A-Za-z0-9_.%-]{1,300})$'; Summary = 'Create or change a monitor.'; Body = 'definition: the analysis (as for analyze; excludePolicyIds: policies left out of this monitor); schedule; enabled'; Public = $true
            Role = 'Admin'; Apply = 'Engine'; Action = 'ca.monitor.change'; NeedsReason = $true; Handler = { param($c, $m)
+            $m.mn = [uri]::UnescapeDataString("$($m.mn)").Trim(); if ($m.mn -notmatch $script:EpsCaMonitorNamePattern) { return New-EpsWebError 400 'a monitor name is 1-100 letters, digits, spaces, - _ or .' }
             $t = "CaMonitor|$($m.mn)"
             $v = ConvertTo-EpsCaRequest -Body $c.Body.definition
             if (-not $v.Ok -or $v.Request.ListOnly) { $e = if ($v.Error) { $v.Error } else { 'a monitor names policies' }; return New-EpsWebResponse -Status 400 -Body @{ error = $e } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $e } }
@@ -771,8 +778,9 @@ function Get-EpsWebRoutes {
             $p = @{ n = $m.mn; d = $def; s = $sch; e = [bool]$c.Body.enabled } + (New-EpsJournalParameters -Actor $c.Caller.identity -Entity 'CaMonitor' -Key $m.mn -Action $(if ($cur) { 'Update' } else { 'Create' }) -Before $(if ($cur) { @{ definition = $cur.Definition; schedule = $cur.Schedule; enabled = [bool]$cur.Enabled } | ConvertTo-Json -Compress }) -After $after)
             [void](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -NonQuery -Parameters $p -Query "SET XACT_ABORT ON; BEGIN TRAN; MERGE eps.CaMonitor AS x USING (SELECT @n AS Name) AS s ON x.Name = s.Name WHEN MATCHED THEN UPDATE SET Definition = @d, Schedule = @s, Enabled = @e, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Definition, Schedule, Enabled) VALUES (@n, @d, @s, @e); $(Get-EpsJournalSql) COMMIT;")
             New-EpsWebResponse -Body @{ ok = $true; text = "Monitor $($m.mn) saved$(if ($c.Body.enabled) { " - it runs $sch, read only" } else { ' (off)' })." } -Audit @{ Target = $t; After = ($after | ConvertFrom-Json) } } }
-        @{ Method = 'DELETE'; Pattern = '^/api/ca/monitors/(?<mn>[A-Za-z0-9_.-]{1,100})$'; Summary = 'Delete a monitor.'; Public = $false
+        @{ Method = 'DELETE'; Pattern = '^/api/ca/monitors/(?<mn>[A-Za-z0-9_.%-]{1,300})$'; Summary = 'Delete a monitor.'; Public = $false
            Role = 'Admin'; Apply = 'Engine'; Action = 'ca.monitor.delete'; NeedsReason = $true; Handler = { param($c, $m)
+            $m.mn = [uri]::UnescapeDataString("$($m.mn)").Trim()
             $cur = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ n = $m.mn } -Query 'SELECT Definition, Schedule, Enabled FROM eps.CaMonitor WHERE Name = @n')[0]
             if (-not $cur) { return New-EpsWebResponse -Status 404 -Body @{ error = 'no such monitor' } -Audit @{ Target = "CaMonitor|$($m.mn)"; Outcome = 'refused'; OutcomeText = 'missing' } }
             $p = @{ n = $m.mn } + (New-EpsJournalParameters -Actor $c.Caller.identity -Entity 'CaMonitor' -Key $m.mn -Action 'Delete' -Before (@{ definition = $cur.Definition; schedule = $cur.Schedule } | ConvertTo-Json -Compress) -After $null)
@@ -896,7 +904,18 @@ function Get-EpsWebRoutes {
             $cs = $c.Ctx.ConnectionString
             $o = Get-EpsCaOverview -ConnectionString $cs
             $cat = Get-EpsCaTemplateCatalog
-            New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue $o.Rows); findings = @(ConvertTo-EpsWebValue $o.Findings)
+            # owner 2026-11-09 ("the prio here is wrong ... nothin about that i just chose to analyze or monitoring in
+            # progress"): per policy, the analysis it waits for or had last, and the monitors that cover it
+            $act = Get-EpsCaPolicyActivity -ConnectionString $cs
+            $rowsOut = @(ConvertTo-EpsWebValue $o.Rows)
+            foreach ($r in $rowsOut) {
+                $k = "$($r.PolicyId)".ToLowerInvariant(); $a = $act[$k]
+                $r | Add-Member -NotePropertyName Analysis -NotePropertyValue $(if ($a) { $a.Text } else { 'never analysed' }) -Force
+                $r | Add-Member -NotePropertyName AnalysisState -NotePropertyValue $(if ($a) { $a.State } else { 'none' }) -Force
+                $r | Add-Member -NotePropertyName AnalysisId -NotePropertyValue $(if ($a) { $a.AnalysisId } else { $null }) -Force
+                $r | Add-Member -NotePropertyName Monitors -NotePropertyValue $(if ($a -and $a.Monitors) { $a.Monitors } else { '' }) -Force
+            }
+            New-EpsWebResponse -Body @{ rows = $rowsOut; findings = @(ConvertTo-EpsWebValue $o.Findings)
                 monitoring = "$(Get-EpsSetting -ConnectionString $cs -Name 'CA.Monitoring.Enabled' -Default 'false')" -eq 'true'
                 method = "$(Get-EpsSetting -ConnectionString $cs -Name 'CA.GroupTargetingMethod' -Default '')"
                 templates = @($cat.templates).Count; library = $cat.library; stages = @($cat.stages)
@@ -1300,7 +1319,7 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $cs = $c.Ctx.ConnectionString
             $run = Get-EpsIdentityLatestRun -ConnectionString $cs -RunId "$($c.Query.run)"
             $counts = if ($run -and $run.ViewCountsJson) { $run.ViewCountsJson | ConvertFrom-Json -AsHashtable } else { @{} }
-            $views = @(foreach ($v in Get-EpsIdentityViewCatalog) { [ordered]@{ name = $v.Name; group = $v.Group; kind = $v.Kind; severity = $v.Severity; title = $v.Title; what = $v.What; fix = $v.Fix; columns = $v.Columns; v1 = $v.V1; count = $(if ($counts.ContainsKey($v.Name)) { $counts[$v.Name] } else { $null }) } })
+            $views = @(foreach ($v in Get-EpsIdentityViewCatalog) { [ordered]@{ name = $v.Name; group = $v.Group; kind = $v.Kind; severity = $v.Severity; title = $v.Title; what = $v.What; fix = $v.Fix; assumes = @(Get-EpsIdentityViewAssumptions -View $v); columns = $v.Columns; v1 = $v.V1; count = $(if ($counts.ContainsKey($v.Name)) { $counts[$v.Name] } else { $null }) } })
             $hist = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query 'SELECT TOP 30 RunId, CreatedAtUtc, Users, Devices, ViewCountsJson FROM eps.IdentitySnapshot ORDER BY CreatedAtUtc DESC'))
             $ad = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query 'SELECT RequestedAtUtc, RefreshedAtUtc, Users, Error FROM eps.AdUserSnapshotInfo WHERE Id = 1'))[0]
             $cols = @{}; if ($run) { foreach ($k in 'User', 'Device') { $cols[$k] = Get-EpsIdentityColumns -ConnectionString $cs -RunId $run.RunId -Kind $k } }
@@ -1565,6 +1584,9 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $n = Clear-EpsLicenceClaim -ConnectionString $c.Ctx.ConnectionString
             New-EpsWebResponse -Body @{ ok = $true; changed = ($n -gt 0); text = $(if ($n -gt 0) { 'Done: the next update run asks Invardia again (or start the update job now on the Jobs page).' } else { 'Nothing to clear: no licence request or claim is held here yet.' }) } `
                 -Audit @{ Target = 'Licence'; Before = @{ claim = $before.claim; request = $before.request } } } }
+        # RIGHTS-1.7 point 2 (framework): Administration > Optional components - each one's state, its missing rights, the script that adds them
+        @{ Method = 'GET'; Pattern = '^/api/optional-components$'; Summary = 'The optional components: state, rights held and missing, and the script that adds exactly those rights.'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m) New-EpsWebResponse -Body (Get-EpsOptionalComponents -ConnectionString $c.Ctx.ConnectionString) } }
         # WORKER-GUI (2.0.82, owner 2026-11-05: "i didnt see the ad hybrid worker anywhere in the gui or where to configure it
         # or see the services"): Administration > Hybrid worker
         @{ Method = 'GET'; Pattern = '^/api/worker$'; Summary = 'The hybrid workers (scheduled task, AD domain, environment, version, last seen), the AD work queue, the last connection tests and how to add a worker.'; Public = $true
@@ -1665,9 +1687,9 @@ function Get-EpsApiReference {
       required, the answer, how it is applied, the errors and the audit action.
     #>
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
-    $areas = [ordered]@{ overview = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
+    $areas = [ordered]@{ overview = 'Overview'; attention = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
         jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; reference = 'App'; pro = 'Pro features' }
+        worker = 'Hybrid worker'; 'optional-components' = 'Optional components'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; reference = 'App'; pro = 'Pro features' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {
@@ -1775,7 +1797,7 @@ function Add-EpsPendingChange {
 
 function Invoke-EpsWebReplay {
     # one staged change, through its own route handler as the committer; audited under the route's own action
-    param([Parameter(Mandatory)]$Commit, [Parameter(Mandatory)]$Row, [Parameter(Mandatory)][string]$CommitReason)
+    param([Parameter(Mandatory)]$Commit, [Parameter(Mandatory)]$Row, [AllowEmptyString()][string]$CommitReason = '')   # a reason is optional (2.0.19): an empty one must not fail the commit (internal 2026-11-09)
     $route = $null; $m = $null
     foreach ($r in Get-EpsWebRoutes) { if ($r.Method -eq $Row.Method -and $Row.Path -match $r.Pattern) { $route = $r; $m = $Matches; break } }
     if (-not $route) { return @{ Status = 500; Body = @{ error = "no route for $($Row.Method) $($Row.Path)" } } }
@@ -1792,11 +1814,60 @@ function Invoke-EpsWebReplay {
     $res
 }
 
+function Get-EpsCaPolicyActivity {
+    <# Per policy (lower-case id): @{ State = requested | running | done | failed; Text; AnalysisId; Monitors }.
+       requested / running = an ad hoc analysis request for it (CAPolicyAnalyzer, Pending / Dispatched / Running);
+       else its newest analysis (when, impacted of in scope, errors, which monitor or ad hoc). Monitors = the monitors
+       whose runs analysed it in the last 14 days. Read only; a part it cannot read is left out. #>
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $out = @{}
+    $fmt = { param($d) try { ([datetime]$d).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') + 'Z' } catch { "$d" } }
+    try {
+        foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT x.PolicyId, x.CreatedAtUtc, x.InScope, x.Impacted, x.Errors, x.Monitor, x.AnalysisId FROM (SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.PolicyId ORDER BY a.CreatedAtUtc DESC) AS rn FROM eps.CaAnalysis a) x WHERE x.rn = 1")) {
+            $k = "$($x.PolicyId)".ToLowerInvariant()
+            $out[$k] = @{ State = $(if ([int]$x.Errors -gt 0) { 'failed' } else { 'done' }); AnalysisId = "$($x.AnalysisId)"; Monitors = ''
+                Text = "$(& $fmt $x.CreatedAtUtc): $([int]$x.Impacted) impacted of $([int]$x.InScope)$(if ([int]$x.Errors -gt 0) { ", $([int]$x.Errors) error(s)" }) ($(if ($x.Monitor -is [DBNull] -or -not "$($x.Monitor)") { 'ad hoc' } else { "monitor $($x.Monitor)" }))" }
+        }
+    } catch { }
+    try {
+        foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT LOWER(CONVERT(nvarchar(36), PolicyId)) AS P, STRING_AGG(Monitor, ', ') AS M FROM (SELECT DISTINCT PolicyId, Monitor FROM eps.CaAnalysis WHERE Monitor IS NOT NULL AND CreatedAtUtc >= DATEADD(DAY, -14, SYSUTCDATETIME())) d GROUP BY PolicyId")) {
+            $k = "$($x.P)"; if (-not $out[$k]) { $out[$k] = @{ State = 'none'; AnalysisId = $null; Text = 'never analysed'; Monitors = '' } }
+            $out[$k].Monitors = "$($x.M)"
+        }
+    } catch { }
+    try {
+        foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT LOWER(j.value) AS P, q.Status, q.RequestedAtUtc FROM eps.JobRequest q CROSS APPLY OPENJSON(q.Scope, '$.policyIds') j WHERE q.Job = 'CAPolicyAnalyzer' AND q.Status IN ('Pending', 'Dispatched', 'Running') AND ISJSON(q.Scope) = 1")) {
+            $k = "$($x.P)"; $prev = $out[$k]
+            $out[$k] = @{ State = $(if ("$($x.Status)" -eq 'Pending') { 'requested' } else { 'running' }); AnalysisId = $(if ($prev) { $prev.AnalysisId }); Monitors = $(if ($prev) { $prev.Monitors } else { '' })
+                Text = "$(if ("$($x.Status)" -eq 'Pending') { 'requested' } else { 'running' }) $(& $fmt $x.RequestedAtUtc)$(if ($prev -and $prev.State -in 'done', 'failed') { " (last: $($prev.Text))" })" }
+        }
+    } catch { }
+    $out
+}
+
+function Get-EpsAttentionCounts {
+    <# framework §12.5 PENDING-1: the red counts, each with the page it opens. Only what needs a person or failed:
+         queue  - staged changes waiting for a commit, and committed ones that FAILED in the last 7 days (not discarded)
+         runs   - each job whose LAST run Failed / PartlyFailed / Held, plus runs still 'Running' after 3 hours (stuck)
+         tamper - open tamper events
+         worker - a hybrid worker that has not reported within HybridWorker.StaleMinutes, plus AD writes that failed (7 days)
+       A run in progress within its normal time is not counted. Never throws: a count it cannot read is 0. #>
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $q = { param($sql) try { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query $sql) } catch { 0 } }
+    $stale = 15; try { $stale = [int](Get-EpsSetting -ConnectionString $ConnectionString -Name 'HybridWorker.StaleMinutes' -Default '15') } catch { }
+    [ordered]@{
+        queue  = (& $q "SELECT COUNT(*) FROM eps.PendingChange WHERE Status = 'Pending'") + (& $q "SELECT COUNT(*) FROM eps.PendingChange WHERE Status = 'Failed' AND CommittedAtUtc >= DATEADD(DAY, -7, SYSUTCDATETIME())")
+        runs   = (& $q "SELECT COUNT(*) FROM eps.Run r WHERE r.Status IN ('Failed', 'PartlyFailed', 'Held') AND r.StartedAtUtc = (SELECT MAX(x.StartedAtUtc) FROM eps.Run x WHERE x.Job = r.Job)") + (& $q "SELECT COUNT(*) FROM eps.Run WHERE Status = 'Running' AND StartedAtUtc < DATEADD(HOUR, -3, SYSUTCDATETIME())")
+        tamper = & $q "SELECT COUNT(*) FROM eps.TamperEvent WHERE Status = 'Open'"
+        worker = (& $q "SELECT COUNT(*) FROM eps.WorkerHeartbeat WHERE LastSeenUtc < DATEADD(MINUTE, -$([Math]::Max(1, $stale)), SYSUTCDATETIME())") + (& $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Kind = 'AdSetAttribute' AND Status = 'Failed' AND DoneAtUtc >= DATEADD(DAY, -7, SYSUTCDATETIME())")
+    }
+}
+
 function Invoke-EpsCommitQueue {
     # commits the chosen Pending rows (oldest first); each one Applied or Failed with the save's own answer. Then ONE
     # tagging run per object type that changed, in the job's own mode (owner 2026-10-31: "Job's mode"), signed by the
     # committer. -Ids empty = refused (the GUI's Commit all sends every id it shows).
-    param([Parameter(Mandatory)]$Commit, [long[]]$Ids = @(), [Parameter(Mandatory)][string]$Reason)
+    param([Parameter(Mandatory)]$Commit, [long[]]$Ids = @(), [AllowEmptyString()][string]$Reason = '')   # optional (2.0.19); empty failed every commit without a reason
     $cs = $Commit.Ctx.ConnectionString
     $rows = @(Invoke-EpsSql -ConnectionString $cs -Query "SELECT * FROM eps.PendingChange WHERE Status = 'Pending' ORDER BY Id" | Where-Object { $Ids -contains [long]$_.Id })
     $commitId = [guid]::NewGuid(); $done = [System.Collections.Generic.List[object]]::new(); $types = @{}
@@ -1847,7 +1918,30 @@ function New-EpsSignedJobRequest {
         id = $id; j = $Job; m = $Mode; s = $(if ($Scope) { $Scope | ConvertTo-Json -Compress -Depth 12 }); by = $Ctx.Caller.identity
         tok = $Ctx.Caller.token; at = $Ctx.Caller.verifiedAtUtc; c = $Ctx.Correlation; r = "$($Ctx.Body.reason)"
     } -Query 'INSERT INTO eps.JobRequest (RequestId, Job, Mode, Scope, RequestedBy, SignedToken, SignedVerifiedAtUtc, CorrelationId, Reason) VALUES (@id, @j, @m, @s, @by, @tok, @at, @c, @r)')
+    [void](Send-EpsWake)   # FAST-START: the engine checks now, not at its next 5-minute check (best effort - the check runs anyway)
     "$id"
+}
+
+# FAST-START (owner 2026-11-09: "why is it not starting automatically if not running" -> "Web may send a wake-up" / "just
+# make it like fx pim does it with delta"): ONE message on the wake queue (eps-wake) starts caj-eps-wake, which runs a normal
+# engine check (Invoke-EpsTick: the same claims, guards and run record) - a request starts within seconds. The web identity
+# may only SEND to that one queue; the message carries no parameter. At most one wake-up per 20 seconds (a batch of
+# requests needs one check). Never throws: without the setting, the right or the queue the 5-minute check takes the request.
+$script:EpsWakeLast = [datetime]::MinValue
+function Send-EpsWake {
+    param([string]$StorageAccount = $env:EPS_STORAGE_ACCOUNT, [scriptblock]$Post, [datetime]$NowUtc = [datetime]::UtcNow)
+    if (-not $StorageAccount) { return $false }
+    if (($NowUtc - $script:EpsWakeLast).TotalSeconds -lt 20) { return $false }
+    $script:EpsWakeLast = $NowUtc
+    try {
+        $text = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{ job = 'caj-eps-wake'; env = @{} } | ConvertTo-Json -Compress)))
+        $uri = "https://$StorageAccount.queue.core.windows.net/eps-wake/messages?messagettl=600"
+        $body = "<QueueMessage><MessageText>$text</MessageText></QueueMessage>"
+        if ($Post) { return [bool](& $Post $uri $body) }
+        $tok = Get-EpsManagedIdentityToken -Resource 'https://storage.azure.com/'
+        $r = Invoke-WebRequest -Method POST -Uri $uri -Body $body -ContentType 'application/xml' -Headers @{ Authorization = "Bearer $tok"; 'x-ms-version' = '2021-08-06' } -SkipHttpErrorCheck -TimeoutSec 10
+        return ([int]$r.StatusCode -lt 300)
+    } catch { return $false }
 }
 
 # ---- TAG-TEST: the test run pages (owner 2026-11-05) - READ ONLY over eps.Run / eps.TagChange ----------------------

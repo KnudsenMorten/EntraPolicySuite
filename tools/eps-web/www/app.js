@@ -36,7 +36,12 @@
       else if (k.indexOf('on') === 0) e.addEventListener(k.substring(2), v);
       else e.setAttribute(k, v === true ? '' : String(v));
     });
-    for (var i = 2; i < arguments.length; i++) { var c = arguments[i]; if (c === null || c === undefined) continue; if (Array.isArray(c)) c.forEach(function (x) { if (x) e.appendChild(x); }); else e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); }
+    // a child is a node or text, alone or in an array (owner 2026-11-09, Tag types "Could not load: Failed to execute
+    // 'appendChild'": "set by rule #3, #7" passed its ', ' separators as text INSIDE an array, which went in as-is)
+    var add = function (x) { if (x === null || x === undefined || x === false) return; if (Array.isArray(x)) { x.forEach(add); return; } e.appendChild(typeof x === 'string' || typeof x === 'number' ? document.createTextNode(String(x)) : x); };
+    for (var i = 2; i < arguments.length; i++) add(arguments[i]);
+    // a page's long explanation opens on a click (GUI-WALK 2026-11-09; the CSS .guide.clamp, the click handler below)
+    if (e.className === 'guide' && (e.textContent || '').length > 200) e.className = 'guide clamp';
     return e;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
@@ -344,7 +349,7 @@
   // ---- pages -------------------------------------------------------------------------------------------------------
   // a count; with href the whole card is a link to what it counts (ADMIN-WALK: "click 3 open tag changes to get to them")
   function card(num, label, alert, href) {
-    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: fmtNum(num) }), el('div', { class: 'lbl', text: label }));
+    var c = el(href ? 'a' : 'div', { class: 'card' + (alert ? ' alert' : '') + (href ? ' card-link' : ''), href: href || null }, el('div', { class: 'num', text: num === null || num === undefined || num === '' ? '-' : (typeof num === 'number' ? fmtNum(num) : String(num)) }), el('div', { class: 'lbl', text: label }));
     return c;
   }
   function stCell(key) { return function (r) { return 'st-' + r[key]; }; }
@@ -435,14 +440,15 @@
     var now = r.isSet ? r.value : r.default;
     var canEdit = r.editable && isRole(r.role);
     var head = el('div', { class: 'srow' });
-    var name = el('div', { class: 'sname' }, el('div', { class: 'slabel', text: r.label }), el('div', { class: 'skey', text: r.key }));
+    // GUI-WALK (owner 2026-11-09): the internal key is a tooltip on the label, not a subtitle that pushes the help out
+    var name = el('div', { class: 'sname' }, el('div', { class: 'slabel', text: r.label, title: r.key }));
     if (!r.active) name.appendChild(el('span', { class: 'badge', text: 'not used in this release' }));
     head.appendChild(name);
     var ctl = null, read = null;
     if (canEdit) {
       if (r.type === 'boolean') ctl = el('select', { 'aria-label': r.label }, el('option', { value: 'true', text: 'On' }), el('option', { value: 'false', text: 'Off' }));
       // a stored value outside the list (e.g. v1's raw 'Dynamic' from an import) stays visible as its own option
-      else if (r.type === 'enum') ctl = el('select', { 'aria-label': r.label }, (r.values || []).concat((now !== null && now !== undefined && (r.values || []).indexOf(String(now)) < 0) ? [String(now)] : []).map(function (v) { return el('option', { value: v, text: v === '' ? '(not set)' : ((r.values || []).indexOf(v) < 0 ? v + ' (as imported)' : v) }); }));
+      else if (r.type === 'enum') ctl = el('select', { 'aria-label': r.label }, (r.values || []).concat((now !== null && now !== undefined && (r.values || []).indexOf(String(now)) < 0) ? [String(now)] : []).map(function (v) { return el('option', { value: v, text: v === '' ? '(not set)' : ((r.values || []).indexOf(v) < 0 ? v + ' (as imported)' : ((r.valueLabels && r.valueLabels[v]) || v)) }); }));   // GUI-WALK round 2: a value's label (Mail.Mode), the stored value unchanged
       else if (r.type === 'text' && SETTING_PICK[r.pick]) ctl = settingPickSelect(r, now);
       else if (r.type === 'list') ctl = el('textarea', { rows: 3, 'aria-label': r.label, placeholder: 'one per line' + (r.itemHint ? ': ' + r.itemHint : '') });
       else ctl = el('input', { type: 'text', 'aria-label': r.label, inputmode: (r.type === 'int' || r.type === 'number') ? 'decimal' : null, maxlength: r.maxLength || null });
@@ -474,12 +480,16 @@
       el('button', { type: 'button', class: 'link', text: 'History', onclick: toggle(historyPanel) }));
     if (canEdit) {
       acts.appendChild(document.createTextNode(' '));
-      acts.appendChild(el('button', { type: 'button', text: 'Save', onclick: function () {
+      // GUI-WALK: Save is quiet until the field is changed, then it is the one filled button on the row
+      var saveBtn = el('button', { type: 'button', class: 'secondary', text: 'Save', onclick: function () {
         var next = read();
         var norm = function (v) { return r.type === 'list' ? JSON.stringify(parseList(v)) : String(v === null || v === undefined ? '' : v); };
         if (norm(next) === norm(now)) { status('No change to save for ' + r.label + '.'); return; }
         saveSetting(r, next);
-      } }));
+      } });
+      acts.appendChild(saveBtn);
+      var dirty = function () { var n0 = function (v) { return r.type === 'list' ? JSON.stringify(parseList(v)) : String(v === null || v === undefined ? '' : v); }; saveBtn.className = n0(read()) === n0(now) ? 'secondary' : ''; };
+      if (ctl) { ctl.addEventListener('input', dirty); ctl.addEventListener('change', dirty); }
       if (r.isSet && r.value !== r.default) { acts.appendChild(document.createTextNode(' ')); acts.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Use default', onclick: function () { saveSetting(r, r.default); } })); }
     }
     head.appendChild(acts);
@@ -499,7 +509,7 @@
     }
     else if (!canEdit) meta.appendChild(document.createTextNode('Changed by a' + (r.role === 'Admin' ? 'n Admin' : ' SuperAdmin') + '. '));
     if (r.isSet && r.updatedAtUtc) { meta.appendChild(document.createTextNode('Changed ')); meta.appendChild(timeEl(r.updatedAtUtc)); if (r.updatedBy) meta.appendChild(document.createTextNode(' by ' + r.updatedBy)); meta.appendChild(document.createTextNode('.')); }
-    else meta.appendChild(document.createTextNode('Default (' + showValue(r, r.default) + ').'));
+    else meta.appendChild(document.createTextNode('Default: ' + showValue(r, r.default).replace(/^\((.*)\)$/, '$1') + '.'));
     return el('div', { class: 'setting' }, head, meta, panel);
   }
 
@@ -573,13 +583,42 @@ function schedPicker(current, job) {
     return k === 'daily' ? 'daily ' + tm : k === 'weekly' ? 'weekly ' + day.value + ' ' + tm : k === 'monthly' ? 'monthly ' + mday.value + ' ' + tm : k === 'minutes' ? 'every ' + mins.value + 'm' : k === 'hours' ? 'every ' + hrs.value + 'h' : 'manual';
   } };
 }
+  // owner 2026-11-09 ("what does first mean ?"): the value mode in words - which matching rule's value is written
+  function valueModeText(m) {
+    return m === 'Last' ? 'the last matching rule wins' : m === 'Multiple' ? 'all matching values, comma-separated' : 'the first matching rule wins';
+  }
   function valueInput(tt, cur, label) {
-    // the tag type's allowed values as suggestions; the server refuses a value that is not on the list
-    var id = 'vals-' + Math.random().toString(36).substring(2);
-    var dl = el('datalist', { id: id }, ((tt && tt.values) || []).map(function (v) { return el('option', { value: v.value, label: v.description || (v.isPattern ? 'pattern' : '') }); }));
-    var inp = el('input', { type: 'text', list: id, 'aria-label': label, placeholder: label, maxlength: 1024 });
-    inp.value = textOf(cur);
-    return { node: el('span', null, inp, dl), input: inp };
+    // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type WITH a value list is
+    // picked from that list - nothing to type, so nothing the server refuses. A pattern entry (e.g. v1's Exchange_*)
+    // adds "Other value matching <pattern>", which opens a field for that one value. Only a tag type WITHOUT a list
+    // (free text, e.g. AccountInfo) keeps a text field. A stored value that is no longer on the list stays selectable,
+    // marked, so opening an old rule never changes it silently.
+    var vals = (tt && tt.values) || [];
+    var fixed = vals.filter(function (v) { return !v.isPattern; }), pats = vals.filter(function (v) { return v.isPattern; });
+    var curText = textOf(cur);
+    if (!vals.length) {
+      var inp = el('input', { type: 'text', 'aria-label': label, placeholder: label + ' (free text)', maxlength: 1024 });
+      inp.value = curText;
+      return { node: el('span', null, inp), input: inp };
+    }
+    var OTHER = '\u0000other';
+    var onList = function (x) { return fixed.some(function (v) { return String(v.value).toLowerCase() === String(x).toLowerCase(); }); };
+    var sel = el('select', { 'aria-label': label },
+      el('option', { value: '', text: '- no value -' }),
+      fixed.map(function (v) { return el('option', { value: v.value, text: v.value + (v.description ? ' - ' + v.description : '') }); }));
+    if (pats.length) sel.appendChild(el('option', { value: OTHER, text: 'Other value matching ' + pats.map(function (v) { return v.value; }).join(' or ') + '...' }));
+    var other = el('input', { type: 'text', 'aria-label': label + ' (matching ' + pats.map(function (v) { return v.value; }).join(', ') + ')', placeholder: 'a value matching ' + pats.map(function (v) { return v.value; }).join(' or '), maxlength: 1024, hidden: true });
+    if (curText && !onList(curText)) {
+      if (pats.length) { sel.value = OTHER; other.value = curText; other.hidden = false; }
+      else { sel.appendChild(el('option', { value: curText, text: curText + ' (not on the list - pick a listed value)' })); sel.value = curText; }
+    } else {
+      sel.value = curText ? fixed.filter(function (v) { return String(v.value).toLowerCase() === curText.toLowerCase(); })[0].value : '';
+    }
+    sel.addEventListener('change', function () { other.hidden = sel.value !== OTHER; if (!other.hidden) other.focus(); });
+    var hint = el('div', { class: 'smeta', text: 'The values of this tag type - add one on the Tag types page.' });
+    // the caller reads .input.value: the picked value, or the typed one for "Other value matching ..."
+    var proxy = {}; Object.defineProperty(proxy, 'value', { get: function () { return sel.value === OTHER ? other.value : sel.value; } });
+    return { node: el('span', null, sel, other, hint), input: proxy };
   }
   function ruleEditor(ot, j, card, opts) {
     // card = an existing card (edit), a copy (duplicate) or {} (new); opts = { insertAfter, title, onDone }
@@ -587,7 +626,7 @@ function schedPicker(current, job) {
     box.appendChild(el('h3', { text: opts.title }));
     var errs = el('div', { class: 'errors', hidden: true });
     var types = j.tagTypes.filter(function (t) { return t.enabled || t.name === card.TagType; });
-    var tsel = el('select', { 'aria-label': 'Tag type' }, el('option', { value: '', text: '- tag type -' }), types.map(function (t) { return el('option', { value: t.name, text: t.name + ' (' + t.attribute + ', ' + t.valueMode + ')' + (t.enabled ? '' : ' - switched off') }); }));
+    var tsel = el('select', { 'aria-label': 'Tag type' }, el('option', { value: '', text: '- tag type -' }), types.map(function (t) { return el('option', { value: t.name, text: t.name + ' (' + t.attribute + ') - ' + valueModeText(t.valueMode) + (t.enabled ? '' : ' - switched off') }); }));
     tsel.value = textOf(card.TagType);
     // ADMIN-WALK: the persona offers the ones the rules already use (a new one can still be typed)
     var pid = 'personas-' + Math.random().toString(36).substring(2);
@@ -606,8 +645,31 @@ function schedPicker(current, job) {
       var tt = j.tagTypes.filter(function (t) { return t.name === tsel.value; })[0];
       if (ot === 'User') {
         vAD = valueInput(tt, vAD ? vAD.input.value : card.TagValueAD, 'value for AD-synced users'); vCloud = valueInput(tt, vCloud ? vCloud.input.value : card.TagValueCloud, 'value for cloud users');
+        // owner 2026-11-09 ("50% of the time the have to be identitically. consider a button so the are identitically - or
+        // as its peer - propose it by default"): picking one side PROPOSES the other - its peer when the list has one
+        // (Internal_User_AD_Synced_MFA <-> Internal_User_Cloud_MFA), else the same value - until that side is picked by
+        // hand; "Same as AD" / "Use the peer" set it in one click. One hint for both fields.
+        [vAD, vCloud].forEach(function (v) { var h = v.node.querySelector('.smeta'); if (h) h.parentNode.removeChild(h); });
         valHost.appendChild(el('label', { class: 'rf-val' }, el('span', { text: 'AD-synced users' }), vAD.node));
         valHost.appendChild(el('label', { class: 'rf-val' }, el('span', { text: 'Cloud users' }), vCloud.node));
+        var listed = function (x) { return ((tt && tt.values) || []).some(function (v) { return !v.isPattern && String(v.value).toLowerCase() === String(x).toLowerCase(); }); };
+        var hasList = !!((tt && tt.values) || []).length;
+        var peerOf = function (x, toCloud) {
+          if (!x) return '';
+          var p = toCloud ? String(x).replace(/AD_Synced/i, 'Cloud') : String(x).replace(/Cloud/i, 'AD_Synced');
+          if (p !== x && (!hasList || listed(p))) return p;   // the peer, when the tag type has it
+          return x;                                            // else the same value
+        };
+        var selOf = function (v) { return v.node.querySelector('select') || v.node.querySelector('input'); };
+        var adSel = selOf(vAD), cloudSel = selOf(vCloud), cloudByHand = !!textOf(card.TagValueCloud) && textOf(card.TagValueCloud) !== peerOf(textOf(card.TagValueAD), true), adByHand = false;
+        var setVal = function (s, x) { if (!s) return; if (s.tagName === 'SELECT' && !Array.prototype.some.call(s.options, function (o) { return o.value === x; })) return; s.value = x; s.dispatchEvent(new Event('change')); };
+        if (adSel) adSel.addEventListener('change', function (ev) { if (ev.isTrusted && !cloudByHand && vAD.input.value) setVal(cloudSel, peerOf(vAD.input.value, true)); });
+        if (cloudSel) cloudSel.addEventListener('change', function (ev) { if (ev.isTrusted) { cloudByHand = true; if (!adByHand && !vAD.input.value && vCloud.input.value) setVal(adSel, peerOf(vCloud.input.value, false)); } });
+        if (adSel) adSel.addEventListener('change', function (ev) { if (ev.isTrusted) adByHand = true; });
+        valHost.appendChild(el('div', { class: 'toolbar rf-val-tools' },
+          el('button', { type: 'button', class: 'secondary', text: 'Same as AD-synced', title: 'Cloud users get the same value as AD-synced users', onclick: function () { setVal(cloudSel, vAD.input.value); cloudByHand = true; } }),
+          el('button', { type: 'button', class: 'secondary', text: 'Use the cloud peer', title: 'Cloud users get the cloud counterpart of the AD-synced value (AD_Synced -> Cloud), when the tag type has it', onclick: function () { setVal(cloudSel, peerOf(vAD.input.value, true)); cloudByHand = true; } }),
+          el('span', { class: 'smeta', text: hasList ? 'Picking the AD-synced value proposes the cloud value (its peer, else the same). The values come from the tag type - add one on the Tag types page.' : 'Free text: picking the AD-synced value proposes the cloud value.' })));
       } else { vDev = valueInput(tt, vDev ? vDev.input.value : card.TagValue, 'value (empty = clear the attribute)'); valHost.appendChild(vDev.node); }
     }
     tsel.addEventListener('change', drawValues); drawValues();
@@ -678,6 +740,11 @@ function schedPicker(current, job) {
   function prettyJson(s) { if (!s) return ''; try { var o = JSON.parse(s); delete o.reason; delete o.expected; return JSON.stringify(o, null, 1); } catch (e) { return textOf(s); } }
   // ADMIN-WALK-2: a staged change as a FIELD diff - the fields that change, before -> after, highlighted; the rest folded
   var QD_SKIP = { reason: 1, expected: 1, ruleId: 1, ruleSet: 1, order: 1, updatedAtUtc: 1, UpdatedAtUtc: 1 };
+  // owner 2026-11-09 (the commit queue showed "tagValueAD" / "tagValueCloud"): the field names in words, keyed lower-case
+  var QD_LABEL = { tagvaluead: 'Value for AD-synced users', tagvaluecloud: 'Value for cloud users', tagvalue: 'Value', tagtype: 'Tag type',
+    persona: 'Persona', enabled: 'Runs (enabled)', notes: 'Notes', conditions: 'Conditions', attribute: 'Attribute', valuemode: 'Which rule wins',
+    allowmultiple: 'Allows several values', fallbackad: 'Fallback for AD-synced users', fallbackcloud: 'Fallback for cloud users', description: 'Description',
+    value: 'Value', ispattern: 'A pattern', name: 'Name', insertafter: 'Placed after rule' };
   function qdVal(v) {
     if (v === null || v === undefined || v === '') return '(empty)';
     if (Array.isArray(v)) return v.length ? v.map(function (x) { return x && typeof x === 'object' ? (x.conditionType || x.ConditionType ? (x.conditionType || x.ConditionType) + ' = ' + textOf(x.target !== undefined ? x.target : x.Target) : JSON.stringify(x)) : String(x); }).join('\n') : '(none)';
@@ -696,7 +763,8 @@ function schedPicker(current, job) {
     keys.forEach(function (k) {
       var bk = b.hasOwnProperty(k) ? k : lc[k.toLowerCase()];
       var bv = r.Op === 'Create' || !r.BeforeJson ? undefined : b[bk], av = r.Op === 'Delete' ? undefined : a[k];
-      var row = el('tr', null, el('th', { text: k }), el('td', { class: 'qd-before', text: r.Op === 'Create' ? '(new)' : qdVal(bv) }), el('td', { class: 'qd-after', text: r.Op === 'Delete' ? '(deleted)' : qdVal(av) }));
+      // a Create has no Before: an empty, plain cell (a struck-out "(new)" made a new rule look like a deletion)
+      var row = el('tr', null, el('th', { text: QD_LABEL[k.toLowerCase()] || k }), el('td', { class: r.Op === 'Create' ? 'qd-none' : 'qd-before', text: r.Op === 'Create' ? '' : qdVal(bv) }), el('td', { class: 'qd-after', text: r.Op === 'Delete' ? '(deleted)' : qdVal(av) }));
       (r.Op === 'Create' || r.Op === 'Delete' || qdVal(bv) !== qdVal(av) ? changed : same).push(row);
     });
     var t = el('table', { class: 'qd' }, el('thead', null, el('tr', null, el('th', { text: 'Field' }), el('th', { text: 'Before' }), el('th', { text: 'After' }))), el('tbody', null, changed));
@@ -746,11 +814,13 @@ function schedPicker(current, job) {
           withReason('Discard ' + x.length + ' change(s)', 'They are not written; they stay in the list as discarded.', function (reason) { return api('POST', '/api/queue/discard', { ids: x, reason: reason }); }); } }] : [];
       var tools = el('div', { class: 'toolbar' }, el('span', { class: 'count', text: fmtNum(pending.length) + ' change(s) waiting' }));
       if (isRole('Admin') && pending.length) {
-        var stOts = {}; pending.forEach(function (r) { if (r.ObjectType) stOts[r.ObjectType] = 1; }); Object.keys(stOts).forEach(function (ot) { tools.appendChild(el('a', { href: '#tagtest/' + ot + '/staged', class: 'btn-link', text: 'Test these staged ' + (ot === 'User' ? 'user' : 'device') + ' changes' })); });
+        // owner 2026-11-09 (the commit queue: "impossible to read"): the main action is Commit (the filled button), testing
+        // first is the secondary one, and Discard all is a red danger button - not a plain link that looks harmless
         var allMine = twoMen && pending.every(mine);
-        tools.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Commit all (' + pending.length + ')', disabled: allMine, title: allMine ? 'A second approver is required: another admin commits the changes you staged.' : null, onclick: function () { commit(pending); } }));
+        tools.appendChild(el('button', { type: 'button', text: 'Commit all (' + pending.length + ')', disabled: allMine, title: allMine ? 'A second approver is required: another admin commits the changes you staged.' : null, onclick: function () { commit(pending); } }));
+        var stOts = {}; pending.forEach(function (r) { if (r.ObjectType) stOts[r.ObjectType] = 1; }); Object.keys(stOts).forEach(function (ot) { tools.appendChild(el('a', { href: '#tagtest/' + ot + '/staged', class: 'btn-link secondary', text: 'Test the ' + (ot === 'User' ? 'user' : 'device') + ' changes first' })); });
         if (allMine) tools.appendChild(el('span', { class: 'smeta', text: 'Every waiting change is yours: another admin commits them (second approver).' }));
-        if (isRole('SuperAdmin')) tools.appendChild(el('button', { type: 'button', class: 'link', text: 'Discard ALL', onclick: function () {
+        if (isRole('SuperAdmin')) tools.appendChild(el('button', { type: 'button', class: 'danger', text: 'Discard all (' + pending.length + ')', onclick: function () {
           withReason('Discard ALL ' + pending.length + ' waiting change(s)', 'Every waiting change is discarded, also other admins\' changes.', function (reason) { return api('POST', '/api/queue/discard-all', { expectedCount: pending.length, reason: reason }); }); } }));
       }
       p.appendChild(tools);
@@ -901,7 +971,7 @@ function schedPicker(current, job) {
     var fmt = el('select', { 'aria-label': 'Format' }, el('option', { value: 'v2', text: 'This app\'s CSV export (v2)' }), el('option', { value: 'v1', text: 'v1 ' + (ot === 'User' ? 'Identity_Tagging*.csv' : 'Device_Tagging*.csv') + ' (one or more files)' }));
     var file = el('input', { type: 'file', accept: '.csv,text/csv', 'aria-label': 'CSV file' });
     var delMissing = el('input', { type: 'checkbox' }), replace = el('input', { type: 'checkbox' });
-    var opt2 = el('label', null, delMissing, ' also delete the rules the file leaves out'), opt1 = el('label', null, replace, ' replace the rules an earlier v1 import made (instead of adding them)');
+    var opt2 = el('label', { class: 'c-danger' }, delMissing, ' DELETE every rule that is not in the file'), opt1 = el('label', null, replace, ' replace the rules an earlier v1 import made (instead of adding them)');
     var sync = function () { file.multiple = fmt.value === 'v1'; opt2.hidden = fmt.value !== 'v2'; opt1.hidden = fmt.value !== 'v1'; };
     fmt.addEventListener('change', sync); sync();
     var errs = el('div', { class: 'errors', hidden: true });
@@ -1047,6 +1117,13 @@ function schedPicker(current, job) {
                 onclick: function (ev) { ev.stopPropagation(); ev.preventDefault(); openRuleMatched(ot, w.r, gridTagTypes); } })));
             return;
           }
+          // GUI-WALK round 2: the import's note "v1: Identity_Tagging.csv:2, ..." is a small "from v1" badge (the rows on its
+          // hover); any text after it stays. Shown only - editing the cell still edits the whole note.
+          var v1m = c.key === 'notes' ? /^v1: ([^;]*?)(?:;\s*(.*))?$/.exec(v) : null;
+          if (v1m) {
+            tr.appendChild(el('td', { 'data-r': String(ri), 'data-c': String(ci), class: cls.join(' '), title: 'Imported from v1: ' + v1m[1] }, el('span', { class: 'badge', text: 'from v1' }), v1m[2] ? ' ' + v1m[2] : ''));
+            return;
+          }
           tr.appendChild(el('td', { 'data-r': String(ri), 'data-c': String(ci), class: cls.join(' '), title: tip, draggable: grab ? 'true' : null, text: c.key === 'matched' && v !== '' ? fmtNum(v) : v }));
         });
         tbody.appendChild(tr);
@@ -1066,6 +1143,14 @@ function schedPicker(current, job) {
       var cur = cellGet(w, c), inp, extra = null;
       if (c.kind === 'bool') { inp = el('select', { 'aria-label': c.label }, el('option', { value: 'TRUE', text: 'TRUE' }), el('option', { value: 'FALSE', text: 'FALSE' })); inp.value = cur; }
       else if (c.kind === 'tagtype') { inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '-' }), j.tagTypes.filter(function (t) { return t.enabled || t.name === cur; }).map(function (t) { return el('option', { value: t.name, text: t.name }); })); inp.value = cur; }
+      else if (c.kind === 'value' && (function () { var t0 = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0]; return t0 && t0.values.length && !t0.values.some(function (v) { return v.isPattern; }); })()) {
+        // owner 2026-11-09 ("then it should be a drop down here ... and not a text field"): a tag type with a value list is
+        // picked, as in the rule editor; a stored value no longer on the list stays, marked (a pattern list keeps the field)
+        var tv = j.tagTypes.filter(function (t) { return t.name === w.body.tagType; })[0].values;
+        inp = el('select', { 'aria-label': c.label }, el('option', { value: '', text: '- no value -' }), tv.map(function (v) { return el('option', { value: v.value, text: v.value }); }));
+        if (cur && !tv.some(function (v) { return String(v.value).toLowerCase() === String(cur).toLowerCase(); })) inp.appendChild(el('option', { value: cur, text: cur + ' (not on the list)' }));
+        inp.value = cur;
+      }
       else {
         inp = el('input', { type: 'text', 'aria-label': c.label, maxlength: c.kind === 'conds' ? '20000' : '1024' });
         inp.value = seed !== undefined ? seed : cur;
@@ -1401,9 +1486,9 @@ function schedPicker(current, job) {
         admin ? el('button', { type: 'button', text: 'New rule', onclick: function () { side(null, 'new'); } }) : null,
         // TAG-TEST (owner 2026-11-05): test the rules on the people you pick, see per person why, then go live
         admin ? el('button', { type: 'button', class: 'secondary', text: 'Test run', onclick: function () { openTestRun(ot, j.tagTypes.filter(function (t) { return t.enabled; }).map(function (t) { return t.name; })); } }) : null,
-        el('a', { href: '#tagtest/' + ot, text: 'Test runs' }),
-        admin ? el('button', { type: 'button', class: 'secondary', text: 'Deleted rules', onclick: function () { side(null, 'deleted'); } }) : null,
-        el('a', { href: '#conditions', text: 'Condition types' }));
+        // GUI-WALK round 2: New rule and Test run are the actions; the rest sits in one More menu
+        rowMenu('More for the ' + (ot === 'User' ? 'user' : 'device') + ' rules', [['Test runs', function () { location.hash = '#tagtest/' + ot; }]]
+          .concat(admin ? [['Deleted rules', function () { side(null, 'deleted'); }]] : []).concat([['Condition types', function () { location.hash = '#conditions'; }]]), 'More'));
       host.appendChild(bar);
       var lay = el('div', { class: 'rx-lay' }), filt = el('aside', { class: 'rx-filters', 'aria-label': 'Filters' }), main = el('div', { class: 'rx-main' }), sideBox = el('aside', { class: 'rx-side', 'aria-label': 'The selected rule' });
       // ADMIN-WALK (1366 px): the filter pane can be folded away - folded by default in the grid view on a laptop screen
@@ -1441,7 +1526,7 @@ function schedPicker(current, job) {
         return box;
       };
       var uniq = function (a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }).sort(); };
-      filt.appendChild(facet('Tag type', 'tags', uniq(rows.map(function (r) { return r.tagType; })), function (r, n) { return r.tagType === n; }, function (n) { return n + (attr[n] ? ' (' + attr[n].replace('extensionAttribute', 'ext') + ')' : ''); }));
+      filt.appendChild(facet('Tag type', 'tags', uniq(rows.map(function (r) { return r.tagType; })), function (r, n) { return r.tagType === n; }, function (n) { return n; }));
       filt.appendChild(facet('Show only', 'states', ['staged', 'hint', 'off', 'on'], function (r, n) { return stateOf(r) === n; }, function (n) { return { staged: 'Staged in the queue', hint: 'Has a hint', off: 'Switched off', on: 'On' }[n]; }));
       filt.appendChild(facet('Condition type', 'conds', uniq([].concat.apply([], rows.map(function (r) { return r.conds.map(function (c) { return c.ConditionType; }); }))), function (r, n) { return r.conds.some(function (c) { return c.ConditionType === n; }); }));
       filt.appendChild(el('button', { type: 'button', class: 'link', text: 'Clear filters', onclick: function () { S.q = ''; S.tags = {}; S.states = {}; S.conds = {}; build(queue); } }));
@@ -1481,7 +1566,7 @@ function schedPicker(current, job) {
             var smap = {}, sorder = [];
             grs.forEach(function (r) { var k = keys[1](r); if (!smap[k]) { smap[k] = []; sorder.push(k); } smap[k].push(r); });
             sorder.forEach(function (k) {
-              if (k) body.appendChild(el('div', { class: 'rx-sub' }, el('strong', { text: k + (S.groupBy !== 'tagtype' && attr[k] ? ' (' + attr[k].replace('extensionAttribute', 'ext') + ')' : '') }),
+              if (k) body.appendChild(el('div', { class: 'rx-sub' }, el('strong', { text: k + (S.groupBy !== 'tagtype' && attr[k] ? ' (' + attr[k] + ')' : '') }),
                 smap[k].length > 1 ? el('span', { class: 'smeta', text: smap[k].length + ' alternatives, tried top down - the first that matches wins' }) : null));
               var tb = el('tbody');
               smap[k].forEach(function (r, i) {
@@ -1865,7 +1950,7 @@ function schedPicker(current, job) {
     var ot = el('select', { 'aria-label': 'Object', disabled: !isNew }, el('option', { value: 'User', text: 'users' }), el('option', { value: 'Device', text: 'devices' })); ot.value = t.ObjectType || 'User';
     var name = el('input', { type: 'text', 'aria-label': 'Name', placeholder: 'e.g. Department', maxlength: 60, disabled: !isNew }); name.value = textOf(t.Name);
     var attr = el('select', { 'aria-label': 'Attribute' }); for (var i = 1; i <= 15; i++) attr.appendChild(el('option', { value: 'extensionAttribute' + i, text: 'extensionAttribute' + i })); attr.value = t.Attribute || 'extensionAttribute10';
-    var mode = el('select', { 'aria-label': 'Value mode' }, ['First', 'Last', 'Multiple'].map(function (m) { return el('option', { value: m, text: m }); })); mode.value = t.ValueMode || 'First';
+    var mode = el('select', { 'aria-label': 'Value mode' }, ['First', 'Last', 'Multiple'].map(function (m) { return el('option', { value: m, text: m + ' - ' + valueModeText(m) }); })); mode.value = t.ValueMode || 'First';
     var multi = el('input', { type: 'checkbox' }); multi.checked = !!t.AllowMultiple;
     var en = el('input', { type: 'checkbox' }); en.checked = t.Enabled !== false;
     var desc = el('input', { type: 'text', 'aria-label': 'Description', maxlength: 1000 }); desc.value = textOf(t.Description);
@@ -1918,7 +2003,7 @@ function schedPicker(current, job) {
         if (!t.Shipped) acts.appendChild(el('button', { type: 'button', class: 'link', text: 'Delete', onclick: function () { withReason('Delete tag type ' + t.Name, 'Only a tag type without rules and values can be deleted.', function (reason) { return api('DELETE', '/api/tagtypes/' + t.ObjectType + '/' + encodeURIComponent(t.Name), { reason: reason }); }); } }));
       }
       p.appendChild(el('div', { class: 'rule' + (t.Enabled ? '' : ' off') },
-        el('div', { class: 'rhead' }, el('span', { class: 'slabel', text: t.Name }), el('span', { class: 'skey', text: t.ObjectType + ' · ' + t.Attribute + ' · ' + t.ValueMode + ' · ' + fmtNum(t.Rules) + ' rule(s)' }),
+        el('div', { class: 'rhead' }, el('span', { class: 'slabel', text: t.Name }), el('span', { class: 'skey', text: t.ObjectType + ' · ' + t.Attribute + ' · ' + valueModeText(t.ValueMode) + ' · ' + fmtNum(t.Rules) + ' rule(s)' }),
           t.Enabled ? null : el('span', { class: 'badge', text: 'off' }), t.Shipped ? el('span', { class: 'badge', text: 'shipped' }) : null),
         t.Description ? el('div', { class: 'smeta', text: t.Description }) : null,
         el('div', { class: 'smeta', text: 'Fallback: AD-synced ' + (textOf(t.FallbackAD) || '-') + ', cloud ' + (textOf(t.FallbackCloud) || '-') }), vals, acts, slot));
@@ -1977,7 +2062,7 @@ function schedPicker(current, job) {
   // ---- the CA Policy Analyzer (DESIGN §5.7): READ ONLY towards the tenant; ad hoc first, sign-in logs by default ------
   // CA-ONE (owner 2026-11-02: "merge the ca policy analyzer and new monitor into one module, so either you analyze first,
   // then you can setup monitor or setup monitor. dont make them 2 separate"; about the options: "we dont understand,
-  // simplify"): ONE form in three steps - 1. which policies, 2. which sign-ins, 3. Analyse now / Save as monitor - whose
+  // simplify"): ONE form in three steps - 1. which policies, 2. which sign-ins, 3. Analyze now / Save as monitor - whose
   // first control picks a new or an existing monitor (CA-MONADD: "need an easy way to add/remove ca policy to
   // existing/new monitor"). CA-PERSONA ("it should be possible edit/delete/create existing monitors persona. this
   // functionality replaces the series button"): the personas are a list the admin manages (Manage personas).
@@ -1986,6 +2071,8 @@ function schedPicker(current, job) {
   // groups here are the MANAGED personas over the real policies - a policy in none is under "No persona"
   var CA_OTHER = 'No persona';
   var CA_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+  // a monitor name may hold spaces (owner 2026-11-09 "why is space not allowed"); the server's EpsCaMonitorNamePattern
+  var CA_MON_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$/;
   var CA_PERIODS = [[24, 'the last 24 hours'], [72, 'the last 3 days'], [168, 'the last 7 days'], [336, 'the last 14 days'], [720, 'the last 30 days']];
   // the persona groups: Global first, the personas A-Z, Other last (an explicit rank: the old sort keyed Other on a tilde, which localeCompare ignores)
   function personaRank(g) { return g === 'Global' ? 0 : g === CA_OTHER ? 2 : 1; }
@@ -2127,24 +2214,28 @@ function schedPicker(current, job) {
         el('label', { class: 'wide' }, disabled, ' Include disabled accounts'),
         el('label', { class: 'wide' }, 'Also the policies with the numbers ', nums, el('span', { class: 'smeta', text: ' (v1\'s list: 6 = CA006, 200-249 = CA200 to CA249)' })),
         el('label', { class: 'wide' }, 'Only policies that are ', stSel),
-        el('label', { class: 'wide' }, 'Instead of the period, a fixed window from ', wFrom, ' to ', wTo, el('span', { class: 'smeta', text: ' (UTC, within the last 30 days; Analyse now only - a monitor reads the last hours)' })),
+        el('label', { class: 'wide' }, 'Instead of the period, a fixed window from ', wFrom, ' to ', wTo, el('span', { class: 'smeta', text: ' (UTC, within the last 30 days; Analyze now only - a monitor reads the last hours)' })),
         el('label', { class: 'wide' }, 'At most ', cap, ' sign-ins (empty = every sign-in of the window)'),
         // CA-ANALYZER-PARTS (owner 2026-11-03: "this is too complex for people to dcide on"): EPS decides how it reads a
         // large log - the field is gone; a window longer than a day is read a day at a time
         el('p', { class: 'smeta', text: 'A window longer than a day is read a day at a time - Entra Policy Suite decides this, there is nothing to set.' })));
 
-    // 3. Analyse now / Save as monitor; name, schedule, on and Alert to only for saving
-    var name = el('input', { type: 'text', 'aria-label': 'Monitor name', maxlength: 100, placeholder: 'e.g. users-internal' });
+    // 3. Analyze now / Save as monitor; name, schedule, on and Alert to only for saving
+    var name = el('input', { type: 'text', 'aria-label': 'Monitor name', maxlength: 100, placeholder: 'e.g. users-internal', title: 'Letters, digits, spaces, - _ and .' });
+    // owner 2026-11-09 (typed "int users", got "A monitor name is 1-100 letters, digits, - _ or ." only on Save): a space
+    // becomes - as you type, any other character that a name cannot hold is dropped - the field never holds a refused name
+    // then "why is space not allowed": spaces ARE allowed now; only a character a name cannot hold is dropped as you type
+    name.addEventListener('input', function () { var v = name.value.replace(/[^A-Za-z0-9 _.-]/g, ''); if (v !== name.value) name.value = v; });
     var sch = el('input', { type: 'text', 'aria-label': 'Schedule', placeholder: 'daily 07:00' }); sch.value = 'daily 07:00';
     var en = el('input', { type: 'checkbox' }); en.checked = true;
     var alertTo = el('input', { type: 'text', 'aria-label': 'Alert to', placeholder: 'team@contoso.com, other@contoso.com (empty = the alert recipients in Settings)' });
     var saveBox = el('div', { class: 'editor', hidden: true },
       el('div', { class: 'form' }, el('label', null, 'Name ', name), el('label', null, 'Schedule ', sch), el('label', null, en, ' on'),
         el('label', { class: 'wide' }, 'Alert to ', alertTo),
-        el('div', { class: 'wide smeta', text: 'Schedule examples: daily 07:00 (every day at 07:00), every 4h, weekly mon 06:00. An alert mail goes out only when users are impacted.' })),
+        el('div', { class: 'wide smeta', text: 'Name: letters, digits, spaces, - _ and . Schedule examples: daily 07:00 (every day at 07:00), every 4h, weekly mon 06:00. An alert mail goes out only when users are impacted.' })),
       el('div', { class: 'dlg-buttons' }, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: function () { saveBox.hidden = true; } }), el('button', { type: 'button', text: 'Save', onclick: save })));
     var saveBtn = el('button', { type: 'button', class: 'secondary', text: 'Save as monitor', onclick: function () { saveBox.hidden = false; (st.mon ? sch : name).focus(); } });
-    var runBtn = el('button', { type: 'button', text: 'Analyse now', onclick: analyse });
+    var runBtn = el('button', { type: 'button', text: 'Analyze now', onclick: analyze });
 
     function read() {
       var ser = st.dropSeries ? { prefixes: [], patterns: [], names: st.series.names } : st.series;
@@ -2154,15 +2245,15 @@ function schedPicker(current, job) {
         policyNumbers: nums.value.trim(), policyStates: stSel.value ? [stSel.value] : [], maxSignIns: cap.value.trim() };
     }
     function describe(b) { return [b.personas.length ? b.personas.join(', ') : '', b.policyIds.length ? fmtNum(b.policyIds.length) + ' picked' : '', b.policyPrefixes.concat(b.policyPatterns).join(', ')].filter(function (x) { return x; }).join(' + ') + (b.excludePolicyIds.length ? ' (' + fmtNum(b.excludePolicyIds.length) + ' left out)' : ''); }
-    function analyse() {
+    function analyze() {
       var b = read();
       if (wFrom.value || wTo.value) { if (!wFrom.value || !wTo.value) { notice('A fixed window needs both a from and a to.', 'warn'); return; } b.windowStart = isoUtc(wFrom.value); b.windowEnd = isoUtc(wTo.value); }
       if (!selection().length && !b.personas.length && !b.policyNumbers) { notice('Pick a persona or a policy first (step 1), or give policy numbers under More options.', 'warn'); return; }
-      withReason('Analyse ' + (st.mon ? 'monitor ' + st.mon + ': ' : '') + describe(b), 'Read only: the engine reads the policies and the sign-ins of ' + caPeriodText(b.lookbackHours) + ' and changes nothing.', function (reason) { b.reason = reason; return api('POST', '/api/ca/analyze', b); }, { readOnly: true });
+      withReason('Analyze ' + (st.mon ? 'monitor ' + st.mon + ': ' : '') + describe(b), 'Read only: the engine reads the policies and the sign-ins of ' + caPeriodText(b.lookbackHours) + ' and changes nothing.', function (reason) { b.reason = reason; return api('POST', '/api/ca/analyze', b); }, { readOnly: true });
     }
     function save() {
       var n = st.mon || name.value.trim();
-      if (!CA_NAME.test(n)) { notice('A monitor name is 1-100 letters, digits, - _ or .', 'warn'); name.focus(); return; }
+      if (!CA_MON_NAME.test(n)) { notice('A monitor name starts with a letter or digit and holds up to 100 letters, digits, spaces, - _ or .', 'warn'); name.focus(); return; }
       if (!st.mon && monitors.some(function (m) { return m.Name.toLowerCase() === n.toLowerCase(); })) { notice('A monitor ' + n + ' exists already - pick it under Monitor to change it.', 'warn'); return; }
       var b = read(); b.alertTo = splitList(alertTo.value);
       if (wFrom.value || wTo.value) { notice('A monitor reads the last hours at each run - clear the fixed window to save it.', 'warn'); return; }
@@ -2189,12 +2280,12 @@ function schedPicker(current, job) {
       drawList();
     }
     var node = el('div', { class: 'ca-one', id: 'caOne' },
-      el('div', { class: 'toolbar' }, el('label', null, 'Monitor ', chooser), el('span', { class: 'smeta', text: 'New = analyse now and / or save as a new monitor; pick a monitor to change it.' })),
+      el('div', { class: 'toolbar' }, el('label', null, 'Monitor ', chooser), el('span', { class: 'smeta', text: 'New = analyze now and / or save as a new monitor; pick a monitor to change it.' })),
       el('h4', { class: 'ca-step', text: '1. Which policies' }),
       el('div', { class: 'toolbar' }, filter, allOpen, allShut, noneBtn, manageBtn, listInfo), listBox, pickInfo, seriesBox,
       el('h4', { class: 'ca-step', text: '2. Which sign-ins' }),
       el('div', { class: 'toolbar' }, el('label', null, 'Sign-ins of ', period)), more,
-      el('h4', { class: 'ca-step', text: '3. Analyse or save' }),
+      el('h4', { class: 'ca-step', text: '3. Analyze or save' }),
       el('div', { class: 'toolbar' }, runBtn, saveBtn), saveBox);
     load('');
     return { node: node, load: function (mn) { load(mn); node.scrollIntoView(); } };
@@ -2273,7 +2364,7 @@ function schedPicker(current, job) {
       var used = pe.monitors || [];
       close();
       // a persona a monitor names: the delete names the monitors and asks again (force takes it out of them)
-      withReason('Delete persona ' + pe.name, used.length ? 'The monitor(s) ' + used.join(', ') + ' name this persona: it is taken out of them (a monitor left with nothing to analyse is switched off). The policies themselves stay.' : 'No monitor names it. The policies themselves stay.', function (reason) {
+      withReason('Delete persona ' + pe.name, used.length ? 'The monitor(s) ' + used.join(', ') + ' name this persona: it is taken out of them (a monitor left with nothing to analyze is switched off). The policies themselves stay.' : 'No monitor names it. The policies themselves stay.', function (reason) {
         return api('DELETE', '/api/ca/personas/' + encodeURIComponent(pe.name), { reason: reason, force: used.length > 0 }); });
     }
     list();
@@ -2282,7 +2373,7 @@ function schedPicker(current, job) {
 
   function drawCa(p, preset) {
     var admin = isRole('Admin');
-    p.appendChild(el('div', { class: 'guide', text: 'Before you move a policy to pilot or production: put it in report-only (or on for the pilot), then analyse the sign-in logs - who it would have blocked or challenged, and why. Analyse once, or save the same choice as a monitor that runs on a schedule. The analyzer only READS: it never changes a Conditional Access policy.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'Before you move a policy to pilot or production: put it in report-only (or on for the pilot), then analyze the sign-in logs - who it would have blocked or challenged, and why. Analyze once, or save the same choice as a monitor that runs on a schedule. The analyzer only READS: it never changes a Conditional Access policy.' }));
     return Promise.all([api('GET', '/api/ca/policies'), api('GET', '/api/ca/monitors'), api('GET', '/api/ca/personas')]).then(function (all) {
       var data = { policies: all[0].rows || [], monitors: all[1].rows || [], personas: all[2].rows || [], seeded: !!all[2].seeded, preset: preset || '' };
       var form = null;
@@ -2386,7 +2477,7 @@ function schedPicker(current, job) {
         var a = j.analysis;
         host.appendChild(el('h2', { text: a.DisplayName + ' - ' + (a.Mode === 'SignInLogs' ? 'observed (sign-in logs)' : 'predicted (What-If)') }));
         host.appendChild(el('div', { class: 'cards' }, card(a.InScope, 'in scope'), card(a.Impacted, 'impacted (blocked / challenged)', a.Impacted > 0), card(a.NotImpacted, 'not impacted'), card(a.Errors, 'errors', a.Errors > 0)));
-        host.appendChild(el('p', null, 'State ' + textOf(a.PolicyState) + '. ', a.WindowStartUtc ? 'Window ' : '', a.WindowStartUtc ? timeEl(a.WindowStartUtc) : null, a.WindowStartUtc ? ' - ' : '', a.WindowEndUtc ? timeEl(a.WindowEndUtc) : null, '. Analysed ', timeEl(a.CreatedAtUtc), a.Monitor ? ' by monitor ' + a.Monitor : '', '.'));
+        host.appendChild(el('p', null, 'State ' + textOf(a.PolicyState) + '. ', a.WindowStartUtc ? 'Window ' : '', a.WindowStartUtc ? timeEl(a.WindowStartUtc) : null, a.WindowStartUtc ? ' - ' : '', a.WindowEndUtc ? timeEl(a.WindowEndUtc) : null, '. Analyzed ', timeEl(a.CreatedAtUtc), a.Monitor ? ' by monitor ' + a.Monitor : '', '.'));
         var notes = [].concat(JSON.parse(a.WarningsJson || '[]'), JSON.parse(a.UnresolvedJson || '[]').map(function (x) { return 'not simulated: ' + x; }));
         if (notes.length) host.appendChild(el('ul', { class: 'hints' }, notes.map(function (n) { return el('li', { text: n }); })));
         var toggle = el('button', { type: 'button', class: 'secondary', text: all ? 'Only impacted users' : 'All in-scope users', onclick: function () { all = !all; load(); } });
@@ -2453,7 +2544,7 @@ function schedPicker(current, job) {
   // the change as before -> after per field (never two raw JSON blobs)
   var AUDIT_AREA = { '': 'Area: any', access: 'Access', setting: 'Settings', rule: 'Tagging rules', rules: 'Tagging rules', tagtype: 'Tag types', tagvalue: 'Tag values', condition: 'Condition types', scope: 'Saved scopes',
     queue: 'Commit queue', job: 'Jobs', tamper: 'Tamper', mail: 'Mail', audit: 'Audit', changes: 'Tag changes', runs: 'Runs', auth: 'Sign-in', web: 'Web requests', guard: 'Guards', identity: 'Identity report',
-    ca: 'Conditional Access', setup: 'Setup', update: 'Update', support: 'Invardia support', backup: 'Backups', v1import: 'Import v1', worker: 'Hybrid worker', onboarding: 'Get started', config: 'Configuration',
+    ca: 'Conditional Access', setup: 'Setup', update: 'Update', support: 'Invardia support', backup: 'Backups', v1import: 'Import v1', worker: 'Hybrid worker', optional: 'Optional components', onboarding: 'Get started', config: 'Configuration',
     view: 'Saved views', breakglass: 'Break-glass list' };
   var AUDIT_TEXT = { 'auth.signin': 'Signed in', 'auth.request.refused': 'Sign-in refused', 'web.request.refused': 'Request refused', 'guard.trip': 'A guard stopped a change', 'identity.view': 'Looked at the identity report',
     'ca.analysis.view': 'Looked at an analysis', 'queue.stage': 'Staged a change', 'queue.commit': 'Committed changes', 'queue.discard': 'Discarded changes', 'queue.discard-all': 'Discarded every waiting change',
@@ -2464,7 +2555,24 @@ function schedPicker(current, job) {
     var parts = s.split('.'), area = AUDIT_AREA[parts[0]] || parts[0];
     return area + ': ' + parts.slice(1).join(' ').replace(/-/g, ' ');
   }
-  function auditTargetText(t) { var s = textOf(t), i = s.indexOf('|'); return i > 0 ? s.substring(0, i).replace(/([a-z])([A-Z])/g, '$1 $2') + ' ' + s.substring(i + 1) : s; }
+  // GUI-WALK round 2 ("the audit's raw ids and API paths -> summaries"): a request target ("POST /api/capolicies/policies/
+  // <id>/adopt") in words, ids shortened; the full target stays on the cell's hover
+  var AUDIT_ROUTE_TEXT = [
+    [/^POST \/api\/queue\/commit$/, function () { return 'Commit the queue'; }],
+    [/^POST \/api\/capolicies\/policies\/([^/]+)\/(adopt|release)$/, function (m) { return (m[2] === 'adopt' ? 'Adopt' : 'Release') + ' CA policy ' + auditShortId(m[1]); }],
+    [/^POST \/api\/worker\/retry$/, function () { return 'Retry the worker\'s failed items'; }],
+    [/^(PUT|DELETE) \/api\/ca\/monitors\/([^/]+)$/, function (m) { return (m[1] === 'PUT' ? 'Save' : 'Delete') + ' monitor ' + auditDecode(m[2]); }],
+    [/^\/api\/identity\/rows\|view=(.+)$/, function (m) { return 'Identity report: ' + m[1].replace(/_/g, ' '); }],
+    [/^\/api\/identity$/, function () { return 'Identity report'; }]];
+  function auditShortId(s) { return /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(s) ? s.substring(0, 8) + '…' : auditDecode(s); }
+  function auditDecode(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
+  function auditTargetWords(s) {
+    for (var k = 0; k < AUDIT_ROUTE_TEXT.length; k++) { var m = AUDIT_ROUTE_TEXT[k][0].exec(s); if (m) return AUDIT_ROUTE_TEXT[k][1](m); }
+    var p = /^(GET |POST |PUT |PATCH |DELETE )?\/api\/(.+)$/.exec(s);
+    if (p) { var verb = { 'PUT ': 'Save ', 'PATCH ': 'Change ', 'DELETE ': 'Delete ' }[p[1] || ''] || ''; return verb + p[2].split(/[/|]/).map(function (x) { return /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(x) ? auditShortId(x) : auditDecode(x).replace(/[-_=]/g, ' '); }).join(' › '); }
+    var i = s.indexOf('|'); return i > 0 ? s.substring(0, i).replace(/([a-z])([A-Z])/g, '$1 $2') + ' ' + s.substring(i + 1) : s;
+  }
+  function auditTargetText(t) { var s = textOf(t), w = auditTargetWords(s); return w === s ? s : el('span', { title: s, text: w }); }
   function auditChange(r) {
     var pj = function (s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return undefined; } };
     var b = pj(r.BeforeJson), a = pj(r.AfterJson);
@@ -2540,7 +2648,9 @@ function schedPicker(current, job) {
       var active = null;
       var navItem = function (label, count, sev, delta, onClick, key) {
         var b = el('button', { type: 'button', class: 'idnav-item' + (active === key ? ' on' : ''), onclick: function () { active = key; Array.prototype.forEach.call(nav.querySelectorAll('.idnav-item'), function (x) { x.classList.remove('on'); }); b.classList.add('on'); onClick(); } },
-          el('span', { class: 'idnav-l ' + (ID_SEV_CLS[sev] || ''), text: label }),
+          // owner 2026-11-09 ("what does the colos mean"): a view's name is coloured by its severity ONLY when it finds
+          // something - a High check with 0 stays plain (red = needs you, framework §12.5); the severity is in the tooltip
+          el('span', { class: 'idnav-l ' + (count > 0 ? (ID_SEV_CLS[sev] || '') : (sev === 'Info' ? 'smeta' : '')), title: sev ? sev + ' severity' + (count > 0 ? '' : ' - nothing found') : null, text: label }),
           count === null || count === undefined ? null : el('span', { class: 'badge' + (sev === 'High' && count > 0 ? ' danger' : ''), text: fmtNum(count) }),
           delta ? el('span', { class: 'iddelta ' + (delta > 0 ? 'c-danger' : 'c-good'), title: 'since the previous snapshot', text: (delta > 0 ? '+' : '') + fmtNum(delta) }) : null);
         b.setAttribute('data-key', key);
@@ -2637,6 +2747,10 @@ function schedPicker(current, job) {
         pane.appendChild(el('h3', null, savedRow ? savedRow.Name + ' ' : v.title + ' ', v.severity ? el('span', { class: 'badge' + (v.severity === 'High' ? ' danger' : ''), text: v.severity }) : null, savedRow ? el('span', { class: 'smeta', text: ' (based on ' + v.title + ')' }) : null));
         if (v.what) pane.appendChild(el('p', { text: v.what }));
         if (v.fix) pane.appendChild(el('div', { class: 'guide' }, el('b', { text: 'How to close it: ' }), v.fix));
+        // IDREPORT-VALIDATE (owner 2026-11-09 "maybe add assumptions"): what this view's answer rests on - derived by the
+        // engine from the fields its filter reads; folded to one line until opened
+        if (v.assumes && v.assumes.length) pane.appendChild(el('details', { class: 'id-assumes' }, el('summary', { text: 'What this view assumes (' + v.assumes.length + ')' }),
+          el('ul', null, v.assumes.map(function (a) { return el('li', { text: a }); }))));
         // the filter bar
         var chips = el('div', { class: 'idchips' });
         var search = el('input', { type: 'search', placeholder: 'Search every column', 'aria-label': 'Search' }); search.value = st.q;
@@ -2848,13 +2962,13 @@ function schedPicker(current, job) {
           .then(function (x) { afterAction(x, title); }).catch(function (e) { notice('Refused: ' + e.message, 'warn'); });
       });
       if (enforce) {
-        // ADMIN-WALK (H): the analysis is right here - its last result, Analyse now, and the Analyzer with this policy ticked
+        // ADMIN-WALK (H): the analysis is right here - its last result, Analyze now, and the Analyzer with this policy ticked
         // ADMIN-WALK-2 N4: say exactly what the analysis covered and what it did not
         var widen = (pl.changes || []).filter(function (c) { return /users\.include/i.test(textOf(c.field)); }).map(function (c) { return textOf(c.after); }).filter(Boolean).join('; ');
         body.appendChild(el('div', { class: 'gs-fix' }, el('strong', { text: 'Before you enforce it: ' }), caAnalyseBar(r.PolicyId, r.DisplayName, pl.from)));
         var ackText = pl.from === 'Pilot1'
           ? ' I checked the pilot group\'s report-only results above. ' + to + ' enforces the policy' + (widen ? ' for ' + widen : '') + (to === 'Prod' || widen ? ' - users outside the pilot group were NOT in that analysis.' : '.')
-          : ' I checked the analysis above (' + caWhoText(pl.from) + ').' + (to === 'Prod' ? ' Prod widens the policy' + (widen ? ' to ' + widen : ' to its targets') + ', whose sign-ins were NOT analysed.' : '');
+          : ' I checked the analysis above (' + caWhoText(pl.from) + ').' + (to === 'Prod' ? ' Prod widens the policy' + (widen ? ' to ' + widen : ' to its targets') + ', whose sign-ins were NOT analyzed.' : '');
         body.appendChild(el('label', null, ack, ackText));
         if (to === 'Prod') body.appendChild(el('p', { class: 'smeta', text: 'The Analyzer reads only sign-ins where this policy already applied, so it cannot show what Prod will do to users outside its current stage. Widen step by step (Pilot2, Pilot3) to see more users before Prod.' }));
       }
@@ -2862,7 +2976,7 @@ function schedPicker(current, job) {
       body.appendChild(el('div', { class: 'toolbar' }, go, el('button', { type: 'button', class: 'secondary', text: 'Cancel', onclick: close })));
     }).catch(function (e) { clear(body).appendChild(el('p', { class: 'c-danger', text: e.message })); body.appendChild(el('button', { type: 'button', class: 'secondary', text: 'Close', onclick: close })); });
   }
-  // ADMIN-WALK (H): analyse ONE policy before it is enforced - from its page and from the Move dialog. Analyse now = the
+  // ADMIN-WALK (H): analyze ONE policy before it is enforced - from its page and from the Move dialog. Analyze now = the
   // sign-ins of the last 7 days for this policy (a read); "Pick more in the Analyzer" opens it with the policy ticked.
   var CA_STATE_TEXT = { enabled: 'On', enabledForReportingButNotEnforced: 'Report-only', disabled: 'Off' };
   function caStateText(s) { return CA_STATE_TEXT[s] || textOf(s); }
@@ -2894,22 +3008,22 @@ function schedPicker(current, job) {
     return 'the sign-ins of the users it applied to';
   }
   function caAnalyseNow(policyId, name, win, onSent) {
-    withReason('Analyse ' + name, 'Read only: the engine reads the sign-ins of ' + win.text + ' where this policy applied - who it blocked or challenged (or would have, in report-only) - and changes nothing. The answer is on the CA Policy Analyzer page and on this page in a few minutes.', function (reason) {
+    withReason('Analyze ' + name, 'Read only: the engine reads the sign-ins of ' + win.text + ' where this policy applied - who it blocked or challenged (or would have, in report-only) - and changes nothing. The answer is on the CA Policy Analyzer page and on this page in a few minutes.', function (reason) {
       return api('POST', '/api/ca/analyze', { personas: [], policyIds: [String(policyId).toLowerCase()], excludePolicyIds: [], policyNames: [], policyPrefixes: [], policyPatterns: [], mode: 'SignInLogs', lookbackHours: String(win.hours), sliceHours: '0',
         includeNonInteractive: false, includeGuests: false, includeDisabled: false, policyNumbers: '', policyStates: [], maxSignIns: '', reason: reason })
         .then(function (r) { if (onSent) onSent(); return r; });
     }, { readOnly: true });
   }
-  function caAnalyseFor(policyId, name) {
+  function caAnalyseFor(policyId, name, onSent) {
     // from a list row: the window read from the policy's record first (its last change), then the same read-only request
-    api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId)).then(function (d) { caAnalyseNow(policyId, name, caWindowSince(d)); })
-      .catch(function () { caAnalyseNow(policyId, name, { since: null, hours: 168, text: 'the last 7 days' }); });
+    api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId)).then(function (d) { caAnalyseNow(policyId, name, caWindowSince(d), onSent); })
+      .catch(function () { caAnalyseNow(policyId, name, { since: null, hours: 168, text: 'the last 7 days' }, onSent); });
   }
   // ADMIN-WALK-2: one row menu - a button that opens a list of actions; click, Enter / Space or ArrowDown opens it,
   // Escape or a click elsewhere closes it, arrow keys move inside it. Nothing runs until an item is chosen.
-  function rowMenu(label, items) {
+  function rowMenu(label, items, text) {
     var wrap = el('span', { class: 'rowmenu' });
-    var btn = el('button', { type: 'button', class: 'secondary rowmenu-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': label, text: 'Actions ▾' });
+    var btn = el('button', { type: 'button', class: 'secondary rowmenu-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': label, text: (text || 'Actions') + ' ▾' });
     var list = el('div', { class: 'rowmenu-list', role: 'menu', hidden: true });
     var close = function () { list.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', outside, true); };
     var outside = function (e) { if (!wrap.contains(e.target)) close(); };
@@ -2936,7 +3050,7 @@ function schedPicker(current, job) {
     var box = el('span', { class: 'smeta', text: 'Last analysis: reading ...' });
     var draw = function (a) {
       clear(box);
-      if (!a) { box.appendChild(document.createTextNode('Not analysed yet.')); return; }
+      if (!a) { box.appendChild(document.createTextNode('Not analyzed yet.')); return; }
       box.appendChild(document.createTextNode('Last analysis ')); box.appendChild(timeEl(a.CreatedAtUtc));
       if (a.WindowStartUtc) { box.appendChild(document.createTextNode(' (sign-ins from ')); box.appendChild(timeEl(a.WindowStartUtc)); box.appendChild(document.createTextNode(')')); }
       box.appendChild(document.createTextNode(': ' + caWhoText(stage) + ' - ' + fmtNum(a.InScope) + ' user(s) in scope, '));
@@ -2947,7 +3061,7 @@ function schedPicker(current, job) {
     var read = function () { return api('GET', '/api/ca/analyses?' + qs({ policy: policyId, pageSize: 1 })).then(function (d) { return (d.rows || [])[0]; }); };
     read().then(draw).catch(function () { box.textContent = 'Last analysis: could not be read.'; });
     box.refresh = function (sentAt) {
-      box.textContent = 'Analysing ... the answer shows here when the engine is done (within a few minutes).';
+      box.textContent = 'Analyzing ... the answer shows here when the engine is done (within a few minutes).';
       var n = 0;
       var tick = function () {
         if (!box.isConnected || n++ > 40) return;
@@ -2962,7 +3076,7 @@ function schedPicker(current, job) {
     var last = caLastAnalysisNode(policyId, stage);
     var winNote = el('span', { class: 'smeta', text: '' });
     var win = { since: null, hours: 168, text: 'the last 7 days' };
-    var btn = isRole('Admin') ? el('button', { type: 'button', class: 'secondary', text: 'Analyse this policy', disabled: true, onclick: function () {
+    var btn = isRole('Admin') ? el('button', { type: 'button', class: 'secondary', text: 'Analyze this policy', disabled: true, onclick: function () {
       var sentAt = new Date(Date.now() - 60000);
       caAnalyseNow(policyId, name, win, function () { last.refresh(sentAt); }); } }) : null;
     api('GET', '/api/capolicies/policies/' + encodeURIComponent(policyId)).then(function (d) {
@@ -2974,9 +3088,11 @@ function schedPicker(current, job) {
   function capStageBar(r) {
     // the stages as a strip (the current one marked) and a button per move from here
     var strip = el('div', { class: 'rx-seg' });
-    CAP_STAGES.forEach(function (s) { strip.appendChild(el('button', { type: 'button', class: s === r.Stage ? 'on' : null, disabled: true, title: CAP_STAGE_TEXT[s], text: s })); });
+    // GUI-WALK (owner 2026-11-09 "impossible to read"): the strip is a "you are here" marker, not greyed-out buttons; each
+    // move changes the LIVE policy, so none is a loud primary - the moves are secondary and Disable is the red danger one
+    CAP_STAGES.forEach(function (s) { strip.appendChild(el('span', { class: 'seg' + (s === r.Stage ? ' on' : ''), title: CAP_STAGE_TEXT[s], 'aria-current': s === r.Stage ? 'step' : null, text: s })); });
     var bar = el('div', { class: 'toolbar' }, strip);
-    capMoves(r.Stage).forEach(function (to) { bar.appendChild(el('button', { type: 'button', class: to === 'Disabled' ? 'secondary' : null, text: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); });
+    capMoves(r.Stage).forEach(function (to) { bar.appendChild(el('button', { type: 'button', class: to === 'Disabled' ? 'danger' : 'secondary', text: capMoveLabel(r.Stage, to), onclick: function () { capStage(r, to); } })); });
     if (!capMoves(r.Stage).length) bar.appendChild(el('span', { class: 'count', text: r.Stage === 'Custom' ? 'Not one of the template\'s stages: look at it in the tenant first (Disable is the only move).' : '' }));
     return bar;
   }
@@ -3578,7 +3694,7 @@ function schedPicker(current, job) {
   }
   function drawCaPolicies(p) {
     var admin = isRole('Admin'), owner = isRole('SuperAdmin');   // Adopt / Release: SuperAdmin only (owner 2026-11-01)
-    p.appendChild(el('div', { class: 'guide', text: 'Your Conditional Access policies, each compared with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt RECORDS that you manage a policy from here (nothing in the tenant changes). An adopted policy is then managed from its row or its page (a SuperAdmin): move it to another stage, Edit or Clone it, analyse who it hits, undo a change; Templates deploys a new one and tests a new version next to the old one (Promote / Roll back); Remove deletes policies that are off. Every change shows what changes first and is your own action - nothing changes a policy by itself.' }));
+    p.appendChild(el('div', { class: 'guide', text: 'Your Conditional Access policies, each compared with its template (by the CA number in its name): the stage it is really in, what differs, and whether it excludes the break-glass accounts. Adopt RECORDS that you manage a policy from here (nothing in the tenant changes). An adopted policy is then managed from its row or its page (a SuperAdmin): move it to another stage, Edit or Clone it, analyze who it hits, undo a change; Templates deploys a new one and tests a new version next to the old one (Promote / Roll back); Remove deletes policies that are off. Every change shows what changes first and is your own action - nothing changes a policy by itself.' }));
     capSubnav(p, '');
     return api('GET', '/api/capolicies').then(function (j) {
       var rows = j.rows || [];
@@ -3612,11 +3728,11 @@ function schedPicker(current, job) {
       p.appendChild(el('h3', { text: 'Policies' }));
       if (owner) p.appendChild(el('div', { class: 'toolbar' }, el('a', { href: '#capolicies/templates', class: 'btn-link', text: 'Deploy a new policy from a template' }),
         el('span', { class: 'smeta', text: ' - or Clone an adopted one from its row.' })));
-      // ADMIN-WALK: the row's actions come FIRST (visible at 1366 px): one menu - Open, Edit, Clone, Analyse, Move to, Adopt / Release
+      // ADMIN-WALK: the row's actions come FIRST (visible at 1366 px): one menu - Open, Edit, Clone, Analyze, Move to, Adopt / Release
       var cols = [{ key: '_act', label: 'Actions', render: function (r) {
           var ad = r.Adoption === 'Adopted', opts = [['', 'Actions ...'], ['open', 'Open']];
           if (owner && ad) opts.push(['edit', 'Edit ...'], ['clone', 'Clone ...']);
-          if (admin) opts.push(['analyse', 'Analyse who it hits ...']);
+          if (admin) opts.push(['analyze', 'Analyze who it hits ...']);
           if (owner && ad) capMoves(r.Stage).forEach(function (to) { opts.push(['move:' + to, to === 'Disabled' ? 'Disable (off) ...' : capMoveLabel(r.Stage, to) + ' (' + CAP_STAGE_TEXT[to] + ') ...']); });
           if (owner) opts.push(ad ? ['release', 'Release (stop managing it here) ...'] : ['adopt', 'Adopt as it is ...']);
           // ADMIN-WALK-2: a real menu button (a <select> fired on keyboard arrows and had a width per row)
@@ -3624,16 +3740,25 @@ function schedPicker(current, job) {
             var v = o[0];
             if (v === 'open') location.hash = '#capolicies/' + r.PolicyId;
             else if (v === 'edit' || v === 'clone') { capAutoOpen = { id: String(r.PolicyId).toLowerCase(), what: v === 'edit' ? 'Edit' : 'Clone' }; location.hash = '#capolicies/' + r.PolicyId; }
-            else if (v === 'analyse') caAnalyseFor(r.PolicyId, r.DisplayName);
+            else if (v === 'analyze') caAnalyseFor(r.PolicyId, r.DisplayName, render);
             else if (v.indexOf('move:') === 0) capStage(r, v.substring(5));
             else if (v === 'release') capRelease(r);
             else if (v === 'adopt') capAdopt(r);
           }]; })); } },
         { key: 'DisplayName', label: 'Policy', render: function (r) { return el('a', { href: '#capolicies/' + r.PolicyId, text: r.DisplayName }); } },
         { key: 'TemplateId', label: 'Template', type: 'cat' }, { key: 'Persona', label: 'Persona', type: 'cat', multi: ', ' }, { key: 'StageShown', label: 'Stage', type: 'cat', cls: function (r) { return r.StageMismatch ? 'c-danger' : ''; } },
-        { key: 'StateShown', label: 'State', type: 'cat' }, { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
+        { key: 'StateShown', label: 'State', type: 'cat' },
+        // owner 2026-11-09 ("the prio here is wrong fx lots of template focus but nothin about that i just chose to analyze
+        // or monitoring in progress"): what is happening to the policy comes right after its stage - the analysis it waits
+        // for (requested / running) or had last (impacted of in scope, opens it), the monitors that cover it, open findings;
+        // the template comparison follows
+        { key: 'Analysis', label: 'Analysis', wrap: true, cls: function (r) { return r.AnalysisState === 'requested' || r.AnalysisState === 'running' ? 'c-warning' : (r.AnalysisState === 'failed' ? 'c-danger' : ''); },
+          render: function (r) { return r.AnalysisId && (r.AnalysisState === 'done' || r.AnalysisState === 'failed') ? el('a', { href: '#ca/' + r.AnalysisId, text: r.Analysis }) : textOf(r.Analysis); } },
+        { key: 'Monitors', label: 'Monitored by', type: 'cat', multi: ', ', render: function (r) { return r.Monitors || '-'; } },
+        { key: 'Findings', label: 'Findings', type: 'cat' },
+        { key: 'Compared', label: 'Against its template', type: 'cat', cls: function (r) { return r.InLibrary && !r.Matches ? 'c-danger' : ''; } },
         { key: 'BreakGlass', label: 'Break-glass', type: 'cat', cls: function (r) { return CAP_BG_CLS[r.BreakGlass] || ''; } }, { key: 'Adoption', label: 'Adopted', type: 'cat' },
-        { key: 'Findings', label: 'Findings', type: 'cat' }, { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];
+        { key: 'ModifiedAtUtc', label: 'Changed in the tenant', type: 'date' }];
       // owner 2026-11-03 ("move to any lifecycle phase"): every stage it can go to is in the row's Actions menu; picking
       // one only opens the move dialog (what changes, the confirmation)
       var capBulk = owner ? [
@@ -3710,7 +3835,7 @@ function schedPicker(current, job) {
         el('span', { class: 'count', text: 'Edit changes this policy in your tenant; Clone creates a new one, off. Each shows what changes before you approve it.' })));
       else if (owner) p.appendChild(el('p', { class: 'smeta', text: 'Adopt it first to edit or clone it from here.' }));
       if (capAutoOpen && capAutoOpen.id === String(pol.PolicyId).toLowerCase()) { var ao = capAutoOpen.what; capAutoOpen = null; if (isRole('SuperAdmin') && ad && ad.Status === 'Adopted') setTimeout(function () { if (ao === 'newversion') capNewVersion(j); else caPolicyEditor(j, ao); }, 0); }
-      // ADMIN-WALK (H): who this policy hits - analyse it from here, before any move
+      // ADMIN-WALK (H): who this policy hits - analyze it from here, before any move
       p.appendChild(el('h3', { text: 'Who it hits' }));
       p.appendChild(caAnalyseBar(pol.PolicyId, pol.DisplayName, rv.stage));
       // CA-LIFECYCLE: the stage buttons (SuperAdmin, an adopted policy) and the moves made from here
@@ -4162,8 +4287,8 @@ function schedPicker(current, job) {
       var rows = j.rows || [];
       var missing = rows.filter(function (r) { return r.inTenant === 'missing' && r.canCreate; }), ruleOff = rows.filter(function (r) { return r.canRule; });
       var readAll = function () { withReason('Read the groups', 'The engine reads the managed groups and administrative units in the tenant. Read only: nothing changes. The page shows the result when the engine is done.', function (reason) { return api('POST', '/api/groups/check', { reason: reason }); }, { readOnly: true }); };
-      p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), card(missing.length, 'missing', missing.length > 0),
-        card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
+      p.appendChild(el('div', { class: 'cards' }, card(rows.length, 'groups managed'), (j.checkedAtUtc ? card(missing.length, 'missing', missing.length > 0) : card('-', 'missing: not read yet')),
+        (j.checkedAtUtc ? card(ruleOff.length, 'dynamic rule differs', ruleOff.length > 0) : card('-', 'rules: not read yet')), card(rows.filter(function (r) { return r.inAdminUnit === false; }).length, 'not in their administrative unit')));
       // not read yet: every row is 'unknown' - say so where it is seen, with the button next to it
       if (!j.checkedAtUtc && rows.length) p.appendChild(el('div', { class: 'bar bar-warn' }, el('span', { text: 'The groups have not been read from the tenant yet, so their state, members and rules show as unknown. ' }), admin ? el('button', { type: 'button', text: 'Read the groups now', onclick: readAll }) : el('span', { text: 'An Admin can read them.' })));
       p.appendChild(el('div', { class: 'toolbar' },
@@ -4182,7 +4307,7 @@ function schedPicker(current, job) {
       var cols = [{ key: '_act', label: 'Actions', render: function (r) {
           var b = [];
           if (admin) b.push(el('button', { type: 'button', class: 'link', text: 'Check', title: 'Read this group in the tenant now (changes nothing)', onclick: function () { grpCheck([r.name], 'Check ' + r.name); } }));
-          if (owner && r.canCreate) b.push(el('button', { type: 'button', text: 'Create', title: r.inTenant === 'unknown' ? 'Not read yet: the engine checks first and skips it when it is there' : 'Create it as v1 does', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
+          if (owner && r.canCreate && r.inTenant !== 'present') b.push(el('button', { type: 'button', class: r.inTenant === 'missing' ? null : 'secondary', text: 'Create', title: r.inTenant === 'unknown' ? 'Not read yet: the engine checks first and skips it when it is there' : 'Create it as v1 does', onclick: function () { grpDialog('create', { names: [r.name] }, 'Create ' + r.name); } }));
           if (r.canEditRule) b.push(el('button', { type: 'button', class: 'secondary', text: owner ? 'Edit rule' : 'Rule', onclick: function () { grpRule(r); } }));
           if (owner && r.canRule) b.push(el('button', { type: 'button', class: 'secondary', text: 'Set rule', title: 'Set it back to Entra Policy Suite\'s rule' + (r.custom ? ' (yours)' : ' (v1\'s)'), onclick: function () { grpDialog('rule', { names: [r.name] }, 'Set the rule of ' + r.name); } }));
           if (owner && r.canMembers) b.push(el('button', { type: 'button', class: 'secondary', text: 'Members', onclick: function () { grpMembers(r); } }));
@@ -4313,7 +4438,8 @@ function schedPicker(current, job) {
     p.appendChild(el('div', { class: 'guide', text: 'Everything Entra Policy Suite needs before the templates, tagging and reports work - what v1\'s scripts set up first: the engine\'s rights, the break-glass accounts, the authentication strengths, the group targeting method and the groups, administrative units, named locations, the tag attributes, mail, the hybrid worker. "Check now" reads the tenant (it changes nothing); each step says what is ready, missing or worth a look, and how to fix it. Work top down: a step that needs an earlier one waits until that one is ready.' }));
     // V1-IMPORT-GUIDE (owner 2026-11-03: "i am missing instructions on how to import v1 csv files for eps, where is the
     // docs for that in the gui"): the two ways in, step by step
-    var v1 = el('details', { class: 'gs-step', open: true });
+    // GUI-WALK round 2 (owner 2026-11-09 "impossible to read"): collapsed by default - one line until it is opened
+    var v1 = el('details', { class: 'gs-step' });
     v1.appendChild(el('summary', null, el('strong', { text: 'Coming from v1? Import it first' })));
     v1.appendChild(el('p', { text: 'Two ways, depending on what you want to bring over. v1\'s files are only read, never changed.' }));
     v1.appendChild(el('h4', { text: 'A. Only the tagging rules - here in the browser (Admin)' }));
@@ -4397,6 +4523,37 @@ function schedPicker(current, job) {
       }).catch(function () { if (n < 60) workerTestFollow(sent, n + 1); });
     }, 15000);
   }
+  // 2.0.117 admin walk: "None" only when every right was read and none is missing - never for a right this page cannot see
+  function optionalMissingText(c) {
+    if ((c.missing || []).length) return c.missing.join(', ');
+    if (c.state === 'off') return 'Not needed while off';
+    var unread = (c.rights || []).some(function (r) { return r.state === 'not read' || r.state === 'unknown'; });
+    if (c.state === 'not readable' || unread) return c.script ? 'Not read here - its script reads it back' : 'Not read here';
+    return 'None';
+  }
+  // RIGHTS-1.7 point 2: each optional component, its state, the rights it is missing and the script that adds exactly those
+  function drawOptional(p) {
+    p.appendChild(el('div', { class: 'guide', text: 'Optional components hold no rights until you turn them on. This page shows each one, whether it is on, which of its rights are missing, and the script that adds exactly those rights. Turning a component off removes nothing. Rights come from the last check on the Get started page; "not read" means this page cannot see that right, and its script reads it back when you run it.' }));
+    return api('GET', '/api/optional-components').then(function (j) {
+      var rows = j.components || [];
+      var short = rows.filter(function (c) { return (c.missing || []).length; });
+      if (short.length) p.appendChild(el('div', { class: 'bar bar-warn', text: short.length + ' optional component(s) are on but miss a right: ' + short.map(function (c) { return c.title; }).join('; ') + '.' }));
+      if (j.checkedAtUtc) p.appendChild(el('p', { class: 'muted', text: 'Rights last checked: ' + fmtTime(j.checkedAtUtc) }));
+      p.appendChild(table(rows, [
+        { key: 'title', label: 'Component', wrap: true }, { key: 'state', label: 'State', type: 'cat' },
+        { key: 'missing', label: 'Missing rights', wrap: true, cls: function (c) { return (c.missing || []).length ? 'c-danger' : ''; }, render: function (c) { return optionalMissingText(c); } },
+        { key: 'script', label: 'How to add it', wrap: true, render: function (c) { return c.script || c.how; } }]));
+      if (rows.length) p.appendChild(el('h3', { text: 'Each component: what it does, its rights and the command' }));
+      rows.forEach(function (c) {
+        p.appendChild(el('details', null, el('summary', { text: c.title + ': ' + c.state }),
+          el('p', { text: c.what }),
+          (c.switchedOnBy || []).length ? el('p', { text: 'Switched on by: ' + c.switchedOnBy.join(', ') }) : null,
+          (c.rights || []).length ? table(c.rights, [{ key: 'right', label: 'Right', wrap: true }, { key: 'scope', label: 'Where', wrap: true }, { key: 'feature', label: 'What it is for', wrap: true }, { key: 'state', label: 'State', type: 'cat', cls: function (r) { return r.state === 'missing' ? 'c-danger' : ''; } }]) : null,
+          c.command ? el('pre', { text: c.command }) : el('p', { text: c.how })));
+      });
+    });
+  }
+
   function drawWorker(p) {
     p.appendChild(el('div', { class: 'guide', text: 'The hybrid worker is a small program on a domain-joined Windows server in your network. It writes the tags of AD-synced users in Active Directory and reads AD group members for the rules. It runs as the scheduled task \'EntraPolicySuite Hybrid Worker\' every 5 minutes, as its gMSA, and talks to Entra Policy Suite only through the database - nothing comes in to it. It needs no password.' }));
     return api('GET', '/api/worker').then(function (j) {
@@ -4407,10 +4564,10 @@ function schedPicker(current, job) {
       if (!(j.workers || []).length) p.appendChild(el('div', { class: 'bar bar-warn', text: 'No hybrid worker has reported yet. Tags of AD-synced users wait in the queue below until one runs - add one with the steps further down.' }));
       bad.forEach(function (w) { p.appendChild(el('div', { class: 'bar bar-warn', text: workerLine(w, j.staleMinutes) })); });
       p.appendChild(table(j.workers || [], [
-        { key: 'name', label: 'Worker' }, { key: 'machine', label: 'Machine' }, { key: 'environment', label: 'AD environment', type: 'cat', render: function (w) { return w.environment || '(the only one)'; } },
-        { key: 'adDomain', label: 'AD domain', render: function (w) { return (w.adDomain || '?') + (w.adServer ? ' (' + w.adServer + ')' : ''); } },
+        { key: 'name', label: 'Worker' }, { key: 'machine', label: 'Machine' }, { key: 'environment', label: 'AD environment', type: 'cat', render: function (w) { return w.environment || 'default'; } },
+        { key: 'adDomain', label: 'AD domain', render: function (w) { return (w.adDomain || 'not reported yet') + (w.adServer ? ' (' + w.adServer + ')' : ''); } },
         { key: 'runAs', label: 'Runs as' }, { key: 'hostType', label: 'Host', type: 'cat' },
-        { key: 'taskState', label: 'Scheduled task', type: 'cat', cls: function (w) { return w.taskProblem ? 'c-danger' : ''; }, render: function (w) { return (w.taskState || '?') + (w.taskEnabled === false ? ' (disabled)' : '') + (w.taskLastResult ? ' - last result ' + w.taskLastResult : ''); } },
+        { key: 'taskState', label: 'Scheduled task', type: 'cat', cls: function (w) { return w.taskProblem ? 'c-danger' : ''; }, render: function (w) { return (w.taskState || 'not reported yet') + (w.taskEnabled === false ? ' (disabled)' : '') + (w.taskLastResult ? ' - last result ' + w.taskLastResult : ''); } },
         { key: 'taskNextRunUtc', label: 'Next run', type: 'date' },
         { key: 'version', label: 'Version', cls: function (w) { return w.behind ? 'c-warning' : ''; }, render: function (w) { return w.version + (w.behind ? ' (behind ' + j.release + ')' : ''); } },
         { key: 'lastSeenUtc', label: 'Last report', type: 'date', cls: function (w) { return w.stale ? 'c-danger' : 'c-good'; } },
@@ -4534,9 +4691,16 @@ function schedPicker(current, job) {
         if (!g.checkedAtUtc) setupBar.appendChild(el('div', { class: 'bar bar-warn' }, el('strong', { text: 'Not set up yet? ' }), 'Get started checks the ' + fmtNum(steps.length) + ' things Entra Policy Suite needs and creates what is missing. ', el('a', { href: '#start', text: 'Open Get started' })));
         else if (done < steps.length) setupBar.appendChild(el('div', { class: 'bar bar-warn' }, el('strong', { text: 'Finish setup: ' + fmtNum(done) + ' of ' + fmtNum(steps.length) + ' steps ready. ' }), el('a', { href: '#start', text: 'Open Get started' })));
       }).catch(function () { /* the overview still shows */ });
+      // framework §12.5 PENDING-1: one line per thing that waits for you, with its link (the same counts as the red menu marks)
+      var waitBar = el('div'); p.appendChild(waitBar);
+      api('GET', '/api/attention').then(function (a) {
+        paintAttention(a);
+        var go = { queue: ['#queue', 'Open the commit queue'], tamper: ['#tamper', 'Open Tamper'], runs: ['#runs', 'Open Runs'], worker: ['#worker', 'Open Hybrid worker'] };
+        Object.keys(go).forEach(function (k) { var n = parseInt(a[k], 10) || 0; if (n) waitBar.appendChild(el('div', { class: 'bar bar-block' }, el('span', { class: 'nav-block-badge', text: String(n) }), ' ' + attWords(k, n) + '. ', el('a', { href: go[k][0], text: go[k][1] }))); });
+      }).catch(function () { });
       return api('GET', '/api/overview').then(function (o) {
         p.appendChild(el('div', { class: 'cards' },
-          card(o.tamperOpen, 'open tag changes not made by the engine', o.tamperOpen > 0, '#tamper'), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0, '#tamper'),
+          card(o.tamperOpen, 'open tamper events (tag changes not made by the engine)', o.tamperOpen > 0, '#tamper'), card(o.tamperOpenHigh, 'of them HIGH', o.tamperOpenHigh > 0, '#tamper'),
           card(o.userRules, 'user tag rules enabled', false, '#rules/User'), card(o.deviceRules, 'device tag rules enabled', false, '#rules/Device'),
           card(o.requestsOpen, 'job requests waiting or running', false, '#jobs'), card(o.workPackagesQueued, 'AD changes queued for the worker', false, '#worker')));
         p.appendChild(el('h3', { text: 'The last run of each job' }));
@@ -4580,7 +4744,8 @@ function schedPicker(current, job) {
         var cols = [{ key: 'FoundAtUtc', label: 'Found', type: 'date' }, { key: 'Severity', label: 'Severity', type: 'cat', cls: function (r) { return 'sev-' + r.Severity; } },
           { key: 'Status', label: 'Status', type: 'cat' }, { key: 'ObjectType', label: 'Type', type: 'cat' },
           { key: 'ObjectName', label: 'Object', render: function (r) { return el('a', { href: '#changes/q:' + encodeURIComponent(textOf(r.ObjectName)), title: 'its tag changes', text: textOf(r.ObjectName) }); } },
-          { key: 'Attribute', label: 'Attribute', type: 'cat' }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
+          // GUI-WALK round 2: the TAG (Classification) first; the attribute (extensionAttribute6) is its tooltip
+          { key: 'TagType', label: 'Tag', type: 'cat', render: function (r) { return el('span', { title: textOf(r.Attribute), text: textOf(r.TagType) || textOf(r.Attribute) }); } }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
           { key: 'Initiator', label: 'Changed by' }, { key: 'Detail', label: 'What it means', wrap: true }, { key: 'ResolvedBy', label: 'Resolved by' }];
         // ADMIN-WALK-2 (1366 px): Accept / Restore FIRST, so they are never cut off at the right edge
         if (isRole('Admin')) cols.unshift({ key: '_act', label: 'Action', nowrap: true, render: function (r) {
@@ -4612,8 +4777,8 @@ function schedPicker(current, job) {
       if (runPick) p.appendChild(el('div', { class: 'bar bar-info' }, 'The changes of one run. ', el('a', { href: '#run/' + runPick, text: 'The run' }), ' · ', el('a', { href: '#changes', text: 'All changes' })));
       p.appendChild(pagedTable('/api/changes', [{ key: 'q', label: 'Search object, value, persona', value: qPick }, { key: 'status', label: 'Status', options: ['', 'Planned', 'Applied', 'Failed', 'Skipped', 'Queued'] }].concat(runPick ? [{ key: 'runId', hidden: true, value: runPick }] : []), [
         // ADMIN-WALK-2: the date on one line and linked to its run; a device row shows no "persona" (personas are users')
-        { key: 'AtUtc', label: 'When', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open the run that made this change', text: fmtTime(r.AtUtc) }) : fmtTime(r.AtUtc); } }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Dir', type: 'cat' },
-        { key: 'TagType', label: 'Tag type', type: 'cat' }, { key: 'Attribute', label: 'Attribute', type: 'cat' }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
+        { key: 'AtUtc', label: 'When', type: 'date', render: function (r) { return r.RunId ? el('a', { href: '#run/' + r.RunId, title: 'Open the run that made this change', text: fmtTime(r.AtUtc) }) : fmtTime(r.AtUtc); } }, { key: 'ObjectType', label: 'Type', type: 'cat' }, { key: 'ObjectName', label: 'Object' }, { key: 'Directory', label: 'Written to', type: 'cat' },
+        { key: 'TagType', label: 'Tag type', type: 'cat', render: function (r) { return el('span', { title: textOf(r.Attribute), text: textOf(r.TagType) || textOf(r.Attribute) }); } }, { key: 'OldValue', label: 'Was' }, { key: 'NewValue', label: 'Now' },
         { key: 'Reason', label: 'Why', type: 'cat' }, { key: 'Persona', label: 'Persona (users)', render: function (r) { return r.ObjectType === 'Device' ? '' : textOf(r.Persona); } }, { key: 'Status', label: 'Status', type: 'cat', cls: stCell('Status') }, { key: 'Via', label: 'Via', type: 'cat' }, { key: 'Error', label: 'Error', wrap: true }],
         { exportPath: '/api/changes/export' }));
       return Promise.resolve();
@@ -4680,7 +4845,7 @@ function schedPicker(current, job) {
           Update: { text: 'Check for an update now', what: 'Checks which release is approved for this install\'s ring, and installs it if it is newer (between runs, as on its schedule).', ro: false } };
         if (isRole('Admin')) cols.push({ key: '_run', label: 'Run now', render: function (r) {
           if (!r.Implemented || r.Job === 'TamperMonitor') return null;
-          if (r.Job === 'CAPolicyAnalyzer') return el('a', { href: '#ca', text: 'Analyse on its page' });
+          if (r.Job === 'CAPolicyAnalyzer') return el('a', { href: '#ca', text: 'Analyze on its page' });
           var ro = RUN_ONLY[r.Job];
           if (ro) return el('button', { type: 'button', class: 'secondary', text: ro.text, onclick: function () { withReason(ro.text + ': ' + jobName(r.Job), ro.what, function (reason) { return api('POST', '/api/jobs/' + r.Job + '/run', { mode: 'Apply', reason: reason }); }, { readOnly: ro.ro }); } });
           if (!otOf[r.Job]) return null;
@@ -4693,7 +4858,7 @@ function schedPicker(current, job) {
             if (pick.value.indexOf('saved:') === 0) body.scopeName = pick.value.substring(6); else if (pick.value === 'adhoc') body.scope = adhoc.read();
             var who = pick.value ? 'the objects in the scope' : 'EVERYONE';
             withReason((mode === 'Apply' ? 'Apply' : 'Preview') + ': ' + jobName(r.Job) + (pick.value ? ' (scoped)' : ''), mode === 'Apply' ? 'The job CHANGES the directory for ' + who + ' (the mass-change guard still applies).' : 'The job computes every change for ' + who + ' and writes none.', function (reason) { body.reason = reason; return api('POST', '/api/jobs/' + r.Job + '/run', body); }, { readOnly: mode !== 'Apply' }); }; };
-          return el('span', null, pick, ' ', el('button', { type: 'button', class: 'secondary', text: 'Preview', onclick: run('Preview') }), ' ', el('button', { type: 'button', text: 'Apply', onclick: run('Apply') }), ' ', el('a', { href: '#tagtest/' + otOf[r.Job], text: 'Test runs' }), adhoc.node);
+          return el('span', null, pick, ' ', el('button', { type: 'button', text: 'Preview', title: 'Computes every change and writes none', onclick: run('Preview') }), ' ', el('button', { type: 'button', class: 'danger', text: 'Apply (writes tags)...', title: 'Writes the tags in the directory for the chosen scope', onclick: run('Apply') }), ' ', el('a', { href: '#tagtest/' + otOf[r.Job], text: 'Test runs' }), adhoc.node);
         } });
         p.appendChild(table(rows, cols));
         p.appendChild(el('h3', { text: 'Saved scopes' }));
@@ -4716,6 +4881,7 @@ function schedPicker(current, job) {
       });
     } },
     { id: 'worker', label: 'Hybrid worker', role: 'Reader', draw: drawWorker },
+    { id: 'optional', label: 'Optional components', role: 'Reader', draw: drawOptional },
     { id: 'license', label: 'License', role: 'Reader', draw: drawLicense },
     { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p, arg) {
       p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
@@ -4908,12 +5074,38 @@ function schedPicker(current, job) {
     { label: 'Administration', items: [
       { hash: 'settings', label: 'Settings', desc: 'Every setting with what it does.' },
       { hash: 'worker', label: 'Hybrid worker', desc: 'The AD worker: its scheduled task, AD domain, queue, connection test, how to add one.' },
+      { hash: 'optional', label: 'Optional components', desc: 'What is optional, whether it is on, which rights are missing and the script that adds them.' },
       { hash: 'access', label: 'Access', desc: 'Who may sign in, and their role.' },
       { hash: 'backups', label: 'Backups / Undo', desc: 'The daily backups of your policies and tagging; put something back, undo a change.' },
       { hash: 'audit', label: 'Audit', desc: 'Every change and who made it.' },
       { hash: 'license', label: 'License', desc: 'Community or Pro: the edition, validity, users against the license, the Pro features.' },
       { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] }
   ];
+  // framework §12.5 PENDING-1 (owner 2026-10-08; 2026-11-09 "where is the red marker when things are in the queue o not
+  // completed"): what waits for a person or did not complete = a red count on the menu ITEM and the SUM on its GROUP, read
+  // on every page load (GET /api/attention); nothing to show = nothing shown (no 0). The look is PIM's (.nav-block-*).
+  var ATT_OF = { queue: 'queue', tamper: 'tamper', runs: 'runs', worker: 'worker' };
+  var ATT_TEXT = { queue: ['change waits in the commit queue (or failed there)', 'changes wait in the commit queue (or failed there)'],
+    tamper: ['tamper event is open', 'tamper events are open'], runs: ['job did not complete (failed, held or stuck)', 'jobs did not complete (failed, held or stuck)'],
+    worker: ['hybrid worker problem (late, or an AD write failed)', 'hybrid worker problems (late, or AD writes failed)'] };
+  var attLast = null;
+  function attWords(k, n) { return n + ' ' + ATT_TEXT[k][n === 1 ? 0 : 1]; }
+  function paintAttention(a) {
+    attLast = a || attLast; a = attLast || {};
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs .nav-grp'), function (g) {
+      var sum = 0, tips = [];
+      Array.prototype.forEach.call(g.querySelectorAll('.nav-item[data-att]'), function (it) {
+        var k = it.getAttribute('data-att'), n = Math.max(0, parseInt(a[k], 10) || 0), b = it.querySelector('.nav-block-badge');
+        it.classList.toggle('has-block', n > 0);
+        if (b) { b.hidden = !n; b.textContent = n ? String(n) : ''; if (n) { b.title = attWords(k, n); b.setAttribute('aria-label', attWords(k, n)); } }
+        if (n) { sum += n; tips.push(attWords(k, n)); }
+      });
+      var c = g.querySelector('.nav-block-count');
+      g.classList.toggle('has-block', sum > 0);
+      if (c) { c.hidden = !sum; c.textContent = sum ? String(sum) : ''; if (sum) { c.title = tips.join('; '); c.setAttribute('aria-label', tips.join('; ')); } }
+    });
+  }
+  function loadAttention() { if (!isRole('Reader')) return; api('GET', '/api/attention').then(paintAttention).catch(function () { }); }
   function pageOf(id) { return PAGES.filter(function (x) { return x.id === id; })[0]; }
   function closeMenus() { Array.prototype.forEach.call(document.querySelectorAll('.nav-grp.open'), function (g) { g.classList.remove('open'); g.firstChild.setAttribute('aria-expanded', 'false'); }); }
   function drawTabs() {
@@ -4923,20 +5115,22 @@ function schedPicker(current, job) {
       if (!items.length) return;
       var active = items.some(function (it) { return it.hash.split('/')[0] === cur; });
       var box = el('div', { class: 'nav-grp' + (active ? ' active' : '') });
-      var btn = el('button', { type: 'button', class: 'tab nav-grp-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-selected': active ? 'true' : 'false' }, g.label + ' ', el('span', { class: 'nav-caret', text: '▾' }));
+      var btn = el('button', { type: 'button', class: 'tab nav-grp-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-selected': active ? 'true' : 'false' }, g.label + ' ', el('span', { class: 'nav-block-count', hidden: true }), el('span', { class: 'nav-caret', text: '▾' }));
       var menu = el('div', { class: 'nav-grp-menu', role: 'menu' });
       items.forEach(function (it) {
         var on = it.hash === full || (it.hash === cur && !(cur === 'capolicies' && full !== 'capolicies'));
-        menu.appendChild(el('a', { href: '#' + it.hash, role: 'menuitem', class: 'nav-item' + (on ? ' on' : ''), onclick: closeMenus }, el('span', { class: 'nav-item-l', text: it.label }), el('span', { class: 'nav-item-d', text: it.desc })));
+        menu.appendChild(el('a', { href: '#' + it.hash, role: 'menuitem', class: 'nav-item' + (on ? ' on' : ''), 'data-att': ATT_OF[it.hash] || null, onclick: closeMenus }, el('span', { class: 'nav-item-l' }, it.label, ATT_OF[it.hash] ? el('span', { class: 'nav-block-badge', hidden: true }) : null), el('span', { class: 'nav-item-d', text: it.desc })));
       });
       btn.addEventListener('click', function (ev) { ev.stopPropagation(); var open = box.classList.contains('open'); closeMenus(); if (!open) { box.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); } });
       box.appendChild(btn); box.appendChild(menu); nav.appendChild(box);
     });
   }
   document.addEventListener('click', closeMenus);
+  // a clamped page explanation opens on a click anywhere in it (a link inside it still works as a link)
+  document.addEventListener('click', function (ev) { var g = ev.target && ev.target.closest ? ev.target.closest('.guide.clamp') : null; if (g && !g.classList.contains('open') && !ev.target.closest('a,button')) g.classList.add('open'); });
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(); });
   function render() {
-    drawTabs();
+    drawTabs(); paintAttention(); loadAttention();
     var c = current(), pg = PAGES.filter(function (x) { return x.id === c.id; })[0] || PAGES[0];
     // ADMIN-WALK Pro (2026-11-06): each render draws into its OWN container. A draw still loading from an earlier render
     // (on a Pro install every pro/*.js addPage renders again) then lands in a box no longer on the page - it appended
@@ -5027,7 +5221,9 @@ function schedPicker(current, job) {
     var on = m.proFeatures || [];
     PRO_PAGES.forEach(function (x) {
       var grp = NAV_GROUPS.filter(function (g) { return g.label === x.menu; })[0] || NAV_GROUPS[NAV_GROUPS.length - 1];
-      if (!grp.items.some(function (it) { return it.hash === x.hash; })) grp.items.push({ hash: x.hash, label: x.label + ' (Pro)', desc: x.desc });
+      // owner 2026-11-09 (screenshot: "Pro Enterprise" in the header and "Policy as code (Pro)" in the menu): "(Pro)" only
+      // where the feature is NOT on - it tells a Community install what needs Pro; a Pro install just has the page
+      if (!grp.items.some(function (it) { return it.hash === x.hash; })) grp.items.push({ hash: x.hash, label: x.label + (on.indexOf(x.feature) < 0 ? ' (Pro)' : ''), desc: x.desc });
       if (on.indexOf(x.feature) < 0 && !pageOf(x.hash)) PAGES.push({ id: x.hash, label: x.label, role: 'Reader', draw: function (p) {
         p.appendChild(el('div', { class: 'bar bar-info' }, 'A Pro feature - see ', el('a', { href: '#license', text: 'License' }), '. ' + x.desc)); return Promise.resolve(); } });
     });

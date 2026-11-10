@@ -436,10 +436,10 @@ function Get-EpsConfigRestorePlan {
     if (& $want 'Monitor') {
         $now = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Definition, Schedule, Enabled FROM eps.CaMonitor')) { $now["$($r.Name)".ToLowerInvariant()] = $r }
         foreach ($it in @($by['Monitor'])) { if (-not $it) { continue }; $b = $it.Body; $c = $now["$($b.Name)".ToLowerInvariant()]
-            if ("$($b.Name)" -notmatch '^[A-Za-z0-9_.-]{1,100}$') { $counts.refused++; $notes.Add("monitor '$($b.Name)': not a name a monitor can have - left out"); continue }
+            if ("$($b.Name)" -notmatch $script:EpsCaMonitorNamePattern) { $counts.refused++; $notes.Add("monitor '$($b.Name)': not a name a monitor can have - left out"); continue }
             $defJ = ConvertTo-Json -InputObject $b.Definition -Depth 20 -Compress
             if ($c -and ((("$($c.Definition)" | ConvertFrom-Json) | ConvertTo-Json -Depth 20 -Compress) -ceq $defJ) -and "$($c.Schedule)" -ceq "$($b.Schedule)" -and [bool]$c.Enabled -eq [bool]$b.Enabled) { $counts.same++; continue }
-            & $add 'Monitor' $it.Key 'PUT' "/api/ca/monitors/$($b.Name)" ([ordered]@{ definition = $b.Definition; schedule = "$($b.Schedule)"; enabled = [bool]$b.Enabled }) "$(if ($c) { $vb.back } else { $vb.again }) monitor $($b.Name) ($($b.Schedule)$(if (-not $b.Enabled) { ', off' }))" (-not $c) }
+            & $add 'Monitor' $it.Key 'PUT' "/api/ca/monitors/$([uri]::EscapeDataString("$($b.Name)"))" ([ordered]@{ definition = $b.Definition; schedule = "$($b.Schedule)"; enabled = [bool]$b.Enabled }) "$(if ($c) { $vb.back } else { $vb.again }) monitor $($b.Name) ($($b.Schedule)$(if (-not $b.Enabled) { ', off' }))" (-not $c) }
     }
     if (@($by['Scope']).Count) { $notes.Add("saved scopes are in the $(if ($Import) { 'file' } else { 'backup' }) ($(@($by['Scope']).Count)) but are put back by hand (Jobs: saved scopes)") }
     [ordered]@{ ok = $true; backupId = $(if ($BackupId) { $BackupId }); takenAtUtc = $d.Header.TakenAtUtc; kind = $d.Header.Kind; requests = @($reqs); notes = @($notes); counts = $counts

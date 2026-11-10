@@ -6,30 +6,30 @@
       "name": "Shared mailbox",
       "classifications": ["*SharedMailbox*"],
       "minimum": { "label": "", "skuPartNumbers": [], "servicePlanIds": [] },
-      "overProvisioned": ["AAD_PREMIUM", "AAD_PREMIUM_P2", "SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB", "SPE_F1"]
+      "overProvisioned": ["AAD_PREMIUM", "AAD_PREMIUM_P2", "SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_w/o_Teams_Bundle_M3", "O365_w/o_Teams_Bundle_M5", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB", "SPE_F1"]
     },
     {
       "name": "Service and non-managed accounts",
       "classifications": ["Service_Account", "Break_Glass_Account", "NonManaged_User_AD_Synced", "NonManaged_User_Cloud", "Shared_Mail_User", "AppSystem_Test_User"],
       "minimum": { "label": "Entra ID P1", "skuPartNumbers": [], "servicePlanIds": ["41781fb2-bc02-4b7c-bd55-b576c07bb09d"] },
-      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
+      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_w/o_Teams_Bundle_M3", "O365_w/o_Teams_Bundle_M5", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
     },
     {
       "name": "Shared devices and Teams Rooms",
       "classifications": ["Shared_Device_User", "Teams_Room"],
       "minimum": { "label": "Enterprise Mobility + Security E5", "skuPartNumbers": ["EMSPREMIUM"], "servicePlanIds": [] },
-      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
+      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_w/o_Teams_Bundle_M3", "O365_w/o_Teams_Bundle_M5", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
     },
     {
       "name": "Admins",
       "classifications": ["Internal_Admin", "External_Admin"],
       "minimum": { "label": "Entra ID P2 or EMS E5", "skuPartNumbers": [], "servicePlanIds": ["eec0eb4f-6444-4b95-aba0-50c24d67f998"] },
-      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
+      "overProvisioned": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_w/o_Teams_Bundle_M3", "O365_w/o_Teams_Bundle_M5", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"]
     },
     {
       "name": "Users",
       "classifications": ["Internal_User", "Internal_User_Developer", "External_User"],
-      "minimum": { "label": "M365 E3, O365 E3, M365 E5, BizPrem, BizStd", "skuPartNumbers": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"], "servicePlanIds": [] },
+      "minimum": { "label": "M365 E3, O365 E3, M365 E5 (also the EEA bundles without Teams), BizPrem, BizStd", "skuPartNumbers": ["SPE_E3", "SPE_E5", "O365_w/o Teams Bundle_M3", "O365_w/o_Teams_Bundle_M3", "O365_w/o_Teams_Bundle_M5", "O365_BUSINESS_PREMIUM", "Microsoft_365_Business_Standard_EEA_(no_Teams)", "SPB"], "servicePlanIds": [] },
       "overProvisioned": []
     }
   ]

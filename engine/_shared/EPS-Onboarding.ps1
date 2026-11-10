@@ -134,7 +134,7 @@ function Get-EpsSetupSteps {
     # -DbJob: eps.UplinkState setup.dbjob (the version whose database setup job last read every principal back; $null =
     # not readable). -UpdateRun: the last update run's summary ($null = not readable, '' = none yet).
     # -GraphWriteNeed: Get-EpsGraphWriteNeed (SEC-02-GRAPH, 2.0.99) - not given = the write rights reported as needed
-    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null, $GraphWriteNeed = $null)
+    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null, $GraphWriteNeed = $null, $AdDelegation = $null)
     $d = Get-EpsOnboardingDefaults
     $at = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $out = [System.Collections.Generic.List[object]]::new()
@@ -149,7 +149,7 @@ function Get-EpsSetupSteps {
         $detail = if ($st -eq 'unknown') { "$($Rights.Reason)" } else { "for $($d.roleFor[$r])" }
         $need = if ($GraphWriteNeed -and $GraphWriteNeed.Known) { $GraphWriteNeed.Roles[$r] } else { $null }
         if ($need -and -not $need.Needed) {
-            $detail = if ($st -eq 'ok') { "not needed ($($need.Why)) but still granted: the next install run removes it (or Grant-EpsEnginePermissions -GraphPermission $r -Remove)" } else { "not needed: $($need.Why)" }
+            $detail = if ($st -eq 'ok') { "not needed now ($($need.Why)), still granted and kept - nothing is removed automatically (to take it away yourself: Grant-EpsEnginePermissions -GraphPermission $r -Remove)" } else { "not needed: $($need.Why)" }
             $st = 'n/a'
         } elseif ($need -and $need.Needed -and $st -eq 'missing') { $detail = "needed ($($need.Why)): grant it with Grant-EpsEnginePermissions -GraphPermission $r" }
         $out.Add([ordered]@{ key = "graph-$($r.ToLowerInvariant().Replace('.', '-'))"; title = "Engine has the Graph permission $r"; state = $st; since = "$($d.roleSince[$r])"; how = 'customer'; checkedAt = $at; detail = $detail })
@@ -163,13 +163,15 @@ function Get-EpsSetupSteps {
     $exDetail = "for $($d.exchangeRole.for)"
     # OPEN-09: needed only while a feature that uses Exchange is on - otherwise n/a, and a role still held is said to be extra
     if ($ExchangeNeed -and $ExchangeNeed.Known -and -not $ExchangeNeed.Needed) {
-        $exDetail = if ($ex -eq 'ok') { "not needed ($($ExchangeNeed.Why)) but still granted: the next install or update run removes it (or Grant-EpsEnginePermissions -Exchange -Remove)" } else { "not needed: $($ExchangeNeed.Why)" }
+        $exDetail = if ($ex -eq 'ok') { "not needed now ($($ExchangeNeed.Why)), still granted and kept - nothing is removed automatically (to take them away yourself: Grant-EpsEnginePermissions -Exchange -Remove)" } else { "not needed: $($ExchangeNeed.Why)" }
         $ex = 'n/a'
     } elseif ($ExchangeNeed -and $ExchangeNeed.Known -and $ExchangeNeed.Needed -and $ex -eq 'missing') {
         $exDetail = "needed ($($ExchangeNeed.Why)): grant it with Grant-EpsEnginePermissions -Exchange"
     }
     $out.Add([ordered]@{ key = 'exchange-recipient-admin'; title = 'Engine holds the Exchange Recipient Administrator role'; state = $ex; since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = $exDetail })
     $out.Add([ordered]@{ key = 'mail-sender'; title = 'An alert mail sender is set up'; state = $(if (-not $MailMode) { 'unknown' } elseif ($MailMode -eq 'none') { 'missing' } else { 'ok' }); since = '2.0.0'; how = 'customer'; checkedAt = $at; detail = 'set up once by an Exchange admin (the mail sender setup script), then Settings > Mail' })
+    # IDENTITY-MOVE-1 rule 13: no row without a worker that writes AD; "missing" names the exact step and clears by itself
+    if ($AdDelegation) { $out.Add([ordered]@{ key = 'ad-delegation'; title = 'The hybrid worker may write the tag attributes in AD (read back by the worker)'; state = "$($AdDelegation.State)"; since = '2.0.117'; how = 'customer'; checkedAt = $at; detail = "$($AdDelegation.Detail)" }) }
     # SEC-08: no person needs database admin rights - the setup job did the database as its own identity
     $out.Add([ordered]@{ key = 'db-job'; title = 'The database setup job sets up the database (no person needs database admin rights)'; since = '2.0.59'; how = 'support-app'; checkedAt = $at
         state = $(if ($null -eq $DbJob) { 'unknown' } elseif ("$DbJob".Trim()) { 'ok' } else { 'missing' })
@@ -411,6 +413,56 @@ function Get-EpsOnboardingOverview {
                     counts = [ordered]@{ ok = @($it | Where-Object State -eq 'ok').Count; missing = @($it | Where-Object State -eq 'missing').Count; check = @($it | Where-Object State -eq 'check').Count; unknown = @($it | Where-Object State -eq 'unknown').Count }
                     items = @($it | ForEach-Object { [ordered]@{ item = "$($_.Item)"; title = "$($_.Title)"; state = "$($_.State)"; detail = "$($_.Detail)" } }) } })
     @{ Steps = $steps; CheckedAtUtc = $(if ($rows.Count) { $rows[0].CheckedAtUtc }); CheckedBy = $(if ($rows.Count) { "$($rows[0].CheckedBy)" }) }
+}
+
+# ---- RIGHTS-1.7 point 2: the optional components, their state and their missing rights (Administration > Optional components) ----
+function Get-EpsOptionalComponentView {
+    <# PURE. engine/rights/eps-rights.json + what is stored -> one row per optional component.
+       -Settings: name -> value. -CheckRows: eps.OnboardingCheck (Step, Item, State, Detail - the engine's own read of its rights).
+       State: on | off | not readable (the web app cannot see it). A right: ok | missing | unknown | not read (nothing here
+       reads it: its own script reads it back). Missing = held by nobody while the component is on. Reads only; nothing is
+       granted or removed from here (framework RIGHTS-1.7 points 3 and 5). #>
+    param([Parameter(Mandatory)]$Catalog, [hashtable]$Settings = @{}, [object[]]$CheckRows = @(), [int]$Workers = 0, [int]$MailboxConditions = 0)
+    $allRights = @(@($Catalog.identities.rights) + @($Catalog.invardiaSupportApp.rights) + @($Catalog.onPremises.identities.rights))
+    $find = { param($step, $item) @($CheckRows | Where-Object { "$($_.Step)" -eq $step -and "$($_.Item)" -eq $item })[0] }
+    $stateOf = {
+        param($entry)
+        $row = switch -Regex ("$($entry.kind)|$($entry.right)") {
+            '^graph\|'                 { & $find 'rights' "graph:$($entry.right)"; break }
+            '^directoryRole\|Exchange' { & $find 'rights' 'exchange'; break }
+            '^exchange\|Application Mail\.Send' { & $find 'mail' 'sender'; break }
+            default                    { $null }
+        }
+        if ($row) { "$($row.State)" } else { 'not read' }
+    }
+    foreach ($component in @($Catalog.optionalComponents)) {
+        $switchedOn = @(@($component.switches) | Where-Object { $_ -and "$($Settings["$($_.setting)"])".Trim() -eq "$($_.on)" } | ForEach-Object { "$($_.setting)" })
+        $state = if ("$($component.alsoOnWhen)" -eq 'notReadable') { 'not readable' }
+                 elseif ($switchedOn.Count) { 'on' }
+                 elseif ("$($component.alsoOnWhen)" -eq 'mailboxRules' -and $MailboxConditions -gt 0) { 'on' }
+                 elseif ("$($component.alsoOnWhen)" -eq 'workerReports' -and $Workers -gt 0) { 'on' }
+                 else { 'off' }
+        $rights = @(foreach ($entry in @($allRights | Where-Object { "$($_.featureKey)" -ceq "$($component.key)" })) {
+            $rightState = & $stateOf $entry
+            [ordered]@{ right = "$($entry.right)"; scope = "$($entry.scope)"; feature = "$($entry.feature)"; state = $rightState }
+        })
+        $missing = @(if ($state -eq 'on') { $rights | Where-Object { $_.state -eq 'missing' } | ForEach-Object { $_.right } })
+        $command = if ($component.script) { "./$($component.script.name) -TenantId <tenant id> -SubscriptionId <subscription id>$(if ("$($component.script.arguments)".Trim()) { " $($component.script.arguments)" })" }
+        [ordered]@{ key = "$($component.key)"; title = "$($component.title)"; what = "$($component.what)"; state = $state; switchedOnBy = $switchedOn
+                    rights = $rights; missing = $missing; script = $(if ($component.script) { "$($component.script.name)" }); command = $command; how = "$($component.how)" }
+    }
+}
+
+function Get-EpsOptionalComponents {
+    # the page's data: only what the web app may read already (settings, the stored rights check, the workers' heartbeat)
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $catalog = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'rights\eps-rights.json') -Raw | ConvertFrom-Json -Depth 30
+    $settings = @{}; foreach ($row in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Value FROM eps.Setting')) { $settings["$($row.Name)"] = "$($row.Value)" }
+    $checks = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Step, Item, State, Detail, CheckedAtUtc FROM eps.OnboardingCheck WHERE Step IN ('rights', 'mail')")
+    $workers = [int]@(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT COUNT(*) AS n FROM eps.WorkerHeartbeat')[0].n
+    $mailbox = [int]@(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT COUNT(*) AS n FROM eps.UserTagRuleCondition WHERE ConditionType LIKE 'Mailbox[_]%'")[0].n
+    @{ components = @(Get-EpsOptionalComponentView -Catalog $catalog -Settings $settings -CheckRows $checks -Workers $workers -MailboxConditions $mailbox)
+       checkedAtUtc = $(if ($checks.Count) { $checks[0].CheckedAtUtc }) }
 }
 
 # ---- the break-glass account list, edited in the GUI (until now only the v1 import filled it) ------------------------------

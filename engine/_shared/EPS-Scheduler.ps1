@@ -18,6 +18,14 @@ function Get-EpsDefaultJobSchedule {
         [pscustomobject]@{ Job = 'UserTagging';    Schedule = 'daily 01:00'; AcaJobName = 'caj-eps-usertag';   Implemented = $true }
         [pscustomobject]@{ Job = 'DeviceTagging';  Schedule = 'daily 01:30'; AcaJobName = 'caj-eps-devicetag'; Implemented = $true }
         [pscustomobject]@{ Job = 'IdentityReport'; Schedule = 'daily 02:00'; AcaJobName = 'caj-eps-idreport';  Implemented = $true }
+        # the per-user sign-in methods, cached per user and re-read on change (SecurityInsight's design; owner 2026-11-09
+        # "Both, as SI" / "remember to do the cachin"): 8 minutes per run at most, the next run carries on (EPS-SignInMethods)
+        # FAST-START (owner 2026-11-09: "why is it not starting automatically if not running" -> "Web may send a wake-up" /
+        # "just make it like fx pim does it with delta"): the web app puts a message on eps-wake right after it writes a
+        # request; this job then runs ONE normal engine check (Invoke-EpsTick, the same claims and guards) - the work starts
+        # within seconds instead of at the next 5-minute check. The web identity may only SEND to this one queue.
+        [pscustomobject]@{ Job = 'Wake';           Schedule = 'manual';      AcaJobName = 'caj-eps-wake';      Implemented = $true; AlwaysOn = $true; TimeoutSeconds = 900 }
+        [pscustomobject]@{ Job = 'SignInMethods';  Schedule = 'every 15m';   AcaJobName = 'caj-eps-signinmethods'; Implemented = $true; TimeoutSeconds = 1800 }
         [pscustomobject]@{ Job = 'NamedLocations'; Schedule = 'daily 06:00'; AcaJobName = 'caj-eps-namedloc';  Implemented = $true }   # V1-PARITY P8 (2.0.82): v1's service-tag job
         [pscustomobject]@{ Job = 'TamperMonitor';  Schedule = 'every 15m';   AcaJobName = 'caj-eps-tamper';    Implemented = $true; TimeoutSeconds = 3600 }   # UPD-STUCK-RUN: a 30-s job, never 7 days
         [pscustomobject]@{ Job = 'PolicyDeploy';   Schedule = 'manual';      AcaJobName = 'caj-eps-policy';    Implemented = $false }
@@ -400,7 +408,7 @@ function Invoke-EpsTick {
                 elseif (Get-Command Invoke-EpsUpdateExpediteCheck -ErrorAction SilentlyContinue) {
                     $vf = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'VERSION'
                     $iv = if (Test-Path -LiteralPath $vf) { (Get-Content -LiteralPath $vf -Raw).Trim() } else { '' }
-                    # a Pro install's check sends its licence: the tick reads only its text (eps_tick: SELECT(Id, LicenceText), 2.0.98)
+                    # a Pro install's check sends its licence: the tick reads only its text (eps_schedule: SELECT(Id, LicenceText), 2.0.98)
                     $licRead = { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query 'SELECT LicenceText FROM eps.License WHERE Id = 1' }
                     $un = Invoke-EpsUpdateExpediteCheck -ConnectionString $ConnectionString -InstalledVersion $iv -NowUtc $NowUtc -AlreadyStarted $already -GetLicence $licRead
                 }
