@@ -302,6 +302,7 @@ function Invoke-EpsTick {
             if ($running -or $dispatched) { return 'the previous run is still running (overlap guard)' }
             $null
         }
+        $startedNow = @{}
         $start = {
             param($job, $why, [bool]$fromRequest, [hashtable]$envs)
             $r = $byJob[$job]
@@ -322,8 +323,14 @@ function Invoke-EpsTick {
             @{ Job = $job; Action = $(if ($res.Ok) { 'Started' } else { 'StartFailed' }); Reason = $(if ($res.Ok) { $why } else { $res.Reason }); Execution = $res.Execution }
         }
 
+        # 0. STALL-1 (framework 8.18): a run that keeps going without progress is marked, its execution ends itself, and it
+        # is started once more (EPS-Watchdog.ps1). Never fails the tick.
+        if (Get-Command Invoke-EpsStallWatch -ErrorAction SilentlyContinue) {
+            try { foreach ($d in @(Invoke-EpsStallWatch -ConnectionString $ConnectionString -NowUtc $NowUtc -Start $start -Blocked $blocked)) { $decisions.Add($d); if ($d.Action -eq 'Restarted') { $startedNow[$d.Job] = $true } } }
+            catch { $decisions.Add(@{ Job = 'StallWatch'; Action = 'Skipped'; Reason = "the stall check failed: $($_.Exception.Message)" }) }
+        }
+
         # 1. requests first: an admin is waiting for them
-        $startedNow = @{}
         foreach ($q in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT RequestId, Job, Mode, RequestedBy FROM eps.JobRequest WHERE Status = 'Pending' ORDER BY RequestedAtUtc")) {
             if ($startedNow[$q.Job] -and -not $parallel[$q.Job]) {
                 if ($alwaysOn[$q.Job]) {

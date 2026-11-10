@@ -2,6 +2,16 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.123 - A job that hangs is caught, stopped and started again
+Builds on the owner's decision: "build the stall watchdog now" (2026-11-10)
+- New: every job now reports its progress while it runs. A run that makes no progress for 60 minutes, or runs more
+  than twice its usual length (at least 30 minutes) without progress, is stopped and started once more. Before, a
+  hanging job ran until its time limit.
+- A run that hangs again within 24 hours stays stopped and shows on Jobs & runs with the reason. A run a person asked
+  for is not repeated without them: ask for it again. An update is never stopped half-way.
+- Invardia support is told at once about a job that hung (error code eps-run-0101) and looks at it; it closes by
+  itself after the next good run of the job.
+
 ## 2.0.121 - The update brings the web app's sign-in front to .NET 10
 Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
 - Fix: an install that was already up to date did not move its web app's sign-in front to the version the release

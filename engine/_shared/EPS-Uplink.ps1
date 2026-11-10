@@ -42,7 +42,8 @@ $script:EpsUplinkAlertMax   = 10
 $script:EpsUplinkAlertRepeatHours = 24
 $script:EpsUplinkWorkerSilentMinutes = 60
 $script:EpsUplinkFirstRunsHours = 24      # a job without a watermark: its runs of the last 24 h (no history dump)
-$script:EpsUplinkSleep = { param([int]$Ms) if ($Ms -gt 0) { Start-Sleep -Milliseconds $Ms } }   # a test counts the pauses
+$script:EpsStallErrorCode = 'eps-run-0101'   # STALL-1: the run-stalled code in internal/errors/errors.json (handed over, never shipped) (Invardia 2026-11-10, prefix eps-)
+$script:EpsUplinkSleep ={ param([int]$Ms) if ($Ms -gt 0) { Start-Sleep -Milliseconds $Ms } }   # a test counts the pauses
 
 # ---- the closed lists (Invardia packages/core/src/uplink.ts + heartbeatstate.ts; framework §8.17 / §8.19) ----
 $script:EpsUplinkLists = @{
@@ -52,7 +53,7 @@ $script:EpsUplinkLists = @{
     Hosting         = @('container', 'vm', 'arc')
     RuntimeIdentity = @('mi-container', 'mi-vm', 'mi-arc', 'spn-certificate', 'spn-secret')
     FixKind         = @('customer-config', 'product-defect')
-    ErrorClass      = @('held-guard', 'partly-failed', 'queue-start-timeout', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified', 'repeat-failure')
+    ErrorClass      = @('held-guard', 'partly-failed', 'queue-start-timeout', 'run-limit', 'permission', 'throttled', 'sql', 'timeout', 'upstream-error', 'unclassified', 'repeat-failure', 'run-stalled')
     JobResult       = @('succeeded', 'failed', 'stopped', 'running')
     UpdaterResult   = @('succeeded', 'failed', 'nothing-to-do')
     MailJob         = @('present', 'missing')
@@ -68,14 +69,14 @@ $script:EpsUplinkLists = @{
     SetupState      = @('ok', 'missing', 'n/a', 'unknown')       # FLEET-STEPS (owner 2026-11-03 via Invardia, the field shared by SI, PIM and EPS)
     SetupHow        = @('updater', 'support-app', 'customer')
     EndpointKind    = @('webapp', 'api')                         # DELIVERY-CONTRACT A (framework §0.1 / §8.9): every address a person or Invardia opens
-    LongRunState    = @('ok', 'long', 'stuck')
-    LongRunAction   = @('none', 'cancel-update-restart')
+    LongRunState    = @('ok', 'long', 'stuck', 'stalled')        # STALL-1 (framework 8.18): stalled = no progress / > 2x, caught
+    LongRunAction   = @('none', 'cancel-update-restart', 'cancel-restart')   # cancel-restart: stopped and started once more
 }
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
     heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId')
-    run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts')
+    run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'FailedStep', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts', 'Reports')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
@@ -443,18 +444,34 @@ function Get-EpsUplinkLongRun {
       DELIVERY-CONTRACT A (framework §0.1, Pipeline.longRun): the run that goes NOW with the largest ratio of its age to
       its usual length (the median of the job's last 10 finished runs; at least 1 minute). state: ok < 2x, long >= 2x,
       stuck >= 4x. newerWaiting / action: EPS's updater is not built yet - false / none. $null when nothing runs.
+      STALL-1 (framework 8.18): stalled (Get-EpsStallVerdict: no progress for 60 min, or > 2x its usual) wins over any
+      other state - a running run the engine never stops (the update: action none), or the run the engine stopped in the
+      last 4 h (one heartbeat interval; action cancel-restart when it was started once more, else none).
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
     try {
-        $run = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Job, StartedAtUtc FROM eps.Run WHERE Status = 'Running' AND Job <> 'Tick'")
-        if (-not $run.Count) { return $null }
+        $hasVerdict = [bool](Get-Command Get-EpsStallVerdict -ErrorAction SilentlyContinue)
+        $run = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Job, StartedAtUtc, ProgressAtUtc FROM eps.Run WHERE Status = 'Running' AND Job <> 'Tick'")
         $best = $null
         foreach ($r in $run) {
             $d = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = [string]$r.Job } -Query "SELECT TOP 10 DATEDIFF(second, StartedAtUtc, EndedAtUtc) / 60.0 AS M FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC" | ForEach-Object { [double]$_.M } | Sort-Object)
             $usual = if ($d.Count) { [Math]::Max(1.0, $d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { 1.0 }
             $age = [Math]::Round(($NowUtc - [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc')).TotalMinutes, 1)
             $ratio = $age / $usual
-            if (-not $best -or $ratio -gt $best.ratio) { $best = @{ job = [string]$r.Job; startedUtc = [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc'); usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $ratio; state = $(if ($ratio -ge 4) { 'stuck' } elseif ($ratio -ge 2) { 'long' } else { 'ok' }); newerWaiting = $false; action = 'none'; at = $NowUtc } }
+            $stalled = $hasVerdict -and (Get-EpsStallVerdict -StartedUtc $r.StartedAtUtc -ProgressAtUtc $r.ProgressAtUtc -Durations $d -NowUtc $NowUtc).Stalled
+            $st = if ($stalled) { 'stalled' } elseif ($ratio -ge 4) { 'stuck' } elseif ($ratio -ge 2) { 'long' } else { 'ok' }
+            $c = @{ job = [string]$r.Job; startedUtc = [datetime]::SpecifyKind([datetime]$r.StartedAtUtc, 'Utc'); usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $ratio; state = $st; newerWaiting = $false; action = 'none'; at = $NowUtc }
+            if (-not $best -or ($st -eq 'stalled' -and $best.state -ne 'stalled') -or (($st -eq 'stalled') -eq ($best.state -eq 'stalled') -and $ratio -gt $best.ratio)) { $best = $c }
+        }
+        if ($best -and $best.state -eq 'stalled') { return $best }
+        # a run the engine stopped as stalled since the last heartbeat
+        $s = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ t = $NowUtc.AddHours(-4) } -Query "SELECT TOP (1) Job, StartedAtUtc, EndedAtUtc, HeldReason FROM eps.Run WHERE Status = 'Failed' AND HeldReason LIKE 'stalled%' AND EndedAtUtc > @t ORDER BY EndedAtUtc DESC")[0]
+        if ($s) {
+            $su = [datetime]::SpecifyKind([datetime]$s.StartedAtUtc, 'Utc'); $age = [Math]::Round(([datetime]::SpecifyKind([datetime]$s.EndedAtUtc, 'Utc') - $su).TotalMinutes, 1)
+            $d = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = [string]$s.Job } -Query "SELECT TOP 10 DATEDIFF(second, StartedAtUtc, EndedAtUtc) / 60.0 AS M FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC" | ForEach-Object { [double]$_.M } | Sort-Object)
+            $usual = if ($d.Count) { [Math]::Max(1.0, $d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { 1.0 }
+            return @{ job = [string]$s.Job; startedUtc = $su; usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $age / $usual; state = 'stalled'; newerWaiting = $false
+                      action = $(if ("$($s.HeldReason)" -match 'started once more') { 'cancel-restart' } else { 'none' }); at = $NowUtc }
         }
         $best
     } catch { $null }
@@ -594,6 +611,9 @@ function Get-EpsJobRunStreak {
 function Get-EpsUplinkErrorClass {
     # PURE. eps.Run -> @{ Outcome; ErrorClass; FixKind } (closed lists). A held run is a warning (the guard did its job).
     param([string]$Status, [string]$Text, [string]$Job)
+    # STALL-1 (framework 8.18, Invardia 2026-11-10 "same as PIM"): a run the engine stopped as stalled = ONE run report,
+    # warning / run-stalled (its catalogue entry opens the ticket; a later OK of the job resolves it)
+    if ("$Text" -match '^stalled') { return @{ Outcome = 'warning'; ErrorClass = 'run-stalled'; FixKind = '' } }
     switch ($Status) {
         'Succeeded'    { return @{ Outcome = 'ok'; ErrorClass = ''; FixKind = '' } }
         'Held'         { return @{ Outcome = 'warning'; ErrorClass = 'held-guard'; FixKind = '' } }
@@ -631,6 +651,11 @@ function New-EpsUplinkRunRecord {
         if ($ms -ge 0) { $o.DurationMs = [int][math]::Min($ms, 2147483646) }
     }
     $o.ErrorClass = Select-EpsUplinkEnum $cls.ErrorClass 'ErrorClass'
+    if ($cls.ErrorClass -eq 'run-stalled') {
+        $o.FailedStep = $o.Job   # the step that stalled = the job (EPS's jobs are one step each)
+        # framework §8.16: the item carries the catalogue code (internal/errors/errors.json, eps-run-0101, opensTicket true)
+        $o.Reports = @([ordered]@{ Report = $o.Job; Code = $script:EpsStallErrorCode; CauseClass = 'run-stalled'; Action = 'support' })
+    }
     $o.FixKind = Select-EpsUplinkEnum $cls.FixKind 'FixKind'
     # framework lesson 2026-11-08: N runs in a row not complete = deterministic - a fix-request cause (product-defect),
     # never for a permission the customer must give (customer-config stays)
@@ -675,7 +700,7 @@ function Get-EpsUplinkDueRuns {
     if (-not $wm.ContainsKey('eps-engine') -and $wm.ContainsKey('eps-tick')) { $wm['eps-engine'] = $wm['eps-tick'] }
     $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
     $since = @(@($wm.Values) + $default | Sort-Object)[0]
-    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' ORDER BY EndedAtUtc")
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
     @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
 }
 function Get-EpsUplinkBacklog {

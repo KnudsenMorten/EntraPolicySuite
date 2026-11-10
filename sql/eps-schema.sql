@@ -1352,3 +1352,12 @@ CREATE INDEX IX_UserSignInMethods_Pick ON eps.UserSignInMethods (Privileged DESC
 GO
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 37)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (37, '2.0.115');
+GO
+-- STALL-1 (framework 8.18, owner via Invardia 2026-11-10: a hanging job at a customer was not detected): a run that
+-- keeps going without progress is caught. The job's watchdog (EPS-Watchdog.ps1) writes how many SQL statements and Graph
+-- pages the run has finished (Progress) and when that number last moved (ProgressAtUtc); NULL = no watchdog (older image).
+IF COL_LENGTH('eps.Run', 'Progress') IS NULL ALTER TABLE eps.Run ADD Progress BIGINT NULL;
+IF COL_LENGTH('eps.Run', 'ProgressAtUtc') IS NULL ALTER TABLE eps.Run ADD ProgressAtUtc DATETIME2 NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 38)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (38, '2.0.122');

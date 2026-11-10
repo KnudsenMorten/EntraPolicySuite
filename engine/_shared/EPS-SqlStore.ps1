@@ -120,8 +120,9 @@ function Invoke-EpsSql {
             # column (the scheduler's claim) would then never match the value it just read
             if ($v -is [datetime]) { $prm.SqlDbType = [System.Data.SqlDbType]::DateTime2 }
         }
-        if ($NonQuery) { return $cmd.ExecuteNonQuery() }
-        if ($Scalar) { $r = $cmd.ExecuteScalar(); if ($r -is [DBNull]) { return $null }; return $r }
+        # STALL-1: every finished statement is progress for this run's watchdog (EPS-Watchdog.ps1)
+        if ($NonQuery) { $n = $cmd.ExecuteNonQuery(); if ($script:EpsWatchOn) { [EpsRunWatchdog]::Step() }; return $n }
+        if ($Scalar) { $r = $cmd.ExecuteScalar(); if ($script:EpsWatchOn) { [EpsRunWatchdog]::Step() }; if ($r -is [DBNull]) { return $null }; return $r }
         $rd = $cmd.ExecuteReader()
         try {
             while ($rd.Read()) {
@@ -130,6 +131,7 @@ function Invoke-EpsSql {
                 [pscustomobject]$row
             }
         } finally { $rd.Dispose() }
+        if ($script:EpsWatchOn) { [EpsRunWatchdog]::Step() }
     } finally { if ($own) { $conn.Dispose() } }
 }
 

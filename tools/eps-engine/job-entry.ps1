@@ -19,7 +19,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-SignInMethods', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-SignInMethods', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead', 'EPS-Watchdog') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 # EPS PRO: the Pro package's modules (pro/engine/*.ps1, their engine-only writes included); absent without the Pro package
 $proEngine = Join-Path $sol 'pro\engine'
 if (Test-Path -LiteralPath $proEngine) { foreach ($pf in @(Get-ChildItem -LiteralPath $proEngine -Filter '*.ps1' -File | Sort-Object Name)) { . $pf.FullName } }
@@ -44,6 +44,11 @@ if (-not $ConnectionString) { Say 'EPS_SQL_CONNECTION is not set'; exit 2 }
 # UPD-STUCK-RUN (internal 2026-11-06): caj-eps-tamper-4w76v ran 5.5 h and printed NOTHING - every job says it started, so
 # a hang is placed (before this line = the container; after it = SQL, the queue or the job's own work)
 Say "start$(if ($env:CONTAINER_APP_REPLICA_NAME) { " ($env:CONTAINER_APP_REPLICA_NAME)" })"
+# STALL-1 (framework 8.18): the work jobs report their progress, and end themselves when the engine marks the run stalled
+# (EPS-Watchdog.ps1); the jobs without a running run row (the checks, the setup, the GUI) have nothing to watch
+if ($Job -notin 'Tick', 'Wake', 'Web', 'DbInit', 'SupportAccess', 'SupportRead', 'Config') {
+    Say (Start-EpsRunWatchdog -ConnectionString $ConnectionString -Job $Job -StartedUtc $script:__started -MayStop:($Job -notin $script:EpsStallNeverStop))
+}
 # V1-PARITY P16: this job's log level (Log.Level.<Job>: Off / Normal / Verbose); warnings and errors are always kept
 $script:__logLevel = if ($Job -in $script:EpsLogFeatures) { Get-EpsLogLevel -ConnectionString $ConnectionString -Feature $Job } else { 'Normal' }
 # gap (4): the jobs that page through Graph and bulk-copy run with smaller sizes after repeated failed runs (halved per run in
@@ -164,6 +169,7 @@ WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
         # the CA Policy Analyzer (DESIGN §5.7) - READ ONLY towards the tenant. One execution = one ad-hoc request
         # (EPS_REQUEST_ID) or one monitor (EPS_CA_MONITOR); several run side by side, each with its own parameters.
         $runId = [guid]::NewGuid(); $label = ''; $body = $null; $reqId = $env:EPS_REQUEST_ID; $monitor = $env:EPS_CA_MONITOR
+        Set-EpsWatchRun -RunId $runId   # several executions side by side: this one watches its own run row
         if ($reqId) {
             $q = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ id = [guid]$reqId; r = $runId } -Query @'
 UPDATE q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL

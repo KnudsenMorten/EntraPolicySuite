@@ -66,6 +66,7 @@ function Invoke-EpsGraph {
             $msg = try { ($r.Body | ConvertFrom-Json).error.message } catch { $r.Body }
             throw "Graph $Method $($uri -replace '\?.*$', '') -> $($r.Status): $msg"
         }
+        if ($script:EpsWatchOn) { [EpsRunWatchdog]::Step() }   # STALL-1: a page read is progress (a 429 retry is not)
         $obj = if ($r.Body) { $r.Body | ConvertFrom-Json -Depth 20 }
         if (-not $All) { return $obj }
         foreach ($v in @($obj.value)) { if ($null -ne $v) { $items.Add($v) } }
