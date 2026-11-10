@@ -17,7 +17,7 @@
     { "id": "NamedLocations", "label": "Named locations" },
     { "id": "IdentityReport", "label": "Identity report" },
     { "id": "SignInMethods", "label": "Per-user sign-in methods" },
-    { "id": "Uplink", "label": "Invardia telemetry" },
+    { "id": "Uplink", "label": "Invardia support link" },
     { "id": "Update", "label": "Updates" },
     { "id": "Backup", "label": "Backups" },
     { "id": "CaOptions", "label": "Conditional Access options from Graph" },
@@ -843,13 +843,13 @@
       }
     },
     {
-      "key": "Uplink.Enabled", "group": "Uplink", "label": "Send telemetry to Invardia", "type": "boolean", "default": "true", "role": "SuperAdmin",
-      "confirm": [ { "when": "off", "title": "Stop sending telemetry to Invardia?", "body": "Invardia no longer sees that this install runs, which runs failed or the support state - it marks the install silent, and a failure is only found when you report it." } ],
+      "key": "Uplink.Enabled", "group": "Uplink", "label": "Invardia support link (send health and run results)", "type": "boolean", "default": "true", "role": "SuperAdmin",
+      "confirm": [ { "when": "off", "title": "Turn off the Invardia support link?", "body": "Invardia no longer sees that this install runs, which runs failed or the support state - it marks the install silent, and a failure is only found when you report it." } ],
       "info": {
-        "what": "Every 4 hours the uplink job tells Invardia that this install runs (a heartbeat with counts and the state of the jobs), and sends one record per finished run. Only with the per-install key Invardia issued, kept in the install's own Key Vault: without that key nothing is ever sent (there is no anonymous telemetry). Numbers and states only - never a user, device, tag value or object name.",
-        "enabled": "On (the default): with the key in the Key Vault, the next uplink run sends the heartbeat and the runs since the last one. Without the key it sends nothing and the job says so.",
-        "disabled": "Off: the uplink job sends nothing. Invardia marks the install silent after about 5 hours.",
-        "risk": "Nothing changes in the directory. Off, Invardia cannot see failures or offer support from the telemetry. Reversible: switch it on again.",
+        "what": "Sends Entra Policy Suite's health and run results to Invardia support, so support can see problems and updates can roll out. Every 4 hours the Invardia support link job tells Invardia that this install runs (a heartbeat with counts and the state of the jobs), and sends one record per finished run. Only with the per-install key Invardia issued, kept in the install's own Key Vault: without that key nothing is ever sent (there is no anonymous telemetry). Numbers and states only - never a user, device, tag value or object name.",
+        "enabled": "On (the default): with the key in the Key Vault, the next Invardia support link run sends the heartbeat and the runs since the last one. Without the key it sends nothing and the job says so.",
+        "disabled": "Off: the Invardia support link sends nothing. Invardia marks the install silent after about 5 hours.",
+        "risk": "Nothing changes in the directory. Off, Invardia cannot see failures or roll out updates from it. A report that cannot be delivered is retried next cycle; you are never mailed about it. Reversible: switch it on again.",
         "requires": "SuperAdmin. The per-install key from Invardia as the secret 'uplink-key' in the install's Key Vault, readable by the engine identity only (the install grants that when the secret exists).",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Enabled/"
@@ -859,10 +859,10 @@
       "key": "Uplink.Alerts.Enabled", "group": "Uplink", "label": "Send security findings to Invardia", "type": "boolean", "default": "true", "role": "SuperAdmin", "dependsOn": ["Uplink.Enabled"],
       "info": {
         "what": "Also sends Invardia a short alert record for a finding that is still open: foreign changes to watched tags (and the high-severity ones), drift or deletion of an adopted Conditional Access policy, a policy without the break-glass exclusion, a hybrid worker that stopped reporting. One record per finding type per 24 hours while it is open, numbers only.",
-        "enabled": "On (the default): from the next uplink run, open findings are reported to Invardia as well.",
+        "enabled": "On (the default): from the next Invardia support link run, open findings are reported to Invardia as well.",
         "disabled": "Off: no alert record is sent. Your own alarms (alert mail, the Azure Monitor rules) are not affected by this switch.",
-        "risk": "Nothing changes in the directory. The uplink is Invardia's view, never your only alarm. Reversible.",
-        "requires": "SuperAdmin. Telemetry on (Uplink.Enabled) with the per-install key; Invardia taking the alert kind.",
+        "risk": "Nothing changes in the directory. The Invardia support link is Invardia's view, never your only alarm. Reversible.",
+        "requires": "SuperAdmin. The Invardia support link on (Uplink.Enabled) with the per-install key; Invardia taking the alert kind.",
         "recommended": "On (the default).",
         "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Alerts.Enabled/"
       }
@@ -1075,9 +1075,9 @@
       }
     },
     {
-      "key": "Log.Level.Uplink", "group": "Log", "label": "Log level: the Invardia telemetry", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
+      "key": "Log.Level.Uplink", "group": "Log", "label": "Log level: the Invardia support link", "type": "enum", "values": ["Off", "Normal", "Verbose"], "default": "Normal", "role": "Admin",
       "info": {
-        "what": "How much the run log of the Invardia telemetry keeps (v1: each script's Verbose / Debug switch).",
+        "what": "How much the run log of the Invardia support link keeps (v1: each script's Verbose / Debug switch).",
         "enabled": "Verbose: also a detail line per object (tagging: per planned change) - for finding out why something happened.",
         "disabled": "Off: only warnings and errors are kept (the run record always is). Normal (the default): also the information lines.",
         "risk": "Verbose writes many more lines on a large tenant; they are removed after 'Keep run logs (days)'. Off hides the information that explains a run. Reversible from the next run.",

@@ -519,7 +519,7 @@
 // the stored name stays 'Tick'
 // ADMIN-WALK (2026-11-05): every job by a name people understand, not its internal one
 var JOB_NAMES = { Tick: 'Engine', UserTagging: 'User tagging', DeviceTagging: 'Device tagging', IdentityReport: 'Identity report', NamedLocations: 'Named locations (Azure service tags)',
-  TamperMonitor: 'Tamper monitor', PolicyDeploy: 'Policy deploy', CAPolicyAnalyzer: 'CA Policy Analyzer', Config: 'Configuration changes', Uplink: 'Invardia status reports',
+  TamperMonitor: 'Tamper monitor', PolicyDeploy: 'Policy deploy', CAPolicyAnalyzer: 'CA Policy Analyzer', Config: 'Configuration changes', Uplink: 'Invardia support link',
   Update: 'Update check', Backup: 'Backup', CaOptions: 'Conditional Access options from Graph' };
 function jobName(j) { return JOB_NAMES[j] || textOf(j); }
 // a schedule in words, and a picker for it (ADMIN-WALK: frequency + time / day, never a free-text box). The value it
@@ -4716,10 +4716,11 @@ function schedPicker(current, job) {
           !ws.length ? 'No hybrid worker has reported - AD-synced users wait for one. ' : fmtNum(ws.length) + ' worker(s), ' + (late.length ? fmtNum(late.length) + ' LATE (' + late.map(function (w) { return w.WorkerName; }).join(', ') + ')' : 'all reporting') + '; ',
           ws.length ? fmtNum(o.workPackagesQueued) + ' AD change(s) waiting, ' + fmtNum(o.workPackagesFailed) + ' failed in 7 days. ' : null,
           el('a', { href: '#worker', text: 'Hybrid worker page' })));
-        // UPLINK-1: Invardia telemetry and the support state Invardia reported (shown only - no access is granted from it)
-        p.appendChild(el('h3', { text: 'Invardia telemetry and support' }));
+        // UPLINK-1 / SUPPORT-LINK-1 (owner 2026-11-10): the Invardia support link and the support state Invardia reported (shown only - no access is granted from it)
+        p.appendChild(el('h3', { text: 'Invardia support link' }));
+        p.appendChild(el('p', { class: 'muted', text: 'Sends Entra Policy Suite\'s health and run results to Invardia support, so support can see problems and updates can roll out.' }));
         var ul = o.uplink || {}, su = o.support;
-        p.appendChild(el('p', { text: 'Telemetry: ' + (ul.last || 'the uplink job has not run yet') + (ul.heartbeatUtc ? ' - last heartbeat ' + fmtTime(ul.heartbeatUtc) : '') }));
+        p.appendChild(el('p', { text: 'Last cycle: ' + (ul.last || 'the Invardia support link has not run yet') + (ul.heartbeatUtc ? ' - last heartbeat ' + fmtTime(ul.heartbeatUtc) : '') }));
         p.appendChild(el('p', { class: su && su.Active ? 'c-danger' : null, text: 'Invardia support: ' + (!su ? 'none reported' :
           (su.Active ? 'OPEN until ' + fmtTime(su.MaxUntilUtc) + (su.TicketNumber ? ', ticket ' + su.TicketNumber : '') + (su.AccessLevel ? ', level ' + su.AccessLevel : '') + (su.OpenedBy ? ', opened by ' + su.OpenedBy : '') + (su.Reason ? ' (' + su.Reason + ')' : '')
             : (su.State === 'open' ? 'ended ' + fmtTime(su.MaxUntilUtc) : 'closed') + ' - as reported ' + fmtTime(su.LastSeenUtc)) +
@@ -4841,7 +4842,7 @@ function schedPicker(current, job) {
           CaOptions: { text: 'Read the options now', what: 'Reads which values Graph offers per Conditional Access setting, and the tenant\'s strengths, locations and roles. It only reads.', ro: true },
           IdentityReport: { text: 'Run the report now', what: 'Builds a new identity report snapshot. It only reads the tenant and AD.', ro: true },
           NamedLocations: { text: 'Run now', what: 'Reads the Azure service tags and updates the Azure.Network.ServiceTag.* named locations whose ranges changed (as on its schedule).', ro: false },
-          Uplink: { text: 'Send now', what: 'Sends the status report to Invardia now.', ro: false },
+          Uplink: { text: 'Send now', what: 'Sends Entra Policy Suite\'s health and run results to Invardia support now.', ro: false },
           Update: { text: 'Check for an update now', what: 'Checks which release is approved for this install\'s ring, and installs it if it is newer (between runs, as on its schedule).', ro: false } };
         if (isRole('Admin')) cols.push({ key: '_run', label: 'Run now', render: function (r) {
           if (!r.Implemented || r.Job === 'TamperMonitor') return null;
@@ -5029,7 +5030,7 @@ function schedPicker(current, job) {
         p.appendChild(el('h2', { text: jobName(r.Job) + ' - ' + r.Mode + ' - ' + r.Status }));
         p.appendChild(el('div', { class: 'cards' }, card(r.Objects, 'objects'), card(r.Planned, 'planned'), card(r.Overwrites, 'overwrites'), card(r.Applied, 'applied'), card(r.Failed, 'failed', r.Failed > 0)));
         p.appendChild(el('p', null, 'Started ', timeEl(r.StartedAtUtc), r.EndedAtUtc ? ', ended ' : '', r.EndedAtUtc ? timeEl(r.EndedAtUtc) : null, '. ', el('a', { href: '#changes/' + r.RunId, text: 'Its tag changes' })));
-        if (r.HeldReason) p.appendChild(el('div', { class: 'guide', text: 'HELD: ' + r.HeldReason }));
+        if (r.HeldReason) p.appendChild(el('div', { class: 'guide', text: (r.Status === 'Succeeded' ? '' : 'HELD: ') + r.HeldReason }));
         // UNDO-BACKUP: a tagging run that wrote tags can be undone (a new run puts the old values back)
         if (isRole('Admin') && /^(User|Device)Tagging$/.test(r.Job) && r.Mode === 'Apply' && r.Applied > 0 && !r.UndoneBy) p.appendChild(el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'secondary', text: 'Undo this run...', onclick: function () { runUndoDialog(r.RunId); } })));
         if (r.UndoOfRunId) p.appendChild(el('p', null, 'The undo of ', el('a', { href: '#run/' + r.UndoOfRunId, text: 'this run' }), '.'));

@@ -16,7 +16,7 @@
     schedule check and puts the run requests on the job queues. Then it runs the engine's schedule check once.
     Every feature that changes your directory is OFF after the install, and a scheduled tagging run only previews until
     you switch it to Apply. On from the start: the nightly backup and the monthly read of the policy options (both only
-    read the tenant), the nightly check for an approved update, and telemetry to Invardia (sent only once Invardia has
+    read the tenant), the nightly check for an approved update, and the Invardia support link (sent only once Invardia has
     issued the install's key).
     -WhatIf shows every step and what it would create, and changes nothing. A failed install resumes where it stopped. Exit code: 0 done, 1 a step failed, 2 a check failed (nothing was created), 4 waiting for a step of yours (DNS records, a check from inside your network) - run the same command again when it is done.
 

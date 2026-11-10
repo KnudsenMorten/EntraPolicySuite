@@ -987,6 +987,23 @@ function Get-EpsUplinkState {
     $h = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Name, Value FROM eps.UplinkState')) { if ($r.Value -isnot [DBNull]) { $h["$($r.Name)"] = "$($r.Value)" } }
     $h
 }
+$script:EpsSupportLinkAmberAfter = 3   # SUPPORT-LINK-1: amber only after this many undelivered cycles in a row
+function Get-EpsSupportLinkCycleStatus {
+    <# PURE. SUPPORT-LINK-1 (owner 2026-11-10, relayed by PIM: "must go into all solutions"): the run status of one
+       Invardia support link cycle. A cycle that could not deliver (-Stopped: anything but 'budget', which is the rate
+       budget and not a failure) counts; a delivered cycle resets the count. Amber (PartlyFailed) only from the 3rd
+       undelivered cycle in a row; before that the run is Succeeded with an info line. The customer is never mailed
+       about it - Invardia sees a missing heartbeat itself.
+       -> @{ Status; Failed (the count to keep); Text (the run's line, $null = none) } #>
+    param([AllowEmptyString()][string]$Stopped, [int]$FailedBefore = 0)
+    if (-not $Stopped) { return @{ Status = 'Succeeded'; Failed = 0; Text = $null } }
+    if ($Stopped -eq 'budget') { return @{ Status = 'Succeeded'; Failed = 0; Text = 'stopped: budget' } }
+    $n = [math]::Max(0, $FailedBefore) + 1
+    if ($n -ge $script:EpsSupportLinkAmberAfter) {
+        return @{ Status = 'PartlyFailed'; Failed = $n; Text = "$n cycles in a row could not be delivered to Invardia support; retried next cycle (last: $Stopped)" }
+    }
+    @{ Status = 'Succeeded'; Failed = $n; Text = "$(if ($n -eq 1) { '1 report could not be delivered' } else { "$n cycles in a row could not be delivered" }); it is retried next cycle ($Stopped)" }
+}
 function Set-EpsUplinkState {
     # $Value untyped on purpose: a [string] parameter turns $null into '' - $null clears the row's value (NULL)
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Name, [AllowNull()]$Value)

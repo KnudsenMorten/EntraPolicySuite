@@ -135,8 +135,12 @@ WHERE q.Job = 'Uplink' AND q.Status = 'Dispatched'
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
         $u = Invoke-EpsUplinkCycle -ConnectionString $ConnectionString -Version $version -Log $log
-        $st = if ($u.Stopped -and $u.Stopped -ne 'budget') { 'PartlyFailed' } else { 'Succeeded' }
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $st; a = [int]($u.Runs + $u.Alerts + $(if ($u.Heartbeat -like 'ok*') { 1 } else { 0 })); h = $(if ($u.Stopped) { "stopped: $($u.Stopped)" } elseif ($u.Mode -eq 'disabled') { "$($u.Lines | Select-Object -Last 1)" }) } `
+        # SUPPORT-LINK-1: amber only after 3 undelivered cycles in a row (the count is kept in eps.UplinkState); never a mail
+        $before = 0; try { [void][int]::TryParse("$((Get-EpsUplinkState -ConnectionString $ConnectionString)['delivery.failedCycles'])", [ref]$before) } catch { }
+        $cy = Get-EpsSupportLinkCycleStatus -Stopped "$($u.Stopped)" -FailedBefore $before
+        if ($cy.Failed -ne $before) { try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'delivery.failedCycles' -Value "$($cy.Failed)" } catch { } }
+        $st = $cy.Status
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $st; a = [int]($u.Runs + $u.Alerts + $(if ($u.Heartbeat -like 'ok*') { 1 } else { 0 })); h = $(if ($cy.Text) { $cy.Text } elseif ($u.Mode -eq 'disabled') { "$($u.Lines | Select-Object -Last 1)" }) } `
             -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h WHERE RunId = @id' | Out-Null
         if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = 'Done'; t = "$($u.Mode): $($u.Lines | Select-Object -Last 1)" } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         exit 0

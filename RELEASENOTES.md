@@ -2,6 +2,16 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.124 - The Invardia support link: its own name, and no alarm for one missed report
+Builds on the owner's decision: "must go into all solutions" (2026-11-10, the Invardia support link rule)
+- The job that reports to Invardia is now called the Invardia support link on the Jobs page, the overview, the settings
+  and in the documentation. It sends Entra Policy Suite's health and run results to Invardia support, so support can see
+  problems and updates can roll out. It is not a link to another tenant.
+- A report that could not be delivered no longer turns the job amber at once: the run stays green with the line "1 report
+  could not be delivered; it is retried next cycle". Only 3 undelivered cycles in a row turn it amber. A delivered cycle
+  clears the count.
+- You are never mailed when a report cannot be delivered; Invardia sees a missing report itself.
+
 ## 2.0.123 - A job that hangs is caught, stopped and started again
 Builds on the owner's decision: "build the stall watchdog now" (2026-11-10)
 - New: every job now reports its progress while it runs. A run that makes no progress for 60 minutes, or runs more
