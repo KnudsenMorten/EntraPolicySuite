@@ -669,14 +669,17 @@
     ]
   },
   "extraHeld": {
-    "_note": "Rights an identity HOLDS at an install that are not in its list: REPORTED, never removed (owner 2026-11-09 \"i have not approved any removal of graph rights ... then we can talk about clean-up later\").",
-    "internal": [
+    "_note": "Rights an identity HOLDS at an install that are not in its list: REPORTED, never removed by the product itself (owner 2026-11-09 \"i have not approved any removal of graph rights ... then we can talk about clean-up later\"); a removal only on the owner's own word.",
+    "internal": [],
+    "removed": [
       {
+        "install": "internal",
         "identity": "id-eps-engine",
         "right": "Policy.Read.ConditionalAccess",
         "kind": "graph",
-        "since": "2026-10-31",
-        "note": "granted for the CA analyzer, superseded by Policy.Read.All (a 403 on the policy list 25 h after the grant); removed by hand 2026-11-09 08:10Z and RESTORED 08:50Z on the owner's word; kept until the owner decides a clean-up"
+        "removedUtc": "2026-11-10",
+        "approval": "owner 2026-11-10 (direct): \"Remove it now (Recommended)\" - superseded by Policy.Read.All",
+        "how": "Support app: DELETE servicePrincipals/<id-eps-engine>/appRoleAssignments/<id> -> 204; read back: 19 assignments, the removed one gone"
       }
     ]
   },

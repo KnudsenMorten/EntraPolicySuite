@@ -10,14 +10,23 @@
 #   * REST only, NO PowerShell module and no az CLI (framework NO-AZ). The SQL data plane has no REST API, so the TDS
 #     driver is a pinned .NET ASSEMBLY (Microsoft.Data.SqlClient), not a module - EPS-SqlStore Add-Types it from
 #     $env:EPS_SQLCLIENT_DLL. The gallery tooling is removed, so a module cannot even be installed at runtime.
-#   * base images PINNED BY DIGEST (a tag is a mutable pointer); the same digests PIM vetted 2026-09-18. To refresh:
-#     read the registry's digest for the tag (docker buildx imagetools inspect <image>:<tag>), replace it here.
+#   * base images PINNED BY DIGEST (a tag is a mutable pointer). To refresh: read the registry's digest for the tag
+#     (HEAD https://mcr.microsoft.com/v2/<repo>/manifests/<tag> -> Docker-Content-Digest), replace it here.
+#     IMAGE-PATCH-1 (framework, owner 2026-11-10: "we need to include this in the framework so we immediately patch images
+#     when this happens"): every pin is refreshed weekly and at once on a fixable High / Critical finding, and the runtime
+#     stage takes the OS security updates at build (apt-get upgrade only - no package is ever added), so an image built today
+#     carries today's fixed packages even when the base tag has not moved. Refreshed 2026-11-10.
+#   * IMAGE-PATCH-1 point 0 (owner 2026-11-10: "this is very critical and approved. each solution must move to .net 10 +
+#     latest ps you mentioned"; "i dont understand why we download ps from ms if it is included in image"): .NET 8 and
+#     PowerShell 7.4 reached end of support on 2026-11-10. Every stage is mcr.microsoft.com/dotnet/sdk:10.0-noble by
+#     digest - it SHIPS PowerShell 7.6 LTS and the .NET team rebuilds it on every security update. No package is
+#     installed; the build FAILS unless pwsh reports 7.6.x.
 #   * the solution tree is PRUNED in a build stage (tests, fixtures, internal, output, docs never reach a layer).
 #   * the image runs as a NON-ROOT user (uid/gid 10001). It writes only to the temp directory.
 # tests/Test-EpsContainerImage.ps1 checks every one of these rules.
 
 # ---- stage 1: the pinned SQL driver assembly (no PS module) ----
-FROM mcr.microsoft.com/dotnet/sdk:8.0@sha256:5ef85cc12cb25be6ec319a7392d1e9efd53c3bc8abb971c53d8058a473f09053 AS sqldriver
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS sqldriver
 WORKDIR /drv
 RUN dotnet new classlib -n shim -o shim \
  && cd shim \
@@ -26,7 +35,7 @@ RUN dotnet new classlib -n shim -o shim \
  && test -f /usr/share/zoneinfo/Europe/Copenhagen
 
 # ---- stage 2: the solution tree, pruned to what runs in a container ----
-FROM mcr.microsoft.com/powershell:7.4-ubuntu-22.04@sha256:62300a213a9293916333df2b014cd3a8f22fb0b0b65f2bb446aaf436bcf8c868 AS src
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS src
 COPY SOLUTIONS/EntraPolicySuite /src/EntraPolicySuite
 WORKDIR /src/EntraPolicySuite
 RUN rm -rf tests internal output docs CLAUDE.md \
@@ -43,7 +52,15 @@ RUN rm -rf tests internal output docs CLAUDE.md \
  && for f in EPS-Conditions EPS-TagEngine EPS-FastEval EPS-V1Import EPS-SqlStore EPS-Guard EPS-Graph EPS-Exchange EPS-TagJob EPS-Scheduler EPS-TamperMonitor EPS-HybridWorker EPS-WorkerPage EPS-Mail EPS-WebAuth EPS-Audit EPS-Settings EPS-Rules EPS-CaAnalyzer EPS-CaManage EPS-CaWrite EPS-CaOptions EPS-Backup EPS-Onboarding EPS-GroupManage EPS-GroupWrite EPS-OnboardManage EPS-OnboardWrite EPS-IdentityReport EPS-SignInMethods EPS-LogAnalytics EPS-WebApi EPS-ConfigEngine EPS-Uplink EPS-Updater EPS-UpdateApply EPS-SupportAccess EPS-Arm EPS-DbInit EPS-Install EPS-InstallWeb EPS-InstallNetwork EPS-JobRename InvardiaUpdate.verify EPS-Licence EPS-SupportRead; do test -f engine/_shared/$f.ps1; done
 
 # ---- stage 3: runtime ----
-FROM mcr.microsoft.com/powershell:7.4-ubuntu-22.04@sha256:62300a213a9293916333df2b014cd3a8f22fb0b0b65f2bb446aaf436bcf8c868
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e
+
+# IMAGE-PATCH-1: the OS security updates at build (the base tag has not moved since it was pinned, its packages have).
+# Upgrade only - no package is added; the package lists are removed so no apt state ships in the layer.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* \
+ && pwsh -NoLogo -NoProfile -NonInteractive -Command '$v = $PSVersionTable.PSVersion; if ($v.Major -ne 7 -or $v.Minor -ne 6) { throw "PowerShell $v, not 7.6 LTS" }; if ([Environment]::Version.Major -ne 10) { throw ".NET $([Environment]::Version), not 10" }; Write-Host "PowerShell $v on .NET $([Environment]::Version)"'
 
 # NO gallery / SDK module and NO az CLI in the image (framework NO-AZ, PIM §100.52): the gallery tooling and PSReadLine
 # are removed; the build FAILS if any banned module or an az binary is still there.

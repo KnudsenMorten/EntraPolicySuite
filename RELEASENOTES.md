@@ -2,6 +2,42 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.0.121 - The update brings the web app's sign-in front to .NET 10
+Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
+- Fix: an install that was already up to date did not move its web app's sign-in front to the version the release
+  pins (the update stopped with "Cannot bind argument to parameter 'Path'"). It now does, on its next update run.
+- Security fix: the sign-in front is version 2.1.0 on .NET 10 LTS - the same front every Invardia product runs.
+- Signing in works as before: the same Microsoft Entra sign-in, the same roles, nothing to change in your tenant.
+
+## 2.0.120 - .NET 10 for the web app's sign-in front too
+Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
+- Security fix: the web app's sign-in front moves to version 2.0.0 on .NET 10 LTS (a small Ubuntu chiseled runtime, no
+  shell or package manager) with its libraries on their current patched versions. With 2.0.119 every part of Entra
+  Policy Suite now runs on .NET 10 LTS and PowerShell 7.6 LTS.
+- Signing in works as before: the same Microsoft Entra sign-in, the same roles, nothing to change in your tenant.
+
+## 2.0.119 - .NET 10 and PowerShell 7.6: the product moves off the versions whose support ended
+Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
+- Security fix: .NET 8 and PowerShell 7.4 reached the end of Microsoft's support on 10 November 2026 and receive no
+  more security fixes. Every job and the web app's pages now run on .NET 10 LTS and PowerShell 7.6 LTS (both supported
+  to November 2028), from Microsoft's .NET 10 image, which the .NET team rebuilds on every security update.
+- The image also takes the operating system's security updates when it is built; the build stops if it does not run
+  PowerShell 7.6 on .NET 10.
+- Security fix: the web app's sign-in front moves to version 1.4.6, on a smaller patched runtime image (Ubuntu
+  chiseled, no shell or package manager). It moves to .NET 10 in a following version.
+- Nothing in your directory, the database, the rights or the settings changes. The update installs like any other.
+
+## 2.0.118 - Security patch: the container images on today's patched base images
+Builds on the owner's decision: "we need to include this in the framework so we immediately patch images when this happens" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1)
+- Security fix: the engine image (every job and the web app's pages) is built on the current .NET SDK base and takes
+  the operating system's security updates when it is built, so fixed High and Critical vulnerabilities in the base
+  image's packages no longer ship. Nothing else in the product changes.
+- A private network install: the image build now also reaches archive.ubuntu.com and security.ubuntu.com for the
+  security updates; they are on the network hand-off list. A subnet the install made needs no change; if your firewall allows only listed
+  hosts, add these two before the update installs.
+- The pages on invardia.com now match the code: the Conditional Access changes a SuperAdmin can make, what is on after
+  the install, every identity and its rights, all jobs and settings, every install parameter and script.
+
 ## 2.0.117 - Optional components, rights are never taken away by themselves, the AD step finishes itself
 Builds on the owner's decision: "i have not approved any removal of graph rights" (2026-11-09, direct; optional components per the rights rule relayed by Invardia 2026-11-09)
 - Turning a feature off no longer takes its rights away: the install reports the right as not needed and keeps it.

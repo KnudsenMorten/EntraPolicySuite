@@ -4,14 +4,20 @@
     Installs Entra Policy Suite 2.0 in your own Azure subscription (Container Apps + Azure SQL), as yourself, in a browser.
 .DESCRIPTION
     Signs you in in a browser (no PowerShell module, no az CLI, works in Cloud Shell), checks the subscription, then
-    creates - in one resource group - three managed identities (the engine, the engine's scheduler, the web app), a Log
+    creates - in one resource group - five managed identities (the engine, which also runs the schedule check; the web
+    app; the database setup job; the update job; the support read job), a Log
     Analytics workspace, a container registry with the engine image built in it, Azure SQL (Entra-only) with the
     database and its schema, a Container Apps environment, the job queues and the jobs (the engine checks its schedules
     every 5 minutes; user and device tagging and the other jobs start from their own queues), the web app, and grants
-    the engine identity exactly the rights it needs (Graph: User.ReadWrite.All, Device.ReadWrite.All and read-only
-    rights; Exchange.ManageAsApp + the Entra role Exchange Recipient Administrator). The engine identity also runs the
+    each identity the rights listed in engine/rights/eps-rights.json (the engine: Microsoft Graph read rights and the
+    Conditional Access / group rights its SuperAdmin-approved changes use; User.ReadWrite.All and Device.ReadWrite.All once
+    a feature that writes them is on; Exchange.ManageAsApp + Exchange Recipient Administrator only when a feature needs
+    mailboxes). A right is never removed by itself. The engine identity also runs the
     schedule check and puts the run requests on the job queues. Then it runs the engine's schedule check once.
-    Every feature is OFF after the install, and a scheduled run only previews until you switch it to Apply.
+    Every feature that changes your directory is OFF after the install, and a scheduled tagging run only previews until
+    you switch it to Apply. On from the start: the nightly backup and the monthly read of the policy options (both only
+    read the tenant), the nightly check for an approved update, and telemetry to Invardia (sent only once Invardia has
+    issued the install's key).
     -WhatIf shows every step and what it would create, and changes nothing. A failed install resumes where it stopped. Exit code: 0 done, 1 a step failed, 2 a check failed (nothing was created), 4 waiting for a step of yours (DNS records, a check from inside your network) - run the same command again when it is done.
 
     PUBLIC (the default): the web app has a public HTTPS address behind the Entra sign-in; Azure SQL, Key Vault, the job
@@ -29,7 +35,8 @@
     -HubVnetId a script for the hub owner (prepare-hub-entrapolicysuite.ps1) next to it.
     Outbound from the network the jobs reach graph.microsoft.com, login.microsoftonline.com, outlook.office365.com,
     management.azure.com and invardia.com (default outbound, or allow them on your firewall). The registry's build pool
-    runs in the endpoints subnet and needs a way out too (mcr.microsoft.com for the base images): a subnet the install
+    runs in the endpoints subnet and needs a way out too (mcr.microsoft.com for the base images, archive.ubuntu.com and security.ubuntu.com for the
+    OS security updates the build takes): a subnet the install
     makes has default outbound access on; your own subnet needs a NAT gateway, a 0.0.0.0/0 route to your firewall, or
     default outbound access - the install checks it before it creates anything.
     PUBLIC -> PRIVATE: run the same command with -PrivateNetwork on a public install. A Container Apps environment cannot
@@ -331,4 +338,4 @@ $url = if ($ctx.Web -and $ctx.Web.Url) { "`nThe web app: $($ctx.Web.Url) - sign 
 if ($ctx.Renamed -and $ctx.Renamed.Count) { Write-Host "`nChanged to the standard (each read back):" -ForegroundColor Cyan; foreach ($r in $ctx.Renamed) { Write-Host "  $r" } }
 # SECAUDIT-1a: who owns the web app registration (the updater identity; the Support app never)
 if ($ctx.OwnerLines -and @($ctx.OwnerLines).Count) { Write-Host "`nThe web app registration's owner:" -ForegroundColor Cyan; foreach ($r in $ctx.OwnerLines) { Write-Host "  $r" -ForegroundColor $(if ("$r" -like 'WARNING*') { 'Yellow' } else { 'Gray' }) } }
-Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature is off; switch one on in the settings, preview, then go live.$url"
+Finish 0 "`nEntra Policy Suite $version is installed in $ResourceGroup. Every feature that changes your directory is off; switch one on in the settings, preview, then go live.$url"

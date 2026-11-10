@@ -3,7 +3,7 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Install Entra Policy Suite 2.0 in your own Azure subscription",
-  "purpose": "Creates Entra Policy Suite in one resource group of your subscription - managed identities, Log Analytics, a container registry with the engine image built in it, Azure SQL (Entra-only), a Container Apps environment and the jobs - and grants the engine identity the Graph and Exchange rights it needs and the tick identity only the right to send to the job queues and pull its image. Every feature is off afterwards.",
+  "purpose": "Creates Entra Policy Suite in one resource group of your subscription - managed identities, Log Analytics, a container registry with the engine image built in it, Azure SQL (Entra-only), a Container Apps environment and the jobs - and grants each identity the rights in engine/rights/eps-rights.json. Every feature that changes your directory is off afterwards and tagging only previews until you switch it to Apply; the nightly backup and the monthly read of the policy options (both read only), the nightly update check and the telemetry to Invardia (sent only with the key Invardia issues) are on.",
   "whenToRun": "Once, to install. Again with the same parameters to resume an install that stopped.",
   "runAs": [
     {
@@ -23,7 +23,7 @@
     {
       "target": "Azure",
       "action": "create",
-      "object": "resource group (default rg-eps) with: 4 user-assigned managed identities (id-eps-engine - also the scheduler, id-eps-web, id-eps-dbinit - the database setup job, id-eps-updater - the update job's apply), Log Analytics workspace log-eps, container registry acreps<suffix> (Basic), Azure SQL server sql-eps-<suffix> (Entra-only, the group grp-eps-sql-admins as admin) + database eps (S1, 250 GB), Container Apps environment cae-eps, jobs caj-eps-engine (every 5 min) + one job per work job, each started from its own queue (caj-eps-usertag, caj-eps-devicetag, ..., caj-eps-uplink - the Invardia telemetry every 4 h), and the database setup job caj-eps-dbinit (started by the install only)",
+      "object": "resource group (default rg-eps) with: 5 user-assigned managed identities (id-eps-engine - also the scheduler, id-eps-web, id-eps-dbinit - the database setup job, id-eps-updater - the update job's apply, id-eps-support - the support read job), Log Analytics workspace log-eps, container registry acreps<suffix> (Basic), Azure SQL server sql-eps-<suffix> (Entra-only, the group grp-eps-sql-admins as admin) + database eps (S1, 250 GB), Container Apps environment cae-eps, jobs caj-eps-engine (every 5 min) + one job per work job, each started from its own queue (caj-eps-usertag, caj-eps-devicetag, ..., caj-eps-uplink - the Invardia telemetry every 4 h), and the database setup job caj-eps-dbinit (started by the install only)",
       "scope": "the resource group",
       "why": "where Entra Policy Suite runs",
       "undo": "delete the resource group"
@@ -139,9 +139,9 @@
       "target": "Entra",
       "action": "grant",
       "object": "id-eps-engine",
-      "permission": "Microsoft Graph application: User.Read.All and Device.Read.All (read only); User.ReadWrite.All only while user tagging, the tamper monitor or the stale identity clean-up's disable action is on, Device.ReadWrite.All only while device tagging is on (removed otherwise); GroupMember.Read.All, Organization.Read.All, AuditLog.Read.All, Policy.Read.All (read only), RoleManagement.Read.Directory (read only), DeviceManagementManagedDevices.Read.All (read only: the identity report's Intune devices), Application.Read.All (read only), Policy.ReadWrite.ConditionalAccess (the stage buttons only), Group.ReadWrite.All and AdministrativeUnit.ReadWrite.All (the groups the Conditional Access policies use, on a SuperAdmin's request only), Policy.ReadWrite.AuthenticationMethod (the two authentication strengths v1 creates, on a SuperAdmin's request only), PrivilegedEligibilitySchedule.Read.AzureADGroup and PrivilegedAssignmentSchedule.Read.AzureADGroup (read only: admins through PIM for Groups in the identity report), UserAuthenticationMethod.Read.All (read only: the per-user sign-in methods, cached per user)",
+      "permission": "Microsoft Graph application: User.Read.All and Device.Read.All (read only); User.ReadWrite.All only while user tagging, the tamper monitor or the stale identity clean-up's disable action is on, Device.ReadWrite.All once device tagging is on (kept when a feature is switched off - a right is never removed by itself); GroupMember.Read.All, Organization.Read.All, AuditLog.Read.All, Policy.Read.All (read only), RoleManagement.Read.Directory (read only), DeviceManagementManagedDevices.Read.All (read only: the identity report's Intune devices), Application.Read.All (read only), Policy.ReadWrite.ConditionalAccess (on a SuperAdmin's request only), Group.ReadWrite.All and AdministrativeUnit.ReadWrite.All (the groups the Conditional Access policies use, on a SuperAdmin's request only), Policy.ReadWrite.AuthenticationMethod (the two authentication strengths v1 creates, on a SuperAdmin's request only), PrivilegedEligibilitySchedule.Read.AzureADGroup and PrivilegedAssignmentSchedule.Read.AzureADGroup (read only: admins through PIM for Groups in the identity report), UserAuthenticationMethod.Read.All (read only: the per-user sign-in methods, cached per user)",
       "scope": "the tenant",
-      "why": "write the tags on users and devices, read group members and licences for the rules, read the audit log to say who changed a watched tag (the tamper monitor), read application names for the CA documentation (Application.Read.All), and move ONE adopted Conditional Access policy ONE stage when a SuperAdmin asks for it, after he saw the change (Policy.ReadWrite.ConditionalAccess; leave it out with -ExcludeGraphRole Policy.ReadWrite.ConditionalAccess and the stage buttons are refused by the tenant)",
+      "why": "write the tags on users and devices, read group members and licences for the rules, read the audit log to say who changed a watched tag (the tamper monitor), read application names for the CA documentation (Application.Read.All), and write a Conditional Access policy only when a SuperAdmin asks for it, after seeing the change, with a reason - deploy a template, save an edit or a copy, move a stage, promote or roll back a version, put a policy back from a backup, delete policies that are off (Policy.ReadWrite.ConditionalAccess; leave it out with -ExcludeGraphRole Policy.ReadWrite.ConditionalAccess and these changes are refused by the tenant)",
       "undo": "remove the app role assignments of id-eps-engine"
     },
     {
@@ -150,7 +150,7 @@
       "object": "id-eps-engine",
       "permission": "Office 365 Exchange Online application: Exchange.ManageAsApp + the Entra role Exchange Recipient Administrator",
       "scope": "the tenant",
-      "why": "read Exchange recipient types for the rules and the identity report, and write a mail-enabled user's custom attribute when Graph refuses it - only while user tagging, the identity report or a rule with a mailbox condition is on; a run while none of them is on removes it",
+      "why": "read Exchange recipient types for the rules and the identity report, and write a mail-enabled user's custom attribute when Graph refuses it - granted once user tagging, the identity report or a rule with a mailbox condition is on; kept when none of them is on any more - a right is never removed by itself (Grant-EpsEnginePermissions.ps1 -Exchange -Remove takes it away)",
       "undo": "remove the app role assignment and the role assignment"
     },
     {
@@ -247,7 +247,7 @@
     {
       "target": "SQL",
       "action": "create",
-      "object": "by the database setup job caj-eps-dbinit (as id-eps-dbinit, every principal read back): the eps schema; the roles eps_engine, eps_schedule, eps_web, eps_worker with object-level grants from sql/eps-grants.json (no db_datareader / db_datawriter); the database users id-eps-engine (roles eps_engine and eps_schedule - it is also the scheduler) and id-eps-web (eps_web)",
+      "object": "by the database setup job caj-eps-dbinit (as id-eps-dbinit, every principal read back): the eps schema; the roles eps_engine, eps_schedule, eps_web, eps_worker, eps_supportread with object-level grants from sql/eps-grants.json (no db_datareader / db_datawriter); the database users id-eps-engine (roles eps_engine and eps_schedule - it is also the scheduler) and id-eps-web (eps_web)",
       "permission": "per role: SELECT / INSERT / UPDATE / DELETE on named tables only (the audit trail INSERT + SELECT only)",
       "scope": "the database eps",
       "why": "each part reads and writes only its own data (least privilege)",

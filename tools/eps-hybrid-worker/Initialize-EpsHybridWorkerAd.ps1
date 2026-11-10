@@ -2,7 +2,8 @@
 <#
 .SYNOPSIS
     Delegates the Entra Policy Suite hybrid worker in Active Directory: the right to write EXACTLY the tag attributes
-    you choose on user (and, for device tags, computer) objects - nothing else (DESIGN §6). Run once by a domain admin on
+    you choose on user objects - nothing else (DESIGN §6; device tags are written in Entra ID, so -ObjectClasses computer
+    is not needed by any feature today). Run once by a domain admin on
     a domain machine.
 .DESCRIPTION
     The same way for every hybrid worker (framework HYBRID-AD-1):

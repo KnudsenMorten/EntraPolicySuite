@@ -3,7 +3,7 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Delegate the Entra Policy Suite hybrid worker's gMSA in Active Directory",
-  "purpose": "Gives the hybrid worker the right to write exactly the tag attributes you choose on user objects (and computer objects for device tags) anywhere in the domain - one inheritable ACE per attribute and object class at the domain root, granted to the group <gMSA>-PermissionGroup (the gMSA its only member), nothing else. Plan first: without -Apply nothing is changed; with -Apply every change is read back.",
+  "purpose": "Gives the hybrid worker the right to write exactly the tag attributes you choose on user objects anywhere in the domain (device tags are written in Entra ID, not in AD) - one inheritable ACE per attribute and object class at the domain root, granted to the group <gMSA>-PermissionGroup (the gMSA its only member), nothing else. Plan first: without -Apply nothing is changed; with -Apply every change is read back.",
   "whenToRun": "Once before the worker is installed, and again when a tag type moves to another attribute.",
   "runAs": [
     {
@@ -59,7 +59,7 @@
       "name": "ObjectClasses",
       "required": false,
       "default": "user",
-      "help": "user, and computer for device tags"
+      "help": "user (the default); computer is accepted, but no feature writes computer objects today"
     },
     {
       "name": "ProductOu",

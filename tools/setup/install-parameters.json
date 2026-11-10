@@ -94,7 +94,7 @@
       "page": "database",
       "type": "guid",
       "default": "",
-      "help": "Your Entra security group to be the Azure SQL server's admin (you must be a member). Empty: you. An existing server keeps its admin."
+      "help": "Your Entra security group to be the Azure SQL server's admin. Empty: the group grp-eps-sql-admins (found, else created). Either way the database setup job's identity is added to it and does the database work - you need no database right. An existing server keeps its admin."
     },
     {
       "key": "sqlAdminGroupName",

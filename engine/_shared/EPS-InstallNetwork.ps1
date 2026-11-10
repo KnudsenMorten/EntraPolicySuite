@@ -23,7 +23,7 @@ $script:EpsVnetIdRx = '(?i)^/subscriptions/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 $script:EpsRgIdRx = '(?i)^/subscriptions/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/resourceGroups/([^/]+?)/?$'
 $script:EpsSubnetNameRx = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,78}[A-Za-z0-9_]$'
 # the hosts a private install reaches OUTBOUND (the customer's firewall decides; the installer's help lists them)
-$script:EpsOutboundHosts = @('graph.microsoft.com', 'login.microsoftonline.com', 'outlook.office365.com', 'management.azure.com', 'invardia.com', 'mcr.microsoft.com (the base images of the build)')
+$script:EpsOutboundHosts = @('graph.microsoft.com', 'login.microsoftonline.com', 'outlook.office365.com', 'management.azure.com', 'invardia.com', 'mcr.microsoft.com (the base images of the build)', 'archive.ubuntu.com and security.ubuntu.com (the OS security updates of the build)')
 
 # ---------------------------------------------------------------- addresses (PURE) ----------------------------------
 function ConvertFrom-EpsCidr {
