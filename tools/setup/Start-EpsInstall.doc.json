@@ -2,9 +2,9 @@
   "script": "Start-EpsInstall.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Download Entra Policy Suite 2.0 and start the install",
-  "purpose": "Downloads Entra Policy Suite 2.0 and runs its Install-EntraPolicySuite.ps1 with your parameters. The Pro copy (invardia.com/support/eps/) signs you in in your browser, takes the signed Pro package of your ring from Invardia and checks its signature, size and SHA-256; the Community copy takes the latest v2 release from GitHub and checks it against the SHA-256 digest GitHub publishes. Either way the package is unpacked in a new temporary folder.",
-  "whenToRun": "To install Entra Policy Suite 2.0, or to resume an install that stopped.",
+  "title": "Download Entra Policy Suite 2.1 and start the install",
+  "purpose": "Downloads Entra Policy Suite 2.1 and runs its Install-EntraPolicySuite.ps1 with your parameters. The Pro copy (invardia.com/support/eps/) signs you in in your browser, takes the signed Pro package of your ring from Invardia and checks its signature, size and SHA-256; the Community copy takes the latest v2 release from GitHub and checks it against the SHA-256 digest GitHub publishes. Either way the package is unpacked in a new temporary folder.",
+  "whenToRun": "To install Entra Policy Suite 2.1, or to resume an install that stopped.",
   "installLines": {
     "pro": [
       "Invoke-WebRequest https://invardia.com/support/eps/Start-EpsInstall.ps1 -OutFile Start-EpsInstall.ps1",

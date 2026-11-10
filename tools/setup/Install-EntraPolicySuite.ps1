@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Installs Entra Policy Suite 2.0 in your own Azure subscription (Container Apps + Azure SQL), as yourself, in a browser.
+    Installs Entra Policy Suite 2.1 in your own Azure subscription (Container Apps + Azure SQL), as yourself, in a browser.
 .DESCRIPTION
     Signs you in in a browser (no PowerShell module, no az CLI, works in Cloud Shell), checks the subscription, then
     creates - in one resource group - five managed identities (the engine, which also runs the schedule check; the web

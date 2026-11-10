@@ -2,6 +2,22 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.0 - Entra Policy Suite 2.1
+Builds on the owner's decision: "maybe it is time to move version, we had it in the framework. we did large upd today" (2026-11-10)
+Entra Policy Suite 2.1 is a minor release: nothing breaks and there is nothing to do. Your installation updates from
+2.0 by itself, on its ring, like every update.
+- New since 2.0.120: the engine runs on .NET 10 and PowerShell 7.6 on Microsoft's own container image, and the web
+  app's sign-in front on .NET 10.
+- New since 2.0.123: a job that hangs is caught, stopped and started once more, and Invardia support is told at once
+  (error code eps-run-0101).
+- New since 2.0.124: the job that reports to Invardia is the Invardia support link; one report that could not be
+  delivered no longer turns it amber, and you are never mailed about it.
+- What 2.0 brought, and 2.1 carries on: Conditional Access management (the template library, adopting your policies,
+  the stage lifecycle, monitors and the CA Policy Analyzer), user and device tagging with the Rules grid, test runs, the
+  commit queue and undo, the identity report, the tamper monitor and alert mail, named locations from Azure service tags,
+  nightly backups, the hybrid worker for Active Directory, the private network install, and updates that install
+  themselves on your ring.
+
 ## 2.0.125 - The Invardia support link name in the run log and the on/off setting
 Builds on the owner's decision: "must go into all solutions" (2026-11-10, the Invardia support link rule)
 - The run log of the Invardia support link now names it that way ("Invardia support link: ..."), not "uplink".

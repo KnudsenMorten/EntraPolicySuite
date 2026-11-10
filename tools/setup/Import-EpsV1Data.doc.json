@@ -2,7 +2,7 @@
   "script": "Import-EpsV1Data.ps1",
   "product": "eps",
   "version": "2.0.69",
-  "title": "See what a v1 install's rules and settings become in Entra Policy Suite 2.0",
+  "title": "See what a v1 install's rules and settings become in Entra Policy Suite 2.1",
   "purpose": "Reads a v1 Entra Policy Suite folder (the tagging CSV files and the two configs) and shows the plan: the rule cards, tag types and values, settings, break-glass accounts, admin units, target groups and service tags, with the hints on the rules. It writes nothing. The import itself is done in the web app (Overview > Import v1, a SuperAdmin): upload the same files, look at the plan, approve - Entra Policy Suite writes it. With -Apply the script lists the files to upload.",
   "whenToRun": "Before the move from v1, to see the plan on the machine that has the v1 folder - optional: the Import v1 page shows the same plan.",
   "runAs": [

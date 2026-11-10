@@ -2,7 +2,7 @@
   "script": "Install-EntraPolicySuite.ps1",
   "product": "eps",
   "version": "2.0.0",
-  "title": "Install Entra Policy Suite 2.0 in your own Azure subscription",
+  "title": "Install Entra Policy Suite 2.1 in your own Azure subscription",
   "purpose": "Creates Entra Policy Suite in one resource group of your subscription - managed identities, Log Analytics, a container registry with the engine image built in it, Azure SQL (Entra-only), a Container Apps environment and the jobs - and grants each identity the rights in engine/rights/eps-rights.json. Every feature that changes your directory is off afterwards and tagging only previews until you switch it to Apply; the nightly backup and the monthly read of the policy options (both read only), the nightly update check and the Invardia support link (sent only with the key Invardia issues) are on.",
   "whenToRun": "Once, to install. Again with the same parameters to resume an install that stopped.",
   "runAs": [

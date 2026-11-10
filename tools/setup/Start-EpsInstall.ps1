@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Downloads Entra Policy Suite 2.0 from its GitHub release and starts the install (the launcher is an asset of every
+    Downloads Entra Policy Suite 2.1 from its GitHub release and starts the install (the launcher is an asset of every
     release: https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1).
 .DESCRIPTION
     Takes the latest v2 release of KnudsenMorten/EntraPolicySuite (or -Version), downloads its zip into a new temporary

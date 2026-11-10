@@ -1,13 +1,13 @@
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://invardia.com/brand/Invardia-EntraPolicySuite-Community-logo/horizontal/invardia-entrapolicysuite-community-horizontal-reversed.svg"><img alt="Invardia Entra Policy Suite Community" src="https://invardia.com/brand/Invardia-EntraPolicySuite-Community-logo/horizontal/invardia-entrapolicysuite-community-horizontal-colour.svg" width="460"></picture></p>
 
-# Entra Policy Suite 2.0
+# Entra Policy Suite 2.1
 
 Conditional Access management, user and device tagging, and identity reporting for Microsoft Entra ID - running in
 your own Azure subscription as Container Apps with Azure SQL, with a web app your admins sign in to with Microsoft
 Entra ID.
 
 > **v1 (the scripts) is unchanged** and stays on the [`v1` branch](https://github.com/KnudsenMorten/EntraPolicySuite/tree/v1)
-> with its releases v1.0.1 and v1.0.2. Entra Policy Suite 2.0 is a new major: it reads your v1 rule files and moves them
+> with its releases v1.0.1 and v1.0.2. Entra Policy Suite 2 is a new major: it reads your v1 rule files and moves them
 > into its database (the web app's Import v1 page), and it never changes your v1 install.
 
 ## What it does

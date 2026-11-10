@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Shows what a v1 Entra Policy Suite install's rules and settings become in Entra Policy Suite 2.0. Writes nothing.
+    Shows what a v1 Entra Policy Suite install's rules and settings become in Entra Policy Suite 2.1. Writes nothing.
 .DESCRIPTION
     Reads a v1 folder - DATA\Identity_Tagging*.csv, Device_Tagging*.csv, EntraNamedLocations_AzureNetworkServiceTags.csv,
     Entra_Policy_Suite_custom.config, Entra_Policy_Suite_locked.config, and the attribute per tag type from
