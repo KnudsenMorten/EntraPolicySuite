@@ -103,7 +103,7 @@ function Test-InvardiaManifest {
         $mr = -1; if (-not [int]::TryParse("$($m.ring)", [ref]$mr)) { return (& $no "the manifest names no ring (this environment asked for ring $Ring)") }
         if ($mr -ne $Ring) { return (& $no "the manifest is for ring $mr, not ring $Ring that this environment asked for") }
     }
-    $ver = "$($m.version)".Trim(); if ($ver -notmatch '^\d+\.\d+\.\d+$') { return (& $no "the manifest names no release version ('$ver')") }
+    $ver = "$($m.version)".Trim(); if ($ver -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { return (& $no "the manifest names no release version ('$ver')") }
     $sha = "$($m.sha256)".Trim().ToLowerInvariant(); if ($sha -notmatch '^[0-9a-f]{64}$') { return (& $no 'the manifest carries no SHA-256') }
     $seq = 0; if (-not [int]::TryParse("$($m.sequence)", [ref]$seq) -or $seq -lt 1) { return (& $no 'the manifest carries no sequence') }
     if ($seq -lt $AppliedSequence) { return (& $no "REPLAY refused: sequence $seq is lower than the $AppliedSequence already applied here") }

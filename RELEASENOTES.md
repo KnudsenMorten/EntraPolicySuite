@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.5 - Ready for same-day security patches of Microsoft's base images
+Builds on the owner's decision: "make sure it is consistent cross all solutions" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
+- Your installation, its update and its hybrid worker now accept a security patch numbered with four parts (for
+  example 2.1.5.1). When Microsoft publishes a new base image with security fixes, Invardia releases it as such a patch
+  - the same code on the new image - and it reaches your installation within a day, without waiting for the next release.
+- The update check is the same one PIM Manager uses (3.1.8), so every Invardia product reads these versions alike.
+
 ## 2.1.4 - Security fix: the engine and the sign-in front run on .NET 10.0.15
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)

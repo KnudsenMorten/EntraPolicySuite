@@ -23,7 +23,7 @@ function Get-EpsSigninFrontPin {
     # the sign-in front version this release pins (framework §12.11g: products pin; 1.4.4 - never 1.3.0, 1.4.0, 1.4.1)
     param([Parameter(Mandatory)][string]$SolutionRoot)
     $v = "$(Get-Content -LiteralPath (Join-Path $SolutionRoot 'tools\eps-web\signin-front.version') -Raw -ErrorAction SilentlyContinue)".Trim([char]0xFEFF).Trim()
-    if ($v -notmatch '^\d+\.\d+\.\d+$') { throw 'this release pins no sign-in front version (tools/eps-web/signin-front.version)' }
+    if ($v -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'this release pins no sign-in front version (tools/eps-web/signin-front.version)' }
     if ($v -in '1.3.0', '1.4.0', '1.4.1') { throw "sign-in front $v is a version the framework forbids (§12.11g item 10) - pin 1.4.2 or later" }
     $v
 }

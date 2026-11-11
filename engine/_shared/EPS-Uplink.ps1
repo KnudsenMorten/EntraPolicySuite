@@ -381,7 +381,7 @@ function New-EpsUplinkHeartbeat {
             # nothing yet, so it is left out), longRun.at = when this was judged
             $l = [ordered]@{ usualMin = [double]$lr.usualMin; ageMin = [double]$lr.ageMin; ratio = [Math]::Round([double]$lr.ratio, 2); state = $st
                              action = $(if ($a = Select-EpsUplinkEnum "$($lr.action)" 'LongRunAction') { $a } else { 'none' }) }
-            if ("$($lr.newerWaiting)" -match '^\d+\.\d+\.\d+$') { $l.newerWaiting = "$($lr.newerWaiting)" }
+            if ("$($lr.newerWaiting)" -match '^\d+\.\d+\.\d+(\.\d+)?$') { $l.newerWaiting = "$($lr.newerWaiting)" }
             $l.at = ConvertTo-EpsUplinkIso $(if ($lr.at) { $lr.at } else { $NowUtc })
             $p = [ordered]@{ state = 'running'; step = (Get-EpsUplinkJobId "$($lr.job)") }
             $su = if ($lr.startedUtc) { ConvertTo-EpsUplinkIso $lr.startedUtc }

@@ -137,7 +137,7 @@ function Sync-EpsUpdateHeadVersion {
       Never fails the tick. Returns $true when it ran.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version)
-    if ("$Version".Trim() -notmatch '^\d+\.\d+\.\d+$') { return $false }
+    if ("$Version".Trim() -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { return $false }
     Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsUpdateHeadSetting; v = "$Version".Trim() } -Query @'
 UPDATE eps.Setting SET Value = JSON_MODIFY(Value, '$.version', @v), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (tick)'
 WHERE Name = @n AND ISJSON(Value) = 1 AND ISNULL(JSON_VALUE(Value, '$.version'), N'') <> @v

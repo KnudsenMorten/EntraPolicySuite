@@ -63,7 +63,7 @@ function ConvertFrom-EpsWorkerInstallState {
     $j = $null; try { $j = "$Value" | ConvertFrom-Json } catch { return (& $no "the install's update state is not readable") }
     $r = -1; if (-not [int]::TryParse("$($j.ring)", [ref]$r) -or $r -lt 0 -or $r -gt 3) { return (& $no "the install names no update ring") }
     $ver = "$($j.version)".Trim()
-    if ($ver -notmatch '^\d+\.\d+\.\d+$') { return (& $no "the install has not said which version it runs yet (it does from 2.0.102, after its next update check)") }
+    if ($ver -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { return (& $no "the install has not said which version it runs yet (it does from 2.0.102, after its next update check)") }
     @{ Ok = $true; Ring = $r; Version = $ver; Reason = '' }
 }
 
@@ -115,7 +115,7 @@ function Set-EpsWorkerAppLink {
     $prev = $cur.Path
     if ($cur.Kind -eq 'folder') {
         $vd = Join-Path $Root 'versions'; New-Item -ItemType Directory -Force -Path $vd | Out-Null
-        $name = if ($cur.Version -match '^\d+\.\d+\.\d+$') { $cur.Version } else { 'previous' }
+        $name = if ($cur.Version -match '^\d+\.\d+\.\d+(\.\d+)?$') { $cur.Version } else { 'previous' }
         $prev = Join-Path $vd $name
         if (Test-Path -LiteralPath $prev) { $prev = Join-Path $vd "$name-$([datetime]::UtcNow.ToString('yyyyMMddHHmmss'))" }
         Move-Item -LiteralPath $app -Destination $prev
