@@ -1,9 +1,9 @@
-# EntraPolicySuite -- the hybrid worker's DAILY UPDATE (WORKER-UPD, 2.0.102; framework §5.5, Invardia 2026-11-08: "copy
+# EntraPolicySuite -- the hybrid worker's UPDATE (WORKER-UPD, 2.0.102; every hour since 2.1.1, WORKER-UPD-2; framework §5.5, Invardia 2026-11-08: "copy
 # PIM's design" - PIM's Install-PimHybridWorker.ps1 -Phase Update - "PLUS what PIM lacks: a worker self-test after the
 # switch and an automatic flip-back on failure, recorded and on the heartbeat").
 #
-# A scheduled task as SYSTEM (never the gMSA) runs tools\eps-hybrid-worker\Update-EpsHybridWorker.ps1 once a day:
-#   1. the version THIS install runs and its ring: eps.Setting 'update-head-check' (the cloud's update job writes it nightly)
+# A scheduled task as SYSTEM (never the gMSA) runs tools\eps-hybrid-worker\Update-EpsHybridWorker.ps1 every hour (once a day before 2.1.1):
+#   1. the version THIS install runs and its ring: eps.Setting 'update-head-check' (the cloud's update job writes it; since 2.1.1 the engine's tick keeps its version = the version that runs)
 #   2. Invardia's SIGNED Community manifest of that ring (GET /api/updates/entrapolicysuite/community/<ring>, no install key),
 #      verified by InvardiaUpdate.verify.ps1 (embedded CN=Invardia-Updates keys; product, kind, ring, sequence, size, https)
 #      - the worker moves ONLY when the signed version IS the install's version (it follows the install, never runs ahead)

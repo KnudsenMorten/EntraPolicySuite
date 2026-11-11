@@ -343,6 +343,47 @@ function Invoke-EpsVaultShapeCheck {
     } catch { @{ State = 'failed'; Reason = "not checked: $((("$($_.Exception.Message)") -split "`n")[0])" } }
 }
 
+function Measure-EpsPlainSecrets {
+    <#
+      PURE. SEC-10 keyvault-secrets-only (framework ALIGN-AUTO-ALL, 2026-11-10): how many secrets sit OUTSIDE Key Vault in
+      the Container Apps / jobs' definitions - a container secret without a keyVaultUrl, or an env var with a plain value
+      that is a secret by its name (secret / password / token / api key) or by its content (a password or account key in a
+      connection string, a SAS signature, a bearer token). Never returns a name or a value: the count only.
+    #>
+    param([object[]]$Resources = @())
+    $n = 0
+    foreach ($r in @($Resources | Where-Object { $_ })) {
+        foreach ($s in @($r.properties.configuration.secrets | Where-Object { $_ })) { if (-not "$($s.keyVaultUrl)") { $n++ } }
+        foreach ($c in @($r.properties.template.containers | Where-Object { $_ })) {
+            foreach ($e in @($c.env | Where-Object { $_ })) {
+                if ($e.secretRef -or -not "$($e.value)") { continue }
+                if ("$($e.name)" -match '(?i)secret|passw(or)?d|\bpwd\b|token|api_?key' -or "$($e.value)" -match '(?i)(^|;)\s*(password|pwd|accountkey|sharedaccesskey)\s*=|[?&]sig=|^eyJ[A-Za-z0-9_-]{10,}\.|client_secret') { $n++ }
+            }
+        }
+    }
+    $n
+}
+
+function Get-EpsKeyVaultSetupFact {
+    <#
+      SEC-10 (framework ALIGN-AUTO-ALL, Invardia 2026-11-10): the two setup steps the updater reads on each run, as
+      id-eps-updater (Contributor on the resource group): keyvault-purge-protection (the install's vault has purge
+      protection on) and keyvault-secrets-only (Measure-EpsPlainSecrets over every job and the web app = 0). Never throws:
+      @{ Fact = [ordered]@{ purge; secrets; plain; checkedUtc } | $null; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [string]$SelfKey = 'caj-eps-update', [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $f = Get-EpsUpdateFacts -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -SelfKey $SelfKey
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+        $v = Invoke-EpsArm -Path "$rg/providers/Microsoft.KeyVault/vaults/$($f.Names.KeyVault)" -ApiVersion $script:EpsWeb.KvApi
+        $purge = if ($v.properties.enablePurgeProtection -eq $true) { 'ok' } else { 'missing' }
+        $res = @(@((Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs" -ApiVersion $script:EpsApi.acajob).value)) + @(Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($f.Names.WebApp)" -ApiVersion $script:EpsApi.aca -AllowNotFound)
+        $plain = Measure-EpsPlainSecrets -Resources $res
+        $fact = [ordered]@{ purge = $purge; secrets = $(if ($plain -eq 0) { 'ok' } else { 'missing' }); plain = $plain; resources = @($res | Where-Object { $_ }).Count; checkedUtc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        @{ Fact = $fact; Reason = "$($f.Names.KeyVault): purge protection $purge; $plain secret(s) outside Key Vault in $($fact.resources) job(s) / app(s)" }
+    } catch { @{ Fact = $null; Reason = "not read: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}
+
 function Get-EpsBuildPoolFact {
     <#
       framework rule 11g (5): the registry build pool AS READ NOW, for the heartbeat's BuildPool { tier, count, building,

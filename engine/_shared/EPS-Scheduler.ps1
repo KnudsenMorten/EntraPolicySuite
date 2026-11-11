@@ -329,6 +329,10 @@ function Invoke-EpsTick {
             try { foreach ($d in @(Invoke-EpsStallWatch -ConnectionString $ConnectionString -NowUtc $NowUtc -Start $start -Blocked $blocked)) { $decisions.Add($d); if ($d.Action -eq 'Restarted') { $startedNow[$d.Job] = $true } } }
             catch { $decisions.Add(@{ Job = 'StallWatch'; Action = 'Skipped'; Reason = "the stall check failed: $($_.Exception.Message)" }) }
         }
+        # WORKER-UPD-2 (2.1.1): the install's version for the hybrid worker's update = the version this tick runs on
+        if (Get-Command Sync-EpsUpdateHeadVersion -ErrorAction SilentlyContinue) {
+            try { $vfh = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'VERSION'; if (Test-Path -LiteralPath $vfh) { [void](Sync-EpsUpdateHeadVersion -ConnectionString $ConnectionString -Version (Get-Content -LiteralPath $vfh -Raw).Trim()) } } catch { }
+        }
 
         # 1. requests first: an admin is waiting for them
         foreach ($q in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT RequestId, Job, Mode, RequestedBy FROM eps.JobRequest WHERE Status = 'Pending' ORDER BY RequestedAtUtc")) {
@@ -433,6 +437,19 @@ function Invoke-EpsTick {
                     }
                 }
             }
+        }
+        # 5. ROLL-RETRY-1 (2.1.3, framework §3.6): an update that gave up because jobs were running is started again by the
+        # tick, at most once an hour, until an update run installs or says up to date (Get-EpsRollRetryDecision); never fails the tick
+        if (-not (@($decisions | Where-Object { $_.Job -in 'Update', 'UpdateNow' -and $_.Action -eq 'Started' }).Count) -and $byJob['Update'] -and (Get-Command Get-EpsRollRetryDecision -ErrorAction SilentlyContinue)) {
+            try {
+                $ur = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (30) Status, HeldReason, StartedAtUtc, EndedAtUtc FROM eps.Run WHERE Job = 'Update' ORDER BY StartedAtUtc DESC")
+                $rr = Get-EpsRollRetryDecision -Runs $ur -NowUtc $NowUtc
+                if ($rr.Start) {
+                    $why = & $blocked 'Update'
+                    if ($why) { $decisions.Add(@{ Job = 'RollRetry'; Action = 'Skipped'; Reason = "$why (the held update waits)" }) }
+                    else { $d = & $start 'Update' "roll retry: $($rr.Reason)" $false; $d.Job = 'RollRetry'; $decisions.Add($d) }
+                } elseif ("$($rr.Reason)" -match 'next one from|repeat failure') { $decisions.Add(@{ Job = 'RollRetry'; Action = 'NotDue'; Reason = "$($rr.Reason)" }) }
+            } catch { $decisions.Add(@{ Job = 'RollRetry'; Action = 'Skipped'; Reason = "the roll retry check failed: $($_.Exception.Message)" }) }
         }
         $failed = @($decisions | Where-Object { $_.Action -eq 'StartFailed' }).Count
         $status = if ($failed) { 'PartlyFailed' } else { 'Succeeded' }

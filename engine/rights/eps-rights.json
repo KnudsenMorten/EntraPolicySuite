@@ -776,7 +776,7 @@
           {
             "kind": "local",
             "right": "runs as SYSTEM (Highest)",
-            "scope": "the daily update task 'EntraPolicySuite Hybrid Worker update' (05:30)",
+            "scope": "the update task 'EntraPolicySuite Hybrid Worker update' (every hour)",
             "who": "SYSTEM",
             "when": "always",
             "feature": "download the install's release, verify its signed digest, switch the worker's folder, self-test, switch back on failure",

@@ -1,8 +1,8 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    The Entra Policy Suite hybrid worker's daily update - what the scheduled task 'EntraPolicySuite Hybrid Worker Update'
-    runs once a day AS SYSTEM on the worker (framework §5.5; Install-EpsHybridWorker.ps1 registers it).
+    The Entra Policy Suite hybrid worker's update - what the scheduled task 'EntraPolicySuite Hybrid Worker Update'
+    runs every hour AS SYSTEM on the worker (framework §5.5; Install-EpsHybridWorker.ps1 registers it).
 .DESCRIPTION
     Moves the worker to the version the Entra Policy Suite install runs, and only to a release Invardia signed: reads the
     install's version and ring from its database (the machine's managed identity), asks Invardia for the signed release of
@@ -55,6 +55,15 @@ $runSelfTest = {
     $j = $line[0].Substring(20) | ConvertFrom-Json
     @{ Ok = [bool]$j.ok; Reason = "$($j.reason)" }
 }
+# WORKER-UPD-2 (2.1.1): this task runs every hour, not daily 05:30 - a worker installed before 2.1.1 switches its own
+# trigger here (as SYSTEM, the task's own principal; nothing else of the task changes)
+try {
+    $ut = @(Get-ScheduledTask -TaskName $script:EpsWorkerUpdateTask -ErrorAction SilentlyContinue)[0]
+    if ($ut -and -not @($ut.Triggers | Where-Object { "$($_.Repetition.Interval)" -eq 'PT1H' }).Count) {
+        Set-ScheduledTask -TaskName $ut.TaskName -TaskPath $ut.TaskPath -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Hours 1)) | Out-Null
+        Say "schedule: the update task now runs every hour (it ran once a day)"
+    }
+} catch { Say "schedule: the update task could not be moved to every hour ($($_.Exception.Message)) - it keeps its schedule" }
 try {
     $r = Invoke-EpsWorkerUpdate -Root $Root -ConnectionString $cfg.ConnectionString -WorkerName $cfg.WorkerName -SelfTest $runSelfTest -ApplyAcl $acl -Say { param($m) Say $m }
     exit $(if ($r.Outcome -in 'updated', 'current', 'waiting') { 0 } else { 1 })

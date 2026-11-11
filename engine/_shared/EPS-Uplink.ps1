@@ -268,6 +268,15 @@ function ConvertTo-EpsUplinkUpdateWaited {
     [ordered]@{ version = $m.Groups[1].Value; atUtc = $at.ToString('yyyy-MM-ddTHH:mm:ssZ'); minutes = [int]$m.Groups[2].Value; job = $slug }
 }
 
+function Get-EpsUplinkUpdaterRun {
+    # PURE. UPD-07: the last finished eps.Run of the update job -> @{ At (ISO, Z); Result succeeded | nothing-to-do | failed } or $null
+    param($Run)
+    if (-not $Run -or -not $Run.EndedAtUtc -or $Run.EndedAtUtc -is [DBNull]) { return $null }
+    $res = switch ("$($Run.Status)") { 'Succeeded' { if ([int]("0$($Run.Applied)" -replace '\D', '') -gt 0) { 'succeeded' } else { 'nothing-to-do' } } { $_ -in 'Failed', 'PartlyFailed' } { 'failed' } default { $null } }
+    if (-not $res) { return $null }
+    @{ At = ([datetime]$Run.EndedAtUtc).ToString('yyyy-MM-ddTHH:mm:ssZ'); Result = (Select-EpsUplinkEnum $res 'UpdaterResult') }
+}
+
 function New-EpsUplinkHeartbeat {
     <#
       PURE. The heartbeat from the facts Get-EpsUplinkHeartbeatFacts read. -WithoutNewFields: the liveness record only
@@ -300,6 +309,9 @@ function New-EpsUplinkHeartbeat {
         if ($jobs.Count) { $o.Jobs = @($jobs) }
         if ("$($Facts.Update.Installed)" -match '^[0-9A-Za-z.+-]{1,50}$') {
             $o.Update = [ordered]@{ installed = "$($Facts.Update.Installed)" }
+            # UPD-07: lastUpdaterRunUtc + lastUpdaterResult (succeeded = it installed a release, nothing-to-do = current, failed)
+            $lr = Get-EpsUplinkUpdaterRun -Run $Facts.Update.LastRun
+            if ($lr) { $o.Update.lastUpdaterRunUtc = $lr.At; $o.Update.lastUpdaterResult = $lr.Result }
             # UPD-HOLD: the last update gave up waiting for running jobs (< 26 h) -> waited { version, atUtc, minutes, job } -
             # STRUCTURED (Invardia's contract takes no free text; Invardia writes the sentence). Else left out.
             $wv = ConvertTo-EpsUplinkUpdateWaited -Text "$($Facts.Update.Waited.Text)" -AtUtc $Facts.Update.Waited.AtUtc
@@ -554,7 +566,8 @@ function Get-EpsUplinkHeartbeatFacts {
         Jobs = @($jobs)
         # UPD-HOLD: the last update run's give-up line ("... waited 45 min for running jobs ..., retries next night"), only
         # while it is the LATEST update run and under 26 h old - so it shows in Invardia's fleet view, never fails silently
-        Update = @{ Installed = $Version; Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }) }
+        # UPD-07 (2.1.2): the updater's LAST run (time + outcome) - the alignment check "the updater reaches every install"
+        Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }) }
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
@@ -576,7 +589,9 @@ function Get-EpsUplinkHeartbeatFacts {
             $gwn = if (Get-Command Get-EpsGraphWriteNeed -ErrorAction SilentlyContinue) { try { Get-EpsGraphWriteNeed -Row @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsGraphWriteNeedSql)[0] } catch { $null } }
             # IDENTITY-MOVE-1 rule 13: the AD delegation, asked of the worker on this heartbeat and read from its last answer
             $adCheck = if (Get-Command Request-EpsAdDelegationCheck -ErrorAction SilentlyContinue) { try { [void](Request-EpsAdDelegationCheck -ConnectionString $ConnectionString); Get-EpsAdDelegationCheckState -ConnectionString $ConnectionString } catch { $null } }
-            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd -GraphWriteNeed $gwn -AdDelegation $adCheck) } catch { @() } })
+            # SEC-10 (2.1.2): the Key Vault steps as the update job last read them (eps.UplinkState setup.keyvault)
+            $kvs = try { $kt = "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'setup.keyvault'")"; if ($kt.Trim()) { $kt | ConvertFrom-Json } } catch { $null }
+            @(Get-EpsSetupSteps -Rights (Get-EpsEngineRightsState) -MailMode $mailMode -ExchangeNeed $xn -DbJob $dbj -UpdateRun $upd -GraphWriteNeed $gwn -AdDelegation $adCheck -KeyVault $kvs) } catch { @() } })
     }
 }
 
@@ -591,7 +606,7 @@ function Test-EpsRunIncomplete {
        job) and a Running one are not incomplete. #>
     param([string]$Job, [string]$Status, [string]$HeldReason)
     if ($Status -in 'Failed', 'PartlyFailed') { return $true }
-    if ($Job -eq 'Update' -and $Status -eq 'Succeeded' -and "$HeldReason" -match '(?i)retries next night|the next night tries again') { return $true }
+    if ($Job -eq 'Update' -and $Status -eq 'Succeeded' -and "$HeldReason" -match '(?i)retries next night|the next night tries again|tries again within the hour') { return $true }
     $false
 }
 function Get-EpsRunStreak {

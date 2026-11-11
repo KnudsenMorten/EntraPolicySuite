@@ -101,6 +101,50 @@ function Get-EpsUpdateHead {
 
 $script:EpsUpdateHeadSetting = 'update-head-check'   # written by the update job, read by the tick (UPD-03)
 
+$script:EpsRollRetry = @{ EveryMinutes = 60; MaxHours = 24; GiveUp = 'waited \d{1,4} min for running jobs' }
+function Get-EpsRollRetryDecision {
+    <#
+      PURE. ROLL-RETRY-1 (framework §3.6, Invardia 2026-11-11: "PIM lost a day at 5 installs"): an update that gave up
+      because jobs were running is retried by the TICK, at most once an hour, until an update run installs or says up to
+      date - never "the nightly covers it". -Runs: the update job's eps.Run rows, NEWEST FIRST (Status, HeldReason,
+      StartedAtUtc, EndedAtUtc). @{ Start; Reason }:
+        start  the newest finished update run gave up waiting for running jobs, the give-ups in a row began < 24 h ago,
+               no update runs now and the last one started >= 60 min ago
+        no     anything else (said why)
+    #>
+    param([object[]]$Runs = @(), [datetime]$NowUtc = [datetime]::UtcNow)
+    $no = { param($w) @{ Start = $false; Reason = $w } }
+    $rs = @($Runs | Where-Object { $_ })
+    if (@($rs | Where-Object { "$($_.Status)" -eq 'Running' -and $_.StartedAtUtc -and [datetime]$_.StartedAtUtc -gt $NowUtc.AddHours(-3) }).Count) { return (& $no 'an update runs now') }
+    $fin = @($rs | Where-Object { "$($_.Status)" -ne 'Running' -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] })
+    if (-not $fin.Count) { return (& $no 'no update run yet') }
+    if ("$($fin[0].HeldReason)" -notmatch $script:EpsRollRetry.GiveUp) { return (& $no 'the last update run did not give up waiting for running jobs') }
+    $streak = @(); foreach ($r in $fin) { if ("$($r.HeldReason)" -match $script:EpsRollRetry.GiveUp) { $streak += $r } else { break } }
+    $first = [datetime]$streak[-1].EndedAtUtc
+    if ($first -lt $NowUtc.AddHours(-$script:EpsRollRetry.MaxHours)) { return (& $no "it has given up $($streak.Count) time(s) in a row since $($first.ToString('yyyy-MM-dd HH:mm'))Z - more than $($script:EpsRollRetry.MaxHours) h; Invardia has the repeat failure (run record + alert eps.job.repeat-failure from the 3rd give-up in a row), the nightly run tries again") }
+    $lastStart = [datetime]$(if ($fin[0].StartedAtUtc) { $fin[0].StartedAtUtc } else { $fin[0].EndedAtUtc })
+    if ($lastStart -gt $NowUtc.AddMinutes(-$script:EpsRollRetry.EveryMinutes)) { return (& $no "the last try started at $($lastStart.ToString('HH:mm'))Z - the next one from $($lastStart.AddMinutes($script:EpsRollRetry.EveryMinutes).ToString('HH:mm'))Z") }
+    @{ Start = $true; Reason = "the update gave up waiting for running jobs $($streak.Count) time(s) in a row (first $($first.ToString('HH:mm'))Z) - tried again" }
+}
+
+function Sync-EpsUpdateHeadVersion {
+    <#
+      WORKER-UPD-2 (2.1.1): the version in update-head-check = the version that RUNS. The update job writes the version it
+      started on, i.e. from BEFORE its apply, so after every night with an update the hybrid worker saw "the signed release
+      of ring 0 is <new>, the install runs <old>" and waited another day - internal's worker stayed on 2.0.105 from
+      2026-11-08 and never answered the AD delegation check (alignment gap, 2026-11-10). The TICK runs on the install's
+      image every 5 minutes, so it corrects the version field when it differs (one UPDATE that matches nothing otherwise).
+      Never fails the tick. Returns $true when it ran.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version)
+    if ("$Version".Trim() -notmatch '^\d+\.\d+\.\d+$') { return $false }
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsUpdateHeadSetting; v = "$Version".Trim() } -Query @'
+UPDATE eps.Setting SET Value = JSON_MODIFY(Value, '$.version', @v), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (tick)'
+WHERE Name = @n AND ISJSON(Value) = 1 AND ISNULL(JSON_VALUE(Value, '$.version'), N'') <> @v
+'@ | Out-Null
+    $true
+}
+
 function Get-EpsUpdateExpediteDecision {
     <#
       PURE (UPD-03, 2.0.97; PIM's 15-minute expedite check). Invardia's head answer (Get-EpsUpdateHead) -> @{ Start;
@@ -397,6 +441,17 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
         } catch { & $Log 'Warning' "SQL admin group: $((("$($_.Exception.Message)") -split "`n")[0])" }
         finally { $global:EPS_TokenProvider = $saved2 }
     }
+    # SEC-10 (2.1.2): the Key Vault setup steps as read now -> eps.UplinkState 'setup.keyvault' (the heartbeat's setupSteps
+    # keyvault-purge-protection / keyvault-secrets-only, how updater); a failed read leaves the last stored value
+    if ($updater -and -not $CheckOnly -and (Get-Command Get-EpsKeyVaultSetupFact -ErrorAction SilentlyContinue)) {
+        $saved3 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = $ApplyTokenProvider
+        try { $kvf = Get-EpsKeyVaultSetupFact -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved3 }
+        & $Log 'Info' "Key Vault (SEC-10): $($kvf.Reason)"
+        if ($kvf.Fact) {
+            try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = ($kvf.Fact | ConvertTo-Json -Compress) } -Query "MERGE eps.UplinkState AS d USING (SELECT N'setup.keyvault' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'setup.keyvault', @v);" | Out-Null }
+            catch { & $Log 'Warning' "Key Vault (SEC-10): not stored: $($_.Exception.Message)" }
+        }
+    }
     # framework rule 11g (5): the build pool as read now -> eps.UplinkState 'buildpool' (the uplink sends it); no pool = ''
     # (the heartbeat field is then left out); a failed read leaves the last stored value as it was
     if ($updater -and -not $CheckOnly -and (Get-Command Get-EpsBuildPoolFact -ErrorAction SilentlyContinue)) {
@@ -488,7 +543,7 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
     }
     if ($quiet -and -not $quiet.Go) {
         # gave up: nothing changed; said in the run, to Invardia (the update run waits) and on the heartbeat (Update.waited)
-        $why = "update to $($t.Version) waited $([int]$script:EpsUpdateHold.WaitMinutes) min for running jobs ($(@($quiet.Running) -join ', ')), retries next night"
+        $why = "update to $($t.Version) waited $([int]$script:EpsUpdateHold.WaitMinutes) min for running jobs ($(@($quiet.Running) -join ', ')); tries again within the hour until it installs (ROLL-RETRY-1, at most 24 h)"
         & $Log 'Warning' $why
         $track = Send-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http -WaitReason $why
         $g = @{ Go = $false; Running = @($quiet.Running); Reason = $why }

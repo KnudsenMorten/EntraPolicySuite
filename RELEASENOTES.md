@@ -2,6 +2,36 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.3 - An update held back by running jobs is tried again within the hour
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "alignment is crucial" (2026-11-10)
+- Fix: when the nightly update had to wait for running jobs and gave up, it waited a whole day for the next night.
+  Now the installation tries again every hour until the update is installed, for at most 24 hours. If it has to give up
+  3 times in a row, Invardia support is told at once. Nothing changes while a job runs - the update still installs only
+  between runs.
+- The update's message says what happens next ("tries again within the hour") instead of "retries next night".
+- Fix: the hybrid worker's check that it may write the tag attributes in Active Directory failed as a whole when a rule
+  writes an attribute your AD schema does not have (an AD without the Exchange schema has no extensionAttribute1-15
+  unless added). Get started now shows that attribute as missing, with what to do, and checks the others.
+
+## 2.1.2 - Key Vault and updater checks in Get started
+Builds on the owner's decision: "alignment is crucial" (2026-11-10)
+- New in Get started: two checks of your installation's Key Vault, read by the update job every night - purge protection
+  is on, and every secret Entra Policy Suite uses is in Key Vault (none in app settings or job definitions). The check
+  names a count, never a secret.
+- Invardia support now sees when your updater last ran and whether it installed a release, found nothing to do, or
+  failed - so an installation that stopped updating is noticed.
+
+## 2.1.1 - The hybrid worker keeps up with your installation
+Builds on the owner's decision: "alignment is crucial" (2026-11-10)
+- Fix: the hybrid worker could stay on an old version. Its update followed the version your installation ran BEFORE its
+  last nightly update, so after every update night it waited another day. The installation now keeps its running
+  version current for the worker every 5 minutes.
+- The worker checks for its update every hour instead of once a day at 05:30. A worker installed earlier switches its own
+  task to every hour after its next update; nothing to do on the server.
+- With the worker current, its check that it may write the tag attributes in Active Directory is answered again, and the
+  Get started step shows ok or missing instead of unknown.
+
 ## 2.1.0 - Entra Policy Suite 2.1
 Builds on the owner's decision: "maybe it is time to move version, we had it in the framework. we did large upd today" (2026-11-10)
 Entra Policy Suite 2.1 is a minor release: nothing breaks and there is nothing to do. Your installation updates from

@@ -134,7 +134,7 @@ function Get-EpsSetupSteps {
     # -DbJob: eps.UplinkState setup.dbjob (the version whose database setup job last read every principal back; $null =
     # not readable). -UpdateRun: the last update run's summary ($null = not readable, '' = none yet).
     # -GraphWriteNeed: Get-EpsGraphWriteNeed (SEC-02-GRAPH, 2.0.99) - not given = the write rights reported as needed
-    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null, $GraphWriteNeed = $null, $AdDelegation = $null)
+    param($Rights, [string]$MailMode, [datetime]$NowUtc = [datetime]::UtcNow, $ExchangeNeed = $null, [AllowNull()][object]$DbJob = $null, [AllowNull()][object]$UpdateRun = $null, $GraphWriteNeed = $null, $AdDelegation = $null, [AllowNull()][object]$KeyVault = $null)
     $d = Get-EpsOnboardingDefaults
     $at = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $out = [System.Collections.Generic.List[object]]::new()
@@ -181,6 +181,15 @@ function Get-EpsSetupSteps {
     $out.Add([ordered]@{ key = 'updater'; title = 'The updater can install approved releases (its own identity, Contributor on the resource group)'; since = '2.0.60'; how = 'support-app'; checkedAt = $at
         state = $(if ($null -eq $UpdateRun) { 'unknown' } elseif (-not "$UpdateRun".Trim()) { 'unknown' } elseif ($noUpd) { 'missing' } else { 'ok' })
         detail = $(if ($null -eq $UpdateRun) { 'not readable' } elseif (-not "$UpdateRun".Trim()) { 'no update run yet' } elseif ($noUpd) { 'the update job has no updater identity: one install run with 2.0.60 or later adds it' } else { 'the last update run had its updater identity' }) })
+    # SEC-10 (2.1.2, framework ALIGN-AUTO-ALL): the Key Vault, as the update job (id-eps-updater) last read it - eps.UplinkState
+    # setup.keyvault; $null / unreadable = unknown (the next update run reads it). The detail names a count, never a secret.
+    $kvAt = if ($KeyVault -and $KeyVault.checkedUtc -is [datetime]) { ([datetime]$KeyVault.checkedUtc).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } elseif ($KeyVault -and "$($KeyVault.checkedUtc)" -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') { "$($KeyVault.checkedUtc)" } else { $at }
+    $kvP = if ($KeyVault -and "$($KeyVault.purge)" -in 'ok', 'missing') { "$($KeyVault.purge)" } else { 'unknown' }
+    $out.Add([ordered]@{ key = 'keyvault-purge-protection'; title = 'The installation''s Key Vault has purge protection on'; state = $kvP; since = '2.1.2'; how = 'updater'; checkedAt = $kvAt
+        detail = $(switch ($kvP) { 'ok' { 'read back by the update job' } 'missing' { 'purge protection is off: one install run sets it (it cannot be turned off again once on)' } default { 'not read yet: the next update run reads it' } }) })
+    $kvS = if ($KeyVault -and "$($KeyVault.secrets)" -in 'ok', 'missing') { "$($KeyVault.secrets)" } else { 'unknown' }
+    $out.Add([ordered]@{ key = 'keyvault-secrets-only'; title = 'Every secret the product uses is in Key Vault (none in app settings or job definitions)'; state = $kvS; since = '2.1.2'; how = 'updater'; checkedAt = $kvAt
+        detail = $(switch ($kvS) { 'ok' { "0 secrets outside Key Vault in $([int]$KeyVault.resources) job(s) / app(s)" } 'missing' { "$([int]$KeyVault.plain) secret(s) outside Key Vault in the job / app definitions - move them to Key Vault references" } default { 'not read yet: the next update run reads it' } }) })
     foreach ($s in $out) { if ($s.detail.Length -gt 200) { $s.detail = $s.detail.Substring(0, 200) } }
     @($out)
 }

@@ -15,7 +15,7 @@
     the gMSA reads it and writes only <Root>\logs); writes <Root>\worker.json (the database, the worker's name - no
     secret); on an Arc server adds the gMSA to the local group 'Hybrid agent extension applications' (it reads the Arc
     agent's identity key); grants the gMSA 'Log on as a batch job'; registers the task 'EntraPolicySuite Hybrid Worker'
-    (every 5 minutes, as the gMSA) and runs it once; registers the task 'EntraPolicySuite Hybrid Worker Update' (daily 05:30, as
+    (every 5 minutes, as the gMSA) and runs it once; registers the task 'EntraPolicySuite Hybrid Worker Update' (every hour, as
     SYSTEM: Update-EpsHybridWorker.ps1 - the worker follows the version the install runs, only from Invardia's signed
     release, switched back automatically when the new version fails its self-test).
     -WhatIf: every step it would take, nothing changed. -Remove: the two tasks, the group membership, <Root>\app and <Root>\versions go
@@ -129,12 +129,14 @@ Step "register the task '$task': every 5 minutes as $GmsaName" {
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4) -StartWhenAvailable
     Register-ScheduledTask -TaskName $task -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker (DESIGN §6): AD tags + AD group snapshots, through SQL' -Force | Out-Null
 }
-Step "register the task '$updTask': daily 05:30 as SYSTEM (the worker follows the install's version, only from Invardia's signed release)" {
+Step "register the task '$updTask': every hour as SYSTEM (the worker follows the install's version, only from Invardia's signed release)" {
     $action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -NonInteractive -File `"$appDir\tools\eps-hybrid-worker\Update-EpsHybridWorker.ps1`" -Root `"$Root`""
-    $trigger = New-ScheduledTaskTrigger -Daily -At '05:30'
+    # WORKER-UPD-2 (2.1.1): every hour, not daily 05:30 - with several releases a day a daily check almost never met the
+    # moment the ring's signed release IS the install's version, and the worker stayed behind
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Hours 1)
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1) -StartWhenAvailable
-    Register-ScheduledTask -TaskName $updTask -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker daily update (framework 5.5): the version the install runs, from Invardia''s signed release; switched back when it fails its self-test' -Force | Out-Null
+    Register-ScheduledTask -TaskName $updTask -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Entra Policy Suite hybrid worker update, every hour (framework 5.5): the version the install runs, from Invardia''s signed release; switched back when it fails its self-test' -Force | Out-Null
 }
 Step "run the task once and show its result" {
     Start-ScheduledTask -TaskName $task -TaskPath $taskPath

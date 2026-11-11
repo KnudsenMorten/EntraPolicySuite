@@ -88,9 +88,17 @@ function Get-EpsAdDelegationReadBack {
       Answers @{ State = ok | waiting; Missing; OldOu; OldOuCount; Command }. A group with another member throws (the plan refuses it).
     #>
     param([Parameter(Mandatory)]$Directory, [Parameter(Mandatory)][string]$Gmsa, [Parameter(Mandatory)][string[]]$Attributes, [string[]]$ObjectClasses = @('user'))
-    $plan = @(Get-EpsAdDelegationPlan -Directory $Directory -Gmsa $Gmsa -Attributes $Attributes -ObjectClasses $ObjectClasses)
-    $missing = @($plan | Where-Object { $_.Action -in 'creategroup', 'addmember', 'add' } | ForEach-Object {
-        switch ($_.Action) { 'creategroup' { "the group $($_.OU)" } 'addmember' { "the gMSA as the member of $($_.OU)" } default { "$($_.Attribute) on $($_.ObjectClass) objects at the domain root" } } })
+    # 2.1.3 (found live at internal 2026-11-11, check package 34): an attribute a rule writes that the AD SCHEMA does not
+    # have (an AD without the Exchange schema has no extensionAttribute1-15 unless added) threw "no attribute ... in the AD
+    # schema", so the whole check failed and the step stayed unknown. It is a MISSING item with its fix; the rest is checked.
+    $noSchema = @(foreach ($a in $Attributes) { try { [void]$Directory.GetAttributeGuid($a) } catch { if ("$($_.Exception.Message)" -match 'not? attribute|AD schema') { $a } else { throw } } })
+    $inSchema = @($Attributes | Where-Object { $_ -notin $noSchema })
+    $plan = if ($inSchema.Count) { @(Get-EpsAdDelegationPlan -Directory $Directory -Gmsa $Gmsa -Attributes $inSchema -ObjectClasses $ObjectClasses) } else { @() }
+    # $it, not $_: inside a switch $_ is the switched value (the action), so the text lost the attribute ("  on  objects")
+    $missing = @(@($plan | Where-Object { $_.Action -in 'creategroup', 'addmember', 'add' } | ForEach-Object { $it = $_
+        switch ($it.Action) { 'creategroup' { "the group $($it.OU)" } 'addmember' { "the gMSA as the member of $($it.OU)" } default { "$($it.Attribute) on $($it.ObjectClass) objects at the domain root" } } }) +
+        @($noSchema | ForEach-Object { "$_ is not in the AD schema - a rule writes it in AD: add it to the schema (or extend it with Exchange), or take the AD value off the rules that write it" }))
+    $Attributes = $inSchema
     $sids = @(@($Directory.GetSid($Gmsa)) + @($Directory.GetGroupSid((Get-EpsAdPermissionGroupName -Gmsa $Gmsa))) | Where-Object { $_ })
     $guids = @($plan | Where-Object { $_.Kind -eq 'Root' } | ForEach-Object { [guid]$_.AttributeGuid })
     $oldOu = @(if ($Directory.PSObject.Methods['GetOuDns']) {

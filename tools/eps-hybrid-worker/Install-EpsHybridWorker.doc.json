@@ -12,7 +12,7 @@
     { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "Log on as a batch job", "scope": "the worker machine", "why": "the scheduled task runs as the gMSA", "undo": "remove it from the local security policy" },
     { "target": "the worker", "action": "grant", "object": "the gMSA", "permission": "member of the local group 'Hybrid agent extension applications' (Azure Arc only)", "scope": "the worker machine", "why": "it reads the Arc agent's identity key to get the machine's token", "undo": "-Remove" },
     { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker' (every 5 minutes, as the gMSA)", "scope": "the worker machine", "why": "one worker cycle every 5 minutes", "undo": "-Remove" },
-    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker Update' (daily 05:30, as SYSTEM)", "scope": "the worker machine", "why": "the worker follows the version the install runs: Invardia's signed release is checked (signature, sequence, SHA-256, size, version) before anything is switched; a failed self-test switches back", "undo": "-Remove" }
+    { "target": "the worker", "action": "create", "object": "scheduled task 'EntraPolicySuite Hybrid Worker Update' (every hour, as SYSTEM)", "scope": "the worker machine", "why": "the worker follows the version the install runs: Invardia's signed release is checked (signature, sequence, SHA-256, size, version) before anything is switched; a failed self-test switches back", "undo": "-Remove" }
   ],
   "parameters": [
     { "name": "GmsaName", "required": true, "default": null, "help": "DOMAIN\\name$ of the gMSA the worker writes AD as" },
@@ -26,7 +26,7 @@
     { "name": "Remove", "required": false, "default": false, "help": "take the worker away" }
   ],
   "readsOnly": [ "the release folder it installs from" ],
-  "network": [ "<server>.database.windows.net (the worker, every cycle)", "the domain controllers (LDAP, the worker)", "https://invardia.com and the release download it names (the daily update, HTTPS outbound)" ],
+  "network": [ "<server>.database.windows.net (the worker, every cycle)", "the domain controllers (LDAP, the worker)", "https://invardia.com and the release download it names (the update check every hour, HTTPS outbound)" ],
   "whatIf": "Every step it would take; nothing is copied, granted or registered.",
   "undo": "-Remove: both tasks, the group membership and the code; then Initialize-EpsHybridWorkerAd.ps1 -Remove and Grant-EpsHybridWorkerAccess.ps1 -Remove.",
   "docUrl": "https://invardia.com/docs/eps/scripts/Install-EpsHybridWorker"
