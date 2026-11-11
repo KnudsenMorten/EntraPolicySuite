@@ -26,7 +26,7 @@
 # tests/Test-EpsContainerImage.ps1 checks every one of these rules.
 
 # ---- stage 1: the pinned SQL driver assembly (no PS module) ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS sqldriver
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS sqldriver
 WORKDIR /drv
 RUN dotnet new classlib -n shim -o shim \
  && cd shim \
@@ -35,7 +35,7 @@ RUN dotnet new classlib -n shim -o shim \
  && test -f /usr/share/zoneinfo/Europe/Copenhagen
 
 # ---- stage 2: the solution tree, pruned to what runs in a container ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e AS src
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS src
 COPY SOLUTIONS/EntraPolicySuite /src/EntraPolicySuite
 WORKDIR /src/EntraPolicySuite
 RUN rm -rf tests internal output docs CLAUDE.md \
@@ -52,7 +52,7 @@ RUN rm -rf tests internal output docs CLAUDE.md \
  && for f in EPS-Conditions EPS-TagEngine EPS-FastEval EPS-V1Import EPS-SqlStore EPS-Guard EPS-Graph EPS-Exchange EPS-TagJob EPS-Scheduler EPS-TamperMonitor EPS-HybridWorker EPS-WorkerPage EPS-Mail EPS-WebAuth EPS-Audit EPS-Settings EPS-Rules EPS-CaAnalyzer EPS-CaManage EPS-CaWrite EPS-CaOptions EPS-Backup EPS-Onboarding EPS-GroupManage EPS-GroupWrite EPS-OnboardManage EPS-OnboardWrite EPS-IdentityReport EPS-SignInMethods EPS-LogAnalytics EPS-WebApi EPS-ConfigEngine EPS-Uplink EPS-Updater EPS-UpdateApply EPS-SupportAccess EPS-Arm EPS-DbInit EPS-Install EPS-InstallWeb EPS-InstallNetwork EPS-JobRename InvardiaUpdate.verify EPS-Licence EPS-SupportRead EPS-Watchdog; do test -f engine/_shared/$f.ps1; done
 
 # ---- stage 3: runtime ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:212fe4cb74627d5adf9817a4088906ae3edff1bd853bb27565d4b46731efe61e
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb
 
 # IMAGE-PATCH-1: the OS security updates at build (the base tag has not moved since it was pinned, its packages have).
 # Upgrade only - no package is added; the package lists are removed so no apt state ships in the layer.

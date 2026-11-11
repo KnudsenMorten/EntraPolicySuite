@@ -2,6 +2,16 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.4 - Security fix: the engine and the sign-in front run on .NET 10.0.15
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
+- Security fix: the engine's container image moves to .NET 10.0.15 (Microsoft's image of 10 November 2026). It closes one
+  Critical and three High vulnerabilities in the .NET 10.0.14 runtime (CVE-2026-114146, CVE-2026-114147, CVE-2026-114149,
+  CVE-2026-109475), found by Microsoft Defender in the 2.1.3 image.
+- Security fix: the web app's sign-in front moves to 2.1.1 - the same fix, on .NET 10.0.15, the front every Invardia product
+  runs. Signing in works as before.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.3 - An update held back by running jobs is tried again within the hour
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "alignment is crucial" (2026-11-10)
