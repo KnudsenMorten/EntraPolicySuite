@@ -36,6 +36,8 @@ Invoke-WebRequest https://github.com/KnudsenMorten/EntraPolicySuite/releases/lat
 This is the Community install. Pro customers install from invardia.com: <https://invardia.com/support/eps/>.
 The 60-day trial uses the same Pro lines; the license then arrives by itself. Pro and the trial are ordered at
 invardia.com. Everything in Community stays in Community.
+Community and Pro install, update and run the same way - the same installer, sign-in, jobs and settings, and every
+installation updates itself at its nightly run; only the licensed features differ.
 
 Line 2 downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and installs.
 To see the plan first, add `-WhatIf` at the end of line 2: it shows every step the installer would take - nothing is
@@ -48,6 +50,7 @@ created. A stopped install continues where it stopped when you run the same comm
 | `-Location` | westeurope | The Azure region |
 | `-ResourceGroup` | rg-eps | The resource group to install into (an install made before 2.0.55 in rg-entrapolicysuite is found and kept) |
 | `-Version` | the latest 2.x release | A specific release, for example 2.0.20 |
+| `-ConnectToInvardia` | asked once (no) | `yes` connects this installation to Invardia: health reports (numbers and states only) and updates on request. `no` keeps it anonymous: it then sends nothing but the nightly question which release is approved. |
 
 ### Private network
 

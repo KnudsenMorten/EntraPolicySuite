@@ -123,6 +123,10 @@
 .PARAMETER ConfirmedFromInside
     A private install that cannot be proven from inside (the inside job did not run and this machine cannot reach the
     web app): you checked the web app from a machine in your network yourself.
+.PARAMETER ConnectToInvardia
+    Community only: yes connects this install to Invardia (health reports from the support link, and "update now"); no
+    keeps it anonymous (it sends nothing but the nightly question which release is approved). Without it the install asks
+    once when it runs interactively; the default answer is no. A re-run keeps an earlier yes; no takes it back.
 .EXAMPLE
     # the install: two lines. The launcher downloads the release, checks it and runs this script with the same parameters
     # (add -WhatIf at the end of line 2 to see the plan first; nothing is created in Azure)
@@ -186,7 +190,10 @@ param(
     [string[]]$InternalRanges = @(),
     [string]$FirewallIp = '',
     [ValidateSet('external', 'internal')][string]$WebAppAccess = 'external',
-    [switch]$ConfirmedFromInside
+    [switch]$ConfirmedFromInside,
+    # OPT-IN-1 (owner 2026-11-11 "Ask at install (opt-in)"): Community only - "Connect this install to Invardia: health
+    # reports + updates on request". yes / no answers it; empty = asked once when the install runs interactively (default no).
+    [ValidateSet('', 'yes', 'no')][string]$ConnectToInvardia = ''
 )
 $ErrorActionPreference = 'Stop'
 $docUrl = 'https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Install-EntraPolicySuite when EPS is public there (DOC-LINKS)
@@ -254,6 +261,20 @@ $ctx = @{ TenantId = "$TenantId"; SubscriptionId = "$SubscriptionId"; Location =
     # installer in its own process with EPS_INSTALL_CHANNEL=pro - the update job then asks Invardia for the licence. Not a
     # parameter: the two install lines stay the same for both editions; a licence is never part of them.
     Edition = $(if ("$env:EPS_INSTALL_CHANNEL" -eq 'pro') { 'pro' } else { 'community' }) }
+# OPT-IN-1: a Community install stays ANONYMOUS - it sends Invardia nothing beyond the nightly "which release" question -
+# unless its user says yes here. A yes claims a Community install key at the update job's first run (the support link's
+# health reports + "update now"). A re-run keeps a yes given before; -ConnectToInvardia no takes it back. Pro: not asked.
+if ($ctx.Edition -ne 'pro') {
+    $ans = $ConnectToInvardia
+    if (-not $ans -and -not $what -and -not $Quiet -and -not $global:EPS_TokenProvider -and -not [Console]::IsInputRedirected -and [Environment]::UserInteractive) {
+        Write-Host ''
+        Write-Host 'Connect this install to Invardia: health reports + updates on request?' -ForegroundColor Cyan
+        Write-Host '  Yes: Invardia gets this install''s health (numbers and states only - never a user, device, tag or name) and can' 
+        Write-Host '  ask it to update now. No: it sends nothing but the nightly "which release" question. You can change it later.'
+        $ans = if ("$(Read-Host 'Connect to Invardia? [y/N]')".Trim() -match '^(?i)y(es)?$') { 'yes' } else { '' }
+    }
+    if ($ans) { $ctx.ConnectInvardia = $ans }
+}
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it
 $front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin (Get-EpsSigninFrontPin -SolutionRoot $sol)

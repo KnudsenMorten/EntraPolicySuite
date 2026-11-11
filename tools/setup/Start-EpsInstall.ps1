@@ -55,6 +55,7 @@ param(
     [string]$FirewallIp,
     [string]$WebAppAccess,
     [switch]$ConfirmedFromInside,
+    [ValidateSet('', 'yes', 'no')][string]$ConnectToInvardia,
     [ValidatePattern('^$|^2\.\d+\.\d+$')][string]$Version,
     # test seams (as PIM's launcher): the release lookup, the download, the hand-over
     [scriptblock]$GetRelease, [scriptblock]$Download, [scriptblock]$RunInstaller,

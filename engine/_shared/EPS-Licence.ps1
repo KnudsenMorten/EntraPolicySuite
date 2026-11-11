@@ -285,6 +285,38 @@ function Invoke-EpsInstallKeyClaim {
     @{ action = 'retry'; message = "the claim did not answer (HTTP $st) - asked again next run"; hash = $lh }
 }
 
+$script:EpsCommunityClaimHash = 'community-opt-in'   # ClaimLicenceHash of a Community claim (no licence to hash)
+function Invoke-EpsCommunityKeyClaim {
+    <#
+      OPT-IN-1 "claim on yes" (owner 2026-11-11 "Ask at install (opt-in)"; Invardia's Community claim route, live 2026-11-11):
+      ONLY for a Community install whose user said yes at install (the caller checks EPS_CONNECT_INVARDIA = yes):
+        POST <base>/api/install-keys/claim { product; tenantId; edition: 'community' } - NO licence
+      -> 200 { installKey } (the Pro claim's shape) -> -SetKey stores it (uplink-key). With the key the support link sends
+      its health reports and the head call (kind community) reads "update now".
+      409 tenantKnown (the tenant belongs to a company with a licence: claim with the licence) and 409 keyExists (a key was
+      issued already) are refused and NOT asked again until "Claim again"; 429 (the per-IP / daily cap) and anything else
+      = asked again next run. Returns @{ action = none | claimed | refused | retry; message; hash }. The key is never in a message.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$Http, [string]$TenantId, [scriptblock]$SetKey, [AllowNull()][object]$Previous, [string]$BaseUrl = $script:EpsLicenceBase)
+    $h = $script:EpsCommunityClaimHash
+    if ($Previous -and "$($Previous.ClaimLicenceHash)" -eq $h -and "$($Previous.ClaimAction)" -eq 'refused') { return @{ action = 'none'; message = "not asked again: $($Previous.ClaimMessage)"; hash = $h } }
+    if ("$TenantId" -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') { return @{ action = 'none'; message = 'the tenant id is not known - nothing is sent'; hash = '' } }
+    $base = "$BaseUrl".Trim().TrimEnd('/'); if ($base -notmatch '^(?i)https://') { return @{ action = 'retry'; message = 'the claim address is not https'; hash = $h } }
+    $r = & $Http 'POST' "$base/api/install-keys/claim" ([ordered]@{ product = $script:EpsLicenceClaimProduct; tenantId = "$TenantId".ToLowerInvariant(); edition = 'community' }) @{}
+    $st = 0; try { $st = [int]$r.status } catch { $st = 0 }
+    $why = "$($r.body.error)$(if ($r.body.reason) { " $($r.body.reason)" })".Trim()
+    if ($st -eq 200 -and "$($r.body.installKey)" -match '^inv-[A-Za-z0-9_-]{20,100}$') {
+        $k = "$($r.body.installKey)"
+        if ($SetKey) { $sk = & $SetKey $k; if ($sk -and -not $sk.Ok) { return @{ action = 'retry'; message = "claimed, but not stored: $($sk.Reason)"; hash = $h; key = $k } } }
+        return @{ action = 'claimed'; message = 'the Community install key was claimed and stored (you said yes to connect this install to Invardia)'; hash = $h; key = $k }
+    }
+    if ($st -eq 200) { return @{ action = 'retry'; message = 'Invardia answered without a usable install key'; hash = $h } }
+    if ($st -eq 409 -and $why -match 'tenantKnown') { return @{ action = 'refused'; message = 'Invardia knows this tenant as a licensed customer - the install key is claimed with the licence, not as Community'; hash = $h } }
+    if ($st -eq 409 -and $why -match 'keyExists') { return @{ action = 'refused'; message = 'Invardia issued this install''s key already, but it is not in the install''s Key Vault - ask Invardia support, then use Claim again'; hash = $h } }
+    if ($st -eq 429) { return @{ action = 'retry'; message = 'Invardia''s claim limit was reached - asked again next run'; hash = $h } }
+    @{ action = 'retry'; message = "the claim did not answer (HTTP $st$(if ($why -match '^[\w .-]{1,80}$') { ", $why" })) - asked again next run"; hash = $h }
+}
+
 $script:EpsLicenceSecretName = 'eps-licence'   # the licence file in the install's Key Vault (framework §12.25: written by the update job only)
 $script:EpsLicenceKvArmApi = '2023-07-01'
 $script:EpsLicenceWritableSecrets = @('uplink-key', 'eps-licence')   # the ONLY secrets this product's code ever writes
@@ -322,12 +354,12 @@ function Set-EpsUplinkKey { param([Parameter(Mandatory)][string]$Key) Set-EpsIns
 #   PULL   no faster than pollAfterSeconds: POST <base>/api/licence-requests/pull + X-Invardia-Pull-Token -> { status;
 #          licence? = { fileName; sha256; contentBase64 } }
 #   VERIFY offline (SHA-256, signature, product, THIS tenant, dates, a Pro edition), then store: the install's Key Vault
-#          (eps-licence) and eps.License. A COMMUNITY install never knocks. A rejection is never re-requested by itself.
+#          (eps-licence) and eps.License. A COMMUNITY install asks ONLY after its user said yes at install (EPS_CONNECT_INVARDIA=yes; owner 2026-11-11 opt-in), then with edition community (PRO-COMMUNITY-SAME): Invardia answers 200 { status: Community } - the free set, no request, no owner mail; asked again after pollAfterSeconds. A rejection is never re-requested by itself.
 $script:EpsLicenceRenewDays = 30
 
 function Get-EpsLicenceRequestDecision {
     <# PURE (PIM's Get-PimLicenceRequestDecision). @{ action = none|knock|pull; reason; clearHint }. #>
-    param($License, [bool]$ProHere, $State, [bool]$HasToken, [datetime]$NowUtc, [string]$SupersededBy = '', [bool]$ProIntended = $false)
+    param($License, [bool]$ProHere, $State, [bool]$HasToken, [datetime]$NowUtc, [string]$SupersededBy = '', [bool]$ProIntended = $false, [bool]$Connected = $false)
     $NowUtc = $NowUtc.ToUniversalTime()
     $hint = "$SupersededBy".Trim()
     $curId = if ($License) { "$($License.LicenseId)".Trim() } else { '' }
@@ -338,7 +370,20 @@ function Get-EpsLicenceRequestDecision {
         if ($next -and $NowUtc -lt $next) { return @{ action = 'none'; reason = "waiting for Invardia (next check $($next.ToString('u')))"; clearHint = $clear } }
         return @{ action = 'pull'; reason = 'a request is pending at Invardia'; clearHint = $clear }
     }
-    if (-not $ProIntended) { return @{ action = 'none'; reason = 'Community: no licence is requested (a Pro install holds a licence or an install key, or was installed with the Pro installer)'; clearHint = $clear } }
+    if (-not $ProIntended) {
+        # OWNER 2026-11-11 ("Ask at install (opt-in)"): a Community install stays ANONYMOUS - it sends NOTHING to Invardia,
+        # not even this ask - unless its user said yes at install ("Connect this install to Invardia: health reports +
+        # updates on request"; EPS_CONNECT_INVARDIA = yes on the update job). Without the yes: the free set, nothing sent.
+        if (-not $Connected) { return @{ action = 'none'; reason = 'Community, anonymous: nothing is sent to Invardia (no yes to "Connect this install to Invardia" at install)'; clearHint = $clear } }
+        # PRO-COMMUNITY-SAME (owner 2026-11-11 "it must be same pro community"): a Community install asks the SAME way, with
+        # edition 'community'; Invardia answers 200 { status: 'Community' } (the free set, no request, no owner mail) and when
+        # to ask again (pollAfterSeconds, 24 h). A licence or trial for the tenant still comes back as Pro.
+        if ($st -eq 'Community') {
+            $next = $null; try { if ("$($State.nextPollUtc)") { $next = ([datetime]"$($State.nextPollUtc)").ToUniversalTime() } } catch { }
+            if ($next -and $NowUtc -lt $next) { return @{ action = 'none'; reason = "Community: Invardia answered the free set; asked again $($next.ToString('u'))"; clearHint = $clear } }
+        }
+        return @{ action = 'knock'; reason = 'Community: the same licence ask as Pro (Invardia answers which features)'; clearHint = $clear; community = $true }
+    }
     $rejected = @{ action = 'none'; reason = "Invardia rejected the licence request$(if ("$($State.reason)") { ": $($State.reason)" }) - contact Invardia, then use Claim again on the Licence page"; clearHint = $clear }
     if ($st -eq 'Rejected' -and $hint -and -not $clear) { return $rejected }
     if ($hint -and $curId -and -not $clear) { return @{ action = 'knock'; reason = "Invardia re-issued the licence (superseded by $hint)"; clearHint = $false } }
@@ -363,8 +408,9 @@ function Get-EpsLicenceFileSha256 {
 function New-EpsLicenceKnockBody {
     <# PURE. The knock body (the contract's field names); empty optional fields left out; never an edition. #>
     param([Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$InstallId,
-          [string]$CurrentLicenceId = '', $CurrentValidTo, [string]$CurrentLicenceSha256 = '')
+          [string]$CurrentLicenceId = '', $CurrentValidTo, [string]$CurrentLicenceSha256 = '', [string]$Edition = '')
     $b = [ordered]@{ product = $script:EpsLicenceClaimProduct; version = $Version; tenantId = "$TenantId".ToLowerInvariant(); installId = $InstallId }
+    if ("$Edition" -eq 'community') { $b['edition'] = 'community' }   # PRO-COMMUNITY-SAME: a Community install says so (a Pro ask sends none - a trial is just a licence)
     if ("$CurrentLicenceId".Trim()) { $b['currentLicenceId'] = "$CurrentLicenceId".Trim() }
     $hs = "$CurrentLicenceSha256".Trim().ToLowerInvariant(); if ($hs -match '^[0-9a-f]{64}$') { $b['currentLicenceSha256'] = $hs }
     if ($CurrentValidTo) { try { $b['currentValidTo'] = ([datetime]$CurrentValidTo).ToString('yyyy-MM-dd') } catch { } }
@@ -406,7 +452,7 @@ function Invoke-EpsLicenceRequestCycle {
     #>
     param([Parameter(Mandatory)][scriptblock]$Http, [Parameter(Mandatory)][hashtable]$Store, [Parameter(Mandatory)][string]$Version,
           [AllowEmptyString()][string]$TenantId, [AllowEmptyString()][string]$LicenceText, [AllowEmptyString()][string]$InstallKey,
-          [AllowEmptyString()][string]$SupersededBy = '', [AllowEmptyString()][string]$InstallEdition = '', [datetime]$NowUtc = [datetime]::UtcNow,
+          [AllowEmptyString()][string]$SupersededBy = '', [AllowEmptyString()][string]$InstallEdition = '', [datetime]$NowUtc = [datetime]::UtcNow, [AllowEmptyString()][string]$Connect = '',
           [string]$BaseUrl = $script:EpsLicenceBase, [string[]]$TrustedCertsB64)
     $NowUtc = $NowUtc.ToUniversalTime()
     $base = "$BaseUrl".Trim().TrimEnd('/')
@@ -415,7 +461,7 @@ function Invoke-EpsLicenceRequestCycle {
     $state = & $Store.GetState
     $pull = & $Store.GetPull; $token = "$($pull.Token)".Trim()
     $proIntended = [bool]("$LicenceText".Trim() -or "$InstallKey".Trim() -match '^inv-' -or "$SupersededBy".Trim() -or "$InstallEdition".Trim() -ieq 'pro')
-    $d = Get-EpsLicenceRequestDecision -License $lic -ProHere $proHere -State $state -HasToken ([bool]$token) -NowUtc $NowUtc -SupersededBy $SupersededBy -ProIntended $proIntended
+    $d = Get-EpsLicenceRequestDecision -License $lic -ProHere $proHere -State $state -HasToken ([bool]$token) -NowUtc $NowUtc -SupersededBy $SupersededBy -ProIntended $proIntended -Connected ("$Connect".Trim() -ieq 'yes')
     if ($d.clearHint) { & $Store.SetHint '' }
     $save = { param($Status, $Msg, $Extra) $o = [ordered]@{ status = $Status; message = $Msg; requestId = "$($state.requestId)"; requestedUtc = "$($state.requestedUtc)"; nextPollUtc = "$($state.nextPollUtc)"; reason = '' }
               if ($Extra) { foreach ($k in $Extra.Keys) { $o[$k] = $Extra[$k] } }
@@ -426,8 +472,14 @@ function Invoke-EpsLicenceRequestCycle {
     if ($d.action -eq 'knock') {
         $iid = "$($pull.InstallId)".Trim().ToLowerInvariant()
         if ($iid -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { $iid = [guid]::NewGuid().ToString('D'); & $Store.SetPull $token $iid; $iid = "$((& $Store.GetPull).InstallId)".Trim().ToLowerInvariant() }
-        $body = New-EpsLicenceKnockBody -Version $Version -TenantId $TenantId -InstallId $(if ($iid) { $iid } else { [guid]::NewGuid().ToString('D') }) -CurrentLicenceId "$(if ($lic) { $lic.LicenseId })" -CurrentValidTo $(if ($lic) { $lic.ValidTo }) -CurrentLicenceSha256 (Get-EpsLicenceFileSha256 -LicenceText $LicenceText)
+        $body = New-EpsLicenceKnockBody -Version $Version -TenantId $TenantId -InstallId $(if ($iid) { $iid } else { [guid]::NewGuid().ToString('D') }) -CurrentLicenceId "$(if ($lic) { $lic.LicenseId })" -CurrentValidTo $(if ($lic) { $lic.ValidTo }) -CurrentLicenceSha256 (Get-EpsLicenceFileSha256 -LicenceText $LicenceText) -Edition $(if ($d.community) { 'community' } else { '' })
         $r = $null; try { $r = & $Http 'POST' "$base/api/licence-requests" $body (New-EpsLicenceKnockHeaders -InstallKey $InstallKey -InstallId $iid) } catch { $r = @{ status = 0; body = $null; error = 'the request failed' } }
+        if ("$($r.status)" -eq '200' -and "$($r.body.status)" -eq 'Community') {
+            # PRO-COMMUNITY-SAME: the free set - no request, no pull; asked again when Invardia says (24 h)
+            $wait = [Math]::Max(3600, [int]"0$($r.body.pollAfterSeconds)")
+            $st = & $save 'Community' "Community: Invardia answered the free set (no licence for this tenant) - asked again $($NowUtc.AddSeconds($wait).ToString('yyyy-MM-dd HH:mm')) UTC" ([ordered]@{ requestId = ''; requestedUtc = $NowUtc.ToString('o'); nextPollUtc = $NowUtc.AddSeconds($wait).ToString('o') })
+            return @{ action = 'knock'; ok = $true; state = $st; message = $st.message; stored = $false; community = $true }
+        }
         if ("$($r.status)" -notin '200', '201', '202' -or -not "$($r.body.pullToken)") {
             # Invardia's own reason (its error code / message - never a secret: the request carries the install key in a
             # header only) is kept, so a refusal can be acted on (found at the first live knock, 2026-11-05: a bare 422)
@@ -563,7 +615,7 @@ function Invoke-EpsLicenceCycle {
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Version, [scriptblock]$Http,
           [AllowEmptyString()][string]$InstallKey, [scriptblock]$WriteSecret, [scriptblock]$Log = { param($l, $m) },
-          [string]$TenantId = (Get-EpsLicenceTenantId), [string]$InstallEdition = $env:EPS_INSTALL_EDITION, [datetime]$NowUtc = [datetime]::UtcNow,
+          [string]$TenantId = (Get-EpsLicenceTenantId), [string]$InstallEdition = $env:EPS_INSTALL_EDITION, [datetime]$NowUtc = [datetime]::UtcNow, [string]$Connect = $env:EPS_CONNECT_INVARDIA,
           [string[]]$TrustedCertsB64)
     if (-not $Http) { $Http = { param($m, $u, $b, $h) Invoke-EpsUpdateHttp -Method $m -Url $u -Body $b -Headers $h } }
     if (-not $WriteSecret) { $WriteSecret = { param($n, $v) Set-EpsInstallSecret -Name $n -Value $v } }
@@ -585,7 +637,7 @@ function Invoke-EpsLicenceCycle {
                 @{ Ok = $true; Reason = 'stored' } }
         }
         $rq = Invoke-EpsLicenceRequestCycle -Http $Http -Store $store -Version $Version -TenantId $TenantId -LicenceText $text -InstallKey $InstallKey `
-                -SupersededBy $(if ($row) { "$($row.SupersededBy)" } else { '' }) -InstallEdition $InstallEdition -NowUtc $NowUtc -TrustedCertsB64 $TrustedCertsB64
+                -SupersededBy $(if ($row) { "$($row.SupersededBy)" } else { '' }) -InstallEdition $InstallEdition -NowUtc $NowUtc -Connect $Connect -TrustedCertsB64 $TrustedCertsB64
         & $Log $(if ($rq.ok) { 'Info' } else { 'Warning' }) "licence request: $($rq.action) - $($rq.message)"
         if ($rq.stored) { $text = "$($rq.text)" }
         $lic = Resolve-EpsLicenceStatus -Document $text -TrustedCertsB64 $TrustedCertsB64 -Now $NowUtc
@@ -602,6 +654,13 @@ function Invoke-EpsLicenceCycle {
                 if ($cl.action -ne 'none') { try { Set-EpsLicenceClaimState -ConnectionString $cs -Result $cl } catch { & $Log 'Warning' "the claim state was not stored: $((("$($_.Exception.Message)") -split "`n")[0])" } }
                 if ($cl.key) { $out.InstallKey = "$($cl.key)" }   # also when it was not stored: this run still uses it
             }
+        }
+        # OPT-IN-1 "claim on yes": a Community install whose user said yes at install claims its Community key (no licence)
+        if ($out.Edition -eq 'community' -and "$Connect".Trim() -ieq 'yes' -and "$InstallKey".Trim() -notmatch '^inv-[A-Za-z0-9_-]{20,100}$') {
+            $cl = Invoke-EpsCommunityKeyClaim -Http $Http -TenantId $TenantId -SetKey { param($k) & $WriteSecret 'uplink-key' $k } -Previous (Get-EpsStoredLicence -ConnectionString $cs)
+            & $Log $(if ($cl.action -in 'refused', 'retry') { 'Warning' } else { 'Info' }) "install key claim (Community, connected): $($cl.action) - $($cl.message)"
+            if ($cl.action -ne 'none') { try { Set-EpsLicenceClaimState -ConnectionString $cs -Result $cl } catch { & $Log 'Warning' "the claim state was not stored: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+            if ($cl.key) { $out.InstallKey = "$($cl.key)" }
         }
     } catch { & $Log 'Warning' "licence: $((("$($_.Exception.Message)") -split "`n")[0]) - Community features stay on, the next run tries again" }
     $out

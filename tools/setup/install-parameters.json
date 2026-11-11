@@ -353,6 +353,19 @@
       "help": "The Support app's starting level: troubleshoot or setup (read, plus admin only during an open support session of at most 8 hours), read, or none. Used only with -SupportAppId."
     },
     {
+      "key": "connectToInvardia",
+      "parameter": "-ConnectToInvardia",
+      "page": "advanced",
+      "type": "enum",
+      "options": [
+        "yes",
+        "no"
+      ],
+      "required": false,
+      "default": "",
+      "help": "Community only: Connect this install to Invardia - health reports (numbers and states only) and updates on request. yes connects it; no keeps it anonymous (it sends nothing but the nightly question which release is approved). Empty: the install asks once; the default answer is no."
+    },
+    {
       "key": "resume",
       "parameter": "-Resume",
       "page": "advanced",

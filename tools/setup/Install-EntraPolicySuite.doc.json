@@ -268,6 +268,12 @@
       "help": "the subscription to install in"
     },
     {
+      "name": "ConnectToInvardia",
+      "required": false,
+      "default": "",
+      "help": "Community only: yes connects this install to Invardia (health reports from the support link + update now); no keeps it anonymous; empty = asked once when interactive (default no). A re-run keeps an earlier yes; no takes it back"
+    },
+    {
       "name": "Location",
       "required": false,
       "default": "westeurope",

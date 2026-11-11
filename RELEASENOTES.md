@@ -2,6 +2,35 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.8 - Connect a Community installation to Invardia, only if you say yes
+Builds on the owner's decision: "Ask at install (opt-in)" (2026-11-11, relayed by Invardia)
+- The install asks once: "Connect this install to Invardia: health reports + updates on request?" The answer is no
+  unless you type y. Answer it ahead with `-ConnectToInvardia yes` or `-ConnectToInvardia no`; a re-run keeps a yes,
+  and `-ConnectToInvardia no` takes it back.
+- Yes: at its next update run the installation gets its own key from Invardia (no licence needed). It then sends the
+  support link's health reports (numbers and states only - never a user, device, tag value or name) and can be asked
+  by Invardia to update now.
+- No (the default): nothing changes - the installation stays anonymous.
+## 2.1.7 - A Community installation sends Invardia nothing unless you say yes
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "Ask at install (opt-in)" (2026-11-11, relayed by Invardia)
+- Fix: 2.1.6 let a Community installation check its edition with Invardia once a day (tenant id, install id and
+  version) without asking you. A Community installation now sends nothing for it - it simply runs the free features -
+  unless you said yes at install to connect it to Invardia. Pro installations are unchanged.
+- Everything else in 2.1.6 stays: the real edition on the resource group, the support link prepared at install, and the
+  update job run right after the install.
+
+## 2.1.6 - Pro and Community installations are set up the same way
+Builds on the owner's decision: "it must be same pro community, dont get it" (2026-11-11, relayed by Invardia, framework PRO-COMMUNITY-SAME)
+- Fix: every installation's resource group was tagged edition=community, Pro included. It now carries the real edition.
+- Fix: a Community installation prepares the Invardia support link the same way as Pro (the place for its key and the
+  engine's right to read it are made at install), so the link works without running the install again.
+- Fix: every installation runs its update job right after the install, not only Pro - it is current at once.
+- Every installation checks its edition with Invardia the same way, once a day: a Community installation is told it is
+  Community (the free features) - no request and no mail on Invardia's side; a licence or trial for your tenant still
+  arrives by itself.
+- Only the licensed features and where the package comes from differ between Pro and Community.
+
 ## 2.1.5 - Ready for same-day security patches of Microsoft's base images
 Builds on the owner's decision: "make sure it is consistent cross all solutions" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
 - Your installation, its update and its hybrid worker now accept a security patch numbered with four parts (for
