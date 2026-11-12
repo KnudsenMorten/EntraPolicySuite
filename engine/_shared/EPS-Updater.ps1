@@ -535,6 +535,12 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                 & $tr.Emit 'check' 'ok' "$($t.Version) is approved for ring $ringN"
                 $applied = Invoke-EpsUpdateApply -Target @{ Version = $t.Version; Sha256 = $t.Sha256; Size = $t.Size; DownloadUrl = $t.DownloadUrl } -RunningVersion $Version `
                     -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
+                # IMAGE-PRUNE (owner 2026-11-12, framework IMAGE-PATCH-1): ONLY after the update read back healthy - the install's
+                # own registry keeps the current release + 1 previous image; as the updater identity (Contributor on the group)
+                if ($applied.Ok -and (Get-Command Invoke-EpsImagePruneAfterUpdate -ErrorAction SilentlyContinue)) {
+                    $applied.Prune = Invoke-EpsImagePruneAfterUpdate -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Version $t.Version
+                    foreach ($l in @($applied.Prune.Lines)) { & $Log $(if ($applied.Prune.Ok) { 'Info' } else { 'Warning' }) $l }
+                }
             }
         } finally {
             $global:EPS_TokenProvider = $saved
@@ -557,6 +563,13 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                 -OutcomeText $(if ($applied.Ok) { "$(@($applied.Rolled).Count) component(s) rolled" } else { "stopped at '$($applied.Step)': $($applied.Reason)" }) `
                 -Before @{ version = $Version } -After @{ version = $t.Version; ring = $ringN; rolled = @($applied.Rolled); step = "$($applied.Step)" })
         } catch { & $Log 'Warning' "audit: update.apply could not be written: $($_.Exception.Message)" }
+        if ($applied.Prune) {
+            try {
+                [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'update.image-prune' -Actor 'caj-eps-updater (IMAGE-PRUNE)' -ActorSource 'job' `
+                    -Target "Registry|$($t.Version)" -Reason 'keep the current release + 1 previous image (owner 2026-11-12)' -Outcome $(if ($applied.Prune.Ok) { 'ok' } else { 'error' }) `
+                    -OutcomeText "$($applied.Prune.Deleted) image(s) deleted, $($applied.Prune.Left) left" -Before @{} -After @{ deleted = [int]$applied.Prune.Deleted; left = [int]$applied.Prune.Left })
+            } catch { & $Log 'Warning' "audit: update.image-prune could not be written: $($_.Exception.Message)" }
+        }
     } elseif ($t.State -eq 'available') {
         $prev =@(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) HeldReason FROM eps.Run WHERE Job = 'Update' AND Status = 'Succeeded' AND HeldReason IS NOT NULL ORDER BY StartedAtUtc DESC")[0]
         if ("$($prev.HeldReason)" -like "*reported $($t.Version) *") { & $Log 'Info' "update run for $($t.Version) already reported to Invardia" ; $track = @{ Ok = $true; Reason = 'already reported' } }
@@ -568,7 +581,7 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
     }
     $sum = switch ($t.State) {
         'available' {
-            if ($applied -and $applied.Ok) { "updated $Version -> $($t.Version) on ring $ringN ($(@($applied.Rolled).Count) components rolled)" }
+            if ($applied -and $applied.Ok) { "updated $Version -> $($t.Version) on ring $ringN ($(@($applied.Rolled).Count) components rolled)$(if ($applied.Prune) { "; images: $($applied.Prune.Deleted) old deleted, $($applied.Prune.Left) left$(if (-not $applied.Prune.Ok) { ' (prune incomplete)' })" })" }
             elseif ($applied) { "update to $($t.Version) on ring $ringN stopped at '$($applied.Step)': $($applied.Reason)" }
             else { "$($t.Version) is available on ring $ringN (running $Version); not installed$(if ($track.Ok) { " - reported $($t.Version) to Invardia" })" + $(if ($h.Expedite) { "; update now asked" }) + "; $($g.Reason)" }
         }

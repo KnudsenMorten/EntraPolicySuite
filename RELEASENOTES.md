@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.11 - Old images are removed from your registry after each update
+Builds on the owner's decision: "why woud we need to keep old images" - "agreed" (2026-11-12, relayed by Invardia, framework IMAGE-PATCH-1 IMAGE-PRUNE)
+- After an update has installed and every job and the web app read back healthy on the new version, the update job
+  deletes the older Entra Policy Suite images from your installation's own container registry. It keeps the image you
+  run now and the one before it (for a rollback one version down); an older version is rebuilt from its release when
+  needed. Microsoft Defender for Cloud scans every image stored in a registry, so old images kept showing
+  vulnerabilities that the running version no longer has.
+- Only the installation's own images (the engine and the sign-in front) in its own registry are touched; nothing is
+  deleted before the new version reads back healthy. The run and the audit trail say how many were deleted and kept.
 ## 2.1.10 - Mails name the environment by its handle
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "What eng is this" (2026-11-12, relayed by Invardia, framework MAIL-ENV 12.11a)

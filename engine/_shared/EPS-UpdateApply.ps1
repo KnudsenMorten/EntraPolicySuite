@@ -310,6 +310,137 @@ function Invoke-EpsUpdateApply {
     } finally { if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
+# ---------------------------------------------------------------------------------------------------- IMAGE-PRUNE
+# OWNER DECISION 2026-11-12 (framework IMAGE-PATCH-1 "IMAGE-PRUNE"; "why woud we need to keep old images" -> "agreed"):
+# each install's OWN registry keeps only the current release + 1 previous image. Defender scans every STORED image, so old
+# ones keep listing old CVEs; the rollback moves down one version (an older one rebuilds from its release).
+$script:EpsPruneRepos = @('eps-engine', 'signin-front')   # the ONLY repositories ever pruned (the install's own images)
+
+function ConvertTo-EpsImageVersion {
+    # PURE. A version tag (2.1.10, 2.1.5.1) -> [version]; anything else $null (never pruned by its tag).
+    param([string]$Tag)
+    if ("$Tag" -match '^\d+(\.\d+){2,3}$') { try { return [version]$Tag } catch { } }   # 3 or 4 parts only - a release
+    $null
+}
+
+function Select-EpsImagePrune {
+    <#
+      PURE. One repository's manifests (@{ digest; tags; createdTime }) and the tag it RUNS now (-Current) -> what to keep and
+      what to delete. Kept: the image with the current tag, the PREVIOUS (the highest version tag below it), any image with
+      a tag that is not a version, any image newer than the current. Deleted: every image whose tags are all versions below
+      the previous, and an untagged image created before the previous. The current tag not in the repository = nothing
+      pruned (never guess). Returns @{ Keep; Delete (@{ digest; tags }); Previous; Reason }.
+    #>
+    param([object[]]$Manifests = @(), [Parameter(Mandatory)][string]$Current)
+    $cv = ConvertTo-EpsImageVersion $Current
+    $cur = @($Manifests | Where-Object { @($_.tags) -contains $Current })[0]
+    if (-not $cv -or -not $cur) { return @{ Keep = @($Manifests | ForEach-Object { "$($_.digest)" }); Delete = @(); Previous = ''; Reason = "the current tag $Current is not in the repository - nothing pruned" } }
+    $older = @(foreach ($m in $Manifests) { foreach ($tg in @($m.tags)) { $v = ConvertTo-EpsImageVersion $tg; if ($v -and $v -lt $cv) { [pscustomobject]@{ V = $v; Tag = $tg; M = $m } } } })
+    $prev = @($older | Sort-Object V -Descending)[0]
+    $keepD = @("$($cur.digest)"); if ($prev) { $keepD += "$($prev.M.digest)" }
+    $floorV = if ($prev) { $prev.V } else { $cv }
+    $floorM = if ($prev) { $prev.M } else { $cur }; $floorT = try { [datetimeoffset]"$($floorM.createdTime)" } catch { $null }
+    $keep = [System.Collections.Generic.List[string]]::new(); $del = [System.Collections.Generic.List[object]]::new()
+    foreach ($m in $Manifests) {
+        $d = "$($m.digest)"
+        if ($keepD -contains $d) { $keep.Add($d); continue }
+        $tags = @($m.tags | Where-Object { "$_" })
+        if ($tags.Count) {
+            $vs = @($tags | ForEach-Object { ConvertTo-EpsImageVersion $_ })
+            if (@($vs | Where-Object { $null -eq $_ }).Count -or @($vs | Where-Object { $_ -ge $floorV }).Count) { $keep.Add($d) } else { $del.Add(@{ digest = $d; tags = $tags }) }
+        } else {
+            $ct = try { [datetimeoffset]"$($m.createdTime)" } catch { $null }
+            if ($floorT -and $ct -and $ct -lt $floorT) { $del.Add(@{ digest = $d; tags = @() }) } else { $keep.Add($d) }
+        }
+    }
+    @{ Keep = @($keep); Delete = @($del); Previous = $(if ($prev) { $prev.Tag } else { '' }); Reason = "keeps $Current$(if ($prev) { " + $($prev.Tag)" } else { ' (no previous)' })" }
+}
+
+function Get-EpsAcrDataToken {
+    # The registry's data-plane token for one repository, from the caller's Entra token (ARM audience) through the
+    # registry's own exchange: POST /oauth2/exchange -> refresh token, POST /oauth2/token -> access token. Throws on refusal.
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$Repo, [string]$Actions = 'metadata_read,delete')
+    $aad = Get-EpsToken -Resource 'https://management.azure.com'
+    $form = @{ 'Content-Type' = 'application/x-www-form-urlencoded' }
+    $e = & $script:EpsHttp 'POST' "https://$LoginServer/oauth2/exchange" $form ("grant_type=access_token&service=$LoginServer&tenant=$TenantId&access_token=$([uri]::EscapeDataString($aad))")
+    if ([int]$e.Status -ne 200) { throw "the registry refused the token exchange (HTTP $($e.Status))" }
+    $rt = ("$($e.Body)" | ConvertFrom-Json).refresh_token
+    $k = & $script:EpsHttp 'POST' "https://$LoginServer/oauth2/token" $form ("grant_type=refresh_token&service=$LoginServer&scope=$([uri]::EscapeDataString("repository:$($Repo):$Actions"))&refresh_token=$([uri]::EscapeDataString($rt))")
+    if ([int]$k.Status -ne 200) { throw "the registry refused a token for $Repo (HTTP $($k.Status))" }
+    ("$($k.Body)" | ConvertFrom-Json).access_token
+}
+
+function Get-EpsAcrManifests {
+    # Every manifest of one repository (digest, tags, createdTime), paged by the Link header. Throws on an error.
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$Repo, [Parameter(Mandatory)][string]$Token)
+    $out = [System.Collections.Generic.List[object]]::new(); $uri = "https://$LoginServer/acr/v1/$Repo/_manifests?n=500"; $pages = 0
+    while ($uri -and $pages -lt 40) {
+        $pages++
+        $r = & $script:EpsHttp 'GET' $uri @{ Authorization = "Bearer $Token" } $null
+        if ([int]$r.Status -eq 404) { break }
+        if ([int]$r.Status -ne 200) { throw "listing $Repo answered HTTP $($r.Status)" }
+        foreach ($m in @(("$($r.Body)" | ConvertFrom-Json).manifests)) { if ($m) { $out.Add([pscustomobject]@{ digest = "$($m.digest)"; tags = @($m.tags); createdTime = "$($m.createdTime)" }) } }
+        $link = "$(@($r.Headers['Link'])[0])"
+        $uri = if ($link -match '<([^>]+)>;\s*rel="next"') { "https://$LoginServer$($Matches[1])" } else { $null }
+    }
+    @($out)
+}
+
+function Invoke-EpsImagePrune {
+    <#
+      IMAGE-PRUNE: for each of the install's own repositories (eps-engine, signin-front) in ITS registry: list, select
+      (Select-EpsImagePrune), delete the old manifests (DELETE /v2/<repo>/manifests/<digest>), read back what is left.
+      -Current: @{ <repo> = <the tag it runs now> }. Touches no other registry, repository or resource. Never throws:
+      @{ Ok; Deleted; Left; Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][hashtable]$Current)
+    $lines = [System.Collections.Generic.List[string]]::new(); $deleted = 0; $left = 0; $ok = $true
+    foreach ($repo in $script:EpsPruneRepos) {
+        $cur = "$($Current[$repo])"
+        if (-not $cur) { $lines.Add("image prune $repo`: the running tag is not known - left as it is"); continue }
+        try {
+            $tok = Get-EpsAcrDataToken -LoginServer $LoginServer -TenantId $TenantId -Repo $repo
+            $ms = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
+            if (-not $ms.Count) { $lines.Add("image prune $repo`: no images"); continue }
+            $sel = Select-EpsImagePrune -Manifests $ms -Current $cur
+            $gone = 0; $failed = [System.Collections.Generic.List[string]]::new()
+            foreach ($d in $sel.Delete) {
+                $r = & $script:EpsHttp 'DELETE' "https://$LoginServer/v2/$repo/manifests/$($d.digest)" @{ Authorization = "Bearer $tok" } $null
+                if ([int]$r.Status -in 200, 202, 404) { $gone++ } else { $failed.Add("$(@($d.tags) -join ',')$(if (-not @($d.tags).Count) { $d.digest.Substring(0, [math]::Min(19, $d.digest.Length)) }) (HTTP $($r.Status))") }
+            }
+            $after = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
+            $stillOld = @($after | Where-Object { @($sel.Delete | ForEach-Object { $_.digest }) -contains $_.digest })
+            $kept = @($after | Where-Object { @($_.tags) -contains $cur }).Count
+            $deleted += $gone; $left += $after.Count
+            if ($failed.Count -or $stillOld.Count -or -not $kept) { $ok = $false }
+            $lines.Add("image prune $repo`: $($sel.Reason); deleted $gone of $(@($sel.Delete).Count), $($after.Count) left (read back)$(if ($failed.Count) { "; NOT deleted: $($failed -join ', ')" })$(if (-not $kept) { "; WARNING the current $cur did not read back" })")
+        } catch {
+            $ok = $false
+            $lines.Add("image prune $repo`: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing more deleted (the next update tries again)")
+        }
+    }
+    @{ Ok = $ok; Deleted = $deleted; Left = $left; Lines = @($lines) }
+}
+
+function Invoke-EpsImagePruneAfterUpdate {
+    <#
+      IMAGE-PRUNE after an update that READ BACK healthy (the caller checks Applied.Ok): the current tags from what runs
+      now (the update's version for eps-engine; the web app's signin-front tag, read back from ARM), then Invoke-EpsImagePrune
+      on the install's own registry. Never throws.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [Parameter(Mandatory)][string]$Version)
+    try {
+        $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+        $acr = Invoke-EpsArm -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr
+        $login = "$($acr.properties.loginServer)"
+        if ($login -notmatch '^[a-z0-9]{5,50}\.azurecr\.io$') { return @{ Ok = $false; Deleted = 0; Left = 0; Lines = @("image prune: the install's registry $($n.Registry) is not readable - nothing pruned") } }
+        $web = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca -AllowNotFound
+        $front = "$(@($web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
+        $cur = @{ 'eps-engine' = $(if ($n.Image -eq 'eps-engine') { $Version } else { '' }); 'signin-front' = $(if ($front -match '/signin-front:([0-9.]+)$') { $Matches[1] } else { '' }) }
+        Invoke-EpsImagePrune -LoginServer $login -TenantId $TenantId -Current $cur
+    } catch { @{ Ok = $false; Deleted = 0; Left = 0; Lines = @("image prune: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing pruned (the next update tries again)") } }
+}
 function Test-EpsVaultPrivateShape {
     # PURE. framework installer rule 11: a PRIVATE install's vault = public access off, Deny, bypass AzureServices, no IP /
     # network rule. Returns @{ Ok; Drift (plain words) }.

@@ -60,6 +60,7 @@ $script:EpsAuditActions = @(
     'tamper.alarm-inputs.export'    # READ mark: the alarm inputs downloaded (the break-glass accounts and the tamper allow list)
     'setup.database.apply'          # caj-eps-dbinit set up the database: schema, roles, users (incl. the hybrid worker), the first SuperAdmin, removals
     'update.apply'                  # the updater installed a release (or stopped part way): the components rolled
+    'update.image-prune'            # IMAGE-PRUNE (owner 2026-11-12): the updater deleted old images from the install's own registry (current + 1 previous kept)
     'pro.licenseopt.export', 'pro.licenseprice.change'   # EPS Pro licence optimisation: the priced list downloaded (a READ mark) / a price in Entra Policy Suite's own price table changed
     'pro.policycode.export', 'pro.policycode.push', 'pro.policycode.import'   # EPS Pro policy as code: the policies as a zip / pushed to the customer's Git / read from Git into a set to review (the tenant is changed only through the restore path)
     'worker.test.request', 'worker.retry'   # WORKER-GUI (2.0.82): an Admin tests the hybrid worker connection (a read-only package) / tries a failed AD tag change again (a new change + package)
