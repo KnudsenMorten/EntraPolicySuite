@@ -2,6 +2,15 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.9 - Every mail says which environment sent it
+Builds on the owner's decision: "What eng is this" (2026-11-12, relayed by Invardia, framework MAIL-ENV 12.11a)
+- Every mail Entra Policy Suite sends (tamper alerts, CA monitor and CA Policy Analyzer alerts, the identity report, the
+  passkey rollout, the test mail) now starts with its environment: the subject reads for example
+  "[PROD] internal - Warning: ..." and the first line of the mail names the environment and the tenant (name and id).
+  The name is the one Invardia holds for your environment; an installation not connected to Invardia uses its own name.
+- When the tenant name is not set in Settings, the mail uses your directory's own display name.
+- The Invardia support link now also reports how healthy the database statistics are (whether they refresh in the
+  background, the share that is out of date, and when they were last refreshed), so a slow page is caught early.
 ## 2.1.8 - Connect a Community installation to Invardia, only if you say yes
 Builds on the owner's decision: "Ask at install (opt-in)" (2026-11-11, relayed by Invardia)
 - The install asks once: "Connect this install to Invardia: health reports + updates on request?" The answer is no

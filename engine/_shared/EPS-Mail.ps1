@@ -2,7 +2,7 @@
 #   MAIL-1: a shared mailbox (no licence); the product's OWN managed identity sends with Graph app-only
 #           POST /users/<mailbox>/sendMail; the right is Exchange RBAC 'Application Mail.Send' scoped to that ONE
 #           mailbox (Initialize-EpsMailSender.ps1) - never a tenant-wide Mail.Send consent.
-#   MAIL-3: subject  [<Environment>] <severity word if relevant> <what happened> [Entra Policy Suite], max 120 characters,
+#   MAIL-3 + MAIL-ENV (12.11a): subject  [<KIND>] <environment> - <severity word if relevant> <what happened> [Entra Policy Suite], max 120 characters,
 #           only <what happened> is shortened; every mail names its environment in the footer (name, tenant, product,
 #           version).
 # Settings: Mail.Mode (none | sharedMailbox; default none), Mail.Sender (the mailbox's UPN or id), Mail.Recipients
@@ -16,7 +16,9 @@ $script:EpsMailLogoUrl = 'https://invardia.com/brand/Invardia-EntraPolicySuite-l
 function New-EpsMailSubject {
     # MAIL-3. -Severity: Failed | Warning | 'Action needed' | '' (none on a normal mail).
     param([Parameter(Mandatory)][string]$Environment, [Parameter(Mandatory)][string]$What, [ValidateSet('', 'Failed', 'Warning', 'Action needed')][string]$Severity = '', [string]$Ticket)
-    $head = "[$Environment] " + $(if ($Severity) { "$Severity`: " } else { '' })
+    # MAIL-ENV (framework 12.11a, owner 2026-11-12 "What eng is this"): the ENVIRONMENT first - its label ("[PROD] internal",
+    # Get-EpsMailEnvironmentLabel), then " - ", the severity and what happened: "[PROD] internal - Warning: ... [Entra Policy Suite]"
+    $head = "$("$Environment".Trim()) - " + $(if ($Severity) { "$Severity`: " } else { '' })
     $tail = $(if ($Ticket) { " [$Ticket]" } else { '' }) + " [$script:EpsProductName]"
     $room = 120 - $head.Length - $tail.Length
     $w = if ($What.Length -gt $room) { $What.Substring(0, [math]::Max(0, $room - 3)) + '...' } else { $What }
@@ -49,6 +51,8 @@ function New-EpsMailBody {
     # (reversed, served by invardia.com/brand) and the 1 px brand-blue line under it. Mail clients block images by default,
     # so the product name is the image's alt text, in brand-wordmark - a blocked image still reads "Entra Policy Suite".
     [void]$sb.Append("<div style=""background:#0B1633;border-bottom:1px solid #1B4FE4;padding:10px 16px""><img src=""$script:EpsMailLogoUrl"" alt=""$script:EpsProductName"" height=""32"" style=""display:block;height:32px;width:auto;border:0;color:#9FC3FF;font-size:18px;font-weight:600""></div>")
+    # MAIL-ENV (framework 12.11a): the FIRST line names the environment and the tenant (display name + id) - every mail
+    [void]$sb.Append("<p style=""font-size:12px;color:#444;margin:12px 0 4px""><b>$(ConvertTo-EpsHtml $Footer.Environment)</b>$(if ("$($Footer.TenantName)$($Footer.TenantId)".Trim()) { " &middot; tenant $(ConvertTo-EpsHtml $(if ("$($Footer.TenantName)".Trim()) { $Footer.TenantName } else { '(name not known)' })) ($(ConvertTo-EpsHtml $Footer.TenantId))" })</p>")
     [void]$sb.Append("<p>$(ConvertTo-EpsHtml $Summary)</p>")
     # -SummaryHtml: markup the CALLER built and encoded (e.g. a list); never a value from outside unencoded
     if ($SummaryHtml) { [void]$sb.Append($SummaryHtml) }
@@ -97,6 +101,48 @@ function Get-EpsEnvironmentName {
     $Default
 }
 
+function Get-EpsMailEnvironmentLabel {
+    <#
+      MAIL-ENV (framework 12.11a): the environment as every mail names it - "[<KIND>] <display name>". The display name and
+      the kind are Invardia's (eps.UplinkState 'environment', the last good answer of GET /api/enrollments/environment); an
+      install without a key (Community without the yes) has no kind and uses its own name (Get-EpsEnvironmentName). Only
+      THIS install's names - never another customer's. Never throws.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Default = '')
+    $name = Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $Default
+    $kind = ''
+    try {
+        $j = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.UplinkState WHERE Name = 'environment'"
+        if ($null -ne $j -and $j -isnot [DBNull] -and "$j".Trim()) { $kind = ConvertTo-EpsMailKindTag -Kind "$(("$j" | ConvertFrom-Json).kind)" }
+    } catch { }
+    if ($kind -and "$name" -notlike "[$kind]*") { "[$kind] $name" } else { "$name" }
+}
+
+function ConvertTo-EpsMailKindTag {
+    # PURE. Invardia's environment kind -> the subject tag: prod / production -> PROD, test -> TEST, dev / development -> DEV,
+    # demo -> DEMO; another plain word (2-12 letters) in capitals; anything else none.
+    param([string]$Kind)
+    $k = "$Kind".Trim().ToLowerInvariant()
+    switch -Regex ($k) {
+        '^(prod|production)$' { return 'PROD' }
+        '^(dev|development)$' { return 'DEV' }
+        '^[a-z]{2,12}$'       { return $k.ToUpperInvariant() }
+        default               { return '' }
+    }
+}
+
+$script:EpsMailTenantName = $null
+function Get-EpsMailTenantName {
+    # MAIL-ENV: the tenant's display name for the body - the setting Platform.TenantName, else the directory's own name
+    # (Graph /organization, read once per process); '' when neither can be read. Never throws.
+    param([string]$Setting)
+    if ("$Setting".Trim()) { return "$Setting".Trim() }
+    if ($null -ne $script:EpsMailTenantName) { return $script:EpsMailTenantName }
+    $script:EpsMailTenantName = ''
+    try { $o = Invoke-EpsGraph -Path 'v1.0/organization?$select=displayName'; $v = @($o.value)[0].displayName; if ("$v".Trim()) { $script:EpsMailTenantName = "$v".Trim() } } catch { }
+    $script:EpsMailTenantName
+}
+
 function Get-EpsMailConfig {
     param([Parameter(Mandatory)][string]$ConnectionString)
     $g = { param($n, $d) $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $n } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'; if ($null -eq $v -or "$v" -eq '') { $d } else { [string]$v } }
@@ -108,8 +154,8 @@ function Get-EpsMailConfig {
         SmtpServer = & $g 'Mail.SmtpServer' ''; SmtpPort = [int](& $g 'Mail.SmtpPort' '25'); SmtpUseTls = ((& $g 'Mail.SmtpUseTls' 'true') -eq 'true')
         SmtpFrom = & $g 'Mail.SmtpFrom' ''; SmtpCredentialSecret = & $g 'Mail.SmtpCredentialSecret' ''
         Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
-        Environment = (Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'Entra Policy Suite' }))
-        TenantId = $env:EPS_TENANT_ID; TenantName = & $g 'Platform.TenantName' ''
+        Environment = (Get-EpsMailEnvironmentLabel -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'Entra Policy Suite' }))
+        TenantId = $env:EPS_TENANT_ID; TenantName = (Get-EpsMailTenantName -Setting (& $g 'Platform.TenantName' ''))
     }
 }
 

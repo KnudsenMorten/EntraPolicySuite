@@ -282,7 +282,7 @@ function New-EpsUplinkHeartbeat {
       PURE. The heartbeat from the facts Get-EpsUplinkHeartbeatFacts read. -WithoutNewFields: the liveness record only
       (envelope, Outcome, Counts) - the one resend after a 4xx refusal (§8.17).
       Facts: @{ Counts; EnvironmentName; Jobs = @(@{ Job; LastStart; LastEnd; Status; DurationMin; PrevDurationMin; TimeoutHours });
-               Update = @{ Installed }; Mail = @{ Mode; LastSentUtc }; SignIn = @{ Layer; Version }; Database = @{ Tier } }
+               Update = @{ Installed }; Mail = @{ Mode; LastSentUtc }; SignIn = @{ Layer; Version }; Database = @{ Tier; Stats = @{ StatsTotal; StatsStale; AsyncOn }; StatsRefreshedUtc } }
     #>
     param([Parameter(Mandatory)]$Facts, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [switch]$WithoutNewFields, [string[]]$Drop = @())
     $o = New-EpsUplinkEnvelope -Kind 'heartbeat' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
@@ -330,7 +330,15 @@ function New-EpsUplinkHeartbeat {
             if ($layer -eq 'signin-front' -and "$($Facts.SignIn.Version)" -match '^[0-9A-Za-z.+-]{1,50}$') { $s.version = "$($Facts.SignIn.Version)" }
             $o.SignIn = $s
         }
-        if ("$($Facts.Database.Tier)" -match '^[A-Za-z0-9._-]{1,20}$') { $o.Database = [ordered]@{ tier = "$($Facts.Database.Tier)" } }
+        $db = [ordered]@{}
+        if ("$($Facts.Database.Tier)" -match '^[A-Za-z0-9._-]{1,20}$') { $db.tier = "$($Facts.Database.Tier)" }
+        # SQL-STATS-PROOF: exactly the three keys Invardia takes (statsAsync, statsStalePct, statsRefreshedUtc) - each only when read
+        $sf = $Facts.Database.Stats
+        if ($sf -and $sf.AsyncOn -isnot [DBNull] -and $null -ne $sf.AsyncOn) { $db.statsAsync = ([int]$sf.AsyncOn -eq 1) }
+        if ($sf -and $sf.StatsTotal -isnot [DBNull] -and [int]$sf.StatsTotal -gt 0) { $db.statsStalePct = [math]::Min(100, [math]::Max(0, [int][math]::Round(100.0 * [int]$sf.StatsStale / [int]$sf.StatsTotal, [MidpointRounding]::AwayFromZero))) }
+        $sr = [datetime]::MinValue
+        if ([datetime]::TryParse("$($Facts.Database.StatsRefreshedUtc)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$sr)) { $db.statsRefreshedUtc = $sr.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        if ($db.Count) { $o.Database = $db }
         # OPEN-01 auto-check #4 (Invardia 2026-11-05): what the support-access job APPLIED and read back - level none |
         # read | troubleshoot; adminUntil = the end of the open session it gave admin for (null = no admin now; the job
         # never gives more than 8 h); readUser = the read user exists (read back); checkedUtc = its last run. Left out when
@@ -574,7 +582,11 @@ function Get-EpsUplinkHeartbeatFacts {
         SignIn = (Get-EpsUplinkSignIn -Query $q)
         BuildPool = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'buildpool'")" } catch { '' })   # rule 11g (5): as the update job last read it
         SupportAccess = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Level, SessionUntil, ReadUser, AdminNow, CheckedAtUtc FROM eps.SupportAccess WHERE Id = 1')[0] } catch { $null })   # OPEN-01 #4: what caj-eps-support applied (read only)
-        Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")" }
+        # SQL-STATS-PROOF (framework §12.27 point 5): the async setting + the stale share (eps.RefreshChangedStats @ReportOnly,
+        # EXECUTE AS OWNER - no new grant) and the last clean post-write refresh (eps.UplinkState stats.refreshed)
+        Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")"
+                      Stats = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'EXEC eps.RefreshChangedStats @ReportOnly = 1')[0] } catch { $null })
+                      StatsRefreshedUtc = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'stats.refreshed'")" } catch { '' }) }
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
         LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)
         # FLEET-STEPS: the engine's rights read back now (its own app role assignments), never a remembered value

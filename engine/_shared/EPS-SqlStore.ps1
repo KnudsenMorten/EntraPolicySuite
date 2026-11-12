@@ -195,6 +195,8 @@ function Invoke-EpsStatsRefresh {
             "statistics: refreshed $($ok.Count) of $($rows.Count) stale ($(@($ok | ForEach-Object { "$($_.TableName)" } | Select-Object -Unique) -join ', ')) in $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s" +
             $(if ($bad.Count) { "; $($bad.Count) not refreshed: $("$($bad[0].Result)")" }) }
         try { & $Log $text } catch { }
+        # SQL-STATS-PROOF (framework §12.27 point 5): the heartbeat's statsRefreshedUtc = the last refresh that finished clean
+        if (-not $bad.Count) { try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') } -Query "MERGE eps.UplinkState AS d USING (SELECT N'stats.refreshed' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'stats.refreshed', @v);" | Out-Null } catch { } }
         @{ Ok = -not $bad.Count; Updated = $ok.Count; Failed = $bad.Count; Text = $text }
     } catch {
         $text = "statistics: not refreshed (warning only, the run is not affected): $((("$($_.Exception.Message)") -split "`n")[0])"

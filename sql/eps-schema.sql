@@ -1121,11 +1121,22 @@ GO
 -- holds EXECUTE on it and never ALTER on a table. Only statistics whose modifications pass 20 % of the rows + 500,
 -- SAMPLED (the default sample, never FULLSCAN), at most @MaxStats per call and @MaxSeconds in all; it changes no data.
 -- Returns one row per statistic it looked at: TableName, StatName, RowCnt, Mods, Result ('updated' or the error).
-CREATE OR ALTER PROCEDURE eps.RefreshChangedStats @MaxStats INT = 40, @MaxSeconds INT = 120
+-- SQL-STATS-PROOF (framework §12.27 point 5, v39 / 2.1.9): @ReportOnly = 1 changes nothing and returns ONE row for the
+-- heartbeat - StatsTotal, StatsStale (modifications > 20 % of the rows + 500), AsyncOn (AUTO_UPDATE_STATISTICS_ASYNC).
+CREATE OR ALTER PROCEDURE eps.RefreshChangedStats @MaxStats INT = 40, @MaxSeconds INT = 120, @ReportOnly BIT = 0
 WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
+    IF @ReportOnly = 1
+    BEGIN
+        SELECT COUNT(*) AS StatsTotal, ISNULL(SUM(CASE WHEN sp.modification_counter > 0.2 * sp.rows + 500 THEN 1 ELSE 0 END), 0) AS StatsStale,
+               (SELECT CAST(is_auto_update_stats_async_on AS INT) FROM sys.databases WHERE database_id = DB_ID()) AS AsyncOn
+        FROM sys.stats s
+        JOIN sys.objects o ON o.object_id = s.object_id AND o.type = 'U' AND o.schema_id = SCHEMA_ID('eps')
+        CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp;
+        RETURN;
+    END
     DECLARE @t0 DATETIME2 = SYSUTCDATETIME(), @sql NVARCHAR(600), @tbl SYSNAME, @st SYSNAME, @rows BIGINT, @mods BIGINT;
     DECLARE @out TABLE (TableName SYSNAME, StatName SYSNAME, RowCnt BIGINT, Mods BIGINT, Result NVARCHAR(400));
     IF @MaxStats IS NULL OR @MaxStats < 1 OR @MaxStats > 200 SET @MaxStats = 40;
@@ -1361,3 +1372,8 @@ IF COL_LENGTH('eps.Run', 'ProgressAtUtc') IS NULL ALTER TABLE eps.Run ADD Progre
 GO
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 38)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (38, '2.0.122');
+GO
+-- v39 (2.1.9, SQL-STATS-PROOF - framework §12.27 point 5): eps.RefreshChangedStats @ReportOnly (above, CREATE OR ALTER);
+-- the last refresh is eps.UplinkState stats.refreshed (written by the engine). No table change.
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 39)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (39, '2.1.9');
