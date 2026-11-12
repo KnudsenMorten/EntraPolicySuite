@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.10 - Mails name the environment by its handle
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "What eng is this" (2026-11-12, relayed by Invardia, framework MAIL-ENV 12.11a)
+- Fix: 2.1.9 named the environment by its display name, which can be just "PROD". Every mail now names it by its handle,
+  as Invardia holds it - for example "[PROD] contoso-prod - Warning: ..." - and adds the display name only when it says
+  more than the handle.
 ## 2.1.9 - Every mail says which environment sent it
 Builds on the owner's decision: "What eng is this" (2026-11-12, relayed by Invardia, framework MAIL-ENV 12.11a)
 - Every mail Entra Policy Suite sends (tamper alerts, CA monitor and CA Policy Analyzer alerts, the identity report, the

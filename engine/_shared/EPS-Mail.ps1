@@ -103,21 +103,33 @@ function Get-EpsEnvironmentName {
 
 function Get-EpsMailEnvironmentLabel {
     <#
-      MAIL-ENV (framework 12.11a): the environment as every mail names it - "[<KIND>] <display name>". The display name and
-      the kind are Invardia's (eps.UplinkState 'environment', the last good answer of GET /api/enrollments/environment); an
-      install without a key (Community without the yes) has no kind and uses its own name (Get-EpsEnvironmentName). Only
-      THIS install's names - never another customer's. Never throws.
+      MAIL-ENV (framework 12.11a, corrected 2026-11-12 00:42Z - owner: "In the mail I see only prod and not <handle>"):
+      the environment as every mail names it - "[<KIND>] <handle>", the display name after it only when it says more
+      ("[PROD] internal (Production)"). Handle, display name and kind are Invardia's (eps.UplinkState 'environment', the
+      last good answer of GET /api/enrollments/environment); an install without a key (Community without the yes) has no
+      record and uses its own name (Get-EpsEnvironmentName). Only THIS install's names. Never throws.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Default = '')
-    $name = Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $Default
-    $kind = ''
+    $rec = $null
     try {
         $j = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.UplinkState WHERE Name = 'environment'"
-        if ($null -ne $j -and $j -isnot [DBNull] -and "$j".Trim()) { $kind = ConvertTo-EpsMailKindTag -Kind "$(("$j" | ConvertFrom-Json).kind)" }
+        if ($null -ne $j -and $j -isnot [DBNull] -and "$j".Trim()) { $rec = "$j" | ConvertFrom-Json }
     } catch { }
-    if ($kind -and "$name" -notlike "[$kind]*") { "[$kind] $name" } else { "$name" }
+    $local = if ($rec) { '' } else { Get-EpsEnvironmentName -ConnectionString $ConnectionString -Default $Default }
+    ConvertTo-EpsMailEnvironmentLabel -Handle "$($rec.handle)" -DisplayName "$($rec.displayName)" -Kind "$($rec.kind)" -LocalName $local -Default $Default
 }
 
+function ConvertTo-EpsMailEnvironmentLabel {
+    # PURE. MAIL-ENV: "[<KIND>] <handle>" + " (<display name>)" only when the display name differs from the handle and is
+    # not just the kind ("PROD" says nothing). No handle: the display name; no Invardia record: the local name.
+    param([string]$Handle, [string]$DisplayName, [string]$Kind, [string]$LocalName, [string]$Default = '')
+    $tag = ConvertTo-EpsMailKindTag -Kind $Kind
+    $h = "$Handle".Trim(); $d = "$DisplayName".Trim()
+    $name = if ($h) { $h } elseif ($d) { $d } elseif ("$LocalName".Trim()) { "$LocalName".Trim() } else { $Default }
+    $extra = if ($h -and $d -and $d -ine $h -and $d -ine $tag -and $d -ine "[$tag]" -and $d -ine "$Kind".Trim()) { " ($d)" } else { '' }
+    $lab = "$name$extra"
+    if ($tag -and $lab -notlike "[$tag]*") { "[$tag] $lab" } else { $lab }
+}
 function ConvertTo-EpsMailKindTag {
     # PURE. Invardia's environment kind -> the subject tag: prod / production -> PROD, test -> TEST, dev / development -> DEV,
     # demo -> DEMO; another plain word (2-12 letters) in capitals; anything else none.
