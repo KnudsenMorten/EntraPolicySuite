@@ -1,0 +1,17 @@
+{
+  "version": "2.0.121",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "Every installation's sign-in page now gets its security update, including ones already up to date.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "sign-in page updates on every installation",
+      "text": "An installation that was already up to date did not move its sign-in page to the new version. It now does on its next update run."
+    },
+    {
+      "title": "sign-in page on supported .NET 10",
+      "text": "The sign-in page now runs on .NET 10, the same as every Invardia product. Signing in works as before, with nothing to change in your tenant."
+    }
+  ]
+}

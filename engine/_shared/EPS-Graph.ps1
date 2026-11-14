@@ -22,19 +22,63 @@ function Get-EpsToken {
     $t
 }
 
+function Get-EpsHttpRequestBody {
+    <# PURE. The body as it goes on the wire. A JSON body (no content type of the caller's own) goes as UTF-8 BYTES with
+       'application/json; charset=utf-8' (found 2026-11-12 by PIM: since ~17:55Z Graph sendMail refuses a JSON body with
+       non-ASCII text that is not sent as UTF-8 - HTTP 400 RequestBodyRead "missing parameters: Message"; a mail naming a
+       user with æ / ø / å is exactly that). A caller's own content type (the storage queue's XML, a form post) is kept. #>
+    param($Body, [string]$CallerContentType = '')
+    if ($CallerContentType) { return @{ Body = $Body; ContentType = $CallerContentType } }
+    if ($Body -is [string]) { return @{ Body = [Text.Encoding]::UTF8.GetBytes($Body); ContentType = 'application/json; charset=utf-8' } }
+    @{ Body = $Body; ContentType = 'application/json; charset=utf-8' }
+}
+
 $script:EpsHttp = if ($global:EPS_HttpOverride) { $global:EPS_HttpOverride } else {
     {
         param($Method, $Uri, $Headers, $Body)
         $p = @{ Method = $Method; Uri = $Uri; Headers = $Headers; SkipHttpErrorCheck = $true; TimeoutSec = 120 }
         if ($null -ne $Body) {
-            $p.Body = $Body; $p.ContentType = 'application/json'
             # a caller that names its own content type (the storage queue's XML, 2.0.9) - as a parameter, not a header
-            if ($Headers -and $Headers.ContainsKey('Content-Type')) { $p.ContentType = $Headers['Content-Type']; $h2 = @{} + $Headers; $h2.Remove('Content-Type'); $p.Headers = $h2 }
+            $own = ''
+            if ($Headers -and $Headers.ContainsKey('Content-Type')) { $own = "$($Headers['Content-Type'])"; $h2 = @{} + $Headers; $h2.Remove('Content-Type'); $p.Headers = $h2 }
+            $rb = Get-EpsHttpRequestBody -Body $Body -CallerContentType $own
+            $p.Body = $rb.Body; $p.ContentType = $rb.ContentType
         }
         $r = Invoke-WebRequest @p
         @{ Status = [int]$r.StatusCode; Headers = $r.Headers; Body = [string]$r.Content }
     }
 }   # $global:EPS_HttpOverride: a test (or a live check) that runs a whole entry script in another scope
+
+function Test-EpsTransportError {
+    <# PURE. Did this request get NO HTTP answer at all - a TLS handshake that failed, a connection that was reset or
+       refused, a name that did not resolve, a timeout? An HTTP status is never one: it comes back as a status. #>
+    param($ErrorRecord)
+    $e = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    for ($x = $e; $x; $x = $x.InnerException) {
+        if ($x -is [System.Net.Http.HttpRequestException] -or $x -is [System.IO.IOException] -or $x -is [System.Net.Sockets.SocketException] -or
+            $x -is [System.Security.Authentication.AuthenticationException] -or $x -is [System.TimeoutException] -or $x -is [System.Threading.Tasks.TaskCanceledException]) { return $true }
+        if ("$($x.Message)" -match '(?i)SSL connection could not be established|error occurred while sending the request|connection was (forcibly )?closed|connection (was )?reset|response ended prematurely|No such host is known|HttpClient\.Timeout|request was canceled|timed out') { return $true }
+        if ($x -isnot [Exception]) { break }
+    }
+    $false
+}
+
+$script:EpsReadRetryWaitSeconds = 5
+function Invoke-EpsHttpRead {
+    <# One request that only READS. When it got no HTTP answer at all (Test-EpsTransportError), it is sent ONCE more
+       after a short wait - internal 2026-11-13 01:01Z: one failed TLS handshake at the Exchange recipients read failed
+       the whole identity report. A second failure throws as before. Never used for a call that changes something. The
+       parameter names are the HTTP hook's own (a test's hook sees the caller's variables). #>
+    param($Method, $Uri, $Headers, $Body)
+    try { return (& $script:EpsHttp $Method $Uri $Headers $Body) }
+    catch {
+        if (-not (Test-EpsTransportError $_)) { throw }
+        $epsReadFirst = (("$($_.Exception.Message)") -split "`n")[0]
+        Write-Warning "a read of $(try { ([uri]$Uri).Host } catch { 'the service' }) got no answer ($epsReadFirst) - sent once more"
+        Start-Sleep -Seconds $script:EpsReadRetryWaitSeconds
+        & $script:EpsHttp $Method $Uri $Headers $Body
+    }
+}
 
 function Invoke-EpsGraph {
     <#
@@ -52,7 +96,8 @@ function Invoke-EpsGraph {
         while ($true) {
             $h = @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://graph.microsoft.com')" }
             if ($Eventual) { $h.ConsistencyLevel = 'eventual' }
-            $r = & $script:EpsHttp $Method $uri $h $json
+            # a GET only reads: one with no answer at all is sent once more (Invoke-EpsHttpRead); a write never is
+            $r = if ($Method -eq 'GET') { Invoke-EpsHttpRead $Method $uri $h $json } else { & $script:EpsHttp $Method $uri $h $json }
             if ($r.Status -in 429, 503, 504 -and $try -lt $MaxRetry) {
                 $try++
                 $wait = 0; $ra = if ($r.Headers) { $r.Headers['Retry-After'] }
@@ -114,7 +159,9 @@ function Get-EpsEntraGroupMembers {
     # members into the rule. So, with -ConnectionString, the name is PINNED to the group's object id the first time it
     # resolves to exactly one group (eps.GroupPin), and later runs read that group by id; a name that matches more than one
     # group (and has no pin) is REFUSED, and so is a pinned group that is gone. Each refusal is a note (-Notes).
-    param([string[]]$GroupNames, [string]$ConnectionString, [System.Collections.Generic.List[string]]$Notes)
+    # -Refused (TRUST-1 point 3, Invardia 2026-11-12 Q2): each REFUSED name is added - its membership is UNKNOWN (the
+    # MemberOfGroup condition then leaves the tag as it is), never "nobody is a member"
+    param([string[]]$GroupNames, [string]$ConnectionString, [System.Collections.Generic.List[string]]$Notes, [System.Collections.Generic.HashSet[string]]$Refused)
     $out = @{}
     $note = { param($m) if ($null -ne $Notes) { $Notes.Add($m) } else { Write-Warning $m } }
     foreach ($name in @($GroupNames | Where-Object { $_ } | Select-Object -Unique)) {
@@ -122,13 +169,13 @@ function Get-EpsEntraGroupMembers {
         $pin = if ($ConnectionString) { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $name } -Query "SELECT ObjectId FROM eps.GroupPin WHERE Source = 'Entra' AND Name = @n" }
         if ($pin) {
             $g = try { Invoke-EpsGraph -Path "v1.0/groups/$([guid]$pin)?`$select=id,displayName" } catch { if ("$_" -match '-> 404') { $null } else { throw } }
-            if (-not $g) { & $note "group '$name': the pinned group $pin no longer exists - the rule does not match until its pin is cleared"; continue }
+            if (-not $g) { & $note "group '$name': the pinned group $pin no longer exists - the rule leaves its tags as they are until its pin is cleared"; if ($null -ne $Refused) { [void]$Refused.Add($name) }; continue }
             $gid = [string]$g.id
         } else {
             $esc = $name.Replace("'", "''")
             $groups = @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=$([uri]::EscapeDataString("displayName eq '$esc'"))&`$select=id,displayName" -All)
             if (-not $groups.Count) { continue }
-            if ($groups.Count -gt 1) { & $note "group '$name': $($groups.Count) groups have this name - refused (the rule does not match until one is pinned)"; continue }
+            if ($groups.Count -gt 1) { & $note "group '$name': $($groups.Count) groups have this name - refused (the rule leaves its tags as they are until one is pinned)"; if ($null -ne $Refused) { [void]$Refused.Add($name) }; continue }
             $gid = [string]$groups[0].id
             if ($ConnectionString) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $name; o = [guid]$gid } -Query "IF NOT EXISTS (SELECT 1 FROM eps.GroupPin WHERE Source = 'Entra' AND Name = @n) INSERT INTO eps.GroupPin (Source, Name, ObjectId) VALUES ('Entra', @n, @o)" | Out-Null }
         }

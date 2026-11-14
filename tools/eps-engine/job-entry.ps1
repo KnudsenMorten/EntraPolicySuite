@@ -163,7 +163,9 @@ WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
         $u = $null; $ok = $false
         try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log -RunId $runId; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
         catch { & $log 'Error' "$($_.Exception.Message)" }
-        $sum = if ($u) { $u.Summary } else { 'the check failed - see its log' }
+        $sum = if ($u) { "$($u.Summary)" } else { 'the check failed - see its log' }
+        # 2.1.17: a mixed roll names every component - never longer than the columns (NVARCHAR(1000)), or the run stays Running
+        if ($sum.Length -gt 1000) { $sum = $sum.Substring(0, 997) + '...' }
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum; a = $(if ($u.Applied.Ok) { @($u.Applied.Rolled).Count } else { 0 }) } `
             -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h WHERE RunId = @id' | Out-Null
         if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $sum } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
@@ -195,18 +197,18 @@ WHERE q.RequestId = @id AND q.Job = 'CAPolicyAnalyzer' AND q.Status = 'Dispatche
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $scope } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'CAPolicyAnalyzer', 'Preview', @s)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             & $log 'Info' "$label - $($v.Request.Mode), read only (nothing in the tenant is changed)"
             $res = Invoke-EpsCaPolicyAnalyzer -ConnectionString $ConnectionString -Request $v.Request -RunId $runId -Version $version -Log $log
             $ok = $true
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
             $objects = if ($res) { ($res.Analyses | ForEach-Object { $_.Summary.InScope } | Measure-Object -Sum).Sum } else { 0 }
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$objects; p = [int]$(if ($res) { $res.Impacted } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0 WHERE RunId = @id' | Out-Null
-            if ($reqId) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]$reqId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$(@($res.Analyses).Count) policy(ies), $($res.Impacted) impacted" } else { 'the analysis failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if (-not $ok) { 'Failed' } elseif ($res.Partial) { 'PartlyFailed' } else { 'Succeeded' }); o = [int]$objects; p = [int]$(if ($res) { $res.Impacted } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } elseif ($res -and $res.Partial) { "partial: $($res.PartialWhy)" } else { [DBNull]::Value }); js = $(if ($res -and (@($res.Codes).Count -or $res.PartialKind)) { ([ordered]@{ Codes = @($res.Codes); PartialKind = "$($res.PartialKind)" } | ConvertTo-Json -Compress) } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0, SummaryJson = COALESCE(@js, SummaryJson), HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
+            if ($reqId) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]$reqId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$(@($res.Analyses).Count) policy(ies), $(if ($res.Partial) { 'at least ' })$($res.Impacted) impacted$(if ($res.Partial) { " - partial: $($res.PartialWhy)" })" } else { 'the analysis failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
     }
@@ -234,9 +236,9 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
             if ($gate.Allow) {
                 foreach ($id in $ids) {
                     $x = Restore-EpsTamperEvent -ConnectionString $ConnectionString -EventId ([long]$id) -By $q.RequestedBy
-                    $done.Add("event $id`: $(if ($x.Restored) { "restored '$($x.Value)'" } else { "FAILED: $($x.Error)" })")
+                    $done.Add("event $id`: $(if ($x.Queued) { "queued for the hybrid worker - it writes '$($x.Value)' to AD; the event closes when the value is read back" } elseif ($x.Pending) { "not queued again: $($x.Error)" } elseif ($x.Restored) { "restored '$($x.Value)'" } else { "FAILED: $($x.Error)" })")
                     Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'tamper.event.restore' -Actor $q.RequestedBy -ActorSource 'job' -Target "TamperEvent|$id" `
-                        -Outcome $(if ($x.Restored) { 'ok' } else { 'error' }) -OutcomeText $(if (-not $x.Restored) { "$($x.Error)" }) -After @{ appliedBy = 'TamperMonitor'; value = $x.Value } -CorrelationId $q.CorrelationId
+                        -Outcome $(if ($x.Restored -or $x.Queued) { 'ok' } else { 'error' }) -OutcomeText $(if ($x.Queued) { 'queued for the hybrid worker - not written yet; the event closes when the value is read back' } elseif (-not $x.Restored) { "$($x.Error)" }) -After @{ appliedBy = $(if ($x.Queued) { 'HybridWorker (queued)' } else { 'TamperMonitor' }); value = $x.Value; queued = [bool]$x.Queued } -CorrelationId $q.CorrelationId
                 }
             }
             $st = if (-not $gate.Allow) { 'Refused' } elseif ($done | Where-Object { $_ -match 'FAILED' }) { 'Failed' } else { 'Done' }
@@ -266,7 +268,7 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
         if ($open -and "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'TamperMonitor.AutoRestore' -Default 'false')" -eq 'true') {
             foreach ($e in @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $m.RunId } -Query "SELECT EventId FROM eps.TamperEvent WHERE RunId = @r AND Status = 'Open'")) {
                 $x = Restore-EpsTamperEvent -ConnectionString $ConnectionString -EventId $e.EventId -By 'auto-restore (TamperMonitor.AutoRestore)'
-                Say "  auto-restore of event $($e.EventId): $(if ($x.Restored) { "restored '$($x.Value)'" } else { "FAILED: $($x.Error)" })"
+                Say "  auto-restore of event $($e.EventId): $(if ($x.Queued) { "queued for the hybrid worker - it writes '$($x.Value)' to AD; the event closes when the value is read back" } elseif ($x.Pending) { "not queued again: $($x.Error)" } elseif ($x.Restored) { "restored '$($x.Value)'" } else { "FAILED: $($x.Error)" })"
             }
         }
         exit 0
@@ -320,16 +322,16 @@ WHERE q.Job = 'Backup' AND q.Status = 'Dispatched'
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'Backup', 'Apply', NULL)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             $res = if ($req) { Invoke-EpsBackupJob -ConnectionString $ConnectionString -Kind Manual -Actor "$($req.RequestedBy)" -Cause "Back up now$(if ($req.Reason) { ": $($req.Reason)" })" -Log $log }
                    else { Invoke-EpsBackupJob -ConnectionString $ConnectionString -Kind Daily -Log $log }
             $ok = $true
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Policies + $res.ConfigItems } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = 0, Applied = 0 WHERE RunId = @id' | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Policies + $res.ConfigItems } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = 0, Applied = 0, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "CA backup $($res.CaBackupId) ($($res.Policies) policies), configuration backup $($res.ConfigBackupId)" } else { 'the backup failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
@@ -348,16 +350,16 @@ WHERE q.Job = 'CaOptions' AND q.Status = 'Dispatched'
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'CaOptions', 'Preview', NULL)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - read only (nothing in the tenant is changed)"
             $res = Invoke-EpsCaOptionsDiscovery -ConnectionString $ConnectionString -Log $log
             $ok = [bool]$res.Ok
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { (@($res.Tenant.Values) | Measure-Object -Sum).Sum } else { 0 }); p = [int]$(if ($res) { @($res.NewFromGraph).Count } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0 WHERE RunId = @id' | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { (@($res.Tenant.Values) | Measure-Object -Sum).Sum } else { 0 }); p = [int]$(if ($res) { @($res.NewFromGraph).Count } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText -Fallback 'neither the Graph metadata nor any tenant list could be read' } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "Read the options from Graph: $(@($res.NewFromGraph).Count) new from Graph" } else { 'the read failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
@@ -375,18 +377,18 @@ WHERE q.Job = 'IdentityReport' AND q.Status = 'Dispatched'
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'IdentityReport', 'Preview', NULL)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - read only (nothing in the tenant or AD is changed)"
             $res = Invoke-EpsIdentityReportJob -ConnectionString $ConnectionString -RunId $runId -Version $version -Log $log
             $ok = $true
             # EPS PRO 'passkey-tracker': today's ready count per persona from this run (a no-op without the Pro licence; never fails the run)
             if (Get-Command Update-EpsProPasskeyProgress -ErrorAction SilentlyContinue) { [void](Update-EpsProPasskeyProgress -ConnectionString $ConnectionString -Log $log -Version $version) }
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Users + $res.Devices } else { 0 }); p = [int]$(if ($res) { $res.Gaps } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0 WHERE RunId = @id' | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if (-not $ok) { 'Failed' } elseif ($res.Partial) { 'PartlyFailed' } else { 'Succeeded' }); o = [int]$(if ($res) { $res.Users + $res.Devices } else { 0 }); p = [int]$(if ($res) { $res.Gaps } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } elseif ($res -and $res.Partial) { "partial: $($res.PartialWhy)" } else { [DBNull]::Value }); js = $(if ($res -and @($res.Codes).Count) { ([ordered]@{ Codes = @($res.Codes); Sources = @($res.Sources) } | ConvertTo-Json -Compress) } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0, SummaryJson = COALESCE(@js, SummaryJson), HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$($res.Users) users, $($res.Devices) devices, $($res.Gaps) open gap view(s)" } else { 'the report failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
@@ -404,15 +406,15 @@ WHERE q.Job = 'SignInMethods' AND q.Status = 'Dispatched'
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'SignInMethods', 'Preview', NULL)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - read only (nothing in the tenant is changed)"
             $res = Invoke-EpsSignInMethodsFill -ConnectionString $ConnectionString -Log $log
             $ok = -not $res.Refused
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Read + $res.Unknown } else { 0 }); a = [int]$(if ($res) { $res.Read } else { 0 }); f = [int]$(if ($res) { $res.Unknown } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @o, Applied = @a, Failed = @f WHERE RunId = @id' | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Read + $res.Unknown } else { 0 }); a = [int]$(if ($res) { $res.Read } else { 0 }); f = [int]$(if ($res) { $res.Unknown } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $(if ($failText) { $failText } else { "$($res.Refused)" }) } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @o, Applied = @a, Failed = @f, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$($res.Read) user(s) read, $($res.Unknown) unknown; $($res.Stopped)" } else { 'the read failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
@@ -431,17 +433,17 @@ WHERE q.Job = 'NamedLocations' AND q.Status = 'Dispatched'
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'NamedLocations', 'Apply', NULL)" | Out-Null
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
-        $ok = $false; $res = $null
+        $ok = $false; $res = $null; $failText = ''
         try {
             & $log 'Info' "$(if ($req) { "request $($req.RequestId) by $($req.RequestedBy)" } else { 'scheduled run' }) - the service-tag named locations"
             $res = Invoke-EpsServiceTagJob -ConnectionString $ConnectionString -Log $log
             $ok = -not $res.Failed
-        } catch { & $log 'Error' "$($_.Exception.Message)" }
+        } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
             $st = if ($ok) { 'Succeeded' } elseif ($res -and $res.Written) { 'PartlyFailed' } else { 'Failed' }
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $st; o = [int]$(if ($res) { $res.Tags } else { 0 }); p = [int]$(if ($res) { $res.Written + $res.Failed } else { 0 }); a = [int]$(if ($res) { $res.Written } else { 0 }); f = [int]$(if ($res) { $res.Failed } else { 0 }) } `
-                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = @a, Failed = @f WHERE RunId = @id' | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $st; o = [int]$(if ($res) { $res.Tags } else { 0 }); p = [int]$(if ($res) { $res.Written + $res.Failed } else { 0 }); a = [int]$(if ($res) { $res.Written } else { 0 }); f = [int]$(if ($res) { $res.Failed } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText -Fallback "$(if ($res) { $res.Failed } else { 0 }) service-tag named location(s) could not be written - see the log" } else { [DBNull]::Value }) } `
+                -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = @a, Failed = @f, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($res) { "$($res.Tags) tag(s): $($res.Written) written, $($res.Unchanged) unchanged, $($res.Failed) failed" } else { 'the job failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })

@@ -1,0 +1,10 @@
+{
+  "version": "2.0.39",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "The install now explains clearly when an Azure Policy blocks the region check.",
+  "new": [
+    { "title": "Region check names a blocking Azure Policy", "text": "When an Azure Policy in your subscription blocks the region check, the install now says so in plain words, names the policy and continues." }
+  ],
+  "fixes": []
+}

@@ -1,0 +1,17 @@
+{
+  "version": "2.0.124",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "Fewer false alarms: one missed report to Invardia no longer looks like a problem.",
+  "new": [
+    {
+      "title": "The Invardia support link has its own name",
+      "text": "The job that sends health and run results to Invardia support is now called the Invardia support link on Jobs & schedule, the overview and Settings. It does not connect to another tenant."
+    },
+    {
+      "title": "No alarm for one missed report",
+      "text": "A report that could not be delivered is retried next cycle and the run stays green. Only three misses in a row turn it amber, and you are never mailed about it."
+    }
+  ],
+  "fixes": []
+}

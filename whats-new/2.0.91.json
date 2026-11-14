@@ -1,0 +1,12 @@
+{
+  "version": "2.0.91",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Updates no longer get stuck behind a long wait or a stuck job.",
+  "new": [],
+  "fixes": [
+    { "title": "Updates no longer fail after waiting", "text": "An update that waited for a running job now fetches the release again before it downloads, so a long wait no longer stops it until the next night." },
+    { "title": "A stuck job no longer blocks updates", "text": "A job stuck for hours is now stopped and reported instead of holding the update back. A stuck tamper check no longer holds back the next checks." },
+    { "title": "Smaller fixes", "text": "Every job shows a first line in its log when it starts, the hybrid worker's database access is added without waiting for jobs, and Pro MCP tool names follow the standard form." }
+  ]
+}

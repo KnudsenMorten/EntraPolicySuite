@@ -1,0 +1,17 @@
+{
+  "version": "2.0.55",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "New installs use standard names, and private installs behind a firewall reply to your network correctly.",
+  "new": [
+    {
+      "title": "Standard names for new installs",
+      "text": "New installs use standard Azure names and fewer identities. Existing installs keep every name they have, and the setup tools still find them."
+    },
+    {
+      "title": "Private installs work behind a firewall",
+      "text": "A private install behind a central firewall can now route replies back to your network. Without this, connections from your network would time out."
+    }
+  ],
+  "fixes": []
+}

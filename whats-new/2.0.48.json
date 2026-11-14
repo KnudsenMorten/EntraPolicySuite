@@ -1,0 +1,10 @@
+{
+  "version": "2.0.48",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The nightly update check now finds and reports new versions.",
+  "new": [],
+  "fixes": [
+    { "title": "Update check now reports new versions", "text": "The nightly update check now asks Invardia whether an update is wanted and reports a new version, as intended. Before, it never did." }
+  ]
+}

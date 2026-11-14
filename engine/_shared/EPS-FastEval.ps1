@@ -129,7 +129,17 @@ function New-EpsFastCards {
             $t = [string]$k.Target
             $c = [Eps.Cond]::new()
             $c.Path = ([string]$def.Property).Split('.'); $c.Op = $ops[$def.Operator]; $c.Guard = $guards[$def.Guard]; $c.Target = $t
-            if ($c.Op -le 1) { $c.Wild = [System.Management.Automation.WildcardPattern]::new($t, [System.Management.Automation.WildcardOptions]::IgnoreCase) }
+            if ($c.Op -le 1) {
+                $c.Wild = [System.Management.Automation.WildcardPattern]::new($t, [System.Management.Automation.WildcardOptions]::IgnoreCase)
+                # TRUST-1 point 3: a pattern that is not a valid wildcard ('[abc') throws only when it is matched - here, it
+                # would throw out of Candidates and fail the whole run. It becomes a FAILING condition instead (PowerShell
+                # evaluates it: unknown, eps-rule-0101), so the rule is isolated and the run stays whole
+                $bad = try { [void]$c.Wild.IsMatch(''); $false } catch { $true }
+                if ($bad) {
+                    $mods.Add(@{ Def = @{ Kind = 'Module'; Evaluate = { param($o, $tg, $cx) throw "the pattern '$tg' is not a valid wildcard" } }; ConditionType = [string]$k.ConditionType; Target = $t })
+                    $lastIsRest[$i] = $true; continue
+                }
+            }
             # v1: user conditions test the target with -match 'TRUE' / 'FALSE' (a case-insensitive regex = "contains"),
             # device conditions with -eq 'TRUE' / 'FALSE'
             if ($c.Op -eq 3) { $c.TargetTrue = $t -match 'TRUE'; $c.TargetFalse = $t -match 'FALSE' }

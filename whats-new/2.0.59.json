@@ -1,0 +1,21 @@
+{
+  "version": "2.0.59",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Installing no longer needs database admin rights, and gives each part only the access it needs.",
+  "new": [
+    {
+      "title": "Install without database admin rights",
+      "text": "Your install now sets up its own database, with the least access for each part and you as the first SuperAdmin. The person who installs needs no database rights."
+    },
+    {
+      "title": "No temporary firewall opening",
+      "text": "The install no longer opens the database to the installer's machine, and a private install needs no machine inside your network for this step."
+    },
+    {
+      "title": "Existing installs keep their setup",
+      "text": "An existing install keeps its database admin. The installer tells you if it continues the old way."
+    }
+  ],
+  "fixes": []
+}

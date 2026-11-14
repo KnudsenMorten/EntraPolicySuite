@@ -97,6 +97,8 @@ function Invoke-EpsTagPlan {
         Changes = [System.Collections.Generic.List[object]]::new()
         Skipped = [System.Collections.Generic.List[object]]::new()
         Unavailable = @{}; Traces = @{}
+        # TRUST-1: Failed = condition type -> how often its module threw; UnknownTags = object x tag type left as it is
+        Failed = @{}; FailedSample = [ordered]@{}; UnknownTags = 0; UnknownRows = [System.Collections.Generic.List[object]]::new()
         Matched = @{}   # rule id -> objects the rule DECIDED (changed or already right): the Rules page's "Matched"
         # RULES-MATCHED (owner 2026-11-03: "maybe give more context here which users are in scope like a list" / "a button
         # with more context"): rule id -> WHO it decided - at most $script:EpsRuleHitMax per rule and run (the count above
@@ -143,6 +145,7 @@ function Invoke-EpsTagPlan {
             $plan.Traces[$id] = $tr
         }
         $matchesByType = [ordered]@{}
+        $unknownByType = [ordered]@{}   # TRUST-1: tag type -> why it is unknown for this object (a source not read / a condition failed)
 
         $useFast = $null -eq $tr
         $indexes = if ($useFast) { [Eps.FastEval]::Candidates($obj, $fast.Cards) } else { $all }
@@ -165,15 +168,32 @@ function Invoke-EpsTagPlan {
             # fast path: the property conditions already passed - only the rest (modules, unknown types) is evaluated
             # here, and the Modified value counts only when the card's LAST condition is one of them (v1)
             $toEval = if ($useFast) { $fast.Rest[$ci] } else { $compiled[$card] }
+            # TRUST-1 point 3 (framework; Invardia 2026-11-12: "an unread source must NEVER re-tag"): a condition whose source
+            # was not read - or that FAILED (a module that throws) - is UNKNOWN, never "not met". A card with an unknown
+            # condition and no condition that is surely false is UNKNOWN: its tag type is left as it is for this object (no
+            # change, no fallback), named per object; the run stays whole (eps-src-0101 / eps-rule-0101)
+            $unknownWhy = $null
             foreach ($cond in $toEval) {
-                $r = if ($cond.Def) { Test-EpsCondition $cond.Def $cond.Target $obj $Context $explain }
-                     else { @{ Met = $false; Unavailable = "unknown condition type '$($cond.ConditionType)'" } }
+                $r = if ($cond.Def) {
+                         try { Test-EpsCondition $cond.Def $cond.Target $obj $Context $explain }
+                         catch { $plan.Failed["$($cond.ConditionType)"] = 1 + [int]$plan.Failed["$($cond.ConditionType)"]
+                                 # the key names the condition only (bounded: an error text naming the object would make one key per object);
+                                 # the first error text is kept as a sample for the run log
+                                 if (-not $plan.FailedSample.Contains("$($cond.ConditionType)")) { $plan.FailedSample["$($cond.ConditionType)"] = (("$($_.Exception.Message)") -split "`n")[0] }
+                                 @{ Met = $false; Unavailable = "the condition $($cond.ConditionType) failed" } }
+                     } else { $plan.Failed["$($cond.ConditionType)"] = 1 + [int]$plan.Failed["$($cond.ConditionType)"]   # a rule that names no known condition is a failing rule (eps-rule-0101)
+                              @{ Met = $false; Unavailable = "unknown condition type '$($cond.ConditionType)'" } }
+                # a condition that answers nothing (no result, no Met) has not decided anything: a failing condition, not "false"
+                if ($null -eq $r -or $null -eq $r.Met) { $plan.Failed["$($cond.ConditionType)"] = 1 + [int]$plan.Failed["$($cond.ConditionType)"]; if (-not $plan.FailedSample.Contains("$($cond.ConditionType)")) { $plan.FailedSample["$($cond.ConditionType)"] = 'it returned no result' }; $r = @{ Met = $false; Unavailable = "the condition $($cond.ConditionType) failed" } }
                 $modified = $r.Modified
                 if ($r.Unavailable) { $plan.Unavailable[$r.Unavailable] = 1 + [int]$plan.Unavailable[$r.Unavailable] }
                 if ($null -ne $condTrace) { $condTrace.Add(@{ ConditionType = $cond.ConditionType; Target = $cond.Target; Met = [bool]$r.Met; Actual = $r.Actual; Unavailable = $r.Unavailable }) }
-                if (-not $r.Met) { $met = $false; if (-not $tr) { break } }
+                if ($r.Unavailable) { if (-not $unknownWhy) { $unknownWhy = "$($r.Unavailable)" }; continue }   # unknown: the other conditions decide whether it can still be false
+                if (-not $r.Met) { $met = $false; $unknownWhy = $null; if (-not $tr) { break } }
             }
-            if ($tr) { $tr.Rules.Add(@{ RuleId = $card.RuleId; Persona = $card.Persona; TagType = $card.TagType; Result = $(if ($met) { 'Matched' } else { 'NotMatched' }); Conditions = $condTrace }) }
+            if (-not $met) { $unknownWhy = $null }   # a condition that is surely false decides: not matched, whatever is unknown
+            if ($tr) { $tr.Rules.Add(@{ RuleId = $card.RuleId; Persona = $card.Persona; TagType = $card.TagType; Result = $(if ($unknownWhy) { 'Unknown' } elseif ($met) { 'Matched' } else { 'NotMatched' }); Conditions = $condTrace }) }
+            if ($unknownWhy) { if (-not $unknownByType.Contains($card.TagType)) { $unknownByType[$card.TagType] = $unknownWhy }; continue }
             if (-not $met) { continue }
             if ($useFast -and -not $fast.LastIsRest[$ci]) { $modified = $null }
             $vAD = [string]$card.TagValueAD; $vCloud = [string]$card.TagValueCloud
@@ -184,7 +204,26 @@ function Invoke-EpsTagPlan {
 
         $resolved = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
+        # TRUST-1: an UNKNOWN tag type is left exactly as it is - no rule value, no fallback, no copy - and named
+        foreach ($typeName in $unknownByType.Keys) {
+            [void]$resolved.Add($typeName)
+            $plan.UnknownTags++
+            $why = "unknown - $($unknownByType[$typeName]); left as it is (no change, no fallback)"
+            $plan.Skipped.Add([pscustomobject]@{ ObjectId = $id; ObjectName = $name; TagType = $typeName; Reason = $why; Persona = '' })
+            if ($tr) { $tr.Decisions.Add(@{ TagType = $typeName; Wanted = $null; Reason = 'Unknown'; Persona = ''; Action = 'Skipped'; Why = $why }) }
+            # named per object on the run's changes page (eps.TagChange Status Skipped, Reason Unknown, the value as it is) -
+            # at most $script:EpsUnknownRowMax rows per run (a tenant-wide outage stays one bounded list; the count stays exact)
+            $ut = $types[$typeName]
+            if ($ut -and $plan.UnknownRows.Count -lt $(if ($script:EpsUnknownRowMax) { [int]$script:EpsUnknownRowMax } else { 5000 })) {
+                $cur = [string](Get-EpsValue $ext $ut.Attribute)
+                $plan.UnknownRows.Add([pscustomobject]@{ ObjectType = $ObjectType; ObjectId = $id; ObjectName = $name; Directory = $(if ($synced) { 'AD' } else { 'Cloud' })
+                    TagType = $typeName; Attribute = $ut.Attribute; OldValue = $cur; NewValue = $cur; Reason = 'Unknown'; Persona = $null; RuleIds = @()
+                    Status = 'Skipped'; Error = $why.Substring(0, [Math]::Min(2000, $why.Length)) })
+            }
+        }
+
         foreach ($typeName in $matchesByType.Keys) {
+            if ($unknownByType.Contains($typeName)) { continue }
             $tt = $types[$typeName]; $list = $matchesByType[$typeName]
             $mode = if ($tt.ValueMode) { $tt.ValueMode } else { 'First' }
             $vAD = Resolve-EpsMatchValue $list $mode 'AD'
@@ -235,6 +274,12 @@ function Get-EpsPlanSummary {
         Overwrites = $overwrites
         ObjectsChanged = $objects.Count
         Skipped = $Plan.Skipped.Count; ByValue = $byValue; ByRule = $byRule; Unavailable = $Plan.Unavailable
+        # TRUST-1 point 3: what was left as it is, and the catalogue codes it raises (internal/errors/errors.json)
+        UnknownTags = [int]$Plan.UnknownTags; FailedConditions = $(if ($Plan.Failed) { $Plan.Failed } else { @{} })
+        Codes = @(@(if ($Plan.Failed -and $Plan.Failed.Count) { 'eps-rule-0101' }) + @(if ([int]$Plan.UnknownTags -gt 0 -and @($Plan.Unavailable.Keys | Where-Object { "$_" -notlike 'the condition * failed' -and "$_" -notlike 'unknown condition type *' }).Count) { 'eps-src-0101' }))
+        # framework §8.16 MissingName: WHICH source was not read (a stable id), so Invardia keeps one item per source
+        Sources = @(@(foreach ($k in @($Plan.Unavailable.Keys)) { switch -Wildcard ("$k") { 'Exchange recipients*' { 'exchange-recipients' } 'Entra group*' { 'entra-group-members' } 'AD group*' { 'ad-group-snapshot' } 'the tenant licence list*' { 'sku-list' } } }) | Select-Object -Unique)
+        FailedSample = $(if ($Plan.FailedSample) { $Plan.FailedSample } else { @{} })
         Matched = $(if ($Plan.Matched) { $Plan.Matched } else { @{} })
     }
 }

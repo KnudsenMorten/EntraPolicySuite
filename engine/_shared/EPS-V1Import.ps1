@@ -282,11 +282,19 @@ function Get-EpsV1ImportPlan {
     $tv = @{}; foreach ($r in (& $q 'SELECT ObjectType, TagType, Value FROM eps.TagValue')) { $tv["$($r.ObjectType):$($r.TagType):$($r.Value)".ToLowerInvariant()] = $true }
     & $area 'Tag values' @(foreach ($v in $Model.TagValues) { [ordered]@{ key = "$($v.ObjectType) $($v.TagType) = $($v.Value)"; state = $(if ($tv["$($v.ObjectType):$($v.TagType):$($v.Value)".ToLowerInvariant()]) { 'same' } else { 'add' }); text = '' } })
     $rc = @(& $q "SELECT 'User' AS ObjectType, Source, COUNT(*) AS N FROM eps.UserTagRule GROUP BY Source UNION ALL SELECT 'Device', Source, COUNT(*) FROM eps.DeviceTagRule GROUP BY Source")
+    $known = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (Get-Command Import-EpsConditionCatalog -ErrorAction SilentlyContinue) { foreach ($k in (Import-EpsConditionCatalog).Keys) { [void]$known.Add("$k") } }
+    foreach ($c in @(& $q 'SELECT ObjectType, Id FROM eps.ConditionType')) { [void]$known.Add("$($c.ObjectType):$($c.Id)") }
     foreach ($ot in 'User', 'Device') {
         $old = 0; $mine = 0
         foreach ($r in @($rc | Where-Object { $_.ObjectType -eq $ot })) { if ($r.Source -eq 'v1-import') { $old += [int]$r.N } else { $mine += [int]$r.N } }
-        & $area "$ot rules" @(foreach ($r in @($Model."$($ot)Rules")) {
-            [ordered]@{ key = "$($r.TagType) = $(if ($r.TagValueCloud) { $r.TagValueCloud } else { $r.TagValueAD })$(if ($r.Persona) { " ($($r.Persona))" })"; state = 'add'; text = (@($r.V1Rows) -join ', ') } }) @{ replaces = $old; keeps = $mine }
+        # TRUST-1 / Invardia Q3: a rule that names a condition type that does not exist is REFUSED by the apply (Write-EpsV1Import) -
+        # the plan says so, per rule, before anything is written
+        $bad = { param($r) @(@($r.Conditions) | Where-Object { $known.Count -and -not $known.Contains("${ot}:$($_.ConditionType)") } | ForEach-Object { "$($_.ConditionType)" }) }
+        $items = @(foreach ($r in @($Model."$($ot)Rules")) { $b0 = @(& $bad $r)
+            [ordered]@{ key = "$($r.TagType) = $(if ($r.TagValueCloud) { $r.TagValueCloud } else { $r.TagValueAD })$(if ($r.Persona) { " ($($r.Persona))" })"; state = $(if ($b0.Count) { 'refused' } else { 'add' })
+                text = "$(@($r.V1Rows) -join ', ')$(if ($b0.Count) { " - condition type '$($b0 -join "', '")' does not exist: NOT imported" })" } })
+        & $area "$ot rules" $items @{ replaces = $old; keeps = $mine; refused = @($items | Where-Object { $_.state -eq 'refused' }).Count }
     }
     $st = @{}; foreach ($r in (& $q 'SELECT Name, Value FROM eps.Setting')) { $st[[string]$r.Name] = $r }
     & $area 'Settings' @(foreach ($k in $Model.Settings.Keys) { & $cmp $k $st[$k] ([pscustomobject]@{ Value = [string]$Model.Settings[$k] }) @('Value') })

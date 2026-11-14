@@ -1,0 +1,13 @@
+{
+  "version": "2.0.50",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The install no longer stops right after renaming its identities.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Install waits for renamed identities",
+      "text": "Right after a rename, Microsoft can briefly show the old name. The install now waits up to two minutes instead of stopping."
+    }
+  ]
+}

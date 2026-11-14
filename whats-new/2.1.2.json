@@ -1,0 +1,17 @@
+{
+  "version": "2.1.2",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "You and Invardia support can now see that secrets are stored safely and that updates keep running.",
+  "new": [
+    {
+      "title": "Key Vault checks in Get started",
+      "text": "Get started now checks every night that your Key Vault is protected against purging and that every secret is kept in it. The check shows a count, never a secret."
+    },
+    {
+      "title": "Stalled updates are noticed",
+      "text": "Invardia support now sees when your updater last ran and what it did, so an installation that stopped updating is noticed."
+    }
+  ],
+  "fixes": []
+}

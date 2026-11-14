@@ -1,0 +1,21 @@
+{
+  "version": "2.1.21",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Tag changes meant for on-premises AD are no longer lost when a large run stops part way.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "AD tag changes always reach the hybrid worker",
+      "text": "When a large tagging run stopped part way, some AD changes could wait forever and never be written. They now always reach the Hybrid worker, and no change is queued twice."
+    },
+    {
+      "title": "Runs report failure instead of false success",
+      "text": "If AD changes cannot be handed to the Hybrid worker, the tagging run, undo or Tamper restore now ends as failed with the reason, instead of reporting success."
+    },
+    {
+      "title": "A failed undo says why at once",
+      "text": "An undo that cannot record its outcome now ends as failed straight away, and the Backups / Undo page shows the reason."
+    }
+  ]
+}

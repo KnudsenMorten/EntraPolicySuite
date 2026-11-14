@@ -1,0 +1,17 @@
+{
+  "version": "2.0.52",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Entra Policy Suite now holds Exchange rights only when a feature you use needs them.",
+  "new": [
+    {
+      "title": "Exchange rights only when needed",
+      "text": "Exchange Online rights are granted only while user tagging, the Identity report or a mailbox rule is on. Running the install removes them when none is on."
+    },
+    {
+      "title": "Clearer Exchange setup step",
+      "text": "The Exchange setup step now says whether it is needed and how to grant or remove it."
+    }
+  ],
+  "fixes": []
+}

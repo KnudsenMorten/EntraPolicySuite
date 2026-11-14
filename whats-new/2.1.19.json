@@ -1,0 +1,25 @@
+{
+  "version": "2.1.19",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Brief connection drops no longer fail whole runs, and restored tags land in the right directory.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A dropped connection no longer fails a run",
+      "text": "When Microsoft Graph or Exchange Online gives no answer to a read, it is tried once more after a few seconds instead of failing the run. Changes are never sent twice."
+    },
+    {
+      "title": "Failed runs always say why",
+      "text": "A job run that fails now always shows the reason in its run record on the Runs page, not only in its log."
+    },
+    {
+      "title": "Tamper restores go through the right directory",
+      "text": "Restoring a tag on a user synced from on-premises AD is now written in AD by the Hybrid worker. The Tamper event stays open until the restored value is confirmed."
+    },
+    {
+      "title": "Tamper restores work for mail-enabled cloud users",
+      "text": "Restoring a tag on a mail-enabled cloud user now goes through Exchange Online when Entra refuses the change, just as tagging does."
+    }
+  ]
+}

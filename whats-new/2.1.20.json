@@ -1,0 +1,21 @@
+{
+  "version": "2.1.20",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "On-premises AD always ends up with the newest tag value, never an older one.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "AD always keeps the newest tag value",
+      "text": "The Hybrid worker now writes tag changes in the order they were queued and skips an older value when a newer one exists. The Hybrid worker page shows why a change was skipped."
+    },
+    {
+      "title": "Retry and restore respect newer values",
+      "text": "\"Try again\" on a failed AD tag change is refused when a newer value is already written or waiting. A Tamper restore waits until the newer value is written."
+    },
+    {
+      "title": "Two hybrid workers no longer block each other",
+      "text": "When you run two hybrid workers, they can now take work at the same time without getting in each other's way."
+    }
+  ]
+}

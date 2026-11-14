@@ -21,6 +21,8 @@
             return @{ Met = $met; Actual = "AD group '$Target' $(if ($set) { "has $($set.Count) user(s)" } else { 'not found' }), user $who $(if ($met) { 'is' } else { 'is not' }) a member" }
         }
         if ($null -eq $Context.EntraGroupMembers) { return @{ Met = $false; Unavailable = 'Entra group membership was not read' } }
+        # a name the engine REFUSED (two groups with that name, or its pinned group is gone): its membership is unknown
+        if ($Context.EntraGroupsRefused -and $Context.EntraGroupsRefused.Contains($Target)) { return @{ Met = $false; Unavailable = "Entra group '$Target' was refused (not one unique group) - its membership is unknown" } }
         $set = $Context.EntraGroupMembers[$Target]
         $id  = [string](Get-EpsValue $Object 'id')
         $met = [bool]($set -and $id -and $set.Contains($id))

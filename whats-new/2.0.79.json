@@ -1,0 +1,17 @@
+{
+  "version": "2.0.79",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Busy installs no longer fall behind in reporting their runs to Invardia.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Run reports catch up quickly",
+      "text": "An install with many runs could fall days behind in reporting them to Invardia. It now sends more at a time and clears a backlog within a few reports."
+    },
+    {
+      "title": "Failed runs are reported first",
+      "text": "Failed runs and update runs now reach Invardia first, while each job's runs still arrive in order so nothing is skipped."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "version": "2.1.25",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Updates recover from a brief outage on Invardia's side by themselves, and say what happened.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Updates retry a check that got no answer",
+      "text": "Just before installing, an update checks its release once more. If Invardia does not answer, it now asks again a few seconds later."
+    },
+    {
+      "title": "The update's run says the real reason",
+      "text": "When the update still cannot confirm its release, its run says so and it tries again within the hour. It no longer claims it waited for jobs that were not running."
+    }
+  ]
+}

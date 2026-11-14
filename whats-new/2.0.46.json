@@ -1,0 +1,10 @@
+{
+  "version": "2.0.46",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "You now see each night which approved version your install would update to.",
+  "new": [
+    { "title": "Nightly check for approved updates", "text": "Every night the suite asks Invardia which version is approved for your install and records what it would install. It installs nothing yet, and a setting switches it off." }
+  ],
+  "fixes": []
+}

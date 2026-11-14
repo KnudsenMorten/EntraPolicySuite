@@ -21,7 +21,8 @@ function Invoke-EpsExchangeCommand {
         $try = 0
         while ($true) {
             $h = @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://outlook.office365.com')" }
-            $r = & $script:EpsHttp 'POST' $uri $h $body
+            # a Get-* cmdlet only reads: one with no answer at all is sent once more (Invoke-EpsHttpRead); a Set-* never is
+            $r = if ($Cmdlet -like 'Get-*') { Invoke-EpsHttpRead 'POST' $uri $h $body } else { & $script:EpsHttp 'POST' $uri $h $body }
             if ($r.Status -in 429, 503, 504 -and $try -lt $MaxRetry) {
                 $try++; $wait = 0; $ra = if ($r.Headers) { $r.Headers['Retry-After'] }
                 if (-not [int]::TryParse([string](@($ra)[0]), [ref]$wait)) { $wait = [math]::Min(60, [math]::Pow(2, $try)) }

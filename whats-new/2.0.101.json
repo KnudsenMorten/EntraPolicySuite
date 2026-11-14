@@ -1,0 +1,10 @@
+{
+  "version": "2.0.101",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "Invardia support can help with a private installation without you opening your network.",
+  "new": [
+    { "title": "Safe support reads for private installations", "text": "Invardia support can now ask for one read from a short, fixed list, such as recent runs or settings. Every request is recorded in the audit.", "action": "Run the install once more to add support reads; an update alone does not add them." }
+  ],
+  "fixes": []
+}

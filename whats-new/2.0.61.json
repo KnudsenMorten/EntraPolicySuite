@@ -1,0 +1,17 @@
+{
+  "version": "2.0.61",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Invardia can now see that your install's database setup and automatic updates are ready.",
+  "new": [
+    {
+      "title": "Two more setup steps reported",
+      "text": "Your install now tells Invardia whether its database is set up and whether automatic updates are ready, based on real records."
+    },
+    {
+      "title": "Fewer rights needed to install",
+      "text": "Recording the sign-in page version no longer needs database rights from the person who installs."
+    }
+  ],
+  "fixes": []
+}

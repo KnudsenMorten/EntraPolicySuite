@@ -1,0 +1,26 @@
+{
+  "version": "2.1.31",
+  "date": "2026-11-14",
+  "type": "feature",
+  "summary": "Security updates from Microsoft install faster and leave no old images behind.",
+  "new": [
+    {
+      "title": "Security updates install at once",
+      "text": "An update that only moves your installation onto Microsoft's newest images installs at once. It does not wait for running jobs and has no database step."
+    },
+    {
+      "title": "Old images are removed",
+      "text": "Once a job has succeeded on the new image, the previous images are removed from your registry."
+    },
+    {
+      "title": "Support sees what runs",
+      "text": "Your installation reports which image each job and the web app run, so Invardia support can see that every installation is patched."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "The image build reads the version safely",
+      "text": "The image build no longer fails when the version file ends with a line break."
+    }
+  ]
+}

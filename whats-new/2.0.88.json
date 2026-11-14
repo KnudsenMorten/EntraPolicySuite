@@ -1,0 +1,12 @@
+{
+  "version": "2.0.88",
+  "date": "2026-11-06",
+  "type": "feature",
+  "summary": "Licence problems and missing rights now come with a clear reason.",
+  "new": [
+    { "title": "Policy as code names its missing right", "text": "Git push and read in Policy as code need a Key Vault right your administrator grants. Until then they stop and name the right; the zip download works without it.", "action": "Ask your Key Vault administrator to grant the right Policy as code names before you use Git push and read." }
+  ],
+  "fixes": [
+    { "title": "Clear reason when a licence is refused", "text": "When Invardia refuses a licence request, the update run's log now shows Invardia's reason." }
+  ]
+}

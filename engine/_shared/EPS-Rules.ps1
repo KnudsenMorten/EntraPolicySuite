@@ -41,7 +41,7 @@ function Get-EpsRuleHints {
         $seen = @{}
         foreach ($k in $c.Conditions) {
             $def = $Catalog["$($c.ObjectType):$($k.ConditionType)"]
-            if (-not $def) { & $add 'UnknownConditionType' "condition type '$($k.ConditionType)' is unknown - the rule never matches"; continue }
+            if (-not $def) { & $add 'UnknownConditionType' "condition type '$($k.ConditionType)' does not exist - an import or a save refuses this rule; a rule already stored leaves its tags as they are (unknown) for everyone it reaches"; continue }
             if ($def.Validate) { $err = & $def.Validate $k.Target; if ($err) { & $add 'InvalidTarget' "$($k.ConditionType): $err" } }
             $sig = "$($k.ConditionType)|$($k.Target)".ToLowerInvariant()
             if ($seen[$sig]) { & $add 'SameConditionTwice' "'$($k.ConditionType) $($k.Target)' is in the rule twice" }

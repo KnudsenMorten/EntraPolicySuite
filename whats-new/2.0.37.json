@@ -1,0 +1,13 @@
+{
+  "version": "2.0.37",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Security reviewers get an up-to-date pack with every release.",
+  "new": [
+    { "title": "Security pack with every release", "text": "Reviewers now get a security pack with each release: architecture, identities, every permission and why, data, vendor access, hardening and more. It always matches the version you run." }
+  ],
+  "fixes": [
+    { "title": "Documentation describes policy stage moves correctly", "text": "The documentation now says the suite can make one change to a Conditional Access policy: a SuperAdmin moves it to another stage after approval. The permission for it is listed." },
+    { "title": "Smaller fixes: outdated install description removed", "text": "The install description no longer mentions a custom role that newer installs do not create." }
+  ]
+}

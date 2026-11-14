@@ -1,0 +1,13 @@
+{
+  "version": "2.1.27",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "A stuck update is reported to Invardia support at once.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A stopped update is reported at once",
+      "text": "When an update stops while preparing the new version, your installation keeps its current version and Invardia support is told at once, not only after several tries."
+    }
+  ]
+}

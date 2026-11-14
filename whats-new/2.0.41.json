@@ -1,0 +1,11 @@
+{
+  "version": "2.0.41",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Private network installs can now be re-run and resumed without stopping.",
+  "new": [],
+  "fixes": [
+    { "title": "Re-installing a private install works again", "text": "Re-installing a private network install into the same resource group no longer stops when it creates its Key Vault key." },
+    { "title": "Resumed installs get past the web app", "text": "An install resumed from an early step no longer stops when it reaches the web app." }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "version": "2.0.30",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "You can now track who follows up on each account in the Identity report, and how far they got.",
+  "new": [
+    { "title": "Track follow-up actions per user", "text": "Each user in the Identity report now has Action, Status, Who and Notes fields. They are kept across report runs and can be filtered, sorted and exported." },
+    { "title": "Set follow-up for many users at once", "text": "Tick users, or take everyone a filtered view shows, and set the fields on all of them at once. Fields you leave alone stay unchanged." },
+    { "title": "Follow-up is a record only", "text": "Setting the fields needs Admin and is audited. Nothing in Microsoft Entra or Active Directory changes." }
+  ],
+  "fixes": []
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.0.71",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Smaller fixes and improvements.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Updated update-check wording",
+      "text": "The check that verifies updates now uses the newest wording. It checks the same things as before."
+    }
+  ]
+}

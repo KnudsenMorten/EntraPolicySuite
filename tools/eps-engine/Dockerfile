@@ -43,6 +43,8 @@ RUN rm -rf tests internal output docs CLAUDE.md \
  && test -f tools/eps-engine/job-entry.ps1 \
  && test -f tools/eps-web/Start-EpsWeb.ps1 \
  && test -f tools/eps-web/www/index.html \
+ && test -f "whats-new/$(tr -d '\r\n' < VERSION).json" \
+ && test -f tools/eps-web/www/whatsnew/whats-new.js \
  && test -f sql/eps-schema.sql \
  && test -f engine/conditions/catalog.json \
  && test -f engine/settings/catalog.json \

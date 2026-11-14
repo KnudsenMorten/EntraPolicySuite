@@ -1,0 +1,14 @@
+{
+  "version": "2.0.87",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Entra Policy Suite Pro arrives with a self-renewing licence and four Pro features, while Community keeps everything it has.",
+  "new": [
+    { "title": "Pro and the trial", "text": "Entra Policy Suite Pro and a trial come alongside Community, which keeps every feature it has today. Pro installs from a package Invardia signs." },
+    { "title": "The licence arrives and renews itself", "text": "A Pro installation requests, checks and stores its licence, and renews it before it ends. Nobody pastes or uploads a licence." },
+    { "title": "New License page", "text": "Administration > License shows your edition, who it is for, how long it is valid, users against the licence and which Pro features it switches on." },
+    { "title": "Passkey rollout and Stale identities (Pro)", "text": "Passkey rollout tracks, per persona, who can sign in with a passkey against a target date. Stale identities lists inactive accounts and disables them only after a SuperAdmin approves." },
+    { "title": "License optimization and Policy as code (Pro)", "text": "License optimization prices the licences you could save on, without changing any. Policy as code puts your policies in Git for review and applies only what you pick." }
+  ],
+  "fixes": []
+}

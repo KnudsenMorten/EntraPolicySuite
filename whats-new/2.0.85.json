@@ -1,0 +1,10 @@
+{
+  "version": "2.0.85",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Smaller fixes and improvements.",
+  "new": [],
+  "fixes": [
+    { "title": "Correct description of what Community shares", "text": "The architecture page now says correctly that Community sends counts and states to Invardia once a key is issued, and that a SuperAdmin can switch this off." }
+  ]
+}

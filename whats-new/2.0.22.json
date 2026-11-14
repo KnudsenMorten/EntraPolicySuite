@@ -1,0 +1,10 @@
+{
+  "version": "2.0.22",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "Long tagging rules are now easy to read and edit.",
+  "new": [
+    { "title": "Tagging rules are easier to read", "text": "Creating, editing, duplicating or restoring a rule in Tagging Rules now opens a wide dialog. Long tag types, values and notes are readable, and each condition explains itself." }
+  ],
+  "fixes": []
+}

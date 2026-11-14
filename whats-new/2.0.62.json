@@ -1,0 +1,18 @@
+{
+  "version": "2.0.62",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Invardia support can only work within the access your organization agreed to in the Invardia portal.",
+  "new": [
+    {
+      "title": "Support consent from the Invardia portal",
+      "text": "Your install keeps the support level you set in the Invardia customer portal. A support session beyond that level is refused and recorded in Audit."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Environment name read correctly",
+      "text": "Your install now reads its environment name from Invardia without being refused."
+    }
+  ]
+}

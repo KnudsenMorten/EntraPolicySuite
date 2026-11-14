@@ -1,0 +1,8 @@
+# WHATS-NEW-1: WHATSNEW.md is the renderer's output byte for byte (LF) - the release step compares the hash, so no line-end conversion
+WHATSNEW.md text eol=lf
+whats-new/*.json text eol=lf
+# 4a: Invardia's shared What's new pieces, byte for byte as Invardia ships them (SOURCE.txt holds their SHA-256)
+internal/tools/whatsnew/whats-new.schema.json -text
+internal/tools/whatsnew/ConvertTo-WhatsNewMarkdown.ps1 -text
+tools/eps-web/www/whatsnew/whats-new.js -text
+tools/eps-web/www/whatsnew/whats-new.css -text

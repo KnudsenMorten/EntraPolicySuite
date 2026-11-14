@@ -1,0 +1,17 @@
+{
+  "version": "2.1.9",
+  "date": "2026-11-12",
+  "type": "feature",
+  "summary": "You can see at a glance which environment and tenant every mail comes from.",
+  "new": [
+    {
+      "title": "Every mail names its environment",
+      "text": "Alert, report and test mails now show the environment in the subject, and the first line names the environment and tenant. Without a tenant name in Settings, your directory's own name is used."
+    },
+    {
+      "title": "Slow pages are caught earlier",
+      "text": "The Invardia support link now also reports the health of the database statistics, so Invardia support can catch a slowing page early."
+    }
+  ],
+  "fixes": []
+}

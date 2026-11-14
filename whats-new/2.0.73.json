@@ -1,0 +1,13 @@
+{
+  "version": "2.0.73",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Invardia can now confirm the support access your install actually applies.",
+  "new": [
+    {
+      "title": "Support access confirmed to Invardia",
+      "text": "Your install's health report now tells Invardia the support access level in place and until when any admin access lasts, as checked by the install itself."
+    }
+  ],
+  "fixes": []
+}

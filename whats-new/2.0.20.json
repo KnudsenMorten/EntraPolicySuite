@@ -1,0 +1,14 @@
+{
+  "version": "2.0.20",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "Entra Policy Suite now runs in your own Azure, with a web app your admins sign in to.",
+  "new": [
+    { "title": "Install in two lines", "text": "Install from PowerShell 7 or Azure Cloud Shell with a browser sign-in and no add-ons. You can preview the plan, a stopped install resumes, and every feature starts switched off." },
+    { "title": "User and device tagging with preview", "text": "Tag users and devices with rules, preview every run before it applies, and import your v1 rule files. Tamper alerts you to tag changes the suite did not make." },
+    { "title": "Conditional Access templates and review", "text": "Compare your policies with the template library, adopt or release them, and export documentation. The suite never writes a Conditional Access policy." },
+    { "title": "CA Policy Analyzer and Identity report", "text": "The analyzer groups policies by persona and monitors them, with alerts per persona. The Identity report shows gaps and downloads as a workbook." },
+    { "title": "Hybrid worker, roles and audit", "text": "A hybrid worker handles users synced from on-premises AD. SuperAdmin, Admin and Reader roles control access, and every change is audited." }
+  ],
+  "fixes": []
+}

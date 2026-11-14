@@ -1,0 +1,14 @@
+{
+  "version": "2.0.33",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Every Conditional Access policy now shows its persona, and moving from v1 is explained step by step.",
+  "new": [
+    { "title": "Every policy shows its persona", "text": "A Conditional Access policy now shows a persona even when none of your managed personas takes it, taken from its template or its name. Your managed personas still come first." },
+    { "title": "Template library corrects persona names", "text": "Template library 2.0-v1.1 corrects persona spelling slips in 29 templates. Conditional Access > Template updates shows each change, old against new, for you to adopt." },
+    { "title": "Template personas are marked", "text": "In Manage personas, personas you do not manage yet are marked as coming from the template. Editing one makes it yours." },
+    { "title": "Get started explains moving from v1", "text": "Get started now opens with how to bring your v1 setup over: tagging rules in the browser, or everything with the import script, step by step." },
+    { "title": "Simpler analyzer form and rules list", "text": "The CA Policy Analyzer now reads long sign-in periods a day at a time by itself. Tagging Rules shows one run-order number per rule." }
+  ],
+  "fixes": []
+}

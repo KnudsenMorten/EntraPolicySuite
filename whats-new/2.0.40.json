@@ -1,0 +1,13 @@
+{
+  "version": "2.0.40",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Private network installs complete, and region problems are caught before anything is created.",
+  "new": [
+    { "title": "Region check catches more problems up front", "text": "The region check now also works on a fresh install and tests with the same settings as the real install, so it no longer stops installs your policies allow." }
+  ],
+  "fixes": [
+    { "title": "Private network install creates its key", "text": "A private network install no longer stops when it creates its Key Vault key. The vault stays closed to the public internet." },
+    { "title": "Web sign-in step waits for Microsoft Entra", "text": "The web sign-in step now waits for the new app to appear in Microsoft Entra before it gives consent, instead of failing once." }
+  ]
+}

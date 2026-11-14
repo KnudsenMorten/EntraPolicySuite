@@ -1,0 +1,39 @@
+{
+  "version": "2.0.81",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "You can now change, copy and manage Conditional Access policies and their groups from one place, safely and with a full record.",
+  "new": [
+    {
+      "title": "Edit an adopted Conditional Access policy",
+      "text": "You can change any part of an adopted policy in a simple form, with names you can type. You see every change before it is sent, and you approve it with a reason."
+    },
+    {
+      "title": "Clone a policy into a new one",
+      "text": "Clone creates a new policy from an adopted one with your changes. The copy always starts switched off, so you move it through the stages when it is ready."
+    },
+    {
+      "title": "Edits stay safe and recorded",
+      "text": "Only SuperAdmins can edit or clone, and only by their own action. Changes are refused if the policy changed meanwhile or would lose the break-glass exclusion, and every change is recorded."
+    },
+    {
+      "title": "New Groups page for Conditional Access",
+      "text": "See every group your policies use, whether it exists, its members and whether its rule is right. SuperAdmins can create missing groups, fix rules and change pilot or exclude members."
+    },
+    {
+      "title": "Stage moves also update pilot groups",
+      "text": "Moving a policy to a new stage now widens or pauses its pilot group as needed. If the group cannot be set, the policy is left unchanged. Get started can also create a missing group.",
+      "action": "Run the install once more so the engine gets the two new group permissions; Get started, step 1, shows when they are granted."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Settings buttons stay on screen",
+      "text": "On a wide window, the Settings page now lines up each setting so Save and More info stay visible."
+    },
+    {
+      "title": "Private installs update more reliably",
+      "text": "An install on a private network now sets up its build resources the way Azure accepts, and finishes a replacement left over from an earlier run."
+    }
+  ]
+}

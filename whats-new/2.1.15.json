@@ -1,0 +1,30 @@
+{
+  "version": "2.1.15",
+  "date": "2026-11-13",
+  "type": "feature",
+  "summary": "Reports no longer present partial results as complete, so the numbers you see can be trusted.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Partial analyzer runs are clearly marked",
+      "text": "A CA Policy Analyzer run that could not check every user is marked partial. Policy pages keep showing the last complete analysis, and the alert mail says it is partial."
+    },
+    {
+      "title": "Identity report never shows incomplete data",
+      "text": "Unknown admin roles are now shown as unknown, not as no role. If Intune devices cannot be read, the report keeps its last complete run.",
+      "action": "If the Identity report says Intune devices could not be read, grant that right again."
+    },
+    {
+      "title": "Policy checks stay trustworthy when data is missing",
+      "text": "A failed policy review keeps the last review and its date. If a break-glass account cannot be found, the Conditional Access monitor says it cannot check and names the account."
+    },
+    {
+      "title": "Tags stay put when a rule is unclear",
+      "text": "When two Entra groups share a rule's group name, or its group is gone, the tags are left as they are. Imported v1 rules with an unknown condition are skipped and named."
+    },
+    {
+      "title": "Smaller fixes: records and mail text",
+      "text": "Every tag change is now recorded before it is made, then its outcome. Mails with characters such as æ, ø or å are no longer refused by Microsoft."
+    }
+  ]
+}

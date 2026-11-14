@@ -1,0 +1,13 @@
+{
+  "version": "2.0.36",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "You can move a Conditional Access policy straight to the stage you want.",
+  "new": [
+    { "title": "Move a policy to any stage", "text": "A SuperAdmin can now move an adopted Conditional Access policy straight to any stage, up or down, or disable it. A move that skips stages says so." },
+    { "title": "Your Invardia environment name shown everywhere", "text": "The page header, alert mails and reports to Invardia now use the environment name Invardia keeps for your install. The Environment name setting is the fallback." }
+  ],
+  "fixes": [
+    { "title": "Move dialog shows real users and groups", "text": "The move dialog now lists the users and groups the policy covers, and no longer shows unchanged ones as a change." }
+  ]
+}

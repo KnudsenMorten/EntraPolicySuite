@@ -102,4 +102,5 @@ Log Analytics workspace and a Key Vault. The installer's help (`Get-Help ./tools
 
 ## Licence
 
-MIT - see [LICENSE](LICENSE). Release notes: [RELEASENOTES.md](RELEASENOTES.md).
+MIT - see [LICENSE](LICENSE). What each release brings, in plain words: [WHATSNEW.md](WHATSNEW.md) (also in the app under
+Help > What's new). The full release notes: [RELEASENOTES.md](RELEASENOTES.md).

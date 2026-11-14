@@ -1,0 +1,22 @@
+{
+  "version": "2.1.6",
+  "date": "2026-11-11",
+  "type": "feature",
+  "summary": "Pro and Community installations are now set up the same way, so both behave predictably.",
+  "new": [
+    {
+      "title": "Same daily edition check for every installation",
+      "text": "Every installation now checks its edition with Invardia once a day. A licence or trial for your tenant then arrives by itself."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Installations carry their real edition",
+      "text": "Every installation was labelled Community in Azure, Pro included. It now shows its real edition."
+    },
+    {
+      "title": "Community installs are ready from day one",
+      "text": "Community installations now prepare the Invardia support link at install, like Pro, and every installation updates itself right after install, so it is current at once."
+    }
+  ]
+}

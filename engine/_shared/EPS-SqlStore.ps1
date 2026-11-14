@@ -147,7 +147,9 @@ $script:EpsLogFeatures = @($script:EpsLogLevelSettings.Keys)
 function Test-EpsLogLine {
     # pure: is a line of -Line level ('Info', 'Warning', 'Error', 'Verbose', ...) kept at log level -Level?
     param([string]$Level = 'Normal', [string]$Line = 'Info')
-    if ($Line -match '^(?i)(Error|Warn|Warning)$') { return $true }
+    # Notice (2.1.12, framework IMAGE-PRUNE CONTRACT point 5): a line the run MUST keep at every level (what the image
+    # clean-up does, as it does it) - like a warning, never dropped
+    if ($Line -match '^(?i)(Error|Warn|Warning|Notice)$') { return $true }
     switch -Regex ($Level) {
         '^(?i)Off$' { return $false }
         '^(?i)Verbose$' { return $true }
@@ -245,17 +247,33 @@ WHEN NOT MATCHED THEN INSERT (Name, ObjectType, Description, Attribute, ValueMod
         }
         $n.TagValues = @($Model.TagValues).Count
 
-        & $q "DELETE FROM eps.UserTagRule WHERE Source = 'v1-import'" @{} | Out-Null
-        & $q "DELETE FROM eps.DeviceTagRule WHERE Source = 'v1-import'" @{} | Out-Null
-        foreach ($r in $Model.UserRules) {
+        # TRUST-1 / Invardia 2026-11-12 Q3: a rule that names a condition type that does not exist is REFUSED here (not
+        # written) and named - the import page and a save refuse it too; rules already stored keep the UNKNOWN behaviour
+        $known = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        if (Get-Command Import-EpsConditionCatalog -ErrorAction SilentlyContinue) { foreach ($k in (Import-EpsConditionCatalog).Keys) { [void]$known.Add("$k") } }
+        foreach ($c in @(Invoke-EpsSql -Transaction $tx -Query "SELECT ObjectType, Id FROM eps.ConditionType")) { [void]$known.Add("$($c.ObjectType):$($c.Id)") }
+        $n.Refused = [System.Collections.Generic.List[string]]::new()
+        $okRule = { param($r, $ot) if (-not $known.Count) { return $true }; $bad = @(@($r.Conditions) | Where-Object { -not $known.Contains("${ot}:$($_.ConditionType)") } | ForEach-Object { "$($_.ConditionType)" }); if ($bad.Count) { $n.Refused.Add("rule $($r.Persona) / $($r.TagType)$(if (@($r.V1Rows).Count) { " (v1 row(s) $(@($r.V1Rows) -join ', '))" }): condition type '$($bad -join "', '")' does not exist - NOT imported"); return $false }; $true }
+        # review 2026-11-12: the refusals are known BEFORE the old import is replaced - a stored v1 rule that names a refused
+        # (unknown) condition type is KEPT (it keeps its UNKNOWN behaviour); removing it would let the next rule or the
+        # fallback decide for its users, i.e. re-tag them
+        $badTypes = @(foreach ($pair in @(@('User', @($Model.UserRules)), @('Device', @($Model.DeviceRules)))) { foreach ($r in $pair[1]) { foreach ($k in @($r.Conditions)) { if ($known.Count -and -not $known.Contains("$($pair[0]):$($k.ConditionType)")) { "$($k.ConditionType)" } } } }) | Select-Object -Unique
+        $keepJ = ConvertTo-Json -Compress -InputObject @($badTypes | ForEach-Object { "$_" })
+        & $q "DELETE r FROM eps.UserTagRule r WHERE r.Source = 'v1-import' AND NOT EXISTS (SELECT 1 FROM eps.UserTagRuleCondition c WHERE c.RuleId = r.RuleId AND c.ConditionType IN (SELECT value FROM OPENJSON(@k)))" @{ k = $keepJ } | Out-Null
+        & $q "DELETE r FROM eps.DeviceTagRule r WHERE r.Source = 'v1-import' AND NOT EXISTS (SELECT 1 FROM eps.DeviceTagRuleCondition c WHERE c.RuleId = r.RuleId AND c.ConditionType IN (SELECT value FROM OPENJSON(@k)))" @{ k = $keepJ } | Out-Null
+        if (@($badTypes).Count) { $n.KeptStored = [int](Invoke-EpsSql -Transaction $tx -Scalar -Parameters @{ k = $keepJ } -Query "SELECT (SELECT COUNT(*) FROM eps.UserTagRule r WHERE r.Source = 'v1-import' AND EXISTS (SELECT 1 FROM eps.UserTagRuleCondition c WHERE c.RuleId = r.RuleId AND c.ConditionType IN (SELECT value FROM OPENJSON(@k)))) + (SELECT COUNT(*) FROM eps.DeviceTagRule r WHERE r.Source = 'v1-import' AND EXISTS (SELECT 1 FROM eps.DeviceTagRuleCondition c WHERE c.RuleId = r.RuleId AND c.ConditionType IN (SELECT value FROM OPENJSON(@k))))") }
+        $wu = 0; $wd = 0
+        foreach ($r in @($Model.UserRules | Where-Object { & $okRule $_ 'User' })) {
+            $wu++
             $id = Invoke-EpsSql -Transaction $tx -Scalar -Query "INSERT INTO eps.UserTagRule ([Order], Persona, TagType, TagValueAD, TagValueCloud, Source, V1ConditionGroup, Notes) OUTPUT INSERTED.RuleId VALUES (@o, @p, @t, @ad, @c, 'v1-import', @g, @n)" -Parameters @{ o = $r.Order; p = $r.Persona; t = $r.TagType; ad = $r.TagValueAD; c = $r.TagValueCloud; g = $r.V1ConditionGroup; n = "v1: $(@($r.V1Rows) -join ', ')" }
             $s = 0; foreach ($k in $r.Conditions) { $s++; & $q "INSERT INTO eps.UserTagRuleCondition (RuleId, Seq, ConditionType, Target) VALUES (@r, @s, @c, @t)" @{ r = $id; s = $s; c = $k.ConditionType; t = $k.Target } | Out-Null }
         }
-        foreach ($r in $Model.DeviceRules) {
+        foreach ($r in @($Model.DeviceRules | Where-Object { & $okRule $_ 'Device' })) {
+            $wd++
             $id = Invoke-EpsSql -Transaction $tx -Scalar -Query "INSERT INTO eps.DeviceTagRule ([Order], TagType, TagValue, Source, V1ConditionGroup, Notes) OUTPUT INSERTED.RuleId VALUES (@o, @t, @v, 'v1-import', @g, @n)" -Parameters @{ o = $r.Order; t = $r.TagType; v = $r.TagValueCloud; g = $r.V1ConditionGroup; n = "v1: $(@($r.V1Rows) -join ', ')" }
             $s = 0; foreach ($k in $r.Conditions) { $s++; & $q "INSERT INTO eps.DeviceTagRuleCondition (RuleId, Seq, ConditionType, Target) VALUES (@r, @s, @c, @t)" @{ r = $id; s = $s; c = $k.ConditionType; t = $k.Target } | Out-Null }
         }
-        $n.UserRules = @($Model.UserRules).Count; $n.DeviceRules = @($Model.DeviceRules).Count
+        $n.UserRules = $wu; $n.DeviceRules = $wd   # the rules WRITTEN; Refused names each rule left out
 
         foreach ($k in $Model.Settings.Keys) {
             & $q "MERGE eps.Setting AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @a WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, @f, @v, @a);" @{ n = $k; f = $k.Split('.')[0]; v = [string]$Model.Settings[$k]; a = $Actor } | Out-Null
@@ -282,4 +300,15 @@ WHEN NOT MATCHED THEN INSERT (Name, ObjectType, Description, Attribute, ValueMod
         throw
     } finally { $conn.Dispose() }
     [pscustomobject]$n
+}
+
+function Get-EpsFailedRunReason {
+    <# PURE. The HeldReason of a run that FAILED - never empty (internal 2026-11-13 01:01Z: an identity report failed with
+       the error only in its log and HeldReason NULL, so the run list and the uplink said "Failed" and nothing more). The
+       error's first line, cut to the column's 1000 characters; -Fallback when the run failed without an error. #>
+    param([AllowEmptyString()][AllowNull()][string]$Message, [string]$Fallback = 'the run failed - see its log')
+    $t = "$(@(("$Message") -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })[0])"   # the first line with text
+    if (-not $t) { $t = $Fallback }
+    if ($t.Length -gt 1000) { $t = $t.Substring(0, 997) + '...' }
+    $t
 }

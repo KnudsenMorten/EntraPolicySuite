@@ -1,0 +1,18 @@
+{
+  "version": "2.0.115",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "The identity report now finds the users and admins it used to miss, and the menu shows what needs your attention.",
+  "new": [
+    { "title": "Sign-in methods read per user", "text": "An optional job reads every user's sign-in methods, admins first. Until a user is read, the report says unknown, never 'no MFA'." },
+    { "title": "Red markers show what waits for you", "text": "The menu shows a red count where something waits for you or did not complete, such as queued changes, failed jobs or open tamper events. The Overview links each one." },
+    { "title": "Policy list shows analysis and monitors", "text": "Each Conditional Access policy now shows the analysis it waits for or had last, and which monitors cover it." },
+    { "title": "Quicker cloud values in the rule editor", "text": "Picking the value for AD-synced users now proposes the matching value for cloud users. One click accepts it, and a value you pick yourself is kept." }
+  ],
+  "fixes": [
+    { "title": "MFA views list the right users", "text": "'Active without MFA' and 'No MFA, but a company smartphone' never listed anyone. They now list enabled users who are not registered for MFA." },
+    { "title": "All admins are now recognised", "text": "Anyone who can reach a directory role, directly, through a group or through PIM for Groups, now counts as an admin. Admins with a role through a group were missed before." },
+    { "title": "More accurate inactivity, guest and licence views", "text": "Inactivity and guest views count background sign-ins and find every guest. Microsoft 365 E5 and E3 without Teams are now recognised, so those users are no longer listed as missing a licence." },
+    { "title": "Smaller fixes", "text": "AD OU views stay empty until you set an OU pattern, monitor names may hold spaces, and row action menus no longer wrap over two lines." }
+  ]
+}

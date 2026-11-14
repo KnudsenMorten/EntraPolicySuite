@@ -42,6 +42,7 @@ $script:EpsUplinkAlertMax   = 10
 $script:EpsUplinkAlertRepeatHours = 24
 $script:EpsUplinkWorkerSilentMinutes = 60
 $script:EpsUplinkFirstRunsHours = 24      # a job without a watermark: its runs of the last 24 h (no history dump)
+$script:EpsRunWarningCodes = [ordered]@{ 'eps-src-0101' = 'no-data-source'; 'eps-rule-0101' = 'query-defect'; 'eps-rule-0102' = 'no-data-source'; 'eps-src-0102' = 'no-data-source'; 'eps-src-0103' = 'permission'; 'eps-rule-0103' = 'query-defect' }   # TRUST-1 point 3: code -> CauseClass (framework closed list); the catalogue is internal/errors/errors.json
 $script:EpsStallErrorCode = 'eps-run-0101'   # STALL-1: the run-stalled code in internal/errors/errors.json (handed over, never shipped) (Invardia 2026-11-10, prefix eps-)
 $script:EpsUplinkSleep ={ param([int]$Ms) if ($Ms -gt 0) { Start-Sleep -Milliseconds $Ms } }   # a test counts the pauses
 
@@ -61,9 +62,9 @@ $script:EpsUplinkLists = @{
     SignInLayer     = @('signin-front', 'easyauth', 'none')
     # gaps (a) / (b) of the deterministic-failure lesson (Invardia 2026-11-08): eps.job.repeat-failure, eps.uplink.refused -
     # the same words must be in Invardia's ALERT_CATALOG.entrapolicysuite (packages/core/src/uplinkalert.ts)
-    AlertId         = @('eps.tamper.foreign-change', 'eps.tamper.high', 'eps.ca.drift', 'eps.ca.policy-deleted', 'eps.ca.breakglass-exclusion-missing', 'eps.worker.silent', 'eps.job.repeat-failure', 'eps.uplink.refused')
+    AlertId         = @('eps.tamper.foreign-change', 'eps.tamper.high', 'eps.ca.drift', 'eps.ca.policy-deleted', 'eps.ca.breakglass-exclusion-missing', 'eps.worker.silent', 'eps.job.repeat-failure', 'eps.uplink.refused', 'eps.update.stopped')
     Severity        = @('critical', 'warning')
-    Area            = @('tamper', 'ca', 'worker', 'job', 'uplink')
+    Area            = @('tamper', 'ca', 'worker', 'job', 'uplink', 'update')
     AlertJob        = @('tampermonitor', 'caanalyzer', 'tick', 'usertagging', 'devicetagging', 'identityreport', 'namedlocations', 'capolicyanalyzer', 'config', 'update', 'backup', 'caoptions', 'supportread', 'supportaccess', 'dbinit', 'engine', 'uplink')
     MeasuredKey     = @('events', 'high', 'policies', 'accounts', 'minutesSilent', 'runs', 'records')
     SetupState      = @('ok', 'missing', 'n/a', 'unknown')       # FLEET-STEPS (owner 2026-11-03 via Invardia, the field shared by SI, PIM and EPS)
@@ -250,6 +251,40 @@ function ConvertFrom-EpsUplinkBuildPool {
     } catch { return $null }
 }
 
+function ConvertFrom-EpsUplinkRunningImages {
+    <#
+      PURE. SEC-LANE-1 point 9: the stored running images (eps.UplinkState 'update.runningImages', JSON written by the update
+      job) -> Invardia's Update.runningImages items EXACTLY in its closed shape (component req; repo; digest sha256:<64 hex>;
+      dotnet a version; readUtc) - a part that does not fit is left out of its item, an item without a component is left out,
+      at most 40, one per component; nothing readable = $null (the field is left out). Read with System.Text.Json (the time
+      stays the text it is).
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if (-not "$Text".Trim()) { return $null }
+    try {
+        $doc = [System.Text.Json.JsonDocument]::Parse("$Text")
+        try {
+            if ($doc.RootElement.ValueKind -ne 'Array') { return $null }
+            $out = [System.Collections.Generic.List[object]]::new(); $seen = @{}
+            foreach ($e in $doc.RootElement.EnumerateArray()) {
+                if ($out.Count -ge 40 -or $e.ValueKind -ne 'Object') { continue }
+                $get = { param($k) $v = [System.Text.Json.JsonElement]::new(); if ($e.TryGetProperty($k, [ref]$v) -and $v.ValueKind -eq 'String') { $v.GetString() } else { '' } }
+                $c = & $get 'component'
+                if ($c -cnotmatch '^[a-z0-9][a-z0-9._-]{0,79}$' -or $seen.ContainsKey($c)) { continue }
+                $seen[$c] = $true
+                $it = [ordered]@{ component = $c }
+                $r = & $get 'repo'; if ($r -cmatch '^[a-z0-9][a-z0-9._/-]{0,79}$') { $it.repo = $r }
+                $d = & $get 'digest'; if ($d -cmatch '^sha256:[0-9a-f]{64}$') { $it.digest = $d }
+                $dn = & $get 'dotnet'; if ($dn -match '^\d+\.\d+\.\d+$') { $it.dotnet = $dn }
+                $at = & $get 'readUtc'; if ($at -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { $it.readUtc = $at }
+                $out.Add($it)
+            }
+            if (-not $out.Count) { return $null }
+            return @($out)
+        } finally { $doc.Dispose() }
+    } catch { return $null }
+}
+
 function ConvertTo-EpsUplinkUpdateWaited {
     <#
       PURE. The update run's give-up line ("update to 2.0.74 waited 45 min for running jobs (UserTagging, ...), retries next
@@ -316,6 +351,9 @@ function New-EpsUplinkHeartbeat {
             # STRUCTURED (Invardia's contract takes no free text; Invardia writes the sentence). Else left out.
             $wv = ConvertTo-EpsUplinkUpdateWaited -Text "$($Facts.Update.Waited.Text)" -AtUtc $Facts.Update.Waited.AtUtc
             if ($wv) { $o.Update.waited = $wv }
+            # SEC-LANE-1 point 9: the images each job and the web app RUN, as the update job last read them (left out when never read)
+            $rix = ConvertFrom-EpsUplinkRunningImages -Text "$($Facts.Update.RunningImages)"
+            if ($rix) { $o.Update.runningImages = @($rix) }
         }
         if ($Facts.Mail) {
             # mailJob + restriction are required by the contract; the heartbeat reports only what the job itself has
@@ -575,7 +613,7 @@ function Get-EpsUplinkHeartbeatFacts {
         # UPD-HOLD: the last update run's give-up line ("... waited 45 min for running jobs ..., retries next night"), only
         # while it is the LATEST update run and under 26 h old - so it shows in Invardia's fleet view, never fails silently
         # UPD-07 (2.1.2): the updater's LAST run (time + outcome) - the alignment check "the updater reaches every install"
-        Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }) }
+        Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }); RunningImages = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'update.runningImages'")" } catch { '' }) }
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
@@ -616,7 +654,10 @@ function Test-EpsRunIncomplete {
     <# PURE. Did this run NOT complete? Failed / PartlyFailed; and an Update run that gave up for the night (it ends
        Succeeded with its reason - "... retries next night" / "the next night tries again"). A Held run (the guard did its
        job) and a Running one are not incomplete. #>
-    param([string]$Job, [string]$Status, [string]$HeldReason)
+    param([string]$Job, [string]$Status, [string]$HeldReason, [string]$PartialKind = '')
+    # 2.1.16 (review): a CA Policy Analyzer run partial ONLY by its sign-in cap is the monitor's setting (customer-config) -
+    # it completed for what it was told to read, so it is not "incomplete" in a failure streak
+    if ($Job -eq 'CAPolicyAnalyzer' -and $Status -eq 'PartlyFailed' -and ($PartialKind -eq 'cap' -or (-not $PartialKind -and "$HeldReason" -match 'sign-in cap was reached' -and "$HeldReason" -notmatch 'could not be evaluated'))) { return $false }
     if ($Status -in 'Failed', 'PartlyFailed') { return $true }
     if ($Job -eq 'Update' -and $Status -eq 'Succeeded' -and "$HeldReason" -match '(?i)retries next night|the next night tries again|tries again within the hour') { return $true }
     $false
@@ -625,19 +666,19 @@ function Get-EpsRunStreak {
     <# PURE. Runs of ONE job, NEWEST FIRST -> how many in a row (from the newest) did not complete. #>
     param([object[]]$Runs = @())
     $n = 0
-    foreach ($r in $Runs) { if (Test-EpsRunIncomplete -Job "$($r.Job)" -Status "$($r.Status)" -HeldReason "$($r.HeldReason)") { $n++ } else { break } }
+    foreach ($r in $Runs) { if (Test-EpsRunIncomplete -Job "$($r.Job)" -Status "$($r.Status)" -HeldReason "$($r.HeldReason)" -PartialKind "$($r.PartialKind)") { $n++ } else { break } }
     $n
 }
 function Get-EpsJobRunStreak {
     <# The streak of -Job up to and including the run that ended at -EndedAtUtc (the last 10 finished runs read). #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Job, [Parameter(Mandatory)][datetime]$EndedAtUtc)
-    try { Get-EpsRunStreak -Runs @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $Job; e = $EndedAtUtc } -Query "SELECT TOP (10) Job, Status, HeldReason FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND EndedAtUtc <= @e AND Status <> 'Running' ORDER BY EndedAtUtc DESC") } catch { 0 }
+    try { Get-EpsRunStreak -Runs @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $Job; e = $EndedAtUtc } -Query "SELECT TOP (10) Job, Status, HeldReason, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND EndedAtUtc <= @e AND Status <> 'Running' ORDER BY EndedAtUtc DESC") } catch { 0 }
 }
 
 # ---------------------------------------------------------------------------------------------------- run records
 function Get-EpsUplinkErrorClass {
     # PURE. eps.Run -> @{ Outcome; ErrorClass; FixKind } (closed lists). A held run is a warning (the guard did its job).
-    param([string]$Status, [string]$Text, [string]$Job)
+    param([string]$Status, [string]$Text, [string]$Job, [string]$PartialKind = '')
     # STALL-1 (framework 8.18, Invardia 2026-11-10 "same as PIM"): a run the engine stopped as stalled = ONE run report,
     # warning / run-stalled (its catalogue entry opens the ticket; a later OK of the job resolves it)
     if ("$Text" -match '^stalled') { return @{ Outcome = 'warning'; ErrorClass = 'run-stalled'; FixKind = '' } }
@@ -650,7 +691,10 @@ function Get-EpsUplinkErrorClass {
             $parts = @("$Text" -split ';\s*' | Where-Object { "$_".Trim() })
             $qto = '^[A-Za-z][^:]{0,80}: queue eps-[a-z0-9-]{1,60}: .*(?i:time(d)? ?out)'
             $c = if ($Job -eq 'Tick' -and $parts.Count -and -not @($parts | Where-Object { $_.Trim() -notmatch $qto }).Count) { 'queue-start-timeout' } else { 'partly-failed' }
-            return @{ Outcome = 'warning'; ErrorClass = $c; FixKind = '' }
+            # TRUST-1 (2.1.15): a CA Policy Analyzer run that is partial ONLY because the sign-in cap was reached is the
+            # monitor's own setting (MaxSignIns), not a product defect - customer-config, so a streak never opens a defect
+            $fk = if ($Job -eq 'CAPolicyAnalyzer' -and ($PartialKind -eq 'cap' -or (-not $PartialKind -and "$Text" -match 'sign-in cap was reached' -and "$Text" -notmatch 'could not be evaluated'))) { 'customer-config' } else { '' }   # 2.1.16: the structured PartialKind; the words only for an older run
+            return @{ Outcome = 'warning'; ErrorClass = $c; FixKind = $fk }
         }
     }
     $c = switch -Regex ("$Text") {
@@ -662,7 +706,10 @@ function Get-EpsUplinkErrorClass {
         '(?i)\b(500|502|503|504)\b|service unavailable|bad gateway' { 'upstream-error'; break }
         default                                                  { 'unclassified' }
     }
-    @{ Outcome = 'failed'; ErrorClass = $c; FixKind = $(if ($c -eq 'permission') { 'customer-config' } else { '' }) }
+    # backlog d review (2026-11-14): a scoped run stopped on the admin's own input (a scope group that is not one group; the
+    # rules changed after the test it goes live on) is the customer's to fix - customer-config, so a streak never opens a defect
+    $own = "$Text" -match '^group scope: the members of .+ are unknown' -or "$Text" -match '^the rules changed after the test run '
+    @{ Outcome = 'failed'; ErrorClass = $c; FixKind = $(if ($c -eq 'permission' -or $own) { 'customer-config' } else { '' }) }
 }
 
 function New-EpsUplinkRunRecord {
@@ -671,7 +718,7 @@ function New-EpsUplinkRunRecord {
     param([Parameter(Mandatory)]$Run, [string]$Version, [string]$TenantId, [string]$Key, [datetime]$NowUtc = [datetime]::UtcNow, [int]$Streak = 0)
     $o = New-EpsUplinkEnvelope -Kind 'run' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
     $o.Job = Get-EpsUplinkJobId "$($Run.Job)"
-    $cls = Get-EpsUplinkErrorClass -Status "$($Run.Status)" -Text "$($Run.HeldReason)" -Job "$($Run.Job)"
+    $cls = Get-EpsUplinkErrorClass -Status "$($Run.Status)" -Text "$($Run.HeldReason)" -Job "$($Run.Job)" -PartialKind "$($Run.PartialKind)"
     $o.Outcome = Select-EpsUplinkEnum $cls.Outcome 'Outcome'
     if ($Run.StartedAtUtc -and $Run.EndedAtUtc -and $Run.EndedAtUtc -isnot [DBNull]) {
         $ms = [int64](([datetime]$Run.EndedAtUtc - [datetime]$Run.StartedAtUtc).TotalMilliseconds)
@@ -682,6 +729,22 @@ function New-EpsUplinkRunRecord {
         $o.FailedStep = $o.Job   # the step that stalled = the job (EPS's jobs are one step each)
         # framework §8.16: the item carries the catalogue code (internal/errors/errors.json, eps-run-0101, opensTicket true)
         $o.Reports = @([ordered]@{ Report = $o.Job; Code = $script:EpsStallErrorCode; CauseClass = 'run-stalled'; Action = 'support' })
+    }
+    # TRUST-1 point 3: a whole run that left something UNKNOWN (a source not read, a condition that failed) is a warning
+    # with its catalogue code(s) - never 'unknown' on Invardia's run monitor; the run's other data stays trusted
+    $rc = $Run.Codes   # a DataRow / object from SQL or a hashtable (tests); StrictMode is off
+    $codes = @(if ($rc -and $rc -isnot [DBNull]) { try { @("$rc" | ConvertFrom-Json) } catch { @() } })
+    $codes = @($codes | Where-Object { $script:EpsRunWarningCodes.Contains("$_") } | Select-Object -Unique)
+    if ($codes.Count) {
+        if ($o.Outcome -eq 'ok') { $o.Outcome = 'warning' }
+        # framework §8.16: one item per code AND missing name (Invardia's signature = product + CauseClass + MissingName):
+        # the source that was not read, the condition that failed, the CA check - so two causes never merge into one
+        $list = { param($v) @(if ($v -and $v -isnot [DBNull]) { try { @("$v" | ConvertFrom-Json) | Where-Object { "$_" -match '^[A-Za-z0-9_.-]{1,60}$' } } catch { } }) }
+        $names = @{ 'eps-src-0101' = @(& $list $Run.Sources); 'eps-rule-0101' = @(& $list $Run.FailedConditions); 'eps-rule-0102' = @('ca-policy-check'); 'eps-src-0102' = @(& $list $Run.Sources); 'eps-src-0103' = @(& $list $Run.Sources); 'eps-rule-0103' = @('ca-user-evaluation') }
+        $o.Reports = @(@($o.Reports | Where-Object { $_ }) + @(foreach ($cd in $codes) {
+            $ms = @($names["$cd"]); if (-not $ms.Count) { $ms = @('') }
+            foreach ($mn in $ms) { $it = [ordered]@{ Report = $o.Job; Code = "$cd"; CauseClass = $script:EpsRunWarningCodes["$cd"]; Action = 'support' }; if ($mn) { $it.MissingName = "$mn" }; $it }
+        }))
     }
     $o.FixKind = Select-EpsUplinkEnum $cls.FixKind 'FixKind'
     # framework lesson 2026-11-08: N runs in a row not complete = deterministic - a fix-request cause (product-defect),
@@ -727,7 +790,7 @@ function Get-EpsUplinkDueRuns {
     if (-not $wm.ContainsKey('eps-engine') -and $wm.ContainsKey('eps-tick')) { $wm['eps-engine'] = $wm['eps-tick'] }
     $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
     $since = @(@($wm.Values) + $default | Sort-Object)[0]
-    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Codes') END AS Codes, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Sources') END AS Sources, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.FailedConditions') END AS FailedConditions, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
     @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
 }
 function Get-EpsUplinkBacklog {
@@ -752,18 +815,25 @@ function Get-EpsUplinkAlerts {
         eps.worker.silent (warning)          a worker that reported before, silent > 60 min   Measured minutesSilent
         eps.job.repeat-failure (warning)     a job whose last 3+ runs did not complete         Measured runs
         eps.uplink.refused (warning)         uplink records skipped after 3 refusals (24 h)    Measured records
+        eps.update.stopped (critical)        the newest update stopped before the roll (download / verify / build /
+                                             migrate) - at once, not after 3 runs                Measured runs
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
     $out = [System.Collections.Generic.List[object]]::new()
     # gap (b): the worst job whose last runs did not complete, 3+ in a row (each job's last 10 finished runs, 14 days)
     try {
         $rf = Get-EpsRepeatFailureAlert -Rows @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
-SELECT Job, Status, HeldReason, EndedAtUtc FROM (
-  SELECT Job, Status, HeldReason, EndedAtUtc, ROW_NUMBER() OVER (PARTITION BY Job ORDER BY EndedAtUtc DESC) AS rn
+SELECT Job, Status, HeldReason, EndedAtUtc, PartialKind FROM (
+  SELECT Job, Status, HeldReason, EndedAtUtc, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind, ROW_NUMBER() OVER (PARTITION BY Job ORDER BY EndedAtUtc DESC) AS rn
   FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND Status <> 'Running' AND Job <> 'Uplink' AND EndedAtUtc > DATEADD(DAY, -14, SYSUTCDATETIME())) x
 WHERE rn <= 10 ORDER BY Job, EndedAtUtc DESC
 '@)
         if ($rf) { $out.Add($rf) }
+    } catch { }
+    # BUILD-STOP-ALERT: an update that stopped before the roll alerts at ONCE (not after 3 runs)
+    try {
+        $us = Get-EpsUpdateStopAlert -Rows @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (10) Status, HeldReason, EndedAtUtc FROM eps.Run WHERE Job = 'Update' AND Status <> 'Running' AND EndedAtUtc IS NOT NULL ORDER BY EndedAtUtc DESC")
+        if ($us) { $out.Add($us) }
     } catch { }
     # gap (a): records skipped after 3 refusals in a row - open for 24 h after the last skip
     try {
@@ -810,7 +880,7 @@ function Get-EpsRepeatFailureAlert {
         $runs = @($g.Group | Sort-Object { [datetime]$_.EndedAtUtc } -Descending)
         $n = Get-EpsRunStreak -Runs $runs
         if ($n -lt $script:EpsRepeatFailureRuns) { continue }
-        $cls = Get-EpsUplinkErrorClass -Status "$($runs[0].Status)" -Text "$($runs[0].HeldReason)" -Job "$($g.Name)"
+        $cls = Get-EpsUplinkErrorClass -Status "$($runs[0].Status)" -Text "$($runs[0].HeldReason)" -Job "$($g.Name)" -PartialKind "$($runs[0].PartialKind)"
         if ($cls.FixKind -eq 'customer-config') { continue }
         if (-not $worst -or $n -gt $worst.N) { $worst = @{ Job = "$($g.Name)"; N = $n; First = $runs[$n - 1].EndedAtUtc; Class = $(if ($cls.ErrorClass) { $cls.ErrorClass } else { 'gave up' }) } }
     }
@@ -819,6 +889,64 @@ function Get-EpsRepeatFailureAlert {
     if ($script:EpsUplinkLists.AlertJob -notcontains $jid) { $jid = 'engine' }
     @{ AlertId = 'eps.job.repeat-failure'; Severity = 'warning'; Area = 'job'; Job = $jid; Measured = [ordered]@{ runs = [int]$worst.N }; FirstSeenUtc = $worst.First; Page = 'runs'
        ActionText = "The $($worst.Job) job did not complete its last $($worst.N) runs (last: $($worst.Class)). Invardia treats this as a product fault; open Jobs & runs for the log. The alert ends when a run completes." }
+}
+function Get-EpsUpdateStopAlert {
+    <# PURE. BUILD-STOP-ALERT (Invardia 2026-11-13, after every Pro update to 2.1.24 / 2.1.25 stopped at the image build and
+       nothing said so for hours: "it should never stay silent"): the update job's last finished runs (newest first: Status,
+       HeldReason, EndedAtUtc) -> eps.update.stopped (critical) when the NEWEST stopped before the roll (download / verify /
+       build / migrate) - the install keeps its version and a retry of the same version fails the same way. Measured = the
+       stops of that version in a row. $null when the newest run is anything else (updated, up to date, waited, a stopped roll). #>
+    param([object[]]$Rows = @())
+    $runs = @($Rows | Where-Object { $_ -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] })
+    if (-not $runs.Count) { return $null }
+    $rx = "update to ([0-9A-Za-z.+-]{1,40}) on ring \d stopped at '(download|verify|build|migrate)'"
+    # review: a run that only WAITED or could not ask (a give-up, a stale read, Invardia not reached, available but not
+    # installed) changes nothing - it neither closes the alert nor breaks the count (no close / reopen flap)
+    $neutral = "waited \d{1,4} min for running jobs|not installed: the release read again after the hold|the check did not complete|is available on ring \d \(running [^)]*\); not installed"
+    $real = @($runs | Where-Object { "$($_.HeldReason)" -notmatch $neutral })
+    if (-not $real.Count) { return $null }
+    $m = [regex]::Match("$($real[0].HeldReason)", $rx)
+    if (-not $m.Success) { return $null }
+    $ver = $m.Groups[1].Value; $n = 0
+    foreach ($r in $real) { $x = [regex]::Match("$($r.HeldReason)", $rx); if ($x.Success -and $x.Groups[1].Value -eq $ver) { $n++ } else { break } }
+    @{ AlertId = 'eps.update.stopped'; Severity = 'critical'; Area = 'update'; Job = 'update'; Measured = [ordered]@{ runs = $n }; FirstSeenUtc = $real[$n - 1].EndedAtUtc; Page = 'runs'
+       ActionText = "The update to $ver stopped while preparing the new version ($($m.Groups[2].Value)), so this installation keeps running its current version. Invardia support has been told; no action is needed on your side unless support asks." }
+}
+function Send-EpsUpdateStopAlertNow {
+    <#
+      BUILD-STOP-ALERT "at once" (Invardia 2026-11-14, after the 2.1.28.1 build stop at internal waited for the 4-hourly
+      uplink: "An alert that waits up to 4 h is not at once"): the UPDATE JOB sends eps.update.stopped itself, through the
+      uplink path (the same record, key and closed lists), right after its update stopped before the roll. -Stop = this run's
+      own result as a run row (Status, HeldReason, EndedAtUtc); the update job's earlier finished runs are read for the count.
+      The uplink cycle keeps the episode afterwards (alert:<id> state: not sent again inside its repeat window; closed when an
+      update succeeds). Off with Uplink.Alerts.Enabled = false; no install key (no yes to Invardia) = nothing sent.
+      Never throws: @{ Sent; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Stop, [string]$Version, [string]$Key, [string]$TenantId = "$env:EPS_TENANT_ID", [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        # review: the uplink switch first (an owner who turned the uplink off sends NOTHING, key or not), then the alerts switch
+        $set = { param($nm) if (Get-Command Get-EpsSetting -ErrorAction SilentlyContinue) { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name $nm -Default 'true')" } else { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $nm } -Query "SELECT ISNULL((SELECT Value FROM eps.Setting WHERE Name = @n), N'true')")" } }
+        if ((& $set 'Uplink.Enabled') -ne 'true') { return @{ Sent = $false; Reason = 'the uplink is off on this install (Uplink.Enabled)' } }
+        if ((& $set 'Uplink.Alerts.Enabled') -ne 'true') { return @{ Sent = $false; Reason = 'alerts are off on this install (Uplink.Alerts.Enabled)' } }
+        if (-not "$Key".Trim()) { return @{ Sent = $false; Reason = 'no install key - nothing is sent to Invardia' } }
+        $prev = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (10) Status, HeldReason, EndedAtUtc FROM eps.Run WHERE Job = 'Update' AND Status <> 'Running' AND EndedAtUtc IS NOT NULL ORDER BY EndedAtUtc DESC")
+        $a = Get-EpsUpdateStopAlert -Rows (@($Stop) + $prev)
+        if (-not $a) { return @{ Sent = $false; Reason = 'not a stop before the roll' } }
+        $stName = "alert:$($a.AlertId)"
+        $ep = try { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $stName } -Query 'SELECT Value FROM eps.UplinkState WHERE Name = @n')" | ConvertFrom-Json } catch { $null }
+        $last = if ($ep) { ConvertFrom-EpsUplinkTime "$($ep.sentUtc)" }
+        # review: a real update that did NOT stop, finished after that send, ended the episode even if no uplink run closed it -
+        # this stop is a NEW episode and goes now (never silent for the rest of the repeat window)
+        $rxStop = "stopped at '(download|verify|build|migrate)'"; $rxNeutral = "waited \d{1,4} min for running jobs|not installed: the release read again after the hold|the check did not complete|is available on ring \d \(running [^)]*\); not installed"
+        $healed = $last -and @($prev | Where-Object { $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] -and [datetime]::SpecifyKind([datetime]$_.EndedAtUtc, 'Utc') -gt $last -and "$($_.HeldReason)" -notmatch $rxStop -and "$($_.HeldReason)" -notmatch $rxNeutral }).Count
+        if ($last -and -not $healed -and ($NowUtc - $last).TotalHours -lt $script:EpsUplinkAlertRepeatHours) { return @{ Sent = $false; Reason = "already sent at $($ep.sentUtc) - the uplink keeps the episode" } }
+        $rec = New-EpsUplinkAlertRecord -Alert $a -Count 1 -Version $Version -TenantId $TenantId -Key $Key -NowUtc $NowUtc
+        if (-not $rec) { return @{ Sent = $false; Reason = 'the alert is not in the closed lists' } }
+        $r = Send-EpsUplinkRecord -Record $rec -Key $Key
+        if (-not $r.Ok) { return @{ Sent = $false; Reason = "not sent ($($r.Reason)) - the next uplink run sends it" } }
+        Set-EpsUplinkState -ConnectionString $ConnectionString -Name $stName -Value (@{ sentUtc = (ConvertTo-EpsUplinkIso $NowUtc); seen = 0 } | ConvertTo-Json -Compress)
+        @{ Sent = $true; Reason = "eps.update.stopped sent to Invardia at once ($($r.Reason))" }
+    } catch { @{ Sent = $false; Reason = "not sent ($((("$($_.Exception.Message)") -split "`n")[0])) - the next uplink run sends it" } }
 }
 function Get-EpsUplinkSkippedAlert {
     <# PURE. The 'uplink.skipped' state ({ n; firstUtc; lastUtc }) -> the alert while the last skip is under 24 h old. #>
@@ -1160,7 +1288,10 @@ function Invoke-EpsUplinkCycle {
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'true')" -eq 'true') {
             $open = @(Get-EpsUplinkAlerts -ConnectionString $ConnectionString -NowUtc $NowUtc)
             $openIds = @($open | ForEach-Object { $_.AlertId })
-            foreach ($name in @($st.Keys | Where-Object { $_ -like 'alert:*' })) { if ($openIds -notcontains $name.Substring(6)) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name $name -Value $null } }   # closed: a new episode alerts at once
+            # review (2.1.30): an update run going NOW may have sent eps.update.stopped itself before its own row is written - its episode
+            # is never closed under it (else the next cycle would send it a second time)
+            $updNow = try { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = N'Update' AND Status = N'Running' AND StartedAtUtc > DATEADD(HOUR, -3, SYSUTCDATETIME())") } catch { 0 }
+            foreach ($name in @($st.Keys | Where-Object { $_ -like 'alert:*' })) { if ($openIds -notcontains $name.Substring(6) -and -not ($updNow -and $name -eq 'alert:eps.update.stopped')) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name $name -Value $null } }   # closed: a new episode alerts at once
             $sentNow = 0
             foreach ($a in $open) {
                 $ep = if ($st["alert:$($a.AlertId)"]) { try { $st["alert:$($a.AlertId)"] | ConvertFrom-Json } catch { $null } }

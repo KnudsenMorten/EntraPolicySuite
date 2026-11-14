@@ -1,0 +1,13 @@
+{
+  "version": "2.1.13",
+  "date": "2026-11-12",
+  "type": "fix-only",
+  "summary": "Image clean-up no longer removes the security scan results of images you still use.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Scan results are kept for kept images",
+      "text": "Microsoft Defender for Cloud's scan results and their signatures are now kept for every image the clean-up keeps. Removed images take their own scan results with them."
+    }
+  ]
+}

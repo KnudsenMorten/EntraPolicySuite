@@ -1,0 +1,12 @@
+{
+  "version": "2.0.38",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Installs no longer fail halfway because of a blocked region or a private endpoint.",
+  "new": [
+    { "title": "Region checked before anything is created", "text": "Before it creates anything, the install checks that Azure accepts new resources in your chosen region. If not, it stops cleanly and names regions that work." }
+  ],
+  "fixes": [
+    { "title": "Private network install passes its endpoints", "text": "A private network install no longer stops at its first private endpoint." }
+  ]
+}

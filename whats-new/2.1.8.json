@@ -1,0 +1,17 @@
+{
+  "version": "2.1.8",
+  "date": "2026-11-11",
+  "type": "feature",
+  "summary": "Community installations can connect to Invardia for health reports and updates, only if you choose to.",
+  "new": [
+    {
+      "title": "Optional connection to Invardia at install",
+      "text": "The install asks once whether to connect to Invardia; the answer is no unless you say yes. Running the install again keeps a yes; the install's no option takes it back."
+    },
+    {
+      "title": "What a connected installation shares",
+      "text": "Connected installations send health reports with numbers and states only, never users, devices, tag values or names. Invardia can then ask them to update now. No licence is needed."
+    }
+  ],
+  "fixes": []
+}

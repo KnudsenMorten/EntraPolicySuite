@@ -1,0 +1,10 @@
+{
+  "version": "2.0.43",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Smaller fixes and improvements.",
+  "new": [],
+  "fixes": [
+    { "title": "Consistent spelling on the analyzer page", "text": "The CA Policy Analyzer product page now uses US spelling, like the rest of the documentation." }
+  ]
+}

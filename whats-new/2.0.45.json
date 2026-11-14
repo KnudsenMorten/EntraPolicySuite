@@ -1,0 +1,10 @@
+{
+  "version": "2.0.45",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The product name is now consistent in the remaining texts.",
+  "new": [
+    { "title": "Product name in the remaining places", "text": "The installer's closing line, a few messages, the security review pack and the reference documentation now also say Entra Policy Suite." }
+  ],
+  "fixes": []
+}

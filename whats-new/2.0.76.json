@@ -1,0 +1,18 @@
+{
+  "version": "2.0.76",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Automatic updates work again and wait safely for running jobs before they install.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Automatic updates install again",
+      "text": "In 2.0.74 and 2.0.75 the update stopped safely before installing anything. It now waits for running jobs and then installs.",
+      "action": "If your install is on 2.0.74 or 2.0.75, run the install once to get this release; later updates install by themselves."
+    },
+    {
+      "title": "Only this product's jobs are waited for",
+      "text": "The update waits only for Entra Policy Suite's own jobs, never for another product's job in the same place."
+    }
+  ]
+}

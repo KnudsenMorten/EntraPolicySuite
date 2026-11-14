@@ -1,0 +1,13 @@
+{
+  "version": "2.1.4",
+  "date": "2026-11-11",
+  "type": "fix-only",
+  "summary": "Applies Microsoft's latest .NET 10 security patches.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Latest Microsoft security patches applied",
+      "text": "The engine and the sign-in page now run on Microsoft's newest patched .NET 10 release. Signing in and everything else work as before, and your installation updates by itself."
+    }
+  ]
+}

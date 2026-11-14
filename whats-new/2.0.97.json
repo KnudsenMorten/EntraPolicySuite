@@ -1,0 +1,11 @@
+{
+  "version": "2.0.97",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Urgent releases reach your installation within minutes instead of overnight.",
+  "new": [
+    { "title": "Update now within 15 minutes", "text": "When Invardia marks a release 'update now' for your ring, your installation starts the update within about 15 minutes. It does so only when updates are on." },
+    { "title": "Setup scripts run their own version", "text": "The setup scripts on invardia.com now run the version they were published for, instead of the newest release." }
+  ],
+  "fixes": []
+}

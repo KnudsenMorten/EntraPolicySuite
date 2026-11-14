@@ -1,0 +1,17 @@
+{
+  "version": "2.1.24",
+  "date": "2026-11-13",
+  "type": "feature",
+  "summary": "You can now see what every release brings, in plain words, right in the app.",
+  "new": [
+    {
+      "title": "What's new in the Help menu",
+      "text": "Help > What's new shows every release, newest first: what is new and what was fixed. A New badge appears after an update until you open the page."
+    },
+    {
+      "title": "The same text on GitHub and invardia.com",
+      "text": "You read the same release notes in the app, on GitHub and on invardia.com."
+    }
+  ],
+  "fixes": []
+}

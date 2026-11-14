@@ -1,0 +1,12 @@
+{
+  "version": "2.0.110",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "Picking tag values is quicker, and the Tag types page loads again.",
+  "new": [
+    { "title": "Tag values picked from a dropdown", "text": "In the rule editor and the rules grid, a tag type with a value list now offers exactly those values. An older value no longer on the list stays visible and marked." }
+  ],
+  "fixes": [
+    { "title": "Tag types page loads again", "text": "The Tag types page showed 'Could not load' when two rules set the same value. It loads again." }
+  ]
+}

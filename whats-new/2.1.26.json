@@ -1,0 +1,17 @@
+{
+  "version": "2.1.26",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Pro installations update to the newest version again.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Pro installations update again",
+      "text": "A Pro installation could not install 2.1.24 or 2.1.25 and kept running the version before. It now updates straight to this version. Community installations were not affected."
+    },
+    {
+      "title": "Release notes in plain words",
+      "text": "The release notes now describe each fix by what you see."
+    }
+  ]
+}

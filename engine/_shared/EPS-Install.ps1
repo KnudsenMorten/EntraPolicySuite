@@ -511,6 +511,14 @@ function Get-EpsGuidFrom([string]$text) {
     [guid]::new($b).ToString()
 }
 
+function Get-EpsImagePruneSwitch {
+    # IMAGE-PRUNE CONTRACT point 1: the switch Invardia set on the update job (its ARM body, $null when the job is not
+    # there) - the EXACT value, whatever it is (" off" reads as off to the updater - dropping it would turn the clean-up
+    # back on); $null when it is not set, empty, or longer than 100 characters
+    param($Job)
+    $sw = @(@($Job.properties.template.containers | ForEach-Object { $_.env }) | Where-Object { $_ -and $_.name -eq 'EPS_Updater_ImagePrune' })[0]
+    if ($sw -and "$($sw.value)" -and "$($sw.value)".Length -le 100) { "$($sw.value)" } else { $null }
+}
 function Get-EpsJobBodies {
     # The Container Apps Jobs (DESIGN §2, §4): the tick on a 5-minute schedule, one MANUAL job per implemented work job
     # (the tick starts it). No secret anywhere: each job signs in to SQL, Graph and Exchange with its managed identity.
@@ -562,6 +570,8 @@ function Get-EpsJobBodies {
         # OWNER 2026-11-11 (opt-in): a Community install sends nothing to Invardia unless its user said yes at install; the
         # yes is EPS_CONNECT_INVARDIA = yes on the update job, written only when this install has it (never by default)
         if ($job -eq 'Update' -and "$($Ctx.ConnectInvardia)" -eq 'yes') { $extra += @{ name = 'EPS_CONNECT_INVARDIA'; value = 'yes' } }
+        # IMAGE-PRUNE CONTRACT point 1: the update job keeps the switch Invardia set (read from the job before the re-run)
+        if ($job -eq 'Update' -and "$($Ctx.ImagePruneSwitch)") { $extra += @{ name = 'EPS_Updater_ImagePrune'; value = "$($Ctx.ImagePruneSwitch)" } }
         $ids = @{ $miId = @{} }
         # UPDATER-1 phase 2: the update job ALSO carries id-eps-updater (Contributor) for the apply; its SQL, its queue and
         # the install key stay the engine identity's (EPS_ManagedIdentityClientId)
@@ -1023,6 +1033,11 @@ function Invoke-EpsInstallStep {
                 $upj2 = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(Get-EpsAcaJobResourceName -Names $n -Key @(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
                 if (@(@($upj2.properties.template.containers | ForEach-Object { $_.env }) | Where-Object { $_.name -eq 'EPS_CONNECT_INVARDIA' -and "$($_.value)" -eq 'yes' }).Count) { $Ctx.ConnectInvardia = 'yes' }
             }
+            # IMAGE-PRUNE CONTRACT point 1 (2.1.12): the switch EPS_Updater_ImagePrune is set by Invardia through the Support app
+            # on the update job; a re-run keeps the value it finds there (never sets one itself)
+            $upj3 = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/jobs/$(Get-EpsAcaJobResourceName -Names $n -Key @(Get-EpsDefaultJobSchedule | Where-Object Job -eq 'Update')[0].AcaJobName)" -ApiVersion $script:EpsApi.acajob -AllowNotFound
+            $sw = Get-EpsImagePruneSwitch -Job $upj3
+            if ($sw) { $Ctx.ImagePruneSwitch = $sw }
             # the jobs on 2025-01-01: the first version that takes an identity on a scale rule (2.0.9, S4)
             foreach ($j in Get-EpsJobBodies -Ctx $Ctx -Image $image) {
                 # public -> private: a job cannot move to another environment - one in the old environment is deleted and

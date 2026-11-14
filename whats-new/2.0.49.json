@@ -1,0 +1,11 @@
+{
+  "version": "2.0.49",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The suite's sign-in app and admin group now carry clear, standard names.",
+  "new": [
+    { "title": "Standard name for the suite's app", "text": "The suite's app in Microsoft Entra is now named Entra Policy Suite. Your next install run renames an older one in place, so nobody loses access." },
+    { "title": "Database admin group gets the standard name", "text": "An admin group still named after the old product name is renamed in place. A group you named yourself keeps its name, and the install lists every rename." }
+  ],
+  "fixes": []
+}

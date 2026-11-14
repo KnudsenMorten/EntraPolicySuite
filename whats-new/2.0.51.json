@@ -1,0 +1,13 @@
+{
+  "version": "2.0.51",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Invardia now receives your security findings by default, so serious issues get attention faster.",
+  "new": [
+    {
+      "title": "Security findings sent to Invardia",
+      "text": "Findings such as outside tag changes, Conditional Access drift, deleted policies or a silent Hybrid worker now go to Invardia by default. A SuperAdmin can switch it off in Settings."
+    }
+  ],
+  "fixes": []
+}

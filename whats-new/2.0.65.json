@@ -1,0 +1,13 @@
+{
+  "version": "2.0.65",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "A private install's Key Vault now stays private, even after it is recovered.",
+  "new": [
+    {
+      "title": "Key Vault kept private automatically",
+      "text": "On a private network install, every update run checks that the Key Vault is still private and restores it if needed. Public installs are not changed."
+    }
+  ],
+  "fixes": []
+}

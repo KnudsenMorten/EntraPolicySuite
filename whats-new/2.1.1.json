@@ -1,0 +1,18 @@
+{
+  "version": "2.1.1",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "The hybrid worker now stays on the same version as your installation.",
+  "new": [
+    {
+      "title": "Hybrid worker checks for updates hourly",
+      "text": "The Hybrid worker now checks for its update every hour instead of once a day. Existing workers switch by themselves after their next update; nothing to do on the server."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Hybrid worker no longer falls behind",
+      "text": "The Hybrid worker could stay a day behind after every update. It now follows your installation's current version, and Get started shows its AD check as ok or missing again."
+    }
+  ]
+}

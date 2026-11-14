@@ -74,6 +74,9 @@ footer .spacer { flex:1; }
 .card .lbl { color:var(--text-secondary); font-size:13px; margin-top:2px; }
 .card.alert { border-color:var(--danger); background:var(--danger-bg); }
 .guide { background:var(--surface-alt); border-left:3px solid var(--accent); padding:8px 12px; margin:8px 0 12px; }
+.guide.id-incomplete { border-left-color:var(--warn, #b26a00); }
+/* WHATS-NEW-1: the "New" badge on Help > What's new (the page itself is Invardia's whats-new.css, unchanged) */
+.wn-nav-new { display:inline-block; margin-left:6px; padding:0 6px; border-radius:9px; font-size:12px; line-height:16px; background:var(--accent); color:#fff; }
 /* GUI-WALK (owner 2026-11-09 "impossible to read"): a page's explanation shows its first two lines; a click opens all */
 .guide.clamp { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; cursor:pointer; position:relative; padding-right:110px; }
 .guide.clamp::after { content:"Read more"; position:absolute; right:12px; bottom:8px; color:var(--link); background:var(--surface-alt); padding-left:6px; }

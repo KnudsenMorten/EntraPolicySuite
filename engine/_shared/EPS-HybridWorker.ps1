@@ -23,17 +23,22 @@ function Add-EpsWorkPackages {
     $queued = @($Changes | Where-Object { $_.Status -eq 'Queued' })
     if (-not $queued.Count) { return 0 }
     $ids = @{}
-    foreach ($r in Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $RunId } -Query "SELECT ChangeId, ObjectId, Attribute FROM eps.TagChange WHERE RunId = @r AND Status = 'Queued'") { $ids["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r.ChangeId }
+    foreach ($r in Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $RunId } -Query "SELECT c.ChangeId, c.ObjectId, c.Attribute FROM eps.TagChange c WHERE c.RunId = @r AND c.Status = 'Queued' AND NOT EXISTS (SELECT 1 FROM eps.WorkPackage w WHERE w.ChangeId = c.ChangeId)") { $ids["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r.ChangeId }
     $dt = [System.Data.DataTable]::new()
     foreach ($c in 'Kind', 'ChangeId', 'RunId', 'Payload', 'Status', 'Environment') { $col = $dt.Columns.Add($c); if ($c -eq 'ChangeId') { $col.DataType = [long] }; if ($c -eq 'RunId') { $col.DataType = [guid] } }
     foreach ($c in $queued) {
+        # (f) review E nit 4: only a change whose row IS Queued gets a package - one still Planned (its status write failed) is
+        # not queued (the worker would refuse a package without its change record; the run is not Succeeded)
+        $cid = $ids["$($c.ObjectId)|$($c.Attribute)".ToLowerInvariant()]
+        if (-not $cid) { continue }
         $row = $dt.NewRow(); $row.Kind = 'AdSetAttribute'; $row.RunId = $RunId; $row.Status = 'Queued'
-        $cid = $ids["$($c.ObjectId)|$($c.Attribute)".ToLowerInvariant()]; $row.ChangeId = if ($cid) { [long]$cid } else { [DBNull]::Value }
+        $row.ChangeId = [long]$cid
         $row.Payload = @{ sid = [string]$c.OnPremisesSecurityIdentifier; upn = [string]$c.OnPremisesUserPrincipalName; objectId = [string]$c.ObjectId; attribute = $c.Attribute; value = [string]$c.NewValue } | ConvertTo-Json -Compress
         $env = if ($EnvironmentMap.Count) { Get-EpsWorkEnvironment -Upn ([string]$c.OnPremisesUserPrincipalName) -Entries $EnvironmentMap } else { $null }   # EPS-WorkerPage.ps1
         $row.Environment = if ($env) { $env } else { [DBNull]::Value }
         $dt.Rows.Add($row)
     }
+    if (-not $dt.Rows.Count) { return 0 }
     $conn = New-EpsSqlConnection -ConnectionString $ConnectionString
     try {
         Open-EpsSqlConnection $conn
@@ -41,7 +46,7 @@ function Add-EpsWorkPackages {
         foreach ($col in $dt.Columns) { [void]$bc.ColumnMappings.Add($col.ColumnName, $col.ColumnName) }
         $bc.WriteToServer($dt)
     } finally { $conn.Dispose() }
-    $queued.Count
+    $dt.Rows.Count
 }
 
 function Get-EpsAdGroupContext {
@@ -94,7 +99,7 @@ WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, 
     VALUES (@w, @m, @r, @v, @t, @x, @d, @s, @e, @h, @ts, @te, @tl, @tr, @tn);
 '@ | Out-Null }
     & $beat 'cycle started'
-    $sum = [ordered]@{ Groups = 0; GroupErrors = 0; Done = 0; Failed = 0; Claimed = 0; AdUsers = 0 }
+    $sum = [ordered]@{ Groups = 0; GroupErrors = 0; Done = 0; Failed = 0; Claimed = 0; AdUsers = 0; Superseded = 0 }
 
     # 1. the AD groups the tagging job asked for (in the last 7 days) and whose snapshot is older than the refresh time
     $due = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ a = $NowUtc.AddDays(-7); f = $NowUtc.AddMinutes(-$GroupRefreshMinutes) } -Query 'SELECT GroupName FROM eps.AdGroupSnapshotInfo WHERE RequestedAtUtc >= @a AND (RefreshedAtUtc IS NULL OR RefreshedAtUtc < @f OR RequestedAtUtc > RefreshedAtUtc)')
@@ -133,13 +138,19 @@ WHEN NOT MATCHED THEN INSERT (WorkerName, Machine, RunAs, Version, LastSeenUtc, 
 
     # 2. the work packages: claim atomically (READPAST: another worker's claimed rows are skipped, not waited on)
     #    P14: a package for an AD environment goes only to a worker of that environment; a package without one to any
-    $claimed = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ n = $BatchSize; w = $WorkerName; t = $NowUtc; s = $NowUtc.AddMinutes(-$StaleMinutes); m = $MaxAttempts; e = "$Environment" } -Query @'
-UPDATE TOP (@n) p SET Status = 'Claimed', ClaimedBy = @w, ClaimedAtUtc = @t, Attempts = Attempts + 1
+    #    Invardia 2026-11-13 (data correctness): in QUEUE ORDER (PackageId) - "UPDATE TOP" alone takes any rows, so an older
+    #    value for a user could be written after a newer one and stay in AD; the batch is also worked in that order
+    $claimed = @(@(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ n = $BatchSize; w = $WorkerName; t = $NowUtc; s = $NowUtc.AddMinutes(-$StaleMinutes); m = $MaxAttempts; e = "$Environment" } -Query @'
+UPDATE w SET Status = 'Claimed', ClaimedBy = @w, ClaimedAtUtc = @t, Attempts = Attempts + 1
 OUTPUT INSERTED.PackageId, INSERTED.Kind, INSERTED.ChangeId, INSERTED.Payload, INSERTED.Attempts
-FROM eps.WorkPackage p WITH (READPAST, UPDLOCK, ROWLOCK)
-WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
-  AND (p.Environment IS NULL OR p.Environment = @e)
-'@)
+FROM eps.WorkPackage w WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE w.PackageId IN (
+  SELECT TOP (@n) p.PackageId FROM eps.WorkPackage p WITH (READPAST, UPDLOCK, ROWLOCK)
+  WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts < @m AND (p.Status = 'Queued' OR (p.Status = 'Claimed' AND p.ClaimedAtUtc < @s))
+    AND (p.Environment IS NULL OR p.Environment = @e)
+  ORDER BY p.PackageId)
+  AND w.Attempts < @m AND (w.Status = 'Queued' OR (w.Status = 'Claimed' AND w.ClaimedAtUtc < @s))
+'@) | Sort-Object { [long]$_.PackageId })
     $sum.Claimed = $claimed.Count
     foreach ($p in $claimed) {
         # IDENTITY-MOVE-1 rule 13: the AD delegation read back (read only), answered once; the engine asks again until it is ok
@@ -170,7 +181,7 @@ WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts
             continue
         }
         $pl = $p.Payload | ConvertFrom-Json
-        $err = $null
+        $err = $null; $superseded = $null
         try {
             if ($pl.attribute -notmatch '^extensionAttribute([1-9]|1[0-5])$') { throw "refused: '$($pl.attribute)' is not an extensionAttribute the engine writes" }
             # SEC-AUDIT-1 S3: the package must say exactly what the engine's own change record says (object, attribute,
@@ -182,6 +193,11 @@ WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts
             if (-not [string]::Equals("$($ch.ObjectId)", "$($pl.objectId)", [StringComparison]::OrdinalIgnoreCase) -or "$($ch.Attribute)" -ne "$($pl.attribute)" -or "$($ch.NewValue)" -cne "$($pl.value)") {
                 throw "refused: the package does not match change $($p.ChangeId) (object / attribute / value differ from the engine's record)"
             }
+            # Invardia 2026-11-13: a NEWER value for the same user + attribute is queued or already written - this older one
+            # is superseded and never written (written last, it would leave the wrong value in AD)
+            # a live package = Queued, or Claimed with tries left (a claim out of tries is never taken again: not live)
+            $newer = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ c = [long]$p.ChangeId; o = [guid]"$($ch.ObjectId)"; a = "$($ch.Attribute)"; m = $MaxAttempts } -Query "SELECT TOP (1) c.ChangeId FROM eps.TagChange c WHERE c.ObjectId = @o AND c.Attribute = @a AND c.ChangeId > @c AND (c.Status = 'Applied' OR (c.Status = 'Queued' AND EXISTS (SELECT 1 FROM eps.WorkPackage w WHERE w.ChangeId = c.ChangeId AND (w.Status = 'Queued' OR (w.Status = 'Claimed' AND w.Attempts < @m))))) ORDER BY c.ChangeId DESC"
+            if ($newer) { $superseded = [long]$newer; throw 'superseded' }
             # an attribute this AD does not have (no Exchange schema: no extensionAttribute5/9) is refused at once, not retried
             if ($Ad.PSObject.Methods['HasAttribute'] -and -not $Ad.HasAttribute([string]$pl.attribute)) { throw "refused: '$($pl.attribute)' is not in this AD's schema - the tag cannot be written on AD users until the schema has it" }
             $u = $Ad.FindUser([string]$pl.sid, [string]$pl.upn)
@@ -190,6 +206,14 @@ WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts
             $back = [string]$Ad.GetAttribute($u, [string]$pl.attribute)
             if (-not [string]::Equals($back, [string]$pl.value, [StringComparison]::OrdinalIgnoreCase)) { throw "written but read back as '$back', not '$($pl.value)'" }
         } catch { $err = "$($_.Exception.Message)" }
+        if ($superseded) {
+            # not an error and not a write: the package is handled (Done, with why in its Result), the change is Skipped
+            $why = "superseded by change $superseded (a newer value for the same user and attribute) - not written"
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $p.PackageId; r = $why; t = $NowUtc } -Query "UPDATE eps.WorkPackage SET Status = 'Done', Error = NULL, Result = @r, DoneAtUtc = @t WHERE PackageId = @id" | Out-Null
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ c = $p.ChangeId; e = $why; t = $NowUtc } -Query "UPDATE eps.TagChange SET Status = 'Skipped', Error = @e, Via = 'Worker', AtUtc = @t WHERE ChangeId = @c" | Out-Null
+            $sum.Superseded++
+            continue
+        }
         $final = $err -and ([int]$p.Attempts -ge $MaxAttempts -or $err -match '^refused|not in AD')
         $st = if (-not $err) { 'Done' } elseif ($final) { 'Failed' } else { 'Queued' }   # a passing error is tried again next cycle
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $p.PackageId; s = $st; e = $err; t = $NowUtc } -Query 'UPDATE eps.WorkPackage SET Status = @s, Error = @e, DoneAtUtc = CASE WHEN @s IN (''Done'', ''Failed'') THEN @t ELSE NULL END WHERE PackageId = @id' | Out-Null
@@ -198,7 +222,7 @@ WHERE p.Kind IN ('AdSetAttribute', 'AdPing', 'AdDelegationCheck') AND p.Attempts
         }
         if ($st -eq 'Done') { $sum.Done++ } elseif ($st -eq 'Failed') { $sum.Failed++ }
     }
-    & $beat ("groups $($sum.Groups) (errors $($sum.GroupErrors)), packages $($sum.Claimed): done $($sum.Done), failed $($sum.Failed)$(if ($sum.AdUsers) { ", AD users $(if ($sum.AdUsers -lt 0) { 'FAILED' } else { $sum.AdUsers })" })")
+    & $beat ("groups $($sum.Groups) (errors $($sum.GroupErrors)), packages $($sum.Claimed): done $($sum.Done), failed $($sum.Failed)$(if ($sum.Superseded) { ", superseded $($sum.Superseded)" })$(if ($sum.AdUsers) { ", AD users $(if ($sum.AdUsers -lt 0) { 'FAILED' } else { $sum.AdUsers })" })")
     [pscustomobject]$sum
 }
 

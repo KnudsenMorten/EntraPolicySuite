@@ -1,0 +1,13 @@
+{
+  "version": "2.0.67",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Adding or removing a hybrid worker no longer needs database rights.",
+  "new": [
+    {
+      "title": "Hybrid worker access without database rights",
+      "text": "Giving or removing a Hybrid worker's access now runs inside your install and is checked afterwards. You only need the right to start a job in the install."
+    }
+  ],
+  "fixes": []
+}

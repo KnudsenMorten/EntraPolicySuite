@@ -1,0 +1,22 @@
+{
+  "version": "2.0.54",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The install now pauses and tells you what it needs, instead of failing.",
+  "new": [
+    {
+      "title": "The install waits instead of failing",
+      "text": "When the install needs something from you first, such as DNS records, it shows waiting and the reason. Run the same command again and it continues there."
+    },
+    {
+      "title": "Network team tasks listed, not blocking",
+      "text": "When your sign-in cannot change your central network, a private install warns you and lists it as a task for your network team instead of stopping."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Smaller fixes for private installs",
+      "text": "Network links are checked before the install goes on, parts left broken by an earlier run are made again, and two messages no longer suggest removing shared items."
+    }
+  ]
+}

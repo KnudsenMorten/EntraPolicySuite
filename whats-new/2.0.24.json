@@ -1,0 +1,14 @@
+{
+  "version": "2.0.24",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "Monitoring policies is simpler with one form and personas you manage yourself.",
+  "new": [
+    { "title": "One simple CA Policy Analyzer form", "text": "Pick a new or existing monitor, choose policies and a sign-in period, then analyze now or save it as a monitor. Less common options sit under More options." },
+    { "title": "Manage your own personas", "text": "Create, rename and delete personas, and add policies or name rules to them. A policy can be in several personas or none, and monitors follow a rename." },
+    { "title": "Add policies to monitors from Conditional Access", "text": "Each policy shows the monitors it is in. On the Conditional Access page, select policies and add them to or remove them from a monitor." }
+  ],
+  "fixes": [
+    { "title": "Persona groups sort as intended", "text": "Global comes first, then the personas A to Z, then policies without a persona." }
+  ]
+}

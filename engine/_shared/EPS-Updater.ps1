@@ -101,7 +101,12 @@ function Get-EpsUpdateHead {
 
 $script:EpsUpdateHeadSetting = 'update-head-check'   # written by the update job, read by the tick (UPD-03)
 
-$script:EpsRollRetry = @{ EveryMinutes = 60; MaxHours = 24; GiveUp = 'waited \d{1,4} min for running jobs' }
+$script:EpsUpdateRereadSeconds = 15   # 2.1.25: the one resend of the release read after the hold (tests set 0)
+$script:EpsRollRetry = @{ EveryMinutes = 60; MaxHours = 24; GiveUp = 'waited \d{1,4} min for running jobs'
+    StaleRead = 'not installed: the release read again after the hold was not the one planned'   # 2.1.25: retried hourly, as a give-up
+    # 2.1.17 (Invardia 2026-11-13): an update that STOPPED in the roll ('apply' / 'health') may leave the install mixed -
+    # the tick re-runs it within minutes (the first 3 tries 10 min apart, then hourly), never waiting for a release / the nightly
+    Stopped = "stopped at '(apply|health)'"; StoppedEveryMinutes = 10; StoppedFastTries = 3 }
 function Get-EpsRollRetryDecision {
     <#
       PURE. ROLL-RETRY-1 (framework §3.6, Invardia 2026-11-11: "PIM lost a day at 5 installs"): an update that gave up
@@ -118,13 +123,71 @@ function Get-EpsRollRetryDecision {
     if (@($rs | Where-Object { "$($_.Status)" -eq 'Running' -and $_.StartedAtUtc -and [datetime]$_.StartedAtUtc -gt $NowUtc.AddHours(-3) }).Count) { return (& $no 'an update runs now') }
     $fin = @($rs | Where-Object { "$($_.Status)" -ne 'Running' -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] })
     if (-not $fin.Count) { return (& $no 'no update run yet') }
-    if ("$($fin[0].HeldReason)" -notmatch $script:EpsRollRetry.GiveUp) { return (& $no 'the last update run did not give up waiting for running jobs') }
-    $streak = @(); foreach ($r in $fin) { if ("$($r.HeldReason)" -match $script:EpsRollRetry.GiveUp) { $streak += $r } else { break } }
+    $rx = "$($script:EpsRollRetry.GiveUp)|$($script:EpsRollRetry.Stopped)|$($script:EpsRollRetry.StaleRead)"
+    if ("$($fin[0].HeldReason)" -notmatch $rx) { return (& $no 'the last update run did not give up waiting for running jobs, nor stop in the roll') }
+    $stopped = "$($fin[0].HeldReason)" -match $script:EpsRollRetry.Stopped
+    $streak = @(); foreach ($r in $fin) { if ("$($r.HeldReason)" -match $rx) { $streak += $r } else { break } }
     $first = [datetime]$streak[-1].EndedAtUtc
     if ($first -lt $NowUtc.AddHours(-$script:EpsRollRetry.MaxHours)) { return (& $no "it has given up $($streak.Count) time(s) in a row since $($first.ToString('yyyy-MM-dd HH:mm'))Z - more than $($script:EpsRollRetry.MaxHours) h; Invardia has the repeat failure (run record + alert eps.job.repeat-failure from the 3rd give-up in a row), the nightly run tries again") }
     $lastStart = [datetime]$(if ($fin[0].StartedAtUtc) { $fin[0].StartedAtUtc } else { $fin[0].EndedAtUtc })
-    if ($lastStart -gt $NowUtc.AddMinutes(-$script:EpsRollRetry.EveryMinutes)) { return (& $no "the last try started at $($lastStart.ToString('HH:mm'))Z - the next one from $($lastStart.AddMinutes($script:EpsRollRetry.EveryMinutes).ToString('HH:mm'))Z") }
+    $every = if ($stopped -and $streak.Count -le [int]$script:EpsRollRetry.StoppedFastTries) { [int]$script:EpsRollRetry.StoppedEveryMinutes } else { [int]$script:EpsRollRetry.EveryMinutes }
+    if ($lastStart -gt $NowUtc.AddMinutes(-$every)) { return (& $no "the last try started at $($lastStart.ToString('HH:mm'))Z - the next one from $($lastStart.AddMinutes($every).ToString('HH:mm'))Z") }
+    if ($stopped) { return @{ Start = $true; Reason = "the update stopped in the roll ($(("$($fin[0].HeldReason)" -split ': ')[0] -replace '^update to ', ''); $($streak.Count) time(s) in a row, first $($first.ToString('HH:mm'))Z) - the roll is run again" } }
+    if ("$($fin[0].HeldReason)" -match $script:EpsRollRetry.StaleRead) { return @{ Start = $true; Reason = "the release read after the hold differed from the one planned ($($streak.Count) time(s) in a row, first $($first.ToString('HH:mm'))Z) - tried again" } }
     @{ Start = $true; Reason = "the update gave up waiting for running jobs $($streak.Count) time(s) in a row (first $($first.ToString('HH:mm'))Z) - tried again" }
+}
+
+$script:EpsPrunePendingName = 'update.prune-pending'   # SEC-LANE-1: an image-only swap waiting for its proof run
+function Get-EpsPruneProofDecision {
+    <#
+      PURE. SEC-LANE-1 (owner via Invardia 2026-11-14: "when swap works we remove old" = a job has SUCCEEDED on the new image;
+      the config read-back is not enough): -Pending = the stored 'update.prune-pending' ({ version; fromVersion; swappedUtc })
+      or empty; -ProofRuns = how many runs of any job SUCCEEDED, started after the swap; -UpdateRunning. @{ Start; Reason }:
+      start when a swap waits, at least one run proved the new image and no update runs now.
+    #>
+    param([AllowEmptyString()][string]$Pending, [int]$ProofRuns = 0, [bool]$UpdateRunning = $false,
+          # review: the version this install RUNS (a newer update since the swap = the mark is stale: cleared, nothing deleted),
+          # runs that started BEFORE the swap and still run (their image must stay), and now (the mark ends after 24 h)
+          [string]$RunningVersion = '', [int]$OldRunning = 0, [datetime]$NowUtc = [datetime]::UtcNow)
+    if (-not "$Pending".Trim()) { return @{ Start = $false; Reason = 'no image-only swap waits for its proof' } }
+    $p = try { "$Pending" | ConvertFrom-Json } catch { $null }
+    $sw = Get-EpsPruneSwappedUtc -Pending $Pending
+    if (-not $p -or -not "$($p.version)" -or -not $sw) { return @{ Start = $false; Stale = $true; Reason = 'the waiting swap cannot be read - cleared' } }
+    if ($RunningVersion -and "$($p.version)" -ne $RunningVersion) { return @{ Start = $false; Stale = $true; Reason = "the waiting swap is to $($p.version), this install runs $RunningVersion - cleared, nothing deleted (its update keeps its own previous images)" } }
+    if (($NowUtc.ToUniversalTime() - $sw).TotalHours -ge 24) { return @{ Start = $false; Stale = $true; Reason = "no proof within 24 h of the swap to $($p.version) - cleared; the next update removes the old images" } }
+    if ($UpdateRunning) { return @{ Start = $false; Reason = 'an update runs now' } }
+    if ($OldRunning -gt 0) { return @{ Start = $false; Reason = "$OldRunning run(s) that started before the swap still run on the previous image - it stays until they end" } }
+    if ($ProofRuns -lt 1) { return @{ Start = $false; Reason = "the swap to $($p.version) waits for a job to succeed on the new image" } }
+    @{ Start = $true; Reason = "$ProofRuns run(s) succeeded on $($p.version) since the swap - the previous images ($($p.fromVersion)) can go" }
+}
+
+function Get-EpsPruneSwappedUtc {
+    # PURE. The mark's swappedUtc as UTC, read from the JSON TEXT (ConvertFrom-Json would turn it into a local DateTime); $null
+    param([AllowEmptyString()][string]$Pending)
+    $m = [regex]::Match("$Pending", '"swappedUtc"\s*:\s*"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"')
+    if (-not $m.Success) { return $null }
+    [datetime]::ParseExact($m.Groups[1].Value, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal,AssumeUniversal')
+}
+# the runs that PROVE an image (real work - not the tick or the support jobs, which succeed on almost anything) and the runs
+# from before the swap that still run (both read by the tick and by the update job)
+$script:EpsPruneProofSql = "SELECT COUNT(*) FROM eps.Run WHERE Job NOT IN (N'Update', N'Tick', N'Support', N'SupportRead', N'DbInit') AND Status = N'Succeeded' AND StartedAtUtc > @s"
+$script:EpsPruneOldRunningSql = "SELECT COUNT(*) FROM eps.Run WHERE Job NOT IN (N'Update', N'Tick') AND Status = N'Running' AND StartedAtUtc <= @s AND StartedAtUtc > DATEADD(HOUR, -24, SYSUTCDATETIME())"
+
+function Save-EpsReleaseRecord {
+    <#
+      IMAGE-PRUNE CONTRACT point 2 + 5 (2.1.12): the durable release record - what the current release runs and what the
+      previous one ran - in eps.Setting 'update.release-record', written BEFORE the first image is deleted and READ BACK.
+      Throws when it is not stored (the clean-up then deletes nothing).
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Record)
+    $v = $Record | ConvertTo-Json -Depth 6 -Compress
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsReleaseRecordSetting; v = $v } -Query @'
+MERGE eps.Setting AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name
+WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)'
+WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Update', @v, N'engine (update job)');
+'@ | Out-Null
+    $back = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $script:EpsReleaseRecordSetting } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'
+    if ("$back" -ne $v) { throw 'the release record did not read back' }
 }
 
 function Sync-EpsUpdateHeadVersion {
@@ -478,6 +541,34 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
         try { $fc = Invoke-EpsFrontConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -PollSeconds $PollSeconds } finally { $global:EPS_TokenProvider = $saved3 }
         foreach ($l in $fc.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
     }
+    # SEC-LANE-1: the previous images of an image-only swap go once a job SUCCEEDED on the new image (the tick starts this
+    # job when that run is there) - here, as the updater, before anything else moves; the waiting mark is cleared after
+    if ($updater -and -not $CheckOnly -and (Get-Command Invoke-EpsImagePruneAfterUpdate -ErrorAction SilentlyContinue)) {
+        try {
+            $pend = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $script:EpsPrunePendingName } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n')"
+            if ($pend.Trim()) {
+                $pj = try { $pend | ConvertFrom-Json } catch { $null }   # an unreadable mark = Stale below (cleared), never a loop
+                $swp = Get-EpsPruneSwappedUtc -Pending $pend
+                $proof = if ($swp) { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ s = $swp } -Query $script:EpsPruneProofSql) } else { 0 }
+                $oldRun = if ($swp) { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ s = $swp } -Query $script:EpsPruneOldRunningSql) } else { 0 }
+                $pd = Get-EpsPruneProofDecision -Pending $pend -ProofRuns $proof -RunningVersion $Version -OldRunning $oldRun
+                & $Log 'Info' "image clean-up after the swap: $($pd.Reason)"
+                if ($pd.Stale) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsPrunePendingName } -Query "UPDATE eps.Setting SET Value = N'', UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)' WHERE Name = @n" | Out-Null }
+                if ($pd.Start) {
+                    $saved5 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = if ($ApplyTokenProvider) { $ApplyTokenProvider } else { { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+                    try {
+                        $now0 = Get-EpsInstallRunningImages -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
+                        $pcs = $ConnectionString
+                        $pp = Invoke-EpsImagePruneAfterUpdate -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Version "$($pj.version)" -FromVersion "$($pj.fromVersion)" `
+                            -RanBefore @(if ($now0.Ok) { $now0.Images }) -RanBeforeReason "$($now0.Reason)" -Switch "$([Environment]::GetEnvironmentVariable('EPS_Updater_ImagePrune'))" `
+                            -SaveRecord { param($record) Save-EpsReleaseRecord -ConnectionString $pcs -Record $record } -ReadRecord { $null } -Log $Log -OnlyCurrent
+                        & $Log $(if ($pp.Ok) { 'Notice' } else { 'Warning' }) "image clean-up after the proven swap: $($pp.Summary)"
+                        if ($pp.Ok) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsPrunePendingName } -Query "UPDATE eps.Setting SET Value = N'', UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)' WHERE Name = @n" | Out-Null }
+                    } finally { $global:EPS_TokenProvider = $saved5 }
+                }
+            }
+        } catch { & $Log 'Warning' "image clean-up after the swap: $((("$($_.Exception.Message)") -split "`n")[0]) - tried again next run" }
+    }
     $quiet = $null
     if ($t.State -eq 'available' -and $updater -and -not $CheckOnly) {
         $saved = $global:EPS_TokenProvider
@@ -513,19 +604,41 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                     Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names -OnStuck $stuck
                 }.GetNewClosure()
             }
+            # SEC-LANE-1 (owner 2026-11-14: "no wait for ms approved security patches or updates. just do it"): the signed
+            # package is read FIRST; its image-only marker bound to THIS release and to the version this install runs = the short
+            # path - no job wait (running executions keep their image), the hold only for the roll's minutes, no database step
+            $isImageOnly = $false
+            if (Get-Command Test-EpsImageOnlyMarker -ErrorAction SilentlyContinue) {
+                $pre = Save-EpsReleaseArchive -Url $t.DownloadUrl -Sha256 $t.Sha256 -Size $t.Size -Version $t.Version -Fetch $Fetch
+                # review: one brief download failure must not send a security fix down the slow path - read it once more
+                if (-not $pre.Ok) { if ($pre.WorkDir) { Remove-Item -LiteralPath $pre.WorkDir -Recurse -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds $script:EpsUpdateRereadSeconds; $pre = Save-EpsReleaseArchive -Url $t.DownloadUrl -Sha256 $t.Sha256 -Size $t.Size -Version $t.Version -Fetch $Fetch }
+                try { $mk = if ($pre.Ok) { Test-EpsImageOnlyMarker -Root $pre.Root -Version $t.Version -RunningVersion $Version } else { @{ ImageOnly = $false; Reason = "the package could not be read first ($($pre.Reason)) - the full update" } } }
+                finally { if ($pre.WorkDir) { Remove-Item -LiteralPath $pre.WorkDir -Recurse -Force -ErrorAction SilentlyContinue } }
+                $isImageOnly = [bool]$mk.ImageOnly
+                & $Log 'Info' "update: $(if ($isImageOnly) { 'IMAGE-ONLY - the short path (no job wait, no database step): ' } else { 'the full update: ' })$($mk.Reason)"
+            }
             $wq = @{ Probe = $QuietProbe; Log = $Log }; if ($WaitSleep) { $wq.Sleep = $WaitSleep }; if ($WaitNow) { $wq.Now = $WaitNow }
-            $quiet = Wait-EpsUpdateQuiet @wq
+            $quiet = if ($isImageOnly) { @{ Go = $true; Waited = 0; Running = @() } } else { Wait-EpsUpdateQuiet @wq }
             if ($quiet.Go -and $quiet.Waited -gt 0) {
                 # UPD-STALE-LINK (found live 2026-11-06 at internal, 2.0.89 -> 2.0.90): the signed download link is short-lived -
                 # after a 21-min wait the Pro package answered 401. After ANY wait the release is read again for a fresh link;
                 # the same version + SHA-256 = go on, anything else = nothing installed, the next run decides again
-                $t2 = if ($fromPro) { Get-EpsProUpdateTarget -RunningVersion $Version -Ring $ringN -Http $licHttp -InstallKey $InstallKey -LicenceText $proLicence -Edition $proEdition -TrustedKeys $TrustedKeys }
-                      else { Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys }
+                $reRead = { if ($fromPro) { Get-EpsProUpdateTarget -RunningVersion $Version -Ring $ringN -Http $licHttp -InstallKey $InstallKey -LicenceText $proLicence -Edition $proEdition -TrustedKeys $TrustedKeys }
+                            else { Get-EpsUpdateTarget -RunningVersion $Version -Ring $ringN -Http $Http -TrustedKeys $TrustedKeys } }
+                $t2 = & $reRead
+                # 2.1.25 (internal 2026-11-13 10:02Z: the re-read landed in Invardia's slot swap and timed out): a read that got NO
+                # answer is asked once more after a short wait - a read only, nothing is installed on a guess
+                if ("$($t2.State)" -eq 'unreachable') {
+                    & $Log 'Info' "update: Invardia did not answer the read after the wait ($($t2.Reason)) - asked once more"
+                    Start-Sleep -Seconds $script:EpsUpdateRereadSeconds
+                    $t2 = & $reRead
+                }
                 if ($t2.State -eq 'available' -and "$($t2.Version)" -eq "$($t.Version)" -and "$($t2.Sha256)" -eq "$($t.Sha256)" -and "$($t2.DownloadUrl)") {
                     $t = $t2; & $Log 'Info' "update: the release read again after the wait (a fresh download link) - $($t2.Reason)"
                 } else {
-                    & $Log 'Warning' "update: the release read again after the wait is not the one this run planned ($($t2.State) - $($t2.Reason)) - nothing installed, the next run decides again"
-                    $quiet = @{ Go = $false; Waited = $quiet.Waited; Running = @(); Stale = $true }
+                    $staleWhy = "$($t2.State) - $($t2.Reason)"; if ($staleWhy.Length -gt 300) { $staleWhy = $staleWhy.Substring(0, 297) + '...' }
+                    & $Log 'Warning' "update: the release read again after the wait is not the one this run planned ($staleWhy) - nothing installed, the next run decides again"
+                    $quiet = @{ Go = $false; Waited = $quiet.Waited; Running = @(); Stale = $true; StaleWhy = $staleWhy }
                 }
             }
             if ($quiet.Go) {
@@ -533,14 +646,16 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                 $tr = Open-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http
                 & $Log 'Info' "update run to Invardia: $($tr.Reason)"
                 & $tr.Emit 'check' 'ok' "$($t.Version) is approved for ring $ringN"
+                # IMAGE-PRUNE CONTRACT (framework, 2.1.12): the clean-up runs INSIDE the apply, only after the update read back
+                # healthy and while the hold is on; the switch is the update job's EPS_Updater_ImagePrune (default on); the release
+                # record goes to eps.Setting before the first delete (as the engine identity); each line is logged at once
+                $pruneCs = $ConnectionString
+                $prune = @{ Switch = "$([Environment]::GetEnvironmentVariable('EPS_Updater_ImagePrune'))"
+                            SaveRecord = { param($record) Save-EpsReleaseRecord -ConnectionString $pruneCs -Record $record }
+                            ReadRecord = { Invoke-EpsSql -ConnectionString $pruneCs -Scalar -Parameters @{ n = 'update.release-record' } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n' } }
                 $applied = Invoke-EpsUpdateApply -Target @{ Version = $t.Version; Sha256 = $t.Sha256; Size = $t.Size; DownloadUrl = $t.DownloadUrl } -RunningVersion $Version `
-                    -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds
-                # IMAGE-PRUNE (owner 2026-11-12, framework IMAGE-PATCH-1): ONLY after the update read back healthy - the install's
-                # own registry keeps the current release + 1 previous image; as the updater identity (Contributor on the group)
-                if ($applied.Ok -and (Get-Command Invoke-EpsImagePruneAfterUpdate -ErrorAction SilentlyContinue)) {
-                    $applied.Prune = Invoke-EpsImagePruneAfterUpdate -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Version $t.Version
-                    foreach ($l in @($applied.Prune.Lines)) { & $Log $(if ($applied.Prune.Ok) { 'Info' } else { 'Warning' }) $l }
-                }
+                    -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -Emit $tr.Emit -Log $Log -Fetch $Fetch -PollSeconds $PollSeconds `
+                    -Prune $(if (Get-Command Invoke-EpsImagePruneAfterUpdate -ErrorAction SilentlyContinue) { $prune } else { $null }) -ImageOnly:$isImageOnly
             }
         } finally {
             $global:EPS_TokenProvider = $saved
@@ -549,25 +664,43 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
     }
     if ($quiet -and -not $quiet.Go) {
         # gave up: nothing changed; said in the run, to Invardia (the update run waits) and on the heartbeat (Update.waited)
-        $why = "update to $($t.Version) waited $([int]$script:EpsUpdateHold.WaitMinutes) min for running jobs ($(@($quiet.Running) -join ', ')); tries again within the hour until it installs (ROLL-RETRY-1, at most 24 h)"
+        # 2.1.25: the stale re-read is its OWN reason (it said "waited 45 min for running jobs ()" before, with no job running)
+        $why = if ($quiet.Stale) { "update to $($t.Version) not installed: the release read again after the hold was not the one planned ($($quiet.StaleWhy)); tries again within the hour until it installs (ROLL-RETRY-1, at most 24 h)" }
+               else { "update to $($t.Version) waited $([int]$script:EpsUpdateHold.WaitMinutes) min for running jobs ($(@($quiet.Running) -join ', ')); tries again within the hour until it installs (ROLL-RETRY-1, at most 24 h)" }
         & $Log 'Warning' $why
         $track = Send-EpsUpdateRunTrack -InstallKey $InstallKey -Ring $ringN -FromVersion $Version -ToVersion $t.Version -Http $Http -WaitReason $why
         $g = @{ Go = $false; Running = @($quiet.Running); Reason = $why }
     } elseif ($applied) {
         $track = @{ Ok = $tr.Ok; Reason = $tr.Reason }
+        # SEC-LANE-1: an image-only swap that read back healthy waits for its PROOF (a job succeeding on the new image) before
+        # its previous images go - marked here; the tick starts this job when the proof run is there
+        # review: a NORMAL update since a waiting swap makes that mark stale - cleared (its own prune keeps what it must)
+        if ($applied.Ok -and -not $applied.ImageOnly) { try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsPrunePendingName } -Query "UPDATE eps.Setting SET Value = N'', UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)' WHERE Name = @n AND Value <> N''" | Out-Null } catch { } }
+        if ($applied.Ok -and $applied.ImageOnly) {
+            try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsPrunePendingName; v = ([ordered]@{ version = "$($t.Version)"; fromVersion = "$Version"; swappedUtc = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) } | ConvertTo-Json -Compress) } -Query "MERGE eps.Setting AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (update job)' WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Update', @v, N'engine (update job)');" | Out-Null; & $Log 'Info' 'image clean-up: the previous images stay until a job succeeds on the new image' }
+            catch { & $Log 'Warning' "image clean-up: the wait for the proof could not be marked ($($_.Exception.Message)) - the old images stay until a later update" }
+        }
+        # BUILD-STOP-ALERT "at once" (Invardia 2026-11-14): a stop BEFORE the roll is sent to Invardia by this job now, not
+        # at the next 4-hourly uplink run; never fails the cycle
+        if (-not $applied.Ok -and "$($applied.Step)" -in 'download', 'verify', 'build', 'migrate' -and (Get-Command Send-EpsUpdateStopAlertNow -ErrorAction SilentlyContinue)) {
+            $stopRow = [pscustomobject]@{ Status = 'PartlyFailed'; HeldReason = "update to $($t.Version) on ring $ringN stopped at '$($applied.Step)': $($applied.Reason)"; EndedAtUtc = [datetime]::UtcNow }
+            $sa = Send-EpsUpdateStopAlertNow -ConnectionString $ConnectionString -Stop $stopRow -Version $Version -Key "$InstallKey"
+            & $Log $(if ($sa.Sent) { 'Info' } else { 'Warning' }) "alert: $($sa.Reason)"
+        }
         # AUD-01: the install changed (or stopped part way) - in the audit trail, not only in the run's log. A change no
         # person asked for: the job is the actor (AUDIT-1.1). Never fails the cycle.
         try {
             [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'update.apply' -Actor 'caj-eps-updater (ring approval)' -ActorSource 'job' `
                 -Target "Release|$Version -> $($t.Version)" -Reason "approved for ring $ringN" -Outcome $(if ($applied.Ok) { 'ok' } else { 'error' }) `
                 -OutcomeText $(if ($applied.Ok) { "$(@($applied.Rolled).Count) component(s) rolled" } else { "stopped at '$($applied.Step)': $($applied.Reason)" }) `
-                -Before @{ version = $Version } -After @{ version = $t.Version; ring = $ringN; rolled = @($applied.Rolled); step = "$($applied.Step)" })
+                -Before @{ version = $Version } -After @{ version = $t.Version; ring = $ringN; rolled = @($applied.Rolled); step = "$($applied.Step)"; mixed = [bool]$applied.Mixed })
         } catch { & $Log 'Warning' "audit: update.apply could not be written: $($_.Exception.Message)" }
         if ($applied.Prune) {
             try {
                 [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'update.image-prune' -Actor 'caj-eps-updater (IMAGE-PRUNE)' -ActorSource 'job' `
-                    -Target "Registry|$($t.Version)" -Reason 'keep the current release + 1 previous image (owner 2026-11-12)' -Outcome $(if ($applied.Prune.Ok) { 'ok' } else { 'error' }) `
-                    -OutcomeText "$($applied.Prune.Deleted) image(s) deleted, $($applied.Prune.Left) left" -Before @{} -After @{ deleted = [int]$applied.Prune.Deleted; left = [int]$applied.Prune.Left })
+                    -Target "Registry|$($t.Version)" -Reason 'keep what the install runs and ran before the update (owner 2026-11-12, framework IMAGE-PRUNE CONTRACT)' -Outcome $(if ($applied.Prune.Ok) { 'ok' } else { 'error' }) `
+                    -OutcomeText "images: $($applied.Prune.Summary)" -Before @{ version = $Version } `
+                    -After @{ off = [bool]$applied.Prune.Off; deleted = [int]$applied.Prune.Deleted; left = [int]$applied.Prune.Left; repositories = @($applied.Prune.Table) })
             } catch { & $Log 'Warning' "audit: update.image-prune could not be written: $($_.Exception.Message)" }
         }
     } elseif ($t.State -eq 'available') {
@@ -579,10 +712,23 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
             & $Log $(if ($track.Ok) { 'Info' } else { 'Warning' }) "update run to Invardia: $($track.Reason)"
         }
     }
+    # SEC-LANE-1 point 9 (owner 2026-11-14: "patched" = what RUNS): every run with the updater identity reads the image digest
+    # (and .NET) each job and the web app run NOW, AFTER any apply -> eps.UplinkState 'update.runningImages'; the uplink sends
+    # it as heartbeat Update.runningImages. A failed read leaves the last stored value; never fails the cycle.
+    if ($updater -and -not $CheckOnly -and (Get-Command Get-EpsRunningImagesFact -ErrorAction SilentlyContinue)) {
+        $saved4 = $global:EPS_TokenProvider; $global:EPS_TokenProvider = if ($ApplyTokenProvider) { $ApplyTokenProvider } else { { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+        try { $ri = Get-EpsRunningImagesFact -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved4 }
+        & $Log $(if ($ri.Ok) { 'Info' } else { 'Warning' }) "running images (SEC-LANE-1): $($ri.Reason)"
+        if ($ri.Ok) {
+            try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = $(  # eps.UplinkState.Value holds 4000 characters: the items that fit (in order) - never a cut-off JSON
+                $its = @($ri.Items); $js = ConvertTo-Json -InputObject $its -Depth 4 -Compress; while ($its.Count -gt 1 -and $js.Length -gt 4000) { $its = @($its[0..($its.Count - 2)]); $js = ConvertTo-Json -InputObject $its -Depth 4 -Compress }; $js) } -Query "MERGE eps.UplinkState AS d USING (SELECT N'update.runningImages' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'update.runningImages', @v);" | Out-Null }
+            catch { & $Log 'Warning' "running images: not stored: $($_.Exception.Message)" }
+        }
+    }
     $sum = switch ($t.State) {
         'available' {
-            if ($applied -and $applied.Ok) { "updated $Version -> $($t.Version) on ring $ringN ($(@($applied.Rolled).Count) components rolled)$(if ($applied.Prune) { "; images: $($applied.Prune.Deleted) old deleted, $($applied.Prune.Left) left$(if (-not $applied.Prune.Ok) { ' (prune incomplete)' })" })" }
-            elseif ($applied) { "update to $($t.Version) on ring $ringN stopped at '$($applied.Step)': $($applied.Reason)" }
+            if ($applied -and $applied.Ok) { "updated $Version -> $($t.Version) on ring $ringN ($(if ($applied.ImageOnly) { 'image-only swap; ' })$(@($applied.Rolled).Count) components rolled$(if ($applied.Resumed) { '; the roll of a stopped update finished - nothing built or migrated again' }))$(if (@($applied.Resent).Count) { "; $(@($applied.Resent).Count) call(s) did not answer and were sent once more" })$(if ($applied.Prune) { "; images: $($applied.Prune.Summary)" })" }
+            elseif ($applied) { "update to $($t.Version) on ring $ringN stopped at '$($applied.Step)': $($applied.Reason)$(if (@($applied.Resent).Count -and "$($applied.Reason)" -notmatch 'sent once more') { " ($(@($applied.Resent).Count) call(s) did not answer and were sent once more)" })" }
             else { "$($t.Version) is available on ring $ringN (running $Version); not installed$(if ($track.Ok) { " - reported $($t.Version) to Invardia" })" + $(if ($h.Expedite) { "; update now asked" }) + "; $($g.Reason)" }
         }
         'held'      { "$($t.Version) on ring $ringN is held: $($t.Reason)" }

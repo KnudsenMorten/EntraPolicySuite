@@ -1,0 +1,11 @@
+{
+  "version": "2.0.109",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "Re-running the install now recognises a Pro installation correctly.",
+  "new": [],
+  "fixes": [
+    { "title": "Install recognises Pro installations again", "text": "On some installations, re-running the install did not see that it is Pro, and a new Pro install waited until night for its licence. Both now work at once." },
+    { "title": "Install guide matches today's names", "text": "The install guide no longer lists old job names, and explains how an older installation moves to the current ones." }
+  ]
+}

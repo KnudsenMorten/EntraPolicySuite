@@ -1,0 +1,10 @@
+{
+  "version": "2.0.98",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Update now works for Pro installations too.",
+  "new": [],
+  "fixes": [
+    { "title": "Update now works for Pro", "text": "On Pro installations, the quick 'update now' check did not go through. It now works for Pro as it does for Community." }
+  ]
+}

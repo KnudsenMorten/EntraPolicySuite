@@ -935,7 +935,7 @@ function Invoke-EpsCaPolicyAnalyzer {
     # TEMPLATE-UPDATES: the library this install imported is recorded ONCE as taken (a newer library is then only SHOWN)
     try { $base = Initialize-EpsCaTemplateBaseline -ConnectionString $ConnectionString; if ($base) { & $Log 'Info' "recorded the template library $((Get-EpsCaTemplateCatalog).library) as taken ($base templates): a newer library is shown under Conditional Access > Template updates, nothing changes by itself" } }
     catch { & $Log 'Warning' "the template baseline could not be recorded: $($_.Exception.Message)" }
-    if ($Request.ListOnly) { return @{ Analyses = @(); Impacted = 0 } }
+    if ($Request.ListOnly) { return @{ Analyses = @(); Impacted = 0; Codes = @(if ($inv -and $inv.Monitor) { @($inv.Monitor.Codes) } elseif (-not $inv) { 'eps-rule-0102' }) } }
     $plist = if (@($Request.Policies.Personas).Count) { @(Get-EpsCaEffectivePersonaList -ConnectionString $ConnectionString -Policies $policies) } else { @() }
     # the older series of a monitor (policyPrefixes / policyPatterns, before 2.0.24) are still honoured; the monitor's own
     # "left out" policies (excludePolicyIds, CA-LIMITS) are taken out at each run
@@ -987,22 +987,30 @@ function Invoke-EpsCaPolicyAnalyzer {
         $analyses.Add([pscustomobject]@{ AnalysisId = $aid; PolicyId = $id; DisplayName = [string]$p.displayName; State = [string]$p.state; Mode = $mode; Summary = $sum })
     }
     $mail = $null
-    if ($impactedTotal -gt 0) { $mail = Send-EpsCaAnalyzerAlert -ConnectionString $ConnectionString -Analyses @($analyses | Where-Object { $_.Summary.Impacted -gt 0 }) -Version $Version -Recipients @($Request.AlertTo) -Monitor ([string]$Request.Monitor); & $Log 'Info' "alert: $(if ($mail.Sent) { 'mailed' } else { 'NOT mailed - ' + $mail.Reason })" }
-    @{ Analyses = @($analyses); Impacted = $impactedTotal; Mail = $mail }
+    # TRUST-1 point 1: a run whose DATA is not whole - users that could not be evaluated, or the sign-in cap reached (not
+    # every sign-in of the window read) - is PARTIAL (PartlyFailed): its analyses are kept, but never shown as the current one
+    $partialWhy = @(@(if ($shared -and $shared.Capped) { 'the sign-in cap was reached' }) + @(if (@($analyses | Where-Object { [int]$_.Summary.Errors -gt 0 }).Count) { "$(($analyses | ForEach-Object { [int]$_.Summary.Errors } | Measure-Object -Sum).Sum) user check(s) (users x policies) in $(@($analyses | Where-Object { [int]$_.Summary.Errors -gt 0 }).Count) policy(ies) could not be evaluated (eps-rule-0103)" }))
+    if ($partialWhy.Count) { & $Log 'Warning' "the run is partial ($($partialWhy -join '; ')) - its analyses are kept, the policy pages keep showing the last complete one" }
+    # Invardia 2026-11-12: the impact mail of a PARTIAL run still goes out (the TRUST-1 security-signal exemption), and its
+    # FIRST line says it is partial - a capped count is never presented as the total
+    $partialNote = if ($shared -and $shared.Capped) { "partial run: the sign-in limit was reached - $([int]$shared.Scanned) sign-ins read; more may be impacted" }
+                   elseif ($partialWhy.Count) { "partial run: $($partialWhy -join '; ') - more may be impacted" } else { '' }
+    if ($impactedTotal -gt 0) { $mail = Send-EpsCaAnalyzerAlert -ConnectionString $ConnectionString -Analyses @($analyses | Where-Object { $_.Summary.Impacted -gt 0 }) -Version $Version -Recipients @($Request.AlertTo) -Monitor ([string]$Request.Monitor) -PartialNote $partialNote; & $Log 'Info' "alert: $(if ($mail.Sent) { 'mailed' } else { 'NOT mailed - ' + $mail.Reason })" }
+    @{ Analyses = @($analyses); Impacted = $impactedTotal; Mail = $mail; Partial = [bool]$partialWhy.Count; PartialWhy = ($partialWhy -join '; '); PartialKind = $(if (-not $partialWhy.Count) { '' } elseif ($shared -and $shared.Capped -and $partialWhy.Count -eq 1) { 'cap' } elseif ($shared -and $shared.Capped) { 'cap+errors' } else { 'errors' }); Codes = @(@(if ($inv -and $inv.Monitor) { @($inv.Monitor.Codes) } elseif (-not $inv) { 'eps-rule-0102' }) + @(if (@($analyses | Where-Object { [int]$_.Summary.Errors -gt 0 }).Count) { 'eps-rule-0103' })) }   # TRUST-1: the run's catalogue warning codes; eps-rule-0103 = users not evaluated (Invardia (a): ONE item per signature, never one per run)
 }
 
 function Send-EpsCaAnalyzerAlert {
     # one mail per run, only when users are impacted (v1's rule); the details are on the analysis pages
     # -Recipients: the monitor's own (owner 2026-11-02: "i need a way to cntrol the desination of the ca policy analyzer alerts
     # ... as it is different teams"); none = the install's Mail.Recipients. The sender stays the install's mailbox.
-    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][object[]]$Analyses, [string]$Version = '2.0.0', [string[]]$Recipients = @(), [string]$Monitor)
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][object[]]$Analyses, [string]$Version = '2.0.0', [string[]]$Recipients = @(), [string]$Monitor, [string]$PartialNote = '')
     $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
     $own = @($Recipients | Where-Object { "$_".Trim() })
     if ($own.Count) { $cfg.Recipients = $own }
     $n = ($Analyses | ForEach-Object { $_.Summary.Impacted } | Measure-Object -Sum).Sum
     $rows = @($Analyses | ForEach-Object { [pscustomobject]@{ Policy = $_.DisplayName; State = $_.State; Method = $(if ($_.Mode -eq 'WhatIf') { 'predicted (What-If)' } else { 'observed (sign-in logs)' }); 'In scope' = $_.Summary.InScope; Impacted = $_.Summary.Impacted; Errors = $_.Summary.Errors } })
-    $subject = New-EpsMailSubject -Environment $cfg.Environment -What "CA Policy Analyzer$(if ($Monitor) { " ($Monitor)" }): $n impacted user(s) in $(@($Analyses).Count) policy(ies)" -Severity 'Warning'
-    $html = New-EpsMailBody -Summary "The CA Policy Analyzer found $n user(s) a Conditional Access policy would block or challenge. Nothing was changed - the analyzer only reads." -Rows $rows -Columns @('Policy', 'State', 'Method', 'In scope', 'Impacted', 'Errors') `
+    $subject = New-EpsMailSubject -Environment $cfg.Environment -What "CA Policy Analyzer$(if ($Monitor) { " ($Monitor)" }): $(if ($PartialNote) { 'at least ' })$n impacted user(s) in $(@($Analyses).Count) policy(ies)" -Severity 'Warning'
+    $html = New-EpsMailBody -Summary "$(if ($PartialNote) { "$PartialNote. " })The CA Policy Analyzer found $(if ($PartialNote) { 'at least ' })$n user(s) a Conditional Access policy would block or challenge. Nothing was changed - the analyzer only reads." -Rows $rows -Columns @('Policy', 'State', 'Method', 'In scope', 'Impacted', 'Errors') `
         -WhatToDo 'Open the CA Policy Analyzer page for the users and the reason per user before changing the policy.' -ButtonText 'Open the CA Policy Analyzer' -ButtonPage 'ca' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     Send-EpsMail -Config $cfg -Subject $subject -Html $html
 }
@@ -1012,19 +1020,26 @@ function Save-EpsCaPolicyList {
     # the tenant's policies as last read (the GUI picks from it - the web app never calls Graph)
     # + the whole body and the engine's read-only review of it (-Reviews: "<id>" -> Get-EpsCaReview), schema v12
     param([Parameter(Mandatory)][string]$ConnectionString, [object[]]$Policies = @(), [hashtable]$Reviews = @{})
+    $nowIso = [datetime]::UtcNow.ToString('o')   # TRUST-1 point 2: each review carries WHEN it was made (a kept one shows its date)
     $iso = { param($d) if ($d -is [datetime]) { $d.ToUniversalTime().ToString('o') } elseif ($d -is [datetimeoffset]) { $d.UtcDateTime.ToString('o') } else { [string]$d } }
     $json = ConvertTo-Json -InputObject @($Policies | ForEach-Object { $rv = $Reviews["$($_.id)".ToLowerInvariant()]
         @{ id = [string]$_.id; name = [string]$_.displayName; state = [string]$_.state; modified = (& $iso $(if ($_.modifiedDateTime) { $_.modifiedDateTime } else { $_.createdDateTime }))
-           body = ($_ | ConvertTo-Json -Compress -Depth 20); review = $(if ($rv) { $rv | ConvertTo-Json -Compress -Depth 20 }) } }) -Compress -Depth 4
+           body = ($_ | ConvertTo-Json -Compress -Depth 20); review = $(if ($rv) { $rh = ($rv | ConvertTo-Json -Compress -Depth 20) | ConvertFrom-Json -AsHashtable -Depth 20; $rh.reviewedAtUtc = $nowIso; $rh | ConvertTo-Json -Compress -Depth 20 }) } }) -Compress -Depth 4
     if (-not @($Policies).Count) { $json = '[]' }
     [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $json } -Query @'
 SET XACT_ABORT ON;
 BEGIN TRAN;
+-- TRUST-1 point 2 (2.1.15): a policy with NO review this run (its review failed) keeps its last review - only while its
+-- body is the same as when that review was made (a changed policy is never described by an old review)
+DECLARE @old TABLE (PolicyId UNIQUEIDENTIFIER PRIMARY KEY, BodyJson NVARCHAR(MAX), ReviewJson NVARCHAR(MAX));
+INSERT INTO @old (PolicyId, BodyJson, ReviewJson) SELECT PolicyId, BodyJson, ReviewJson FROM eps.CaPolicy;
 DELETE FROM eps.CaPolicy;
 INSERT INTO eps.CaPolicy (PolicyId, DisplayName, State, ModifiedAtUtc, BodyJson, ReviewJson)
-SELECT CAST(x.id AS UNIQUEIDENTIFIER), x.name, x.state, TRY_CAST(x.modified AS DATETIMEOFFSET), x.body, x.review
+SELECT CAST(x.id AS UNIQUEIDENTIFIER), x.name, x.state, TRY_CAST(x.modified AS DATETIMEOFFSET), x.body,
+       COALESCE(x.review, CASE WHEN o.BodyJson = x.body COLLATE Latin1_General_BIN2 THEN o.ReviewJson END)   -- exact (not the collation's case / trailing-space rules)
 FROM OPENJSON(@j) WITH (id NVARCHAR(64) '$.id', name NVARCHAR(256) '$.name', state NVARCHAR(60) '$.state', modified NVARCHAR(64) '$.modified',
-                        body NVARCHAR(MAX) '$.body', review NVARCHAR(MAX) '$.review') AS x;   -- JSON_VALUE stops at 4,000 characters
+                        body NVARCHAR(MAX) '$.body', review NVARCHAR(MAX) '$.review') AS x   -- JSON_VALUE stops at 4,000 characters
+LEFT JOIN @old o ON o.PolicyId = CAST(x.id AS UNIQUEIDENTIFIER);
 COMMIT;
 '@)
 }

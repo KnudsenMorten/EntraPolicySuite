@@ -1,0 +1,17 @@
+{
+  "version": "2.1.3",
+  "date": "2026-11-11",
+  "type": "fix-only",
+  "summary": "Updates delayed by running jobs now install within hours instead of a day later.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Delayed updates are retried every hour",
+      "text": "When the nightly update had to wait for running jobs, it now tries again every hour for up to 24 hours. Invardia support is told if it gives up three times in a row."
+    },
+    {
+      "title": "Missing AD attributes are shown clearly",
+      "text": "If a rule writes an attribute your Active Directory does not have, Get started now names that attribute with what to do, and still checks the others."
+    }
+  ]
+}

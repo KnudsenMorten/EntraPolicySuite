@@ -88,6 +88,8 @@ function Invoke-EpsTamperMonitor {
     $events = [System.Collections.Generic.List[object]]::new(); $notes = [System.Collections.Generic.List[string]]::new()
     $q = { param($sql, $p = @{}) Invoke-EpsSql -ConnectionString $ConnectionString -Parameters $p -Query $sql }
     try {
+        # Invardia 2026-11-13 (e): a restore queued for the hybrid worker is closed only on proof - read back (Update-EpsPendingRestores)
+        foreach ($pendNote in @(Update-EpsPendingRestores -ConnectionString $ConnectionString -NowUtc $NowUtc)) { $notes.Add($pendNote) }
         $types = Read-EpsTagTypes -ConnectionString $ConnectionString
         $watched = Get-EpsWatchedAttributes -TagTypes $types
         $allow = @(); $hv = @('*Break_Glass*')
@@ -109,6 +111,11 @@ function Invoke-EpsTamperMonitor {
             foreach ($r in & $q "SELECT ObjectId, Attribute, Value, SeenAtUtc FROM eps.WatchedValue WHERE ObjectType = @o" @{ o = $ot }) { $base["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r }
             $own = @{}
             foreach ($r in & $q "SELECT c.ObjectId, c.Attribute, c.NewValue, c.AtUtc FROM eps.TagChange c WHERE c.ObjectType = @o AND c.Status = 'Applied' AND c.ChangeId = (SELECT MAX(c2.ChangeId) FROM eps.TagChange c2 WHERE c2.ObjectId = c.ObjectId AND c2.Attribute = c.Attribute AND c2.Status = 'Applied')" @{ o = $ot }) { $own["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r }
+            # TRUST-1 Q4 (review 2026-11-12): a Planned row of an apply run that FAILED or is still RUNNING may have been written to the
+            # tenant without its outcome row - it only SUPPRESSES an alarm for exactly that value (never the drift check or the old
+            # value: a value the run never wrote must not look like EPS's last write)
+            $ownMaybe = @{}
+            foreach ($r in & $q "SELECT c.ObjectId, c.Attribute, c.NewValue, c.AtUtc FROM eps.TagChange c JOIN eps.Run r ON r.RunId = c.RunId WHERE c.ObjectType = @o AND c.Status = 'Planned' AND r.Mode IN ('Apply', 'Undo') AND r.Status IN ('Failed', 'Running') AND c.ChangeId = (SELECT MAX(c2.ChangeId) FROM eps.TagChange c2 JOIN eps.Run r2 ON r2.RunId = c2.RunId WHERE c2.ObjectId = c.ObjectId AND c2.Attribute = c.Attribute AND c2.Status = 'Planned' AND r2.Mode IN ('Apply', 'Undo') AND r2.Status IN ('Failed', 'Running')) AND c.ChangeId > ISNULL((SELECT MAX(c3.ChangeId) FROM eps.TagChange c3 WHERE c3.ObjectId = c.ObjectId AND c3.Attribute = c.Attribute AND c3.Status = 'Applied'), 0)" @{ o = $ot }) { $ownMaybe["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $r }
             $upserts = [System.Collections.Generic.List[object]]::new()
             foreach ($o in $d.Items) {
                 $id = [string]$o.id; $name = if ($ot -eq 'User') { [string]$o.userPrincipalName } else { [string]$o.displayName }
@@ -125,6 +132,9 @@ function Invoke-EpsTamperMonitor {
                     $driftFromEngine = $Mode -eq 'Full' -and $engineLast -and -not [string]::Equals([string]$engineLast.NewValue, $cur, [StringComparison]::OrdinalIgnoreCase)
                     if (-not $differs -and -not $driftFromEngine) { continue }
                     $recordSaysEngine = $engineLast -and [string]::Equals([string]$engineLast.NewValue, $cur, [StringComparison]::OrdinalIgnoreCase) -and ([datetime]$engineLast.AtUtc) -ge ([datetime]$prev.SeenAtUtc).AddHours(-1)
+                    $maybeLast = $ownMaybe[$key]
+                    if (-not $recordSaysEngine -and $maybeLast -and [string]::Equals([string]$maybeLast.NewValue, $cur, [StringComparison]::OrdinalIgnoreCase)) { $recordSaysEngine = $true }
+                    if (-not $recordSaysEngine -and $script:EpsRestoreReadBack -and $script:EpsRestoreReadBack.ContainsKey($key) -and [string]::Equals([string]$script:EpsRestoreReadBack[$key], $cur, [StringComparison]::OrdinalIgnoreCase)) { $recordSaysEngine = $true }   # a restore read back this run
                     $who = Find-EpsAuditInitiator -ObjectId $id -Attribute $wa.Attribute -Since ([datetime]$prev.SeenAtUtc).AddHours(-1) -EngineAppId $EngineAppId -EngineObjectId $EngineObjectId
                     if ($who.Unavailable -and -not $notes.Contains($who.Unavailable)) { $notes.Add($who.Unavailable) }
                     if ($recordSaysEngine -and $who.Kind -in 'engine', 'unknown', 'sync') { continue }   # the engine's own write (AD-synced: via the worker)
@@ -175,20 +185,148 @@ WHEN NOT MATCHED THEN INSERT (ObjectType, ObjectId, Attribute, Value, ObjectName
 function Restore-EpsTamperEvent {
     # One-click restore: the engine writes back the value it last wrote (or the value before the change), recorded as a
     # change (Reason Restore) of its own run, and the event is closed as Restored by whom.
-    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$EventId, [Parameter(Mandatory)][string]$By)
+    # Invardia 2026-11-13 (e): through the RIGHT directory, as the tagging job and the undo do - an AD-synced user's value is
+    # written by the hybrid worker (a work package: AD is the source of truth, a Graph write is refused or overwritten by
+    # the next sync), a cloud user's through Graph with the Exchange fallback for a mail-enabled user, a device's through
+    # Graph. The user's sync state is read at restore time; when it cannot be read nothing is guessed - the restore stops.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$EventId, [Parameter(Mandatory)][string]$By,
+          [string]$TenantId = $env:EPS_TENANT_ID)
     $e = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ id = $EventId } -Query 'SELECT * FROM eps.TamperEvent WHERE EventId = @id')[0]
     if (-not $e) { throw "tamper event $EventId does not exist" }
     if ($e.Status -ne 'Open') { throw "tamper event $EventId is $($e.Status), not Open" }
+    # one restore at a time: an event whose restore waits for the hybrid worker is not queued twice
+    $pend = Get-EpsRestoreMarker -Detail $e.Detail
+    if ($pend.Kind -in 'queued', 'syncWait') { return [pscustomobject]@{ EventId = $EventId; Restored = $false; Queued = $false; Pending = $true; Value = $null; Error = "a restore of this event is already queued for the hybrid worker ($($pend.Text)) - it closes when the value is read back" } }
+    # a newer tag value waits for the hybrid worker: the restore (the last WRITTEN value) would be older than it - not now
+    $waiting = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ o = $e.ObjectId; a = $e.Attribute } -Query "SELECT TOP 1 c.ChangeId FROM eps.TagChange c WHERE c.ObjectId = @o AND c.Attribute = @a AND c.Status = 'Queued' AND EXISTS (SELECT 1 FROM eps.WorkPackage w WHERE w.ChangeId = c.ChangeId AND w.Status IN ('Queued', 'Claimed'))"
+    if ($waiting) { return [pscustomobject]@{ EventId = $EventId; Restored = $false; Queued = $false; Pending = $true; Value = $null; Error = "a newer tag value (change $waiting) is waiting for the hybrid worker - restore after it is written" } }
     $last = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ o = $e.ObjectId; a = $e.Attribute } -Query "SELECT TOP 1 NewValue FROM eps.TagChange WHERE ObjectId = @o AND Attribute = @a AND Status = 'Applied' ORDER BY ChangeId DESC"
     $value = if ($null -ne $last) { [string]$last } else { [string]$e.OldValue }
     $runId = [guid]::NewGuid()
-    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; a = $By } -Query "INSERT INTO eps.Run (RunId, Job, Mode, ApprovedBy) VALUES (@id, 'TamperRestore', 'Apply', @a)" | Out-Null
-    $c = [pscustomobject]@{ ObjectType = $e.ObjectType; ObjectId = [string]$e.ObjectId; ObjectName = $e.ObjectName; Directory = 'Cloud'; TagType = $e.TagType; Attribute = $e.Attribute
-                            OldValue = $e.NewValue; NewValue = $value; Reason = 'Restore'; Persona = $null; RuleIds = @() }
-    $res = Invoke-EpsApplyChanges -ObjectType $e.ObjectType -Changes @($c)
+    # the run names its event (Scope), so a restore the hybrid worker could not write re-opens exactly that event (Invoke-EpsTamperMonitor)
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; a = $By; s = "{""tamperEvent"":$EventId}" } -Query "INSERT INTO eps.Run (RunId, Job, Mode, ApprovedBy, Scope) VALUES (@id, 'TamperRestore', 'Apply', @a, @s)" | Out-Null
+    $dir = 'Cloud'; $sid = $null; $upn = $null; $ctx = @{}
+    if ($e.ObjectType -eq 'User') {
+        $u = try { Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString([string]$e.ObjectId))?`$select=id,onPremisesSyncEnabled,onPremisesSecurityIdentifier,onPremisesUserPrincipalName" } catch { $_ }
+        if ($u -is [System.Management.Automation.ErrorRecord] -or -not $u) {
+            $why = "the user could not be read to find its directory (AD-synced or cloud) - nothing was written: $(if ($u -is [System.Management.Automation.ErrorRecord]) { (("$($u.Exception.Message)") -split "`n")[0] } else { 'no answer' })"
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; e = (Get-EpsFailedRunReason -Message $why) } -Query "UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = 'Failed', Applied = 0, HeldReason = @e WHERE RunId = @id" | Out-Null
+            return [pscustomobject]@{ EventId = $EventId; Restored = $false; Queued = $false; Value = $value; Error = $why }
+        }
+        if ([bool]$u.onPremisesSyncEnabled) { $dir = 'AD'; $sid = [string]$u.onPremisesSecurityIdentifier; $upn = [string]$u.onPremisesUserPrincipalName }
+        elseif ($TenantId) {
+            # the Exchange fallback (Invoke-EpsApplyChanges) needs the recipient type - read once per job run, as the undo does
+            if ($null -eq $script:EpsRestoreMailboxes) { $script:EpsRestoreMailboxes = try { Get-EpsExchangeRecipients -TenantId $TenantId } catch { Write-Warning "Exchange recipients not read ($((("$($_.Exception.Message)") -split "`n")[0])) - a mail-enabled user Graph refuses fails"; $null } }
+            if ($script:EpsRestoreMailboxes) { $ctx.Mailboxes = $script:EpsRestoreMailboxes }
+        }
+    }
+    $c = [pscustomobject]@{ ObjectType = $e.ObjectType; ObjectId = [string]$e.ObjectId; ObjectName = $e.ObjectName; Directory = $dir; TagType = $e.TagType; Attribute = $e.Attribute
+                            OldValue = $e.NewValue; NewValue = $value; Reason = 'Restore'; Persona = $null; RuleIds = @()
+                            OnPremisesSecurityIdentifier = $sid; OnPremisesUserPrincipalName = $upn }
+    # Invardia 2026-11-12 (b), as TRUST-1 Q4: the restore's row is written FIRST (Planned), then the tenant is changed, then its
+    # outcome is written - a failed last write leaves a Planned row of a run that is not Succeeded, read as EPS's own (no false alarm)
     [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $runId -Changes @($c))
+    $res = Invoke-EpsApplyChanges -ObjectType $e.ObjectType -Changes @($c) -Context $ctx -TenantId $TenantId
+    [void](Update-EpsTagChangeStatus -ConnectionString $ConnectionString -RunId $runId -Changes @(@($c) | Where-Object { $_.Status -and "$($_.Status)" -ne 'Planned' }))
+    $queued = $res.Queued -eq 1
+    if ($queued) {
+        # the worker writes it to AD; the work package carries the user's environment as the tagging job's do (P14)
+        $envMap = if ((Get-Command ConvertFrom-EpsEnvironmentMap -ErrorAction SilentlyContinue) -and (Get-Command Get-EpsSetting -ErrorAction SilentlyContinue)) { ConvertFrom-EpsEnvironmentMap (Get-EpsSetting -ConnectionString $ConnectionString -Name 'HybridWorker.EnvironmentByUpnSuffix' -Default '[]') } else { @{ Entries = @() } }
+        # (f): queued only when its package IS written (never "waiting for the worker" with nothing for the worker to take)
+        $pkgFail = $null
+        $queued = $(try { Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $runId -Changes @($c) -EnvironmentMap @($envMap.Entries) } catch { $pkgFail = (("$($_.Exception.Message)") -split "`n")[0]; 0 }) -eq 1
+        if (-not $queued) {
+            $c | Add-Member -NotePropertyName Error -NotePropertyValue "the work package for the hybrid worker could not be queued$(if ($pkgFail) { ": $pkgFail" })" -Force
+            # its change row is not left Queued with nothing to take it (review of (f))
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; e = $c.Error } -Query "UPDATE eps.TagChange SET Status = 'Failed', Error = @e, AtUtc = SYSUTCDATETIME() WHERE RunId = @r AND Status = 'Queued'" | Out-Null
+        }
+    }
     $ok = $res.Applied -eq 1
-    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); e = $c.Error } -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @s, Applied = CASE WHEN @s = ''Succeeded'' THEN 1 ELSE 0 END, HeldReason = @e WHERE RunId = @id' | Out-Null
+    # Invardia 2026-11-13 (e), "never resolved without proof" (TRUST-1): a restore QUEUED for the hybrid worker leaves the event
+    # OPEN (its alert and every open count stay) with a marker in its Detail; the engine's next monitor runs read the value
+    # back and close it then (Update-EpsPendingRestores)
+    $alive = if ($queued -and (Get-Command Get-EpsWorkerStatus -ErrorAction SilentlyContinue)) { try { [bool](Get-EpsWorkerStatus -ConnectionString $ConnectionString).Alive } catch { $true } } else { $true }
+    $note = if ($queued) { "queued for the hybrid worker - it writes '$value' to AD (AD-synced user); the event closes when the value is read back$(if (-not $alive) { ' - NO worker heartbeat in 30 min: it waits until a worker runs' })" } else { $c.Error }
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok -or $queued) { 'Succeeded' } else { 'Failed' }); e = $(if ($ok -or $queued) { $note } else { Get-EpsFailedRunReason -Message $c.Error }); n = [int]$ok } -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @s, Applied = @n, HeldReason = @e WHERE RunId = @id' | Out-Null
     if ($ok) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $EventId; b = $By } -Query "UPDATE eps.TamperEvent SET Status = 'Restored', ResolvedBy = @b, ResolvedAtUtc = SYSUTCDATETIME() WHERE EventId = @id" | Out-Null }
-    [pscustomobject]@{ EventId = $EventId; Restored = $ok; Value = $value; Error = $c.Error }
+    elseif ($queued) { Set-EpsRestoreMarker -ConnectionString $ConnectionString -EventId $EventId -Detail $e.Detail -Marker "restore queued for the hybrid worker since $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm'))Z by $By" }
+    [pscustomobject]@{ EventId = $EventId; Restored = $ok; Queued = $queued; Pending = $queued; Value = $value; Error = $c.Error }
+}
+
+function Get-EpsRestoreMarker {
+    <# PURE. The restore marker at the end of a tamper event's Detail: "[restore queued for the hybrid worker since ...]",
+       "[restore read back ...]" or "[restore not applied: ...]" -> @{ Kind = queued | readBack | notApplied | ''; Text; Base } #>
+    param([AllowNull()][AllowEmptyString()][string]$Detail)
+    # "[restore applied in AD at <time>, waiting for the directory sync]" = syncWait (still pending, like queued)
+    $m = [regex]::Match("$Detail", '\s*\[(restore (queued for the hybrid worker|applied in AD|read back|not applied)[^\]]*)\]\s*$')
+    if (-not $m.Success) { return @{ Kind = ''; Text = ''; Base = "$Detail" } }
+    @{ Kind = $(switch ($m.Groups[2].Value) { 'read back' { 'readBack' } 'not applied' { 'notApplied' } 'applied in AD' { 'syncWait' } default { 'queued' } }); Text = $m.Groups[1].Value; Base = "$Detail".Substring(0, $m.Index) }
+}
+
+function Set-EpsRestoreMarker {
+    # the event's Detail with its restore marker replaced (the column is 2000 characters: the marker is kept, the text is cut)
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$EventId, [AllowNull()][AllowEmptyString()][string]$Detail, [Parameter(Mandatory)][string]$Marker,
+          [string]$Status, [string]$ResolvedBy)
+    $tail = " [$(($Marker -replace '[\[\]]', '').Substring(0, [Math]::Min(600, ($Marker -replace '[\[\]]', '').Length)))]"
+    $base = (Get-EpsRestoreMarker -Detail $Detail).Base
+    if ($base.Length + $tail.Length -gt 2000) { $base = $base.Substring(0, 2000 - $tail.Length) }
+    $p = @{ id = $EventId; d = "$base$tail" }
+    $set = 'Detail = @d'
+    if ($Status) { $p.s = $Status; $p.b = $ResolvedBy; $set += ', Status = @s, ResolvedBy = @b, ResolvedAtUtc = SYSUTCDATETIME()' }
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters $p -Query "UPDATE eps.TamperEvent SET $set WHERE EventId = @id" | Out-Null
+}
+
+function Update-EpsPendingRestores {
+    <#
+      Invardia 2026-11-13 (e): every OPEN event whose restore waits for the hybrid worker, at the start of each monitor run.
+      - the worker could not write it (the restore's change ended Failed): the event stays OPEN, marked "restore not applied"
+      - the worker wrote it (the change is Applied - the worker reads AD back before it says so): the engine reads the user's
+        value in Entra (it arrives with directory sync); when it is the restored value the event is Restored ("read back")
+      - written in AD but not in Entra yet (Invardia 2026-11-13: Entra Connect syncs every ~30 min): "[restore applied in AD
+        at <time>, waiting for the directory sync]", checked again each run; only after -SyncWaitMinutes (2 sync cycles + margin)
+        with Entra still different is it "restore not applied"
+      - otherwise (still queued): it waits. Returns the notes for the run.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow, [int]$SyncWaitMinutes = 90)
+    $out = [System.Collections.Generic.List[string]]::new()
+    # the values read back this run (object|attribute -> value): the compare that follows in the same run takes them as the
+    # engine's own even when directory sync took longer than its one-hour window (review 2026-11-13)
+    $script:EpsRestoreReadBack = @{}
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
+SELECT e.EventId, e.ObjectId, e.ObjectName, e.Attribute, e.Detail, lr.ApprovedBy, c.Status AS ChangeStatus, c.NewValue, c.Error AS ChangeError, c.AtUtc AS ChangeAtUtc
+FROM eps.TamperEvent e
+CROSS APPLY (SELECT TOP (1) r.RunId, r.ApprovedBy FROM eps.Run r WHERE r.Job = 'TamperRestore' AND r.Scope = CONCAT('{"tamperEvent":', e.EventId, '}') ORDER BY r.StartedAtUtc DESC) lr
+JOIN eps.TagChange c ON c.RunId = lr.RunId AND c.Reason = 'Restore'
+WHERE e.Status = 'Open' AND (e.Detail LIKE '%[[]restore queued for the hybrid worker%' OR e.Detail LIKE '%[[]restore applied in AD%')
+'@)
+    foreach ($r in $rows) {
+        $kind = (Get-EpsRestoreMarker -Detail $r.Detail).Kind
+        if ($kind -notin 'queued', 'syncWait') { continue }
+        $at = $NowUtc.ToString('yyyy-MM-dd HH:mm')
+        if ("$($r.ChangeStatus)" -in 'Failed', 'Skipped') {   # Skipped = superseded by a newer value for the same user (the worker)
+            Set-EpsRestoreMarker -ConnectionString $ConnectionString -EventId $r.EventId -Detail $r.Detail -Marker "restore not applied: $((("$($r.ChangeError)") -split "`n")[0]) ($at`Z)"
+            $out.Add("event $($r.EventId) ($($r.ObjectName) $($r.Attribute)): $(if ("$($r.ChangeStatus)" -eq 'Skipped') { 'the restore was superseded by a newer tag value' } else { 'the hybrid worker could not write the restore' }) - the event stays open (restore not applied)")
+            continue
+        }
+        if ("$($r.ChangeStatus)" -ne 'Applied') { continue }
+        $u = try { Invoke-EpsGraph -Path "v1.0/users/$([uri]::EscapeDataString([string]$r.ObjectId))?`$select=id,onPremisesExtensionAttributes" } catch { $null }
+        if (-not $u) { $out.Add("event $($r.EventId): the restore was written in AD; its value could not be read back from Entra this run - tried again next run"); continue }
+        $cur = [string]$u.onPremisesExtensionAttributes.([string]$r.Attribute)
+        if ([string]::Equals($cur, [string]$r.NewValue, [StringComparison]::OrdinalIgnoreCase)) {
+            Set-EpsRestoreMarker -ConnectionString $ConnectionString -EventId $r.EventId -Detail $r.Detail -Marker "restore read back $at`Z" -Status 'Restored' -ResolvedBy "$($r.ApprovedBy)"
+            $script:EpsRestoreReadBack["$($r.ObjectId)|$($r.Attribute)".ToLowerInvariant()] = $cur
+            $out.Add("event $($r.EventId) ($($r.ObjectName) $($r.Attribute)): the restore was read back ('$cur') - Restored")
+            continue
+        }
+        $adAt = if ($r.ChangeAtUtc) { [datetime]$r.ChangeAtUtc } else { $NowUtc }
+        $adText = $adAt.ToString('yyyy-MM-dd HH:mm')
+        if (($NowUtc - $adAt).TotalMinutes -ge $SyncWaitMinutes) {
+            Set-EpsRestoreMarker -ConnectionString $ConnectionString -EventId $r.EventId -Detail $r.Detail -Marker "restore not applied: written in AD at $adText`Z, but Entra still shows '$cur' after $SyncWaitMinutes min ($at`Z)"
+            $out.Add("event $($r.EventId) ($($r.ObjectName) $($r.Attribute)): the restore was written in AD but Entra still shows '$cur' after $SyncWaitMinutes min - the event stays open (restore not applied)")
+        } elseif ($kind -eq 'queued') {
+            Set-EpsRestoreMarker -ConnectionString $ConnectionString -EventId $r.EventId -Detail $r.Detail -Marker "restore applied in AD at $adText`Z, waiting for the directory sync"
+            $out.Add("event $($r.EventId) ($($r.ObjectName) $($r.Attribute)): the restore was written in AD - waiting for the directory sync to read it back")
+        }
+    }
+    @($out)
 }

@@ -73,6 +73,28 @@ function Get-EpsNotExcludedObjects {
     @($Objects | Where-Object { $o = $_; -not @($w | Where-Object { $_.IsMatch([string]$o.userPrincipalName) -or $_.IsMatch([string]$o.displayName) -or $_.IsMatch([string]$o.id) }).Count })
 }
 
+function Update-EpsTagChangeStatus {
+    # TRUST-1 Q4 (2.1.15): each change's outcome (Status, Error, Via) onto the row Write-EpsTagChanges wrote as Planned. Only
+    # Planned rows move; AtUtc becomes the time of the WRITE (the tamper monitor compares it with when it last saw the value).
+    # In chunks of 5,000 (a first apply can have hundreds of thousands), each with a generous timeout. Throws on a SQL error
+    # (the run then fails, its remaining rows stay Planned). Returns the rows updated.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [object[]]$Changes = @())
+    if (-not $Changes.Count) { return 0 }
+    $n = 0
+    for ($i0 = 0; $i0 -lt $Changes.Count; $i0 += 5000) {
+        $chunk = $Changes[$i0..([Math]::Min($i0 + 4999, $Changes.Count - 1))]
+        $j = ConvertTo-Json -Compress -Depth 3 -InputObject @(foreach ($c in $chunk) { [ordered]@{ o = "$($c.ObjectId)"; a = "$($c.Attribute)"; s = "$($c.Status)"; e = $(if ($c.Error) { "$($c.Error)".Substring(0, [Math]::Min(2000, "$($c.Error)".Length)) }); v = $(if ($c.Via) { "$($c.Via)" }) } })
+        $n += [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Timeout 600 -Parameters @{ r = $RunId; j = $j } -Query @'
+UPDATE c SET Status = x.s, Error = x.e, Via = COALESCE(x.v, c.Via), AtUtc = SYSUTCDATETIME()
+FROM eps.TagChange c
+JOIN OPENJSON(@j) WITH (o UNIQUEIDENTIFIER '$.o', a NVARCHAR(60) '$.a', s NVARCHAR(20) '$.s', e NVARCHAR(2000) '$.e', v NVARCHAR(40) '$.v') AS x
+  ON c.ObjectId = x.o AND c.Attribute = x.a
+WHERE c.RunId = @r AND c.Status = 'Planned';
+'@)
+    }
+    $n
+}
+
 function Write-EpsTagChanges {
     # The plan's changes -> eps.TagChange in one bulk copy (a 60,000-user run is one round-trip, not 60,000).
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [object[]]$Changes = @())
@@ -144,9 +166,11 @@ function Write-EpsRuleHits {
             $bc.WriteToServer($dt)
         } finally { $conn.Dispose() }
     }
+    # the newest @k runs THAT KEPT A LIST stay (2026-11-14, backlog d): counting every run let a failed or empty run push a
+    # kept list out, so its rule page lost its rows
     Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $Job; k = $script:EpsRuleHitRunsKept } -Query @'
 DELETE FROM eps.TagRuleHit WHERE RunId IN (SELECT r.RunId FROM eps.Run r WHERE r.Job = @j
-  AND r.RunId NOT IN (SELECT TOP (@k) RunId FROM eps.Run WHERE Job = @j ORDER BY StartedAtUtc DESC)
+  AND r.RunId NOT IN (SELECT TOP (@k) k.RunId FROM eps.Run k WHERE k.Job = @j AND EXISTS (SELECT 1 FROM eps.TagRuleHit kh WHERE kh.RunId = k.RunId) ORDER BY k.StartedAtUtc DESC)
   AND r.RunId NOT IN (SELECT TOP (1) RunId FROM eps.Run WHERE Job = @j AND Scope IS NULL AND Status IN ('Succeeded', 'PartlyFailed', 'Held') ORDER BY StartedAtUtc DESC))
 '@ | Out-Null
     $dt.Rows.Count
@@ -251,8 +275,12 @@ function Invoke-EpsTagJob {
         $evalScope = $Scope; $noneInScope = $false
         if ("$(& $sv 'Kind')" -eq 'Group') {
             $gNotes = [System.Collections.Generic.List[string]]::new()
-            $gm = Get-EpsEntraGroupMembers -GroupNames @(& $sv 'Values') -ConnectionString $ConnectionString -Notes $gNotes
+            # TRUST-1 Q2 (backlog d): a REFUSED scope group (not one unique group, or its pinned group gone) has UNKNOWN members -
+            # never "not in the tenant" and never a quietly narrower scope: the scoped run stops before anything is read or written
+            $gRefused = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $gm = Get-EpsEntraGroupMembers -GroupNames @(& $sv 'Values') -ConnectionString $ConnectionString -Notes $gNotes -Refused $gRefused
             foreach ($n in $gNotes) { & $log 'Warning' $n }
+            if ($gRefused.Count) { throw "group scope: the members of $(@($gRefused | ForEach-Object { "'$_'" }) -join ', ') are unknown (see the warning above) - nothing was evaluated or written; give the group a unique name (or, when its pinned group was deleted, clear the pin), then run again" }
             foreach ($n in @(& $sv 'Values')) { if (-not $gm.ContainsKey("$n")) { & $log 'Warning' "group '$n' is not in the tenant - no members from it" } }
             $ids = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
             foreach ($set in $gm.Values) { foreach ($i in $set) { [void]$ids.Add([string]$i) } }
@@ -279,15 +307,24 @@ function Invoke-EpsTagJob {
         if (-not $Context) {
             $Context = @{}
             $needs = @($rules | ForEach-Object { $_.Conditions } | ForEach-Object { $catalog["${ObjectType}:$($_.ConditionType)"] } | Where-Object { $_ } | ForEach-Object { $_.Needs }) | Select-Object -Unique
-            if ($needs -contains 'SkuPartNumbers') { $Context.SkuPartNumbers = Get-EpsSkuPartNumbers }
+            # TRUST-1 point 3: an enrichment source that cannot be read is ISOLATED - its context entry stays $null, the rules
+            # that need it are UNKNOWN (left as they are, eps-src-0101), the run goes on. The objects themselves are DATA:
+            # a failure to read them still fails the run (above)
+            $isolate = { param($what, $err) & $log 'Warning' "$what not read: $((("$err") -split "`n")[0]) - the rules that need it leave their tags as they are this run" }
+            if ($needs -contains 'SkuPartNumbers') { try { $Context.SkuPartNumbers = Get-EpsSkuPartNumbers } catch { $Context.SkuPartNumbers = $null; & $isolate 'the tenant licence list' $_.Exception.Message } }
             if ($needs -contains 'EntraGroupMembers') {
                 $names = @($rules | ForEach-Object { $_.Conditions } | Where-Object { $_.ConditionType -eq 'MemberOfGroup' } | ForEach-Object { $_.Target })
                 $gNotes = [System.Collections.Generic.List[string]]::new()
-                $Context.EntraGroupMembers = Get-EpsEntraGroupMembers -GroupNames $names -ConnectionString $ConnectionString -Notes $gNotes
+                $Context.EntraGroupsRefused = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                try { $Context.EntraGroupMembers = Get-EpsEntraGroupMembers -GroupNames $names -ConnectionString $ConnectionString -Notes $gNotes -Refused $Context.EntraGroupsRefused }
+                catch { $Context.EntraGroupMembers = $null; & $isolate 'Entra group membership' $_.Exception.Message }
                 foreach ($n in $gNotes) { & $log 'Warning' $n }
             }
             if ($needs -contains 'Mailboxes') {
-                if ($TenantId) { $Context.Mailboxes = Get-EpsExchangeRecipients -TenantId $TenantId; & $log 'Info' "read $($Context.Mailboxes.Count) Exchange recipient(s)" }
+                if ($TenantId) {
+                    try { $Context.Mailboxes = Get-EpsExchangeRecipients -TenantId $TenantId; & $log 'Info' "read $($Context.Mailboxes.Count) Exchange recipient(s)" }
+                    catch { $Context.Mailboxes = $null; & $isolate 'Exchange recipients' $_.Exception.Message }
+                }
                 else { & $log 'Warning' 'Exchange recipients not read: no tenant id (EPS_TENANT_ID)' }
             }
             # AD group members for AD-synced users come from the hybrid worker's snapshots. No live worker = left out,
@@ -318,6 +355,10 @@ function Invoke-EpsTagJob {
         $plan = Invoke-EpsTagPlan -ObjectType $ObjectType -Objects $scoped -Rules $rules -TagTypes $types -Catalog $catalog -Context $Context -Trace $traceIds
         $sum = Get-EpsPlanSummary $plan
         foreach ($k in $plan.Unavailable.Keys) { & $log 'Warning' "unavailable: $k ($($plan.Unavailable[$k]) condition check(s) skipped)" }
+        # TRUST-1 point 3: what could not be decided is left as it is (never a fallback) - named, with its catalogue code;
+        # the run itself stays whole (Succeeded), its other tags are applied
+        if ($sum.UnknownTags) { & $log 'Warning' "$(@($sum.Codes) -join ', '): $($sum.UnknownTags) tag(s) left as they are - a source was not read or a condition failed, so the value is unknown (no change, no fallback); the run's changes page names each object" }
+        foreach ($k in @($sum.FailedConditions.Keys)) { & $log 'Warning' "eps-rule-0101: the condition $k failed $($sum.FailedConditions[$k]) time(s)$(if ($sum.FailedSample[$k]) { " (first: $($sum.FailedSample[$k]))" }) - those rules were treated as unknown" }
         & $log 'Info' "plan: $($sum.Changes) change(s) on $($sum.ObjectsChanged) object(s), $($sum.Overwrites) overwrite(s), $($sum.Unchanged) already right, $($sum.Skipped) skipped"
         if ($__epsLogLevel -eq 'Verbose') {
             # v1's verbose output: one line per planned change (the first 2,000; every change is also on the run's changes page)
@@ -328,6 +369,10 @@ function Invoke-EpsTagJob {
             }
         }
 
+        # TRUST-1 / Invardia 2026-11-12 Q4: the change rows are written FIRST (Planned; an unknown tag Skipped), then the tenant
+        # is changed, then each row gets its outcome. A failed last write leaves Planned rows - EPS's own writes stay visible
+        # (the tamper monitor reads a failed apply run's Planned rows as its own; undo takes only Applied rows)
+        [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $runId -Changes (@($plan.Changes) + @(if ($plan.UnknownRows) { $plan.UnknownRows })))
         $status = 'Succeeded'; $held = $null; $applied = 0; $failed = 0; $queuedAd = 0
         if ($Mode -eq 'Apply') {
             $prev = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $job; id = $runId } -Query "SELECT TOP 1 Planned, Overwrites FROM eps.Run WHERE Job = @j AND Mode = 'Apply' AND Status IN ('Succeeded', 'PartlyFailed') AND Scope IS NULL AND RunId <> @id ORDER BY StartedAtUtc DESC")[0]
@@ -344,24 +389,40 @@ function Invoke-EpsTagJob {
             }
             if ($g.Record) { $script:EpsLastGuardRecord = $g.Record }   # the job's caller sends it (mail, uplink: GUARD-1.2)
         }
-        [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes))
+        # the outcome of each change (Applied / Failed / Queued / Skipped) onto its Planned row - before the work packages read Queued
+        # (f) review E nit 4: the AD changes' work packages are queued EVEN WHEN the status write stops part way (its chunks
+        # before the failure are Queued and need their packages; the rest stay Planned and get none) - in a finally
+        $pkgErr = $null; $pkgs = $queuedAd
+        try { [void](Update-EpsTagChangeStatus -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes | Where-Object { $_.Status -and "$($_.Status)" -ne 'Planned' })) }
+        finally {
+            if ($queuedAd) {
+                try {
+                    # V1-PARITY P14: each AD change goes to the worker of its user's AD environment (HybridWorker.EnvironmentByUpnSuffix)
+                    # (EPS-WorkerPage.ps1 + EPS-Scheduler.ps1, both loaded by the engine; a test that loads neither queues without one)
+                    $envMap = if ((Get-Command ConvertFrom-EpsEnvironmentMap -ErrorAction SilentlyContinue) -and (Get-Command Get-EpsSetting -ErrorAction SilentlyContinue)) { ConvertFrom-EpsEnvironmentMap (Get-EpsSetting -ConnectionString $ConnectionString -Name 'HybridWorker.EnvironmentByUpnSuffix' -Default '[]') } else { @{ Entries = @(); Bad = @() } }
+                    if ($envMap.Bad.Count) { & $log 'Warning' "the AD environments setting has line(s) that are not '<upn suffix>=<environment>', left out: $($envMap.Bad -join '; ')" }
+                    $pkgs = [int](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes) -EnvironmentMap @($envMap.Entries))
+                } catch { $pkgErr = $_; $pkgs = 0; try { & $log 'Error' "the AD changes' work packages could not be queued: $($_.Exception.Message)" } catch { } }
+            }
+        }
+        # (review of (f)): a package write that FAILED is the run's failure (thrown, the run ends Failed with it) - never a
+        # Succeeded run with AD changes nobody will write; fewer packages than queued changes = PartlyFailed, said
+        if ($pkgErr) { throw "the AD changes' work packages could not be queued: $($pkgErr.Exception.Message)" }
+        if ($pkgs -lt $queuedAd) { $status = 'PartlyFailed'; & $log 'Warning' "$pkgs of $queuedAd AD-synced change(s) were queued for the hybrid worker - the others have no package" }
+        $queuedAd = $pkgs
         # RULES-MATCHED: who each rule decided (the Rules page's Matched button); a failure here never fails the run
         $hitsCapped = @(foreach ($k in @($plan.Hits.Keys)) { if ([int]$plan.Matched[$k] -gt $plan.Hits[$k].Count) { "$k" } })
         # (not for a test of the STAGED rules: their rules are not the committed ones, so their lists would mislead)
         if (-not $staged) { try { [void](Write-EpsRuleHits -ConnectionString $ConnectionString -RunId $runId -Job $job -ObjectType $ObjectType -Hits $plan.Hits) }
         catch { & $log 'Warning' "the list of who each rule decided was not stored: $($_.Exception.Message)" } }
         if ($queuedAd) {
-            # V1-PARITY P14: each AD change goes to the worker of its user's AD environment (HybridWorker.EnvironmentByUpnSuffix)
-            # (EPS-WorkerPage.ps1 + EPS-Scheduler.ps1, both loaded by the engine; a test that loads neither queues without one)
-            $envMap = if ((Get-Command ConvertFrom-EpsEnvironmentMap -ErrorAction SilentlyContinue) -and (Get-Command Get-EpsSetting -ErrorAction SilentlyContinue)) { ConvertFrom-EpsEnvironmentMap (Get-EpsSetting -ConnectionString $ConnectionString -Name 'HybridWorker.EnvironmentByUpnSuffix' -Default '[]') } else { @{ Entries = @(); Bad = @() } }
-            if ($envMap.Bad.Count) { & $log 'Warning' "the AD environments setting has line(s) that are not '<upn suffix>=<environment>', left out: $($envMap.Bad -join '; ')" }
-            [void](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $runId -Changes @($plan.Changes) -EnvironmentMap @($envMap.Entries))
             $ws = Get-EpsWorkerStatus -ConnectionString $ConnectionString
             & $log $(if ($ws.Alive) { 'Info' } else { 'Warning' }) "$queuedAd AD-synced change(s) queued for the hybrid worker$(if (-not $ws.Alive) { ' - NO worker heartbeat in 30 min: they wait until a worker runs' })"
         }
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{
             id = $runId; st = $status; h = $held; o = $sum.Objects; p = $sum.Changes; ow = $sum.Overwrites; a = $applied; f = $failed; sk = $sum.Skipped
             js = ([ordered]@{ ByValue = $sum.ByValue; ByRule = $sum.ByRule; Matched = $sum.Matched; Unavailable = $sum.Unavailable; Unchanged = $sum.Unchanged; ObjectsChanged = $sum.ObjectsChanged
+                    UnknownTags = $sum.UnknownTags; Codes = @($sum.Codes); Sources = @($sum.Sources); FailedConditions = @($sum.FailedConditions.Keys)
                     RuleSetHash = $ruleHash; Test = $isTest; TagTypes = @($pickTypes); TracedMax = $(if ($isTest) { $script:EpsTagTestTraceMax })
                     HitMax = $script:EpsRuleHitMax; HitsCapped = @($hitsCapped)
                     GoLive = $(if ($goLive) { [ordered]@{ TestRunId = $testRunId } }); Staged = $stagedInfo

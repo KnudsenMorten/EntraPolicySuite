@@ -2749,6 +2749,8 @@ function schedPicker(current, job) {
         if (v.fix) pane.appendChild(el('div', { class: 'guide' }, el('b', { text: 'How to close it: ' }), v.fix));
         // IDREPORT-VALIDATE (owner 2026-11-09 "maybe add assumptions"): what this view's answer rests on - derived by the
         // engine from the fields its filter reads; folded to one line until opened
+        // TRUST-1 gap 7: one honest marker when this report could not read some role groups (never row by row)
+        if (v.incomplete) pane.appendChild(el('div', { class: 'guide id-incomplete', role: 'status' }, el('b', { text: 'Note: ' }), v.incomplete));
         if (v.assumes && v.assumes.length) pane.appendChild(el('details', { class: 'id-assumes' }, el('summary', { text: 'What this view assumes (' + v.assumes.length + ')' }),
           el('ul', null, v.assumes.map(function (a) { return el('li', { text: a }); }))));
         // the filter bar
@@ -2818,7 +2820,7 @@ function schedPicker(current, job) {
         }
         function drawGrid() {
           if (!last) return;
-          var cols = st.columns.map(function (c) { var t = types[c]; return { key: c, label: idColLabel(c), type: t === 'number' ? 'num' : (t === 'date' ? 'date' : null) }; });
+          var cols = st.columns.map(function (c) { var t = types[c]; return { key: c, label: idColLabel(c) + (c === 'IsAdmin' && j.adminIncomplete ? ' (may be incomplete)' : ''), type: t === 'number' ? 'num' : (t === 'date' ? 'date' : null) }; });
           var t = el('table', { class: 'grid' }), hr = el('tr'), tb = el('tbody');
           var selIds = function () { return Object.keys(st.sel).filter(function (k) { return st.sel[k]; }); };
           if (canAct) {
@@ -4116,12 +4118,12 @@ function schedPicker(current, job) {
     var pl = r.plan || {};
     out.appendChild(el('h3', { text: 'The plan' }));
     out.appendChild(el('div', { class: 'smeta', text: 'Read: ' + (r.files || []).join(', ') }));
-    out.appendChild(table((pl.areas || []).map(function (a) { return { area: a.area, add: a.add, change: a.change, same: a.same, note: a.replaces !== undefined ? 'replaces ' + fmtNum(a.replaces) + ' rule(s) from an earlier v1 import; keeps ' + fmtNum(a.keeps) + ' made in this app' : '' }; }),
-      [{ key: 'area', label: 'Area' }, { key: 'add', label: 'New', type: 'num' }, { key: 'change', label: 'Changed', type: 'num' }, { key: 'same', label: 'Already so', type: 'num' }, { key: 'note', label: '', wrap: true }]));
+    out.appendChild(table((pl.areas || []).map(function (a) { return { area: a.area, add: a.add, change: a.change, same: a.same, refused: a.refused || 0, note: a.replaces !== undefined ? 'replaces ' + fmtNum(a.replaces) + ' rule(s) from an earlier v1 import; keeps ' + fmtNum(a.keeps) + ' made in this app' : '' }; }),
+      [{ key: 'area', label: 'Area' }, { key: 'add', label: 'New', type: 'num' }, { key: 'change', label: 'Changed', type: 'num' }, { key: 'same', label: 'Already so', type: 'num' }, { key: 'refused', label: 'Not imported', type: 'num' }, { key: 'note', label: '', wrap: true }]));
     (pl.areas || []).forEach(function (a) {
       if (!a.items || !a.items.length) return;
-      var d = el('details'); d.appendChild(el('summary', { text: a.area + ': ' + fmtNum(a.add) + ' new, ' + fmtNum(a.change) + ' changed' }));
-      a.items.forEach(function (x) { d.appendChild(el('div', { class: 'smeta', text: (x.state === 'add' ? 'new: ' : 'changed: ') + x.key + (x.text ? ' - ' + x.text : '') })); });
+      var d = el('details'); d.appendChild(el('summary', { text: a.area + ': ' + fmtNum(a.add) + ' new, ' + fmtNum(a.change) + ' changed' + (a.refused ? ', ' + fmtNum(a.refused) + ' NOT imported (a condition type that does not exist)' : '') }));
+      a.items.forEach(function (x) { d.appendChild(el('div', { class: 'smeta', text: (x.state === 'add' ? 'new: ' : x.state === 'refused' ? 'NOT imported: ' : 'changed: ') + x.key + (x.text ? ' - ' + x.text : '') })); });
       out.appendChild(d);
     });
     if (pl.hints && pl.hints.length) { var h = el('details'); h.appendChild(el('summary', { text: 'Hints on the rules (' + fmtNum(pl.hints.length) + ') - never blocking' })); pl.hints.forEach(function (x) { h.appendChild(el('div', { class: 'smeta', text: x })); }); out.appendChild(h); }
@@ -4639,6 +4641,29 @@ function schedPicker(current, job) {
     if (!u || ['warn', 'at', 'over'].indexOf(u.state) < 0) return null;
     return el('div', { class: 'bar bar-warn' }, el('strong', { text: 'License: ' }), u.message + ' ', el('a', { href: '#license', text: 'License' }));
   }
+  // WHATS-NEW-1 (framework; owner 2026-11-13 "all must have same"): Invardia's shared renderer (whatsnew/whats-new.js +
+  // .css, embedded UNCHANGED) draws every release's card from GET /api/whatsnew - the same words as invardia.com and GitHub.
+  // The "New" badge on Help > What's new shows after an update until this page is opened once (the renderer keeps that).
+  var WN_OPTS = { productName: 'Entra Policy Suite', product: 'entrapolicysuite' };
+  var wnNew = false;
+  function wnModule() {
+    if (!document.querySelector('link[data-wn]')) document.head.appendChild(el('link', { rel: 'stylesheet', href: 'whatsnew/whats-new.css', 'data-wn': '1' }));
+    return import('./whatsnew/whats-new.js');
+  }
+  function loadWhatsNewBadge() {
+    Promise.all([api('GET', '/api/whatsnew'), wnModule()]).then(function (r) {
+      var was = wnNew; wnNew = !!r[1].shouldShowNewBadge(r[0].files || [], WN_OPTS);
+      if (wnNew !== was) drawTabs();
+    }).catch(function () { });
+  }
+  function drawWhatsNew(p) {
+    var box = el('div'); p.appendChild(box);
+    Promise.all([api('GET', '/api/whatsnew'), wnModule()]).then(function (r) {
+      // markSeen: only what the renderer could show is marked seen (a damaged newest file keeps the badge)
+      r[1].renderWhatsNew(box, r[0].files || [], { productName: WN_OPTS.productName, product: WN_OPTS.product, markSeen: true });
+      if (wnNew) { wnNew = false; drawTabs(); }
+    }).catch(function (e) { box.appendChild(el('div', { class: 'empty', text: "What's new could not be loaded: " + e.message })); });
+  }
   function drawLicense(p) {
     return api('GET', '/api/license').then(function (l) {
       var b = licenseBanner(l); if (b) p.appendChild(b);
@@ -4884,6 +4909,7 @@ function schedPicker(current, job) {
     { id: 'worker', label: 'Hybrid worker', role: 'Reader', draw: drawWorker },
     { id: 'optional', label: 'Optional components', role: 'Reader', draw: drawOptional },
     { id: 'license', label: 'License', role: 'Reader', draw: drawLicense },
+    { id: 'whatsnew', label: "What's new", role: 'Reader', draw: drawWhatsNew },
     { id: 'settings', label: 'Settings', role: 'Reader', draw: function (p, arg) {
       p.appendChild(el('div', { class: 'guide', text: 'Every behaviour of Entra Policy Suite is a setting. "More info" explains each one: what it does, what happens when it is on or off, the risk, and what it needs. A save needs a reason, is checked before it is stored, and goes into the audit trail and the setting\'s history (where an earlier value can be put back).' }));
       // CONFIG-IO-1: the whole configuration as one file, and an import of one (SuperAdmin) - the import shows every change
@@ -5080,7 +5106,10 @@ function schedPicker(current, job) {
       { hash: 'backups', label: 'Backups / Undo', desc: 'The daily backups of your policies and tagging; put something back, undo a change.' },
       { hash: 'audit', label: 'Audit', desc: 'Every change and who made it.' },
       { hash: 'license', label: 'License', desc: 'Community or Pro: the edition, validity, users against the license, the Pro features.' },
-      { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] }
+      { hash: 'apiref', label: 'API reference', desc: 'The API, route by route.' }] },
+    // WHATS-NEW-1: the Help area
+    { label: 'Help', items: [
+      { hash: 'whatsnew', label: "What's new", desc: 'What each release brings: new features and fixes, newest first.' }] }
   ];
   // framework §12.5 PENDING-1 (owner 2026-10-08; 2026-11-09 "where is the red marker when things are in the queue o not
   // completed"): what waits for a person or did not complete = a red count on the menu ITEM and the SUM on its GROUP, read
@@ -5116,11 +5145,12 @@ function schedPicker(current, job) {
       if (!items.length) return;
       var active = items.some(function (it) { return it.hash.split('/')[0] === cur; });
       var box = el('div', { class: 'nav-grp' + (active ? ' active' : '') });
-      var btn = el('button', { type: 'button', class: 'tab nav-grp-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-selected': active ? 'true' : 'false' }, g.label + ' ', el('span', { class: 'nav-block-count', hidden: true }), el('span', { class: 'nav-caret', text: '▾' }));
+      var wnHere = wnNew && items.some(function (it) { return it.hash === 'whatsnew'; });
+      var btn = el('button', { type: 'button', class: 'tab nav-grp-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false', 'aria-selected': active ? 'true' : 'false' }, g.label + ' ', wnHere ? el('span', { class: 'wn-nav-new', text: 'New' }) : null, el('span', { class: 'nav-block-count', hidden: true }), el('span', { class: 'nav-caret', text: '▾' }));
       var menu = el('div', { class: 'nav-grp-menu', role: 'menu' });
       items.forEach(function (it) {
         var on = it.hash === full || (it.hash === cur && !(cur === 'capolicies' && full !== 'capolicies'));
-        menu.appendChild(el('a', { href: '#' + it.hash, role: 'menuitem', class: 'nav-item' + (on ? ' on' : ''), 'data-att': ATT_OF[it.hash] || null, onclick: closeMenus }, el('span', { class: 'nav-item-l' }, it.label, ATT_OF[it.hash] ? el('span', { class: 'nav-block-badge', hidden: true }) : null), el('span', { class: 'nav-item-d', text: it.desc })));
+        menu.appendChild(el('a', { href: '#' + it.hash, role: 'menuitem', class: 'nav-item' + (on ? ' on' : ''), 'data-att': ATT_OF[it.hash] || null, onclick: closeMenus }, el('span', { class: 'nav-item-l' }, it.label, (wnNew && it.hash === 'whatsnew') ? el('span', { class: 'wn-nav-new', text: 'New' }) : null,ATT_OF[it.hash] ? el('span', { class: 'nav-block-badge', hidden: true }) : null), el('span', { class: 'nav-item-d', text: it.desc })));
       });
       btn.addEventListener('click', function (ev) { ev.stopPropagation(); var open = box.classList.contains('open'); closeMenus(); if (!open) { box.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); } });
       box.appendChild(btn); box.appendChild(menu); nav.appendChild(box);
@@ -5173,6 +5203,7 @@ function schedPicker(current, job) {
       lastHash = to; render();
     });
     window.addEventListener('beforeunload', function (ev) { if (gridDirty()) { ev.preventDefault(); ev.returnValue = ''; } });
+    loadWhatsNewBadge();   // WHATS-NEW-1: the "New" badge after an update
     window.addEventListener('focus', pollVersion);
     setInterval(pollVersion, 5 * 60 * 1000);
     api('GET', '/api/me').then(function (m) {

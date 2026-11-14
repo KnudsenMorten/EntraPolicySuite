@@ -1,0 +1,11 @@
+{
+  "version": "2.0.95",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "After a support-run install, your installation fully owns its web app sign-in registration.",
+  "new": [],
+  "fixes": [
+    { "title": "Ownership handover now completes", "text": "When Invardia's Support app ran the install, it stayed an owner of the web app's sign-in registration. It now removes itself once the installation's own identity is in place." },
+    { "title": "No false owner warnings", "text": "The install now waits briefly for Entra to show a new owner, instead of warning about one that was added." }
+  ]
+}

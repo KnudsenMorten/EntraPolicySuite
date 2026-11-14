@@ -1,0 +1,13 @@
+{
+  "version": "2.0.34",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Setup scripts sign in reliably, and Invardia can spot slow jobs sooner.",
+  "new": [
+    { "title": "Invardia sees addresses and job durations", "text": "For installs that report to Invardia, the status report now includes the web app's addresses and how long a running job has taken compared with usual." },
+    { "title": "Every admin script on invardia.com", "text": "Every script an admin runs is now available on invardia.com as one self-contained file, checked against the release before it runs." }
+  ],
+  "fixes": [
+    { "title": "Setup scripts sign in fresh each time", "text": "The mail, web access and alert setup scripts now sign in again on a second run, instead of reusing an expired sign-in or one for another tenant." }
+  ]
+}

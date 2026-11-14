@@ -1,0 +1,10 @@
+{
+  "version": "2.0.107",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "An install run never takes away a permission the product holds.",
+  "new": [],
+  "fixes": [
+    { "title": "Install runs no longer remove permissions", "text": "An install run now only adds missing Microsoft Graph permissions and names any extra ones, without removing them. The matching setup step is now a report and stays green." }
+  ]
+}

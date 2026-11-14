@@ -1,0 +1,11 @@
+{
+  "version": "2.0.94",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Your installation now owns its web app sign-in registration, not the tool that installed it.",
+  "new": [
+    { "title": "The installation owns its sign-in registration", "text": "The web app's sign-in registration in Entra is now owned by the installation itself. When Invardia's Support app runs the install, it removes itself as owner at the end." },
+    { "title": "Registration settings kept correct on updates", "text": "Every update keeps the registration's own settings as they should be. An install run that may not change it says so, and the next update applies the change." }
+  ],
+  "fixes": []
+}

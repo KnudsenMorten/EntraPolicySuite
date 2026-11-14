@@ -1,0 +1,13 @@
+{
+  "version": "2.0.53",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Private installs keep building updates now that Azure creates new networks without internet access.",
+  "new": [
+    {
+      "title": "Private installs keep internet access for builds",
+      "text": "The network the install creates now allows the outbound access its update builds need. If you bring your own network without it, the install tells you what to add first."
+    }
+  ],
+  "fixes": []
+}

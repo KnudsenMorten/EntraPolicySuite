@@ -1,0 +1,13 @@
+{
+  "version": "2.0.125",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "The Invardia support link is named and explained clearly wherever you see it.",
+  "new": [
+    {
+      "title": "Clearer name and setting for the support link",
+      "text": "The run log now says \"Invardia support link\". Its on/off setting in Settings explains that turning it off stops all reports to Invardia support."
+    }
+  ],
+  "fixes": []
+}

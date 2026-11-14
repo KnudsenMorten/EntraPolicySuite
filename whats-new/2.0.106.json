@@ -1,0 +1,12 @@
+{
+  "version": "2.0.106",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "The product keeps only the Microsoft Graph permissions it needs.",
+  "new": [
+    { "title": "Unneeded permissions are removed", "text": "The next install run removes a Microsoft Graph permission the product no longer needs, and checks the result. Getting started shows a step that names any extra permission." }
+  ],
+  "fixes": [
+    { "title": "Guides describe today's identities", "text": "The security pack and the hybrid worker guide now describe the product's identities as they are today." }
+  ]
+}

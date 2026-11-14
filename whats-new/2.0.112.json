@@ -1,0 +1,11 @@
+{
+  "version": "2.0.112",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "Committing changes without a reason works again.",
+  "new": [],
+  "fixes": [
+    { "title": "Commit without a reason works again", "text": "Committing queued changes without a reason failed with an error. The reason is optional again, and the commit goes through." },
+    { "title": "Run pages show a dash for unknowns", "text": "A run page now shows '-' in its number cards when a number is not known, instead of a placeholder word." }
+  ]
+}

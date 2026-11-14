@@ -1,0 +1,15 @@
+{
+  "version": "2.0.105",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "Every job now reports its runs, and a job that keeps failing recovers by itself.",
+  "new": [
+    { "title": "Every job now shows its runs", "text": "Database setup, support access and configuration changes now appear under Jobs & runs, like every other job." },
+    { "title": "Failing jobs retry with smaller batches", "text": "A job whose last runs did not complete now works in smaller batches, halving each time. A size that keeps timing out is no longer retried unchanged." },
+    { "title": "New alerts to Invardia", "text": "Invardia is now alerted when a job misses three runs in a row or when records had to be skipped. Both alerts close by themselves." }
+  ],
+  "fixes": [
+    { "title": "Backups open on every system", "text": "A policy name with a character such as ':' or '?' no longer creates a backup file that Windows cannot open." },
+    { "title": "Identity report reads AD user ids correctly", "text": "The identity report now reads the security identifier of on-premises AD users correctly." }
+  ]
+}

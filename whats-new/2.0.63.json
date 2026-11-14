@@ -1,0 +1,18 @@
+{
+  "version": "2.0.63",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "You decide in the Invardia portal how much access Invardia support has, and your install enforces it.",
+  "new": [
+    {
+      "title": "Support access follows your portal setting",
+      "text": "Your install applies the support level you set in the Invardia customer portal: none, read only, or extra access only during an open support session, for at most 8 hours."
+    },
+    {
+      "title": "Support access is checked and recorded",
+      "text": "Every change is checked and recorded in Audit, and the product itself cannot raise or lower the level. If Invardia is unreachable, your last setting keeps applying.",
+      "action": "Run the install once to add this feature."
+    }
+  ],
+  "fixes": []
+}

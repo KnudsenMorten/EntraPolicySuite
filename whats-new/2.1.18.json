@@ -1,0 +1,17 @@
+{
+  "version": "2.1.18",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Interrupted updates finish faster and more safely.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Finishing an update only redoes what's missing",
+      "text": "When an update that stopped part way is finished, only the parts left behind are moved. Work already done is not repeated."
+    },
+    {
+      "title": "Updates wait for a busy Azure",
+      "text": "When Azure is still busy with a repeated request, the update now waits up to 5 minutes instead of stopping. Repeated requests are shown in the update's run log and summary."
+    }
+  ]
+}

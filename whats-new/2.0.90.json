@@ -1,0 +1,12 @@
+{
+  "version": "2.0.90",
+  "date": "2026-11-06",
+  "type": "feature",
+  "summary": "Pro: your scripts and AI assistants can work with Entra Policy Suite, always under each person's own role.",
+  "new": [
+    { "title": "API for your own scripts (Pro)", "text": "Your scripts reach Entra Policy Suite through its API as the signed-in person, with that person's role. There is no key to hand out, and changes go through the same checks and audit.", "action": "On an existing installation, run the install once more so getting your token needs no extra consent." },
+    { "title": "MCP server for AI assistants (Pro)", "text": "AI assistants connect through the MCP server, with the same role, checks and audit as the pages." },
+    { "title": "New API and MCP page", "text": "Administration > API and MCP shows your addresses, how to get your token, a script example and the tools your role gets." }
+  ],
+  "fixes": []
+}

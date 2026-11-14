@@ -1,0 +1,17 @@
+{
+  "version": "2.0.57",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Your database now starts larger.",
+  "new": [
+    {
+      "title": "A larger database from the start",
+      "text": "New installs start with a larger database. Running the install enlarges an existing small one; a size you chose yourself is left alone."
+    },
+    {
+      "title": "Sign-in page version reported",
+      "text": "Your install now tells Invardia which sign-in page version it runs, with no extra rights needed."
+    }
+  ],
+  "fixes": []
+}

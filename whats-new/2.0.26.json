@@ -1,0 +1,12 @@
+{
+  "version": "2.0.26",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "New template versions never change your policies without your review.",
+  "new": [
+    { "title": "Template updates you review first", "text": "A new Template updates tab lists what a newer template library adds, changes or removes. Changed templates show before and after, and how your policies differ." },
+    { "title": "Apply or skip persona changes", "text": "Persona changes from the library can be applied to your personas or skipped. Either way they are not offered again." },
+    { "title": "Your policies never change by themselves", "text": "Taking a template change only marks it as seen; your policies stay as they are. Every take needs Admin and a reason, and is audited." }
+  ],
+  "fixes": []
+}

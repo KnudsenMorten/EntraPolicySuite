@@ -1,0 +1,21 @@
+{
+  "version": "2.1.12",
+  "date": "2026-11-12",
+  "type": "feature",
+  "summary": "Image clean-up can never remove anything your installation still runs or needs.",
+  "new": [
+    {
+      "title": "Clean-up keeps everything in use",
+      "text": "What is kept is now decided from what your installation actually runs and needs. If anything is unclear, nothing is deleted and the next update tries again."
+    },
+    {
+      "title": "Clean-up reports what it does",
+      "text": "The run log shows, as it happens, how many images exist, are kept and why, and are deleted. The totals also go to Audit."
+    },
+    {
+      "title": "Safe limits on each clean-up",
+      "text": "At most 100 images per registry folder are deleted per update, and Invardia support can switch the clean-up off for your installation. It starts with the update after this version."
+    }
+  ],
+  "fixes": []
+}

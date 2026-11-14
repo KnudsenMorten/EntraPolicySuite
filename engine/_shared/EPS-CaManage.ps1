@@ -275,10 +275,20 @@ function Test-EpsCaBreakGlassExclusion {
     if ($IsBreakGlassPolicy -or @($iu | Where-Object { $aids -contains $_ }).Count -or @($ig | Where-Object { $rel -contains $_ }).Count) {
         return @{ Ok = $true; Exempt = $true; Text = 'the break-glass policy itself (it targets the break-glass accounts)'; Missing = @() }
     }
-    if (-not $gids.Count -and -not $aids.Count) { return @{ Ok = $null; Exempt = $false; Text = 'no break-glass group or account is known (import the v1 configuration, or set the accounts up) - the check cannot run'; Missing = @() } }
+    # TRUST-1 point 2 (Invardia 2026-11-12 Q1; review: never hide a DEFINITE lock-out): a configured account whose id could
+    # not be resolved cannot be compared. A resolved account the policy does NOT exclude is a lock-out risk whatever the
+    # unresolved ones are (Ok $false); only when every resolved account is excluded and some are unresolved is the answer
+    # unknown (Ok $null) - "excludes every account" is never judged on a subset
+    $noId = @(@($BreakGlass.Accounts) | Where-Object { $_ -and -not $_.Id } | ForEach-Object { "$($_.Upn)" })
+    $unresolved = "the break-glass account(s) $($noId -join ', ') could not be resolved to an id (deleted, or not readable) - the check cannot run this time; check the break-glass accounts in Settings"
+    if (-not $gids.Count -and -not $aids.Count) {
+        if ($noId.Count) { return @{ Ok = $null; Exempt = $false; Text = $unresolved; Missing = @() } }
+        return @{ Ok = $null; Exempt = $false; Text = 'no break-glass group or account is known (import the v1 configuration, or set the accounts up) - the check cannot run'; Missing = @() }
+    }
     $xg = & $low (Get-EpsCaList $Policy 'conditions.users.excludeGroups'); $xu = & $low (Get-EpsCaList $Policy 'conditions.users.excludeUsers')
     if (@($xg | Where-Object { $gids -contains $_ }).Count) { return @{ Ok = $true; Exempt = $false; Text = 'excludes the break-glass group'; Missing = @() } }
     $miss = @($acc | Where-Object { $xu -notcontains "$($_.Id)".ToLowerInvariant() } | ForEach-Object { $_.Upn })
+    if (-not $miss.Count -and $noId.Count) { return @{ Ok = $null; Exempt = $false; Text = $unresolved; Missing = @() } }
     if ($aids.Count -and -not $miss.Count) { return @{ Ok = $true; Exempt = $false; Text = 'excludes every break-glass account'; Missing = @() } }
     @{ Ok = $false; Exempt = $false; Missing = @($miss)
        Text = "does NOT exclude the break-glass group$(if ($miss.Count) { ", nor $($miss.Count) break-glass account(s): $($miss -join ', ')" }) - a lock-out risk" }
@@ -1184,7 +1194,7 @@ function Update-EpsCaInventory {
     foreach ($n in $notes) { & $Log 'Warning' "  $n" }
     $mon = $null
     try { $mon = Invoke-EpsCaMonitorCheck -ConnectionString $ConnectionString -Policies $Policies -Reviews $reviews -Names $names -Version $Version -Log $Log }
-    catch { & $Log 'Error' "the CA monitor failed: $($_.Exception.Message)" }
+    catch { & $Log 'Error' "eps-rule-0102: the CA monitor failed (nothing was cleared): $($_.Exception.Message)"; $mon = @{ Enabled = $true; Failed = $true; Codes = @('eps-rule-0102') } }
     @{ Reviews = $reviews; Names = $names; Notes = @($notes); Monitor = $mon }
 }
 
@@ -1213,9 +1223,14 @@ function Invoke-EpsCaMonitorCheck {
     if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'CA.Monitoring.Enabled' -Default 'false')" -ne 'true') { return @{ Enabled = $false } }
     $byId = @{}; foreach ($p in @($Policies)) { $byId["$($p.id)".ToLowerInvariant()] = $p }
     $now = @{}   # "<policyId>|<kind>" -> @{ Detail; Json; Hash }
+    $reviewFailed = 0   # adopted policies whose review failed this run (eps-rule-0102 even without an open finding)
+    $notChecked = @{}   # "<policyId>|<kind>" -> why it could not be checked this run (TRUST-1: kept, never cleared)
     $adopted = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT PolicyId, DisplayName, AdoptedBodyJson, AdoptedBodyHash FROM eps.CaAdoption WHERE Status = 'Adopted'")
     foreach ($a in $adopted) {
         $k = "$($a.PolicyId)".ToLowerInvariant(); $p = $byId[$k]
+        # TRUST-1 point 2: a policy not in the list (deleted, or not readable) cannot be checked for drift or the
+        # break-glass exclusion - its open Drift / BreakGlass findings are kept, never cleared as if fixed
+        if (-not $p) { $notChecked["$k|Drift"] = 'the policy is not in the list this run'; $notChecked["$k|BreakGlass"] = 'the policy is not in the list this run' }
         if (-not $p) { $now["$k|Missing"] = @{ Name = [string]$a.DisplayName; Detail = 'the adopted policy is no longer in the tenant (deleted, or the engine cannot read it)'; Json = $null; Hash = 'missing' }; continue }
         $h = Get-EpsCaBodyHash $p
         if ($h -ne "$($a.AdoptedBodyHash)") {
@@ -1225,9 +1240,13 @@ function Invoke-EpsCaMonitorCheck {
             $now["$k|Drift"] = @{ Name = [string]$p.displayName; Detail = "changed since it was adopted: $(@($d | ForEach-Object { $_.path }) -join ', ')"; Json = (ConvertTo-Json -InputObject @($d) -Compress -Depth 6); Hash = $h }
         }
         $rv = $Reviews[$k]
+        # TRUST-1 point 2 (Invardia 2026-11-12): no review this run (it failed) or a break-glass check that could not run
+        # (Ok $null) = UNCONFIRMED this run - an open BreakGlass finding is kept, never cleared as if it were fixed (eps-rule-0102)
+        if (-not $rv) { $reviewFailed++ }
+        if (-not $rv -or $null -eq $rv.breakGlass -or $null -eq $rv.breakGlass.ok) { $notChecked["$k|BreakGlass"] = $(if (-not $rv) { 'its review failed this run' } else { "$($rv.breakGlass.text)" }) }
         if ($rv -and $rv.breakGlass.ok -eq $false) { $now["$k|BreakGlass"] = @{ Name = [string]$p.displayName; Detail = "$($rv.breakGlass.text)"; Json = (ConvertTo-Json -InputObject @($rv.breakGlass.missing) -Compress); Hash = "bg:$(@($rv.breakGlass.missing) -join ',')" } }
     }
-    $open = @{}; foreach ($f in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT FindingId, PolicyId, Kind, DetailJson FROM eps.CaFinding WHERE Status = 'Open'")) { $open["$("$($f.PolicyId)".ToLowerInvariant())|$($f.Kind)"] = $f }
+    $open = @{}; foreach ($f in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT FindingId, PolicyId, Kind, Detail, DetailJson FROM eps.CaFinding WHERE Status = 'Open'")) { $open["$("$($f.PolicyId)".ToLowerInvariant())|$($f.Kind)"] = $f }
     $new = 0
     foreach ($key in $now.Keys) {
         $pid0, $kind = $key -split '\|', 2; $x = $now[$key]
@@ -1241,13 +1260,24 @@ function Invoke-EpsCaMonitorCheck {
             [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ p = [guid]$pid0; n = $x.Name; k = $kind; d = $x.Detail.Substring(0, [Math]::Min(2000, $x.Detail.Length)); j = $j } -Query 'INSERT INTO eps.CaFinding (PolicyId, DisplayName, Kind, Detail, DetailJson) VALUES (@p, @n, @k, @d, @j)')
         }
     }
-    foreach ($key in @($open.Keys | Where-Object { -not $now.ContainsKey($_) })) {
+    $kept = 0
+    foreach ($key in @($open.Keys | Where-Object { -not $now.ContainsKey($_) -and $notChecked.ContainsKey($_) })) {
+        # kept open, marked once with the first run that could not check it (the date stays until a run checks it again)
+        $kept++
+        $d0 = "$($open[$key].Detail)"
+        if ($d0 -notlike 'awaiting a re-check since *') {
+            $d1 = "awaiting a re-check since $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC ($($notChecked[$key])) - last known: $d0"
+            [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [long]$open[$key].FindingId; d = $d1.Substring(0, [Math]::Min(2000, $d1.Length)) } -Query "UPDATE eps.CaFinding SET Detail = @d WHERE FindingId = @id AND Status = 'Open'")
+        }
+    }
+    if ($kept) { & $Log 'Warning' "eps-rule-0102: $kept open finding(s) could not be checked this run - kept, not cleared ($(@($notChecked.Values | Select-Object -Unique -First 3) -join '; '))" }
+    foreach ($key in @($open.Keys | Where-Object { -not $now.ContainsKey($_) -and -not $notChecked.ContainsKey($_) })) {
         [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [long]$open[$key].FindingId } -Query "UPDATE eps.CaFinding SET Status = 'Cleared', ClearedAtUtc = SYSUTCDATETIME() WHERE FindingId = @id AND Status = 'Open'")
     }
     & $Log $(if ($now.Count) { 'Warning' } else { 'Info' }) "CA monitor: $($adopted.Count) adopted policy(ies), $($now.Count) open finding(s), $new new - shown and alerted only, nothing is changed"
     $mail = Send-EpsCaMonitorAlert -ConnectionString $ConnectionString -Version $Version
     if ($mail.Findings) { & $Log 'Info' "  alert: $($mail.Findings) finding(s), $(if ($mail.Sent) { 'mailed' } else { "NOT mailed - $($mail.Reason); tried again next run" })" }
-    @{ Enabled = $true; Adopted = $adopted.Count; Open = $now.Count; New = $new; Mail = $mail }
+    @{ Enabled = $true; Adopted = $adopted.Count; Open = $now.Count; New = $new; Mail = $mail; Kept = $kept; Codes = @(if ($kept -or $reviewFailed) { 'eps-rule-0102' }) }
 }
 
 function Send-EpsCaMonitorAlert {

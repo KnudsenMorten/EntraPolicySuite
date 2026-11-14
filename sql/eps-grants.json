@@ -60,7 +60,7 @@
         "Scope": ["SELECT", "INSERT", "UPDATE", "DELETE"],
         "Setting": ["SELECT", "INSERT", "UPDATE"],
         "SupportEvent": ["SELECT", "INSERT", "UPDATE"],
-        "TagChange": ["SELECT", "INSERT"],
+        "TagChange": ["SELECT", "INSERT", "UPDATE(Status, Error, Via, AtUtc)"],
         "TagRuleHit": ["SELECT", "INSERT", "DELETE"],
         "TagType": ["SELECT", "INSERT", "UPDATE", "DELETE"],
         "TagValue": ["SELECT", "INSERT", "UPDATE", "DELETE"],

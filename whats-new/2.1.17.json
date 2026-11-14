@@ -1,0 +1,17 @@
+{
+  "version": "2.1.17",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "An update interrupted by Azure no longer leaves your installation half on the old version.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Updates retry when Azure does not answer",
+      "text": "When Azure does not answer a request during an update, the update tries it once more instead of stopping. Starting a job is never sent twice."
+    },
+    {
+      "title": "A stopped update finishes within minutes",
+      "text": "If an update still stops part way, the next check finishes it within minutes. Until then, the update's run shows which parts are on which version."
+    }
+  ]
+}

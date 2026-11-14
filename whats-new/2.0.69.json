@@ -1,0 +1,21 @@
+{
+  "version": "2.0.69",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Moving from version 1 is now done safely in the web app, with a preview before anything changes.",
+  "new": [
+    {
+      "title": "Import v1 data in the web app",
+      "text": "SuperAdmins can upload version 1 files on the new Import v1 page. You first see what would be added or changed, then import; rules made in the app are never touched."
+    },
+    {
+      "title": "No special database rights needed",
+      "text": "Importing version 1 data no longer needs database rights. Every import is recorded in the change history and Audit."
+    },
+    {
+      "title": "Simpler, consistent install options",
+      "text": "The install now names your Invardia Support app and its starting support level the same way as other Invardia products, and can resume an interrupted install."
+    }
+  ],
+  "fixes": []
+}

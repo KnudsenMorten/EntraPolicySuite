@@ -1,0 +1,13 @@
+{
+  "version": "2.0.80",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Invardia now sees at once if run reports from your install fall behind.",
+  "new": [
+    {
+      "title": "Report backlog visible to Invardia",
+      "text": "Your install's regular health report now tells Invardia how many run reports are still waiting and how old the oldest is, so a delay is spotted quickly."
+    }
+  ],
+  "fixes": []
+}

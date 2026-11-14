@@ -1,0 +1,12 @@
+{
+  "version": "2.0.28",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "You can see at a glance what your tenant still needs before the suite works fully.",
+  "new": [
+    { "title": "Get started shows what is missing", "text": "A new Get started page lists the 13 things the suite needs, such as permissions, break-glass accounts, groups and named locations. Check now reads your tenant, changes nothing, and marks each ready or missing." },
+    { "title": "Manage break-glass accounts on the page", "text": "A SuperAdmin can now add and change the break-glass accounts list on Get started. It changes the suite's list only, never your tenant." },
+    { "title": "Invardia sees whether setup is complete", "text": "For installs that report to Invardia, the status report now says whether every one-time setup step is in place, checked fresh each time." }
+  ],
+  "fixes": []
+}

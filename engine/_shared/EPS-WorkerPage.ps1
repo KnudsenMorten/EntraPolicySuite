@@ -113,6 +113,10 @@ function Invoke-EpsWorkPackageRetry {
     if ($p.ChangeId -is [DBNull] -or -not $p.ChangeId) { return @{ Ok = $false; Status = 409; Reason = "package $PackageId has no change record - it cannot be tried again" } }
     $ch = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ c = [long]$p.ChangeId } -Query 'SELECT RunId, ObjectType, ObjectId, ObjectName, Directory, TagType, Attribute, OldValue, NewValue, Persona, RuleIds FROM eps.TagChange WHERE ChangeId = @c')[0]
     if (-not $ch) { return @{ Ok = $false; Status = 409; Reason = "change $($p.ChangeId) does not exist" } }
+    # Invardia 2026-11-13 (order): a NEWER value for the same user + attribute is written or waiting - the old value is never
+    # queued again (as a new, higher change it would win over the newer one in the worker)
+    $newer = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ c = [long]$p.ChangeId; o = $ch.ObjectId; a = "$($ch.Attribute)" } -Query "SELECT TOP (1) c.ChangeId FROM eps.TagChange c WHERE c.ObjectId = @o AND c.Attribute = @a AND c.ChangeId > @c AND (c.Status = 'Applied' OR (c.Status = 'Queued' AND EXISTS (SELECT 1 FROM eps.WorkPackage w WHERE w.ChangeId = c.ChangeId AND w.Status IN ('Queued', 'Claimed')))) ORDER BY c.ChangeId DESC"
+    if ($newer) { return @{ Ok = $false; Status = 409; Reason = "a newer value for this user and attribute (change $newer) is already written or waiting for the worker - the old value is not tried again" } }
     $pl = $p.Payload | ConvertFrom-Json -AsHashtable; $pl.retryOf = "$PackageId"
     $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ run = $ch.RunId; ot = $ch.ObjectType; oid = $ch.ObjectId; on = $ch.ObjectName; d = $ch.Directory; tt = $ch.TagType; at = $ch.Attribute; ov = $ch.OldValue; nv = $ch.NewValue; pe = $ch.Persona; ri = $ch.RuleIds
             pl = ($pl | ConvertTo-Json -Compress); env = $p.Environment; a = $Actor } -Query @'

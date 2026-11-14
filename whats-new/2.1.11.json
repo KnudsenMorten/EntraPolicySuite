@@ -1,0 +1,17 @@
+{
+  "version": "2.1.11",
+  "date": "2026-11-12",
+  "type": "feature",
+  "summary": "Old images no longer pile up and show vulnerabilities your running version does not have.",
+  "new": [
+    {
+      "title": "Old images are removed after each update",
+      "text": "Once an update is healthy, older Entra Policy Suite images are deleted from your own registry. The current and previous versions are kept, so you can still roll back one version."
+    },
+    {
+      "title": "Cleaner security reports in Defender",
+      "text": "Microsoft Defender for Cloud scans every stored image, so old images showed vulnerabilities you no longer run. Only your installation's own images are touched, and Audit shows how many were removed."
+    }
+  ],
+  "fixes": []
+}

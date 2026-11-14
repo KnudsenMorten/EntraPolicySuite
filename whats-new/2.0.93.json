@@ -1,0 +1,10 @@
+{
+  "version": "2.0.93",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Run reports now say clearly why a job did not start.",
+  "new": [],
+  "fixes": [
+    { "title": "Clearer reasons when a job cannot start", "text": "A run now names the job that could not start and why. A short storage hiccup is reported as such, not as a real failure." }
+  ]
+}

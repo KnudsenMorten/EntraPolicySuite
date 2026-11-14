@@ -1,0 +1,13 @@
+{
+  "version": "2.1.22",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "You can now see when the list of admins may be incomplete.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Admin views show when admins may be missing",
+      "text": "When the Identity report could not read some role groups, the admin views and the Admin column now say \"May be incomplete\" and how many groups were missed."
+    }
+  ]
+}

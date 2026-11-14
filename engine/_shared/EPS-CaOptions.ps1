@@ -121,7 +121,7 @@ function Invoke-EpsCaOptionsDiscovery {
     $cat = Get-EpsCaEnumCatalog
     $opt = $null
     try {
-        $r = & $script:EpsHttp 'GET' $script:EpsCaMetadataUri @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://graph.microsoft.com')"; Accept = 'application/xml' } $null
+        $r = Invoke-EpsHttpRead 'GET' $script:EpsCaMetadataUri @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://graph.microsoft.com')"; Accept = 'application/xml' } $null
         if ($r.Status -ge 400) { throw "Graph `$metadata -> $($r.Status)" }
         $opt = Get-EpsCaOptionRows -Catalog $cat -Metadata (ConvertFrom-EpsGraphMetadata -Xml ([string]$r.Body))
         & $Log 'Info' "Graph v1.0 `$metadata read: $(@($opt.Rows).Count) values for $(@($cat.fields | Where-Object { $_.enumType }).Count) fields"

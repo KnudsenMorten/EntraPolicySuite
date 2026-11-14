@@ -1,0 +1,12 @@
+{
+  "version": "2.0.27",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "You can roll a Conditional Access policy out step by step, with a preview and safety checks.",
+  "new": [
+    { "title": "Move policies through stages with buttons", "text": "A SuperAdmin can now move an adopted Conditional Access policy one stage at a time, from off through pilots to production, or back. Each move first shows exactly what changes.", "action": "Run the install again after this update, so the engine gets the permission the stage buttons need." },
+    { "title": "Safe moves, checked and recorded", "text": "A move that enforces a policy needs your confirmation. The suite checks the policy first, refuses unsafe moves, keeps break-glass accounts excluded, and records every move in the policy's history." },
+    { "title": "Nothing changes a policy by itself", "text": "No schedule, job, monitor or template update ever changes a Conditional Access policy. Only a move you approve does." }
+  ],
+  "fixes": []
+}

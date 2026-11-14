@@ -758,20 +758,45 @@ function Invoke-EpsTagRunUndo {
     $sum = @{ Objects = $objs; Changes = $changes.Count; Overwrites = $overwrites; ByRule = $byRule }
     $prev = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $job; id = $newRun } -Query "SELECT TOP 1 Planned, Overwrites FROM eps.Run WHERE Job = @j AND Mode = 'Apply' AND Status IN ('Succeeded', 'PartlyFailed') AND Scope IS NULL AND RunId <> @id ORDER BY StartedAtUtc DESC")[0]
     $g = Test-EpsMassChangeGuard -Summary $sum -Previous $prev -Settings $GuardSettings -Job $job -ApprovedBy $(if ($Approve) { $Actor } else { $null })
+    # Invardia 2026-11-12 (b), as TRUST-1 Q4: an APPLYING undo writes its change rows FIRST (each built Planned), then the tenant is
+    # changed, then each row gets its outcome - a failed last write leaves Planned rows the tamper monitor reads as EPS's own
     $status = 'Succeeded'; $applied = 0; $failed = 0; $queued = 0; $held = $null
     if ($g.Held) {
         $status = 'Held'; $held = $g.Reason
         & $log 'Warning' "HELD by the mass-change guard: $($g.Reason) - send the undo again with Approve to apply it"
         foreach ($c in $changes) { $c.Status = 'Skipped'; $c | Add-Member -NotePropertyName Error -NotePropertyValue 'undo held by the mass-change guard' -Force }
+        [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes))   # Skipped rows: no Planned row for a change that will not happen
     } elseif ($changes.Count) {
         $ctx = @{}
         if ($ot -eq 'User' -and $TenantId -and @($changes | Where-Object { $_.Directory -ne 'AD' }).Count) { try { $ctx.Mailboxes = Get-EpsExchangeRecipients -TenantId $TenantId } catch { & $log 'Warning' "Exchange recipients not read ($($_.Exception.Message)) - a mail-enabled user Graph refuses fails" } }
+        [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes))   # Planned, BEFORE the tenant is changed
         $res = Invoke-EpsApplyChanges -ObjectType $ot -Changes @($changes) -Context $ctx -TenantId $TenantId
         $applied = $res.Applied; $failed = $res.Failed; $queued = $res.Queued
         if ($failed) { $status = 'PartlyFailed'; & $log 'Warning' "$failed change(s) failed - see the run's changes" }
     }
-    [void](Write-EpsTagChanges -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes))
-    if ($queued) { [void](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes)); & $log 'Info' "$queued AD-synced change(s) queued for the hybrid worker" }
+    # the outcome of each change onto its Planned row (written before the tenant was changed) - before the work packages read Queued
+    # (f): the packages are queued even when the status write stops part way (the rows already Queued need theirs)
+    $pkgErr = $null; $statusErr = $null; $pkgs = $queued
+    try { [void](Update-EpsTagChangeStatus -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes | Where-Object { $_.Status -and "$($_.Status)" -ne 'Planned' })) }
+    catch { $statusErr = $_ }   # (review 2 of (f)): closed below as Failed with why - not left Running for the sweep
+    finally {
+        if ($queued) { try { $pkgs = [int](Add-EpsWorkPackages -ConnectionString $ConnectionString -RunId $newRun -Changes @($changes)) } catch { $pkgErr = $_; $pkgs = 0 } }
+    }
+    # (review of (f)): a failed package write is the undo's failure - never Succeeded with AD changes nobody writes (the run
+    # ends Failed with why, those changes count as failed; no throw: the run row is closed below as every undo's is)
+    if ($statusErr) {
+        $status = 'Failed'; $held = "the outcome of the changes could not be recorded: $((("$($statusErr.Exception.Message)") -split "`n")[0])$(if ($pkgErr) { "; the AD changes' work packages could not be queued either: $((("$($pkgErr.Exception.Message)") -split "`n")[0])" })"
+        try { & $log 'Error' $held } catch { }
+        $queued = $pkgs
+    } elseif ($pkgErr) {
+        $status = 'Failed'; $held = "the AD changes' work packages could not be queued: $((("$($pkgErr.Exception.Message)") -split "`n")[0])"
+        try { & $log 'Error' $held } catch { }
+        $failed += $queued; $queued = 0
+    } elseif ($queued) {
+        if ($pkgs -lt $queued -and $status -eq 'Succeeded') { $status = 'PartlyFailed' }
+        & $log $(if ($pkgs -lt $queued) { 'Warning' } else { 'Info' }) "$pkgs of $queued AD-synced change(s) queued for the hybrid worker"
+        $queued = $pkgs
+    }
     Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $newRun; st = $status; h = $held; o = $objs; p = $changes.Count; ow = $overwrites; a = $applied; f = $failed; sk = $skips.Count } `
         -Query 'UPDATE eps.Run SET EndedAtUtc = SYSUTCDATETIME(), Status = @st, HeldReason = @h, Objects = @o, Planned = @p, Overwrites = @ow, Applied = @a, Failed = @f, Skipped = @sk WHERE RunId = @id' | Out-Null
     @{ Result = $(if ($g.Held) { 'held' } else { 'ok' }); Reason = $held; RunId = "$newRun"; Planned = $changes.Count; Applied = $applied; Failed = $failed; Queued = $queued; Skipped = $skips.Count; SkippedText = @($skips | Select-Object -First 20) }

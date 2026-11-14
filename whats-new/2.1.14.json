@@ -1,0 +1,21 @@
+{
+  "version": "2.1.14",
+  "date": "2026-11-12",
+  "type": "fix-only",
+  "summary": "Missing information can no longer cause wrong tags or silently closed findings.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Unreadable sources never change a tag",
+      "text": "If tagging cannot read something a rule needs, that tag is left as it is and shown as \"Unknown\" on Tag changes. All other tags are applied as usual."
+    },
+    {
+      "title": "One broken rule no longer stops a run",
+      "text": "When a rule's condition fails, only that rule's tags are left unchanged and named. The rest of the run carries on."
+    },
+    {
+      "title": "Findings stay open until they are re-checked",
+      "text": "The Conditional Access monitor no longer closes a finding it could not check. The finding stays open, marked \"awaiting a re-check since\" with the date."
+    }
+  ]
+}

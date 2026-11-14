@@ -1,0 +1,14 @@
+{
+  "version": "2.0.116",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "Your changes take effect within seconds, and the app is clearer to read.",
+  "new": [
+    { "title": "Requests start within seconds", "text": "When you commit a change, press Run now or ask for an analysis, it now starts within seconds instead of waiting up to five minutes." },
+    { "title": "Identity report views explain their assumptions", "text": "Each Identity report view now lists where its facts come from and who it leaves out, so you know what a result means." },
+    { "title": "Clearer Audit, Tamper and Tag changes", "text": "The Audit page says in plain words what each request did. Tamper and Tag changes show the tag name instead of where it is stored." },
+    { "title": "A tidier Tagging Rules page", "text": "New rule and Test run are the main actions, with the rest in one More menu. Rules imported from v1 carry a 'from v1' badge." },
+    { "title": "Smaller wording improvements", "text": "Settings describes the alert mail choices in words, Get started folds the v1 import steps away, and the app spells 'Analyze' one way everywhere." }
+  ],
+  "fixes": []
+}

@@ -2,6 +2,191 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.31 - Security updates from Microsoft install faster
+Builds on the owner's decision: "we need to fix images in fast lane" (2026-11-14, relayed by Invardia, framework SEC-LANE-1)
+- New: a security update that only moves your installation onto Microsoft's newest images (the same code) installs at once:
+  it does not wait for running jobs and has no database step. A job that is running keeps going and the next run uses the
+  new image.
+- New: once a job has succeeded on the new image, the previous images are removed from your registry.
+- New: your installation reports which image each job and the web app run (with its .NET version) to Invardia support, so
+  support can see that every installation is patched.
+- Fix: the image build no longer fails when the version file ends with a line break.
+## 2.1.30 - A stopped update is reported to Invardia support at once
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when an update stops while preparing the new version, your installation now tells Invardia support right away.
+  Before, it waited for its next scheduled report, up to four hours later.
+- Fix: a security update numbered with a fourth part (for example 2.1.28.2) is recognised by the update check the same way in every Invardia product.
+## 2.1.28.2 - Security update for the sign-in page
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "Approve 2.1.28.1 for rings 2/3" (2026-11-14, relayed by Invardia, framework SEC-LANE-1)
+- Security update: the web app's sign-in front moves to 2.1.2 - its ASP.NET Core packages are on Microsoft's security release 10.0.15. The same engine code as 2.1.28.
+- Fix: 2.1.28.1 could not be installed - the update stopped while preparing the new version and the installation kept running 2.1.28. This version installs.
+## 2.1.28.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "Approve 2.1.28.1 for rings 2/3" (2026-11-14, relayed by Invardia, framework SEC-LANE-1)
+- Security update: the web app's sign-in front moves to 2.1.2 - its ASP.NET Core packages are on Microsoft's security release 10.0.15. The same engine code as 2.1.28.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.28 - A group-scoped test run never quietly covers fewer people
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: a tagging run limited to the members of an Entra group now stops with the reason when that group name matches
+  more than one group (or its remembered group was deleted) - nothing is evaluated or written - instead of running on
+  fewer people than asked and saying the group is not in the tenant.
+- Fix: a rule's list of matched people from an earlier run no longer disappears when a later run failed or matched
+  nobody.
+- Fix: an update that sends a change to Azure again after no answer sends it at most once more in all, also when Azure
+  asks it to slow down in between.
+## 2.1.27 - An update that cannot prepare the new version is reported at once
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when an update stops while preparing the new version, your installation keeps running its current version and
+  Invardia support is now told at once, instead of only after the same problem repeated several times.
+## 2.1.26 - Pro installations update to the newest version again
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: a Pro installation could not install 2.1.24 or 2.1.25 - its update stopped while preparing the new version and
+  the installation kept running the version before. Pro installations now update again, straight to this version.
+  Community installations were not affected.
+- Fix: the release notes describe each fix by what you see, in plain words.
+## 2.1.25 - An update that could not check its release again says so, and tries again
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: just before it installs, an update checks its release once more. When Invardia does not answer that check, it
+  now asks again once, a few seconds later, instead of stopping at once.
+- Fix: when the update still cannot confirm its release, its run now says exactly that and it tries again within the
+  hour. Before, it said it had waited for running jobs, even when none were running.
+## 2.1.24 - What's new in the app
+Builds on the owner's decision: "all solutions have a whats new which is human friendly info from release notes. structure in fix and new features must be in gui" / "include all releases. newest first" (2026-11-13, relayed by Invardia, framework WHATS-NEW-1)
+- New: Help > What's new shows every release of Entra Policy Suite, newest first, in plain words: what is new and what was
+  fixed, with anything you need to do shown first. A "New" badge on the menu shows after an update until you open the page.
+- New: the same text is on GitHub (WHATSNEW.md) and on invardia.com.
+## 2.1.23 - The hybrid worker catches up with an update sooner
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when the hybrid worker checks for its update while your installation is still updating, it now checks again 10
+  minutes later instead of an hour later. It still only takes the version your installation runs.
+## 2.1.22 - The admin views say when the admin list may be incomplete
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when the identity report could not read some role groups, the admin views and the Admin column now say "May be
+  incomplete" with how many groups could not be read, instead of looking complete.
+## 2.1.21 - AD tag changes are never left waiting without work for the hybrid worker
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when recording the outcome of a large tagging run stopped part way, the AD changes already marked as waiting for
+  the hybrid worker could be left without the work the worker takes, so they were never written. They now always get it,
+  and a change is never queued twice.
+- Fix: when that work cannot be queued, the tagging run, the undo and the tamper restore now end as failed with the
+  reason, instead of reporting success with changes nobody writes.
+- Fix: an undo that cannot record its outcome now ends as failed with the reason at once, and the undo's answer on the
+  page says why.
+## 2.1.20 - The hybrid worker never leaves an older tag value in AD
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: the hybrid worker now writes tag changes to on-premises AD in the order they were queued. When a newer value for
+  the same user and attribute is already written or waiting, the older one is skipped and never written, so an older
+  value can no longer end up in AD after a newer one. The worker page shows why it was skipped.
+- Fix: "Try again" on a failed AD tag change is refused when a newer value for that user and attribute is already
+  written or waiting, and a tamper restore waits until a newer queued tag value is written.
+- Fix: two hybrid workers taking work at the same time no longer risk blocking each other.
+## 2.1.19 - A dropped connection no longer fails a report, and a tag restore goes through the right directory
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when a read from Microsoft Graph or Exchange Online gets no answer at all (for example a connection that could
+  not be set up), it is sent once more after a few seconds instead of failing the whole run. Only reads are sent again,
+  never a change.
+- Fix: a job run that fails now always says why in its run record, not only in its log.
+- Fix: restoring a tampered tag on a user that is synced from on-premises AD is now written by the hybrid worker in AD,
+  as tagging does. The tamper event stays open until the restored value is read back; if the worker cannot write it,
+  the event says so.
+- Fix: restoring a tampered tag on a mail-enabled cloud user now uses the Exchange Online path when Entra refuses the
+  change, as tagging does.
+## 2.1.18 - Finishing an interrupted update no longer rebuilds it
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when an update that stopped part way is finished, it only moves the parts left behind. The image is not built
+  again and the database step is not repeated, because both were already done.
+- Fix: when Azure is still busy with a request that was sent once more, the update waits for it (at most 5 minutes)
+  instead of stopping.
+- Fix: a request that Azure did not answer and that was sent once more is now shown in the update's run log and run
+  summary.
+## 2.1.17 - An update that is interrupted by Azure finishes within minutes
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "stability + data quality is prio 1" (2026-11-12, relayed by Invardia)
+- Fix: when Azure does not answer a request during an update, the update sends that request once more instead of
+  stopping. Starting a job is never sent twice.
+- Fix: when an update still stops part way, the next check (within minutes) finishes it, instead of leaving some parts
+  on the new version and some on the old one until the next update. While that lasts, the update's run says which
+  parts are on which version, and which part it stopped at.
+## 2.1.16 - Undo and restore are recorded before they change anything, and a repeating analyzer problem is reported once
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "only send in data for the latest collection that completed" / "it should be possible to include new rules and it must never break the pipeline" (2026-11-12, relayed by Invardia, framework TRUST-1)
+- Fix: undoing a tagging run and restoring a tampered tag now record each change before it is made, then its outcome -
+  as tagging itself does since 2.1.15 - so a change is never made without a record of it.
+- Fix: when the CA Policy Analyzer cannot evaluate some users, the run says how many, and when that repeats run after run
+  it is reported to Invardia support as one item, not once per run.
+- Fix: whether a partial CA Policy Analyzer run is only partial because of its sign-in limit is now recorded as such,
+  instead of being read from the wording of its log.
+## 2.1.15 - Reports never show partial results as complete, and tagging changes are recorded before they are made
+Builds on the owner's decision: "only send in data for the latest collection that completed" / "it should be possible to include new rules and it must never break the pipeline" (2026-11-12, relayed by Invardia, framework TRUST-1)
+- Fix: a CA Policy Analyzer run that could not evaluate every user, or that reached its sign-in limit, is now marked as
+  partial. Its results are kept, but each policy page keeps showing the last complete analysis with its date. Its alert
+  mail still goes out and says in its first line that the run is partial and how many sign-ins were read - the number of
+  impacted users is then "at least" that many.
+- Fix: when the review of a Conditional Access policy fails, the policy keeps its last review (with the date it was made)
+  as long as the policy itself has not changed.
+- Fix: when a group that holds an Entra role cannot be read, the identity report says that its members' admin role is
+  unknown, instead of showing them as having no role.
+- Fix: when the Intune devices cannot be read although the right for it is one Entra Policy Suite uses, the identity
+  report run is partial: nothing from it is shown and the report keeps its last complete run. Grant the right again and
+  the next run is complete.
+- Fix: when a break-glass account cannot be found, the Conditional Access monitor says the check cannot run and names
+  the account. A policy that leaves out an account that IS found is still reported as a lock-out risk.
+- Fix: when two Entra groups share the name a tagging rule uses, or the group the rule was linked to is gone, the tags
+  that depend on it are left as they are instead of falling back to the default value.
+- Fix: a v1 rule that uses a condition type that does not exist is no longer imported; the import plan names it. A rule
+  like that which is already stored stays as it is.
+- Fix: user and device tagging now records each change before it is made and then marks its outcome, so a change is never
+  made without a record of it. The engine gets one new database right for this.
+- Fix: every request Entra Policy Suite sends to Microsoft Graph and Azure now carries its text as UTF-8 and says so.
+  Microsoft has started to refuse mails whose text has characters such as æ, ø or å when they were not sent that way.
+## 2.1.14 - A source that cannot be read never changes a tag, and a check that cannot run never clears a finding
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "only send in data for the latest collection that completed" / "it should be possible to include new rules and it must never break the pipeline" (2026-11-12, relayed by Invardia, framework TRUST-1)
+- Fix: when user or device tagging could not read a source a rule needs (for example AD group membership from the
+  hybrid worker, Entra group membership, Exchange recipients or the licence list), the rule was treated as "no match"
+  and the next rule or the fallback value was written. Now such a tag is left exactly as it is - no new value and no
+  fallback - and each one is named on the run's changes page as "Unknown". Every other tag is applied as usual and the
+  run still ends OK. If the source itself fails to read, only the rules that need it are affected.
+- Fix: a rule whose condition fails (an invalid pattern, a condition that errors or a condition type that does not
+  exist) no longer stops the whole run: that rule's tags are left as they are and named, the rest of the run goes on.
+- Fix: an open Conditional Access finding stays open until a run confirms it again. Until then it is marked "awaiting
+  a re-check since" with the date.
+- These cases are reported with a stable warning code in the run's report to Invardia support, so they are followed up.
+## 2.1.13 - The image clean-up keeps the scan results and signatures of the images it keeps
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "prune images must be part of the framework" / "we cannot loose a single row of data. stability + data quality is prio 1" (2026-11-12, relayed by Invardia, framework IMAGE-PRUNE CONTRACT)
+- Fix: Microsoft Defender for Cloud attaches its scan results (and a signature on them) to each image in your registry.
+  The clean-up now keeps these for every image it keeps, instead of treating them as old leftovers. Images that are
+  removed take their own scan results with them.
+## 2.1.12 - The image clean-up keeps everything your installation runs or needs, and says what it does as it does it
+Builds on the owner's decision: "prune images must be part of the framework" / "we cannot loose a single row of data. stability + data quality is prio 1" (2026-11-12, relayed by Invardia, framework IMAGE-PRUNE CONTRACT)
+- What is kept is now decided from what your installation records, not from version numbers: every image a job, the
+  web app or an active revision ran before the update and runs after it, the images named in the last update's
+  release record, every part of a multi-platform image and every image another kept image is built on. If any of this
+  cannot be read, nothing is deleted in that repository and the next update tries again.
+- Before the first image is deleted, the update writes a release record (what the new version runs and what the
+  previous one ran) to the database and reads it back; if it cannot, nothing is deleted.
+- The run log says, per repository and as it happens, how many images there are, how many are kept and why, how many
+  will be deleted, and afterwards how many were deleted and how many are left. These lines are kept at every log level.
+  The totals also go to the audit trail and to the update's report to Invardia.
+- At most 100 images per repository are deleted in one update; a larger backlog continues at the next update.
+- Invardia support can switch the clean-up off for an installation (`EPS_Updater_ImagePrune = off` on the update job);
+  an installation run keeps that setting.
+- Note: the clean-up runs in the update job that installs the next version, so this behaviour starts with the update
+  after 2.1.12.
 ## 2.1.11 - Old images are removed from your registry after each update
 Builds on the owner's decision: "why woud we need to keep old images" - "agreed" (2026-11-12, relayed by Invardia, framework IMAGE-PATCH-1 IMAGE-PRUNE)
 - After an update has installed and every job and the web app read back healthy on the new version, the update job
@@ -65,9 +250,8 @@ Builds on the owner's decision: "make sure it is consistent cross all solutions"
 ## 2.1.4 - Security fix: the engine and the sign-in front run on .NET 10.0.15
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "this is very critical and approved. each solution must move to .net 10 + latest ps you mentioned" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1 point 0)
-- Security fix: the engine's container image moves to .NET 10.0.15 (Microsoft's image of 10 November 2026). It closes one
-  Critical and three High vulnerabilities in the .NET 10.0.14 runtime (CVE-2026-114146, CVE-2026-114147, CVE-2026-114149,
-  CVE-2026-109475), found by Microsoft Defender in the 2.1.3 image.
+- Security fix: the engine's container image moves to .NET 10.0.15 (Microsoft's image of 10 November 2026). It carries
+  Microsoft's latest security fixes for the .NET runtime.
 - Security fix: the web app's sign-in front moves to 2.1.1 - the same fix, on .NET 10.0.15, the front every Invardia product
   runs. Signing in works as before.
 - Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
@@ -172,8 +356,8 @@ Builds on the owner's decision: "this is very critical and approved. each soluti
 ## 2.0.118 - Security patch: the container images on today's patched base images
 Builds on the owner's decision: "we need to include this in the framework so we immediately patch images when this happens" (2026-11-10, relayed by Invardia, framework IMAGE-PATCH-1)
 - Security fix: the engine image (every job and the web app's pages) is built on the current .NET SDK base and takes
-  the operating system's security updates when it is built, so fixed High and Critical vulnerabilities in the base
-  image's packages no longer ship. Nothing else in the product changes.
+  the operating system's security updates when it is built, with the latest security fixes. Nothing else in the
+  product changes.
 - A private network install: the image build now also reaches archive.ubuntu.com and security.ubuntu.com for the
   security updates; they are on the network hand-off list. A subnet the install made needs no change; if your firewall allows only listed
   hosts, add these two before the update installs.
@@ -192,16 +376,14 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   read back.
 - The Active Directory step of the hybrid worker finishes by itself: the worker reads the delegation back, and the step
   clears once the rights are there. Nobody has to come back and mark it done.
-- The tamper monitor no longer reports the engine's own tag change as a change by someone else when Microsoft's audit
-  entry leaves out the app id: the change is matched on the engine's own identity.
+- The tamper monitor no longer reports Entra Policy Suite's own tag changes as tampering.
 - The architecture and security pages list every identity by its role and the rights it holds, the optional
   components, how updates arrive and the newer jobs.
 
 ## 2.0.116 - Requests start at once, identity views say what they assume, a clearer GUI
 - A change you commit, a Run now or an analysis you ask for now starts within seconds: the web app wakes the engine
   check right after it writes the request, instead of waiting for the next 5-minute check. The wake-up runs one normal
-  engine check with all its guards. The web app gets one new right for it: it may put a message on that one queue.
-  If the wake-up cannot be sent, the 5-minute check starts the request as before.
+  engine check with all its guards. The web app gets one narrow new right for it. If the wake-up cannot be sent, the 5-minute check starts the request as before.
 - Each identity report view lists what it assumes: where each fact comes from (the MFA registration report, Entra and
   AD sign-ins, the tags, Intune, the hybrid worker's AD read) and who is left out. The list is worked out from the
   fields the view actually checks, so it cannot drift from it.
@@ -220,11 +402,10 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   report shows a change, or after 90 days; admins are read first; nobody is skipped. Until a user is read, the report
   says unknown, never 'no MFA'. Off by default (Settings > Per-user sign-in methods).
 - The release flow follows the rule that nothing is public before the rings 2/3 approval: test rings get a pre-release.
-- "Active without MFA" and "No MFA, but a company smartphone" could never list anyone: they read a field Microsoft Graph
-  no longer returns. They now list enabled users who are not registered for MFA.
+- "Active without MFA" and "No MFA, but a company smartphone" now list the right users: enabled users who are not
+  registered for MFA.
 - An admin is now anyone who can reach a directory role: active or eligible, directly or through a role group, and
-  through PIM for Groups when the engine may read it (the run says so when it may not). Before, only the registration
-  report's admin flag counted, and admins who get their role through a group were missed.
+  through PIM for Groups when the engine may read it (the run says so when it may not).
 - The inactivity and guest views count non-interactive sign-ins too, and the guest view finds every guest account.
 - "SSPR on, not registered" leaves out guests, and "MFA users - not compliant" lists enabled users only.
 - The AD OU views stay empty until an OU pattern is set (before, every AD user counted as in the wrong OU).
@@ -294,7 +475,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   install run with -RenameJobs. Each new job is made from the old one's settings and proven with one run before the old
   one is removed. The identities, their rights and the web address do not change. Without the switch the install only
   shows the plan.
-- The database role of the schedule check is renamed in place to eps_schedule; its members and permissions stay.
+- The database role of the schedule check gets its standard name in place; its members and permissions stay.
 - The AD script of the hybrid worker gives its rights to a permission group with the worker's gMSA as its only member,
   at the domain root, for the tag attributes you list (users, and computers with -ObjectClasses computer). It reads every
   change back. You now list your attributes; there is no default.
@@ -316,8 +497,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   extra permission, and the install run that removes it.
 - The security pack and the install help no longer describe a separate scheduler identity: the engine identity runs the
   schedule check (as it has since 2.0.56).
-- The hybrid worker guide names Entra Policy Suite's own identity id-eps-worker for a server that also runs another
-  product's worker.
+- The hybrid worker guide names Entra Policy Suite's own worker identity for a server that also runs another product's
+  worker.
 
 ## 2.0.105 - Every job reports its runs, and a failing job retries with smaller batches
 - Backups are saved under file names that are valid on every system. A policy name with a character such as ':' or '?'
@@ -353,9 +534,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 ## 2.0.102 - The hybrid worker updates itself
 - The hybrid worker now updates itself once a day. A new scheduled task on the worker server runs as SYSTEM and moves
   the worker to the version your Entra Policy Suite installation runs. It never runs ahead of it, and never goes back.
-- It takes only a release Invardia signed. Before anything changes it checks the signature, that the release is not
-  older than one it already installed, and the download's SHA-256, size and version. A release that fails a check is
-  refused and the worker keeps running.
+- It takes only a release Invardia signed. It checks every release before anything changes. A release that fails a
+  check is refused and the worker keeps running.
 - The new version is unpacked next to the running one, then the worker switches over. The previous version is kept.
   The new version then tests itself, and if that test fails the worker switches back by itself.
 - The worker runs only the Community files, also for a Pro installation. A release with Pro code among the worker's
@@ -370,11 +550,10 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - A private installation can now be read by Invardia support without opening anything: a new job inside your network
   runs ONE read from a short list this release ships (recent runs, job schedules, settings, the licence state without
   the licence itself, the hybrid workers, the update runs) when Invardia support asks for it. It never runs a query or
-  script sent to it, refuses a request older than 15 minutes, writes the result only to its own log, and every request
-  is recorded in the audit.
-- The job has its own identity that can only read those tables and write the audit. Invardia's Support app may only
-  put a request on that job's queue, and only if you gave the install its id. It holds no right on the job, the database
-  or the network.
+  script sent to it, refuses an old request, writes the result only to its own log, and every request is recorded in
+  the audit.
+- The job has its own identity that can only read those tables and write the audit. Invardia's Support app can only ask
+  for one of those reads, and only if you allowed it.
 - An install run adds the job, its queue and its identity. The update alone does not.
 
 ## 2.0.100 - The Entra Policy Suite logo
@@ -401,8 +580,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 
 ## 2.0.98 - "Update now" for Pro installations
 - Fixed: on a Pro installation the 15-minute "update now" check from 2.0.97 was refused by Invardia, because it did
-  not send the installation's licence. It now sends it, so "update now" works for Pro as it does for Community. (To
-  do this, the scheduler may now read the stored licence text - nothing else of the licence.)
+  not send the installation's licence. It now sends it, so "update now" works for Pro as it does for Community.
 
 ## 2.0.97 - "Update now" works within minutes
 - When Invardia marks a release "update now" for your ring, Entra Policy Suite now starts its update within about 15
@@ -418,9 +596,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   development notes are no longer included. Nothing changes in how Entra Policy Suite works.
 
 ## 2.0.95 - The ownership handover completes
-- Fixed: when Invardia's Support app ran the install, 2.0.94 added the update identity as owner of the sign-in
-  registration but did not remove the Support app, because it did not recognise how the setup run names the Support app.
-  It is now removed (after the update identity is in place, as before).
+- Fixed: when Invardia's Support app ran the install, it is now always removed as owner of the sign-in registration
+  (after the update identity is in place, as before).
 - The install now waits a little for Entra to show a new owner before it judges the change, instead of reporting a
   warning for an owner that was in fact added.
 
@@ -429,8 +606,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   ran the install. When Invardia's Support app ran the install, it removes itself as owner at the end of the run (after
   the update identity is in place, so the registration always has an owner). A person who installs stays owner.
 - The update identity gets one new permission for this, which reaches only the registration it owns: it keeps that
-  registration's own settings as they should be (its address, the web app's sign-in addresses, the web identity's
-  credential) on every update. The tenant-wide consent and who is assigned to the app are still set by the install.
+  registration's own settings as they should be on every update. The tenant-wide consent and who is assigned to the app are still set by the install.
 - An install run that is not allowed to change the registration no longer stops there: it says so, and the update
   identity applies the change on its next run.
 
@@ -441,19 +617,19 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - The scheduler's runs are reported to Invardia as "eps-engine", the same name as its role everywhere else. Nothing
   changes in your installation's Azure resources.
 - Coming from 2.0.90, this version also brings 2.0.91 and 2.0.92 (below): updates that re-read the release after a
-  wait, the tamper check's one-hour limit (set by the update itself), and the updater stopping a job execution that has
+  wait, the tamper check's settings kept current by the update, and the updater stopping a job execution that has
   been stuck for hours. That last rule is built and tested, and has not yet been needed at an installation.
 
-## 2.0.92 - The tamper check's one-hour limit reaches every installation
-- The update now also sets the tamper check's one-hour time limit (2.0.91 set it only on an install run), so an
-  installation gets it with its next update. Nothing else in a job's settings is changed.
+## 2.0.92 - The tamper check's settings reach every installation
+- The update now also keeps the tamper check's settings current on every installation, so an installation gets them
+  with its next update. Nothing else in a job's settings is changed.
 
 ## 2.0.91 - Updates that do not get stuck
 - An update that had to wait for a running job now reads the release again before it downloads. Before, a long wait
   could leave it with an expired download link, and the update stopped (nothing was changed) until the next night.
 - A job execution that has been running for hours without starting its run is now stopped by the updater (it is
-  logged and reported), instead of holding the update back. The tamper check, a job of seconds, now times out after
-  one hour instead of seven days, so one stuck check can no longer block the next checks.
+  logged and reported), instead of holding the update back. A stuck tamper check is now stopped quickly, so the next
+  checks always run.
 - Every job prints a first line when it starts, and the tamper check prints each stage, so a job that stops is easy
   to place in its log.
 - Adding the hybrid worker's database user no longer has to wait for the jobs to finish: it changes only users and
@@ -552,10 +728,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   run again for that. An update checks the membership again right before it updates the database, and does not touch
   the database when the membership cannot be made. A SQL admin group that is not role-assignable is reported, never
   changed.
-- The update job's identity needs five more Microsoft Graph application permissions for this:
-  PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup,
-  RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only, to read the membership back). Run the
-  install again once to grant them; the update job reports any it lacks. It never gets RoleManagement.ReadWrite.Directory.
+- The update job's identity needs a few more Microsoft Graph permissions for this (listed in the security pack). Run
+  the install again once to grant them; the update job reports any it lacks.
 - New: -ReplaceSqlAdminGroup (an install switch, never done without it) replaces a SQL admin group that is not
   role-assignable: the old group is renamed '<name>-old' and kept, a new role-assignable group gets its members, and
   the server's admin moves to it on a run at least 24 hours later - then the database setup job runs at once, and if
@@ -838,9 +1012,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   is told. Nothing that runs is ever stopped.
 
 ## 2.0.73 - support access in the heartbeat
-- The heartbeat to Invardia reports the support access the install applied: the level, until when the Support app has
-  database admin (only during an open support session), and that its read access is in place - as the support-access
-  job read it back, never a guessed value.
+- The heartbeat to Invardia reports the support access the install applied: the support level in effect and that its
+  read access is in place - as the support-access job read it back, never a guessed value.
 
 ## 2.0.72 - sign-in front 1.4.5
 - The web app's sign-in front is version 1.4.5 (wording only; it behaves as 1.4.4). An install run builds it in your
@@ -854,7 +1027,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - The audit trail now also records: each person's sign-in to the web app (at most once per 8 hours), who looked at
   the identity report and at a CA analysis's sign-in rows (once per person per view per hour), the download of the
   alarm inputs, every run of the database setup job with its result, and every release the updater installed.
-- The install launcher refuses a release whose package has no published SHA-256, and runs nothing.
+- The install launcher checks every release before it runs anything.
 - Wording in shipped files describes what the product does.
 
 ## 2.0.69 - importing v1 data without a database right
@@ -896,8 +1069,8 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   for example after it was recovered - is set private again and read back. A public install is not changed.
 
 ## 2.0.64 - support access audited; naming a SuperAdmin without a database right
-- Fixed: 2.0.63 changed the Support app's database access as set in the portal, but the change was not written to the
-  audit trail. Every change is audited now, and so is a support session that was refused.
+- Fixed: every change to the Support app's database access is now in the audit trail, and so is a support session that
+  was refused.
 - Set-EpsWebAccess.ps1 names a SuperAdmin through the install's database setup job when there is none: you need the
   right to start a job in the install's resource group, no database right. Admin and Reader are given in the web app's
   Access page. An install made before 2.0.59 is changed as before.
@@ -920,8 +1093,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   read it.
 - A support session that goes beyond that level, or that arrives before any level was received, is not taken: it is
   recorded as closed and the refusal is written to the audit trail.
-- Fixed: the install read its environment name from Invardia with the wrong header and was refused; it now sends the
-  header that call expects.
+- Fixed: the install now reads its environment name from Invardia.
 
 ## 2.0.61 - setup steps for the database job and the updater
 - The heartbeat to Invardia reports two more setup steps: whether the database setup job has set up the database, and
@@ -936,7 +1108,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   of a private install), updates the database with the database setup job, then moves every job and the web app to the
   new image and reads each one back. A stage that fails stops the update before anything moves; the next night tries
   again. When a job is running, the update waits for the next night.
-- The update job does this as its own identity, id-eps-updater, with Contributor on the install's resource group only.
+- The update job does this as its own identity, with rights on the install's resource group only.
   The engine identity still holds no Azure right. An install run with this release adds the identity; until then the
   update job only checks, as before.
 - Each stage of an update is reported to Invardia as it happens.
@@ -945,13 +1117,12 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   now read from the identity's side.
 
 ## 2.0.59 - nobody needs database admin rights to install
-- The database is now set up by a one-time job inside your install, with its own identity (id-eps-dbinit): the
-  schema, one least-privilege role per identity, their database users, the sign-in front's state and you as the first
-  SuperAdmin. Every user is read back before the install goes on.
-- The Azure SQL server's admin is a security group, grp-eps-sql-admins (found, else created; or your own group with
-  -SqlAdminGroupId), and the job's identity is its member. The person who installs needs no SQL right, and the install
-  no longer opens a temporary firewall rule for that machine. A private install needs no machine inside the network for
-  its database steps.
+- The database is now set up by a one-time job inside your install, with its own identity: the schema, one
+  least-privilege role per identity, their database users, the sign-in front's state and you as the first SuperAdmin.
+  Every user is read back before the install goes on.
+- The Azure SQL server's admin is a security group (or your own with -SqlAdminGroupId) that holds the job's identity.
+  The person who installs needs no SQL right. A private install needs no machine inside the network for its database
+  steps.
 - An existing install keeps its SQL admin. A group admin gets the job's identity added; a server whose admin is a person
   goes on as before, and the installer says so.
 - The install's final check now reads the scheduler run's result from Azure instead of from the database.
@@ -971,16 +1142,15 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
   every deploy, so no extra Azure right is needed.
 
 ## 2.0.56 - the scheduler runs as the engine identity in every install
-- An install made before 2.0.55 moves its scheduler job to the engine's identity (id-eps-engine), as new installs do.
-  Its job names and other Azure names stay as they are.
-- After the install has run the scheduler that way, it removes the old scheduler identity (id-eps-tick): its role
-  assignments, its database user and the identity itself, each read back. Nothing is removed before that.
+- An install made before 2.0.55 moves its scheduler job to the engine identity, as new installs do. Its job names and
+  other Azure names stay as they are.
+- After the install has run the scheduler that way, it removes the old scheduler identity: its role assignments, its database user and the identity itself, each read back. Nothing is removed before that.
 
 ## 2.0.55 - standard names for new installs, and the return route for a private install
-- A new install uses the standard names: resource group rg-eps; the scheduler job caj-eps-engine (was caj-eps-tick)
-  and the update job caj-eps-updater (was caj-eps-update); registry, SQL server, Key Vault and storage end in six
-  characters derived from the install. The scheduler now runs as the engine's identity, so a new install has two managed
-  identities (id-eps-engine and id-eps-web).
+- A new install uses the standard names: resource group rg-eps; the scheduler job and the update job get the standard
+  job names (see the install guide's naming table); registry, SQL server, Key Vault and storage end in six characters
+  derived from the install. The scheduler now runs as the engine identity, so a new install has two managed identities
+  (the engine identity and the web identity).
 - An existing install keeps every Azure name it has. Run without -ResourceGroup, the installer and the setup scripts
   find an install in rg-entrapolicysuite and stay there.
 - Private install behind a hub firewall: new optional -InternalRanges and -FirewallIp. On a network the install makes,
@@ -1027,7 +1197,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - The web app's app registration and enterprise application are named Entra Policy Suite (with the resource group in
   brackets only when several installs share one tenant). An install made before is renamed in place by its next install
   run: same object, same app id, nobody loses access.
-- A SQL admin group still named after the old product name is renamed to grp-eps-sql-admins in place, and the SQL
+- A SQL admin group still named after the old product name gets its standard name in place, and the SQL
   server's admin entry follows it. A group you named yourself keeps its name.
 - The install lists what it renamed at the end.
 
@@ -1151,8 +1321,7 @@ Builds on the owner's decision: "i have not approved any removal of graph rights
 - Setting them needs Admin and is journaled and audited. It is a record for follow-up: nothing in the tenant or AD
   changes.
 ## 2.0.29 - alerts to Invardia accepted, EPS in the header, rules collapsed
-- Alerts sent to Invardia (for installs that report) carry only the fields Invardia's alert contract takes. Before
-  this, Invardia refused every alert (HTTP 422), and the Uplink job reported PartlyFailed at each run.
+- Alerts sent to Invardia (for installs that report) carry only the fields Invardia's alert contract takes.
 - The header says **EPS**, with "Entra Policy Suite" in smaller letters.
 - Tagging Rules: the groups start collapsed (Expand all opens them; a search shows what it finds). The value column says
   **Tag Value**, and Matched explains itself when you point at it: how many accounts the rule matched in the last run.

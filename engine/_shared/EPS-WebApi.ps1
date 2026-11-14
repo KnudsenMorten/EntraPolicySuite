@@ -219,9 +219,12 @@ function Get-EpsWebRoutes {
         @{ Method = 'POST'; Pattern = '^/api/tamper/(?<id>\d+)/accept$'; Summary = 'Accept an open tamper event: the new value stays.'; Public = $true
            Role = 'Admin'; Action = 'tamper.event.accept'; NeedsReason = $true; Handler = { param($c, $m)
             $id = [long]$m.id
-            $before = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = $id } -Query 'SELECT EventId, Status, ObjectName, Attribute, OldValue, NewValue FROM eps.TamperEvent WHERE EventId = @id')[0]
+            $before = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = $id } -Query 'SELECT EventId, Status, ObjectName, Attribute, OldValue, NewValue, Detail FROM eps.TamperEvent WHERE EventId = @id')[0]
             if (-not $before) { return New-EpsWebError 404 'no such event' }
             if ($before.Status -ne 'Open') { return New-EpsWebResponse -Status 409 -Body @{ error = "the event is $($before.Status), not Open" } -Audit @{ Target = "TamperEvent|$id"; Outcome = 'refused'; OutcomeText = "not Open ($($before.Status))" } }
+            # Invardia 2026-11-13 (e): a restore waiting for the hybrid worker would still write the old value after an accept
+            if ("$($before.Detail)" -match '\[restore (queued for the hybrid worker|applied in AD)[^\]]*\]\s*$') { return New-EpsWebResponse -Status 409 -Body @{ error = 'a restore of this event is waiting for the hybrid worker - accept it after the restore is read back or marked not applied' } -Audit @{ Target = "TamperEvent|$id"; Outcome = 'refused'; OutcomeText = 'restore pending' } }
+            $before = $before | Select-Object EventId, Status, ObjectName, Attribute, OldValue, NewValue   # the audit's Before as before (no Detail)
             [void](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -NonQuery -Parameters @{ id = $id; by = $c.Caller.identity } -Query "UPDATE eps.TamperEvent SET Status = 'Accepted', ResolvedBy = @by, ResolvedAtUtc = SYSUTCDATETIME() WHERE EventId = @id AND Status = 'Open'")
             New-EpsWebResponse -Body @{ ok = $true } -Audit @{ Target = "TamperEvent|$id ($($before.ObjectName) $($before.Attribute))"; Before = $before; After = @{ Status = 'Accepted' } } } }
         @{ Method = 'POST'; Pattern = '^/api/tamper/(?<id>\d+)/restore$'; Summary = 'Ask the engine to write the earlier value back for an open tamper event (at its next run).'; Public = $false
@@ -1177,7 +1180,7 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             $s = Invoke-EpsTagRunUndo -ConnectionString $c.Ctx.ConnectionString -RunId ([guid]$m.id) -Actor $c.Caller.identity -Reason "$($c.Body.reason)" -Approve:([bool]$c.Body.approve)
             if ($s.Result -in 'missing', 'refused') { return New-EpsWebResponse -Status $(if ($s.Result -eq 'missing') { 404 } else { 409 }) -Body @{ error = "Not undone: $($s.Reason)." } -Audit @{ Target = $t; Outcome = 'refused'; OutcomeText = $s.Reason } }
             if ($s.Result -eq 'held') { return New-EpsWebResponse -Status 409 -Body @{ error = "HELD by the mass-change guard: $($s.Reason). Nothing was written - send the undo again with Approve to apply it."; runId = $s.RunId } -Audit @{ Target = $t; Outcome = 'held'; OutcomeText = $s.Reason; After = @{ undoRun = $s.RunId; planned = $s.Planned }; Guard = $true } }
-            New-EpsWebResponse -Body @{ ok = $true; runId = $s.RunId; text = "Undone in run $($s.RunId): $($s.Applied) tag(s) put back$(if ($s.Queued) { ", $($s.Queued) queued for the hybrid worker (AD)" })$(if ($s.Failed) { ", $($s.Failed) FAILED" })$(if ($s.Skipped) { ", $($s.Skipped) left as they are (changed since the run)" })." } `
+            New-EpsWebResponse -Body @{ ok = $true; runId = $s.RunId; text = "Undone in run $($s.RunId): $($s.Applied) tag(s) put back$(if ($s.Queued) { ", $($s.Queued) queued for the hybrid worker (AD)" })$(if ($s.Failed) { ", $($s.Failed) FAILED" })$(if ($s.Reason) { " - $($s.Reason)" })$(if ($s.Skipped) { ", $($s.Skipped) left as they are (changed since the run)" })." } `
                 -Audit @{ Target = $t; Outcome = $(if ($s.Failed) { 'error' } else { 'ok' }); After = @{ undoRun = $s.RunId; applied = $s.Applied; queued = $s.Queued; failed = $s.Failed; skipped = $s.Skipped } } } }
         # GET-STARTED (owner 2026-11-03: "i also need a get started wizard to onboard fxbreak glass, auth methods, naming
         # conv for groups etc. see all req in v1 scripts"; DESIGN §5.10): the engine checks, the page shows what it found
@@ -1313,18 +1316,27 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
             }
             New-EpsWebResponse -Body (ConvertTo-EpsCsv -Rows $rows -Columns @(Get-EpsCaDocColumns)) -ContentType 'text/csv; charset=utf-8' -Headers @{ 'Content-Disposition' = "attachment; filename=""$file.csv""" } -Audit $audit } }
 
+        # ---- What's new (framework WHATS-NEW-1, owner 2026-11-13): every release's card, from the whats-new files of THIS
+        # version (Invardia's shared renderer draws them in the browser, the same words as invardia.com and GitHub) ----
+        @{ Method = 'GET'; Pattern = '^/api/whatsnew$'; Summary = "What's new: one card per release, newest first - new features and fixes in plain words."; Public = $true
+           Role = 'Reader'; Handler = { param($c, $m) New-EpsWebResponse -Body @{ files = @(Get-EpsWhatsNewFiles) } } }
         # ---- the identity report (DESIGN §5.4): READ ONLY - the snapshot the engine wrote; saved views (LIST-1) ----
         @{ Method = 'GET'; Pattern = '^/api/identity$'; Summary = 'The identity report: the latest snapshot, its views (each gap with its severity) and the ready-made pivots.'; Body = 'run: an earlier snapshot'; Public = $true
            Role = 'Reader'; Mark = 'identity.view'; Handler = { param($c, $m)
             $cs = $c.Ctx.ConnectionString
             $run = Get-EpsIdentityLatestRun -ConnectionString $cs -RunId "$($c.Query.run)"
             $counts = if ($run -and $run.ViewCountsJson) { $run.ViewCountsJson | ConvertFrom-Json -AsHashtable } else { @{} }
-            $views = @(foreach ($v in Get-EpsIdentityViewCatalog) { [ordered]@{ name = $v.Name; group = $v.Group; kind = $v.Kind; severity = $v.Severity; title = $v.Title; what = $v.What; fix = $v.Fix; assumes = @(Get-EpsIdentityViewAssumptions -View $v); columns = $v.Columns; v1 = $v.V1; count = $(if ($counts.ContainsKey($v.Name)) { $counts[$v.Name] } else { $null }) } })
+            # TRUST-1 gap 7 (Invardia 2026-11-13, option A): ONE honest marker when this snapshot could not read some role groups -
+            # on every view whose answer rests on the Admin column, and on that column; never row by row (their members are unknown)
+            $adminUnread = Get-EpsIdentityAdminUnread -NotesJson $(if ($run) { "$($run.NotesJson)" })
+            $incomplete = if ($adminUnread) { "May be incomplete: $adminUnread role group(s) could not be read, so their members may not be counted as admins in this report." }
+            $views = @(foreach ($v in Get-EpsIdentityViewCatalog) { [ordered]@{ name = $v.Name; group = $v.Group; kind = $v.Kind; severity = $v.Severity; title = $v.Title; what = $v.What; fix = $v.Fix; assumes = @(Get-EpsIdentityViewAssumptions -View $v); columns = $v.Columns; v1 = $v.V1; count = $(if ($counts.ContainsKey($v.Name)) { $counts[$v.Name] } else { $null })
+                incomplete = $(if ($incomplete -and "$($v.Test)" -match '\bIsAdmin\b') { $incomplete } else { $null }) } })
             $hist = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query 'SELECT TOP 30 RunId, CreatedAtUtc, Users, Devices, ViewCountsJson FROM eps.IdentitySnapshot ORDER BY CreatedAtUtc DESC'))
             $ad = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $cs -Query 'SELECT RequestedAtUtc, RefreshedAtUtc, Users, Error FROM eps.AdUserSnapshotInfo WHERE Id = 1'))[0]
             $cols = @{}; if ($run) { foreach ($k in 'User', 'Device') { $cols[$k] = Get-EpsIdentityColumns -ConnectionString $cs -RunId $run.RunId -Kind $k } }
             New-EpsWebResponse -Body @{ snapshot = $(if ($run) { @(ConvertTo-EpsWebValue ($run | Select-Object RunId, CreatedAtUtc, Users, Devices, NotesJson))[0] }); views = $views
-                pivots = $(if ($run -and $run.PivotsJson) { $run.PivotsJson | ConvertFrom-Json } else { @() }); history = $hist; ad = $ad; columns = $cols
+                pivots = $(if ($run -and $run.PivotsJson) { $run.PivotsJson | ConvertFrom-Json } else { @() }); history = $hist; ad = $ad; columns = $cols; adminIncomplete = $incomplete
                 enabled = "$(Get-EpsSetting -ConnectionString $cs -Name 'IdentityReport.Enabled' -Default 'false')" -eq 'true'; me = $c.Caller.identity; role = $c.Role; actionLists = (Get-EpsIdentityActionLists) } } }
         # ID-ACTIONS (owner 2026-11-03: "it must be possible to do multiselect and set the actions + responsible + set text")
         @{ Method = 'POST'; Pattern = '^/api/identity/actions$'; Summary = 'Set the follow-up fields (notes, action, who, status) on many users at once. A record only: nothing in the tenant changes.'; Body = 'ids: the users'' object ids, or selection: { view, filters, q } (every user it shows, at most 5,000); set: { notes, action, actionWho, actionStatus } - a field left out stays, an empty one is cleared; reason'; Public = $false
@@ -1689,7 +1701,7 @@ function Get-EpsApiReference {
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; attention = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
         jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
-        worker = 'Hybrid worker'; 'optional-components' = 'Optional components'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; reference = 'App'; pro = 'Pro features' }
+        worker = 'Hybrid worker'; 'optional-components' = 'Optional components'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; whatsnew = 'App'; reference = 'App'; pro = 'Pro features' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }
     $rows = foreach ($r in Get-EpsWebRoutes) {
@@ -1823,10 +1835,13 @@ function Get-EpsCaPolicyActivity {
     $out = @{}
     $fmt = { param($d) try { ([datetime]$d).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') + 'Z' } catch { "$d" } }
     try {
-        foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT x.PolicyId, x.CreatedAtUtc, x.InScope, x.Impacted, x.Errors, x.Monitor, x.AnalysisId FROM (SELECT a.*, ROW_NUMBER() OVER (PARTITION BY a.PolicyId ORDER BY a.CreatedAtUtc DESC) AS rn FROM eps.CaAnalysis a) x WHERE x.rn = 1")) {
+        foreach ($x in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT x.PolicyId, x.CreatedAtUtc, x.InScope, x.Impacted, x.Errors, x.Monitor, x.AnalysisId, x.RunStatus FROM (SELECT a.*, r.Status AS RunStatus, ROW_NUMBER() OVER (PARTITION BY a.PolicyId ORDER BY CASE WHEN r.Status = 'Succeeded' THEN 0 ELSE 1 END, a.CreatedAtUtc DESC) AS rn FROM eps.CaAnalysis a LEFT JOIN eps.Run r ON r.RunId = a.RunId) x WHERE x.rn = 1")) {
             $k = "$($x.PolicyId)".ToLowerInvariant()
-            $out[$k] = @{ State = $(if ([int]$x.Errors -gt 0) { 'failed' } else { 'done' }); AnalysisId = "$($x.AnalysisId)"; Monitors = ''
-                Text = "$(& $fmt $x.CreatedAtUtc): $([int]$x.Impacted) impacted of $([int]$x.InScope)$(if ([int]$x.Errors -gt 0) { ", $([int]$x.Errors) error(s)" }) ($(if ($x.Monitor -is [DBNull] -or -not "$($x.Monitor)") { 'ad hoc' } else { "monitor $($x.Monitor)" }))" }
+            # TRUST-1 points 1 + 2: the newest analysis of a run that FINISHED (Succeeded) is shown, with its date; one of an
+            # unfinished / partial run only when the policy has no finished one - and then said so
+            $partial = "$($x.RunStatus)" -ne 'Succeeded'
+            $out[$k] = @{ State = $(if ([int]$x.Errors -gt 0 -or $partial) { 'failed' } else { 'done' }); AnalysisId = "$($x.AnalysisId)"; Monitors = ''; Partial = $partial
+                Text = "$(& $fmt $x.CreatedAtUtc): $([int]$x.Impacted) impacted of $([int]$x.InScope)$(if ([int]$x.Errors -gt 0) { ", $([int]$x.Errors) error(s)" }) ($(if ($x.Monitor -is [DBNull] -or -not "$($x.Monitor)") { 'ad hoc' } else { "monitor $($x.Monitor)" }))$(if ($partial) { ' - from a partial or unfinished run (no complete analysis yet)' })" }
         }
     } catch { }
     try {
@@ -2010,6 +2025,15 @@ function Get-EpsTestRunRules {
 # framework LIST-1: columns from a CLOSED list (the snapshot's own columns), values only as parameters.
 $script:EpsIdColumnCache = @{}
 $script:EpsListOps = 'contains', 'notContains', 'equals', 'startsWith', 'anyOf', 'atLeast', 'atMost'
+
+function Get-EpsWhatsNewFiles {
+    <# WHATS-NEW-1: the whats-new\<version>.json files shipped with this version (one per release), parsed. A file that does
+       not parse is left out (the release gate refuses one, so this only guards a damaged install). Newest first. #>
+    param([string]$Folder = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'whats-new'))
+    if (-not (Test-Path -LiteralPath $Folder)) { return @() }
+    $out = foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Filter '*.json' -File)) { try { Get-Content -LiteralPath $f.FullName -Raw -Encoding utf8 | ConvertFrom-Json -Depth 10 } catch { } }
+    @($out | Where-Object { $_ -and "$($_.version)" -match '^\d+\.\d+\.\d+' } | Sort-Object { [version](("$($_.version)" -split '[-]')[0]) } -Descending)
+}
 
 function Get-EpsIdentityLatestRun {
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$RunId)

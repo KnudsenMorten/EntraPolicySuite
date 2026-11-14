@@ -1,0 +1,17 @@
+{
+  "version": "2.1.28.2",
+  "date": "2026-11-14",
+  "type": "fix-only",
+  "summary": "Security update for the sign-in page.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Sign-in page on Microsoft's security release",
+      "text": "The sign-in page in front of the web app runs on Microsoft's newest security release of ASP.NET Core (10.0.15). Nothing else changes."
+    },
+    {
+      "title": "The previous security update installs",
+      "text": "Version 2.1.28.1 could not be installed and your installation kept its version. This version installs."
+    }
+  ]
+}

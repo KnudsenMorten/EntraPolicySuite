@@ -1,0 +1,17 @@
+{
+  "version": "2.0.70",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "You get a fuller record of who did what, and only verified releases can be installed.",
+  "new": [
+    {
+      "title": "A fuller audit trail",
+      "text": "Audit now also records sign-ins to the web app, who viewed the Identity report and sign-in details, alarm downloads, database setup runs and every installed update."
+    },
+    {
+      "title": "Only verified releases are installed",
+      "text": "The installer checks every release before it runs anything."
+    }
+  ],
+  "fixes": []
+}

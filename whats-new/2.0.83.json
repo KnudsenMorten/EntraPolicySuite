@@ -1,0 +1,18 @@
+{
+  "version": "2.0.83",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Test tagging changes safely before they go live, and bring over the rest of what v1 did.",
+  "new": [
+    { "title": "Test runs for tagging", "text": "Test run tries your rules on the people you pick and writes nothing, or only their tags. Test queued changes before you commit, then Go live runs them on everyone." },
+    { "title": "Identity report in Log Analytics", "text": "Each identity report can go to your Log Analytics workspace as v1 did, with v1's exposure lists on the Identity page.", "action": "Run the Log Analytics setup script once, then a SuperAdmin switches on Send the report to Log Analytics in Settings > Identity report." },
+    { "title": "Mail through your own SMTP relay", "text": "Alert mail and the report can go through your own mail relay, with any password kept in your Key Vault. The workbook can go to its own recipients." },
+    { "title": "Policies edited by picking, not typing", "text": "The Conditional Access Edit and Clone form shows names with an Add button and a dropdown for every fixed choice. The choices come from Microsoft Graph and stay current.", "action": "Run the install once more to add the monthly job that reads the choices." },
+    { "title": "More control and safer clean-up", "text": "Export and import the whole configuration, remove policies that are off with a backup first, restore named locations from a backup, and set log levels per feature. CA Policy Analyzer gets v1's options." }
+  ],
+  "fixes": [
+    { "title": "Fallback values protected from removal", "text": "A tag type's fallback value can no longer be removed on Tag types. Change the fallback first." },
+    { "title": "Jobs show times in your time zone", "text": "Jobs shows each next start in the schedule's time zone, and you pick times on a 24-hour clock." },
+    { "title": "Smaller fixes", "text": "Tables no longer show a filter box over a column of buttons, and an object's tag changes are one click from Tamper." }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.0.72",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Smaller fixes and improvements.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Updated sign-in page wording",
+      "text": "The web app's sign-in page has updated wording. It works exactly as before."
+    }
+  ]
+}

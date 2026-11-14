@@ -1,0 +1,14 @@
+{
+  "version": "2.0.68",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Setting up the external tamper alarm no longer needs database rights.",
+  "new": [
+    {
+      "title": "Download the alarm inputs on Tamper",
+      "text": "Admins and SuperAdmins can download one file from the Tamper page with everything the external Azure Monitor alarm needs. The alarm setup now builds from that file.",
+      "action": "After you change break-glass accounts, watched tags or known writers, download a fresh file on the Tamper page and set up the alarm again."
+    }
+  ],
+  "fixes": []
+}

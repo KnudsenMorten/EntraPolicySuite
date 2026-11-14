@@ -1,0 +1,14 @@
+{
+  "version": "2.0.29",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Alerts reach Invardia again, and Tagging Rules is easier to scan.",
+  "new": [
+    { "title": "Tagging Rules easier to scan", "text": "Rule groups start collapsed, and a search opens what it finds. The value column now says Tag Value, and Matched explains how many accounts a rule matched last run." },
+    { "title": "EPS in the header", "text": "The header now shows EPS, with Entra Policy Suite in smaller letters." }
+  ],
+  "fixes": [
+    { "title": "Alerts to Invardia are delivered again", "text": "For installs that report to Invardia, alerts were refused and the reporting job showed partly failed. Alerts now arrive." },
+    { "title": "Smaller fixes: clearer Get started text", "text": "The mail sender step on Get started no longer reads like a command." }
+  ]
+}

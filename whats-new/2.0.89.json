@@ -1,0 +1,14 @@
+{
+  "version": "2.0.89",
+  "date": "2026-11-06",
+  "type": "feature",
+  "summary": "Entra Policy Suite Pro and its 60-day trial can now be ordered at invardia.com.",
+  "new": [
+    { "title": "Pro and the 60-day trial", "text": "Entra Policy Suite Pro and a 60-day trial are now ordered at invardia.com. Pro adds Passkey rollout, Stale identities, License optimization and Policy as code." },
+    { "title": "Header shows your edition", "text": "The header now names the edition your licence gives, such as Pro Enterprise or Pro (trial)." }
+  ],
+  "fixes": [
+    { "title": "License page loads again", "text": "Administration > License showed only 'Could not load'. It now lists your edition, state, dates and Pro features." },
+    { "title": "Smaller fixes", "text": "Pages no longer draw twice while Pro pages load, Stale identities asks for reasons in the app's own dialog, and Pro pages link to their own settings." }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.23",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "The hybrid worker gets onto the new version faster after an update.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Hybrid worker catches up with updates sooner",
+      "text": "If your installation is still updating when the hybrid worker checks, it now checks again after 10 minutes instead of an hour. It still only takes the version your installation runs."
+    }
+  ]
+}

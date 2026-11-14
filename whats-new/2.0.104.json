@@ -1,0 +1,11 @@
+{
+  "version": "2.0.104",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "Repeated failures reach Invardia as one clear report instead of stalling.",
+  "new": [],
+  "fixes": [
+    { "title": "Repeated failures reported once", "text": "A job that fails three runs in a row is reported to Invardia as one repeated failure, and Invardia opens a fix request. A missing permission stays a step for you." },
+    { "title": "Reports to Invardia no longer get stuck", "text": "One refused record no longer holds back the reports of other jobs, and it is skipped after three refusals." }
+  ]
+}

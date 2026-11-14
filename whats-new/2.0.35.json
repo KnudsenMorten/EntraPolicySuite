@@ -1,0 +1,12 @@
+{
+  "version": "2.0.35",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Installs catch missing network setup up front, and the install command is shorter.",
+  "new": [
+    { "title": "Private install checks everything before starting", "text": "A private network install now checks your networks and DNS zones first. Anything missing is listed in plain words, and nothing is created until you fix it." },
+    { "title": "Shorter install command", "text": "The install command now needs only your tenant and subscription. The region is West Europe unless you choose another." },
+    { "title": "Support scripts come with a full guide", "text": "The support scripts on invardia.com come with a guide: the install commands and every script with its documentation page and checksum." }
+  ],
+  "fixes": []
+}

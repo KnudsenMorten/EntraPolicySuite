@@ -1,0 +1,13 @@
+{
+  "version": "2.0.42",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Mails now take you straight to the right page, and installs are easier to manage.",
+  "new": [
+    { "title": "Mails open the right page in one click", "text": "Every mail now has the product header, one button that opens the page it is about, and a link to the web app. All mails use the same subject format." },
+    { "title": "Grant or remove engine permissions after install", "text": "A new script gives the engine a permission it is missing, or takes one away. Only the suite's own permissions can be asked for, you can preview the plan, and every change is checked." },
+    { "title": "Standard tags on the install's resource group", "text": "The install now tags its resource group with product, ring, owner, purpose and more. Tags you set yourself are kept on a re-run." },
+    { "title": "Choose your install's update ring", "text": "You can now set the update ring an install belongs to when you install it. It is reported to Invardia." }
+  ],
+  "fixes": []
+}

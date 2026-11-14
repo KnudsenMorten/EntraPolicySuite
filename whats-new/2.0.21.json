@@ -1,0 +1,12 @@
+{
+  "version": "2.0.21",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "You can now run the suite with no public exposure, inside your own network.",
+  "new": [
+    { "title": "Install inside your own private network", "text": "You can now install the suite inside your own virtual network, with no public address for the web app or its data. Sign-in still goes through Microsoft Entra." },
+    { "title": "Network checks and a clear hand-off", "text": "The install checks name resolution first, prints exactly what your network team must set up, and resumes where it stopped. A final check proves everything works from inside the network." },
+    { "title": "Move an existing install to private", "text": "An existing public install moves to the private network with the same command, and you can preview the plan first." }
+  ],
+  "fixes": []
+}

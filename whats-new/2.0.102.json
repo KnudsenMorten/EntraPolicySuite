@@ -1,0 +1,12 @@
+{
+  "version": "2.0.102",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "The hybrid worker now keeps itself up to date safely, and rolls back by itself if an update fails.",
+  "new": [
+    { "title": "Hybrid worker updates itself daily", "text": "Each worker moves once a day to the version your installation runs, never ahead and never back. It installs only releases Invardia signed.", "action": "On each hybrid worker installed before 2.0.102, run the hybrid worker install once more; the server needs outbound HTTPS to invardia.com." },
+    { "title": "Failed updates roll back by themselves", "text": "The new version is set up next to the old one and tests itself. If the test fails, the worker switches back on its own." },
+    { "title": "Hybrid worker page shows last update", "text": "The Hybrid worker page now shows each worker's last daily update." }
+  ],
+  "fixes": []
+}

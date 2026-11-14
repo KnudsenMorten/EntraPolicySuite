@@ -1,0 +1,13 @@
+{
+  "version": "2.1.5",
+  "date": "2026-11-11",
+  "type": "feature",
+  "summary": "Microsoft's security patches can now reach your installation within a day.",
+  "new": [
+    {
+      "title": "Same-day security patches",
+      "text": "When Microsoft publishes security fixes for its base images, Invardia can release them as a small patch. It reaches your installation and hybrid worker within a day, without waiting for the next release."
+    }
+  ],
+  "fixes": []
+}

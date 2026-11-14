@@ -1,0 +1,11 @@
+{
+  "version": "2.0.84",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Updates keep their database access by themselves, without re-running the install.",
+  "new": [
+    { "title": "Database access kept up to date", "text": "Each update keeps the database setup identity in the SQL admin group and renews a time-limited assignment before it ends. You no longer re-run the install for this.", "action": "Run the install once more to grant the update job its new permissions; the update job reports any it still lacks." },
+    { "title": "Safe replacement of the SQL admin group", "text": "An optional install switch replaces a SQL admin group that is not role-assignable. It keeps the old group and moves back if sign-in fails." }
+  ],
+  "fixes": []
+}

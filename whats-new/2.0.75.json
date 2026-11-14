@@ -1,0 +1,18 @@
+{
+  "version": "2.0.75",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Private installs only run their update build resources while building, which keeps cost down.",
+  "new": [
+    {
+      "title": "Build resources run only when needed",
+      "text": "On a private network install, the resources that build updates now start only for a build and stop afterwards, even when the build fails."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Do not install this release",
+      "text": "This release was replaced by 2.0.76, because its update stops before installing anything. Use 2.0.76 or later."
+    }
+  ]
+}

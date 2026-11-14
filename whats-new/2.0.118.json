@@ -1,0 +1,18 @@
+{
+  "version": "2.0.118",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "Known High and Critical vulnerabilities in the base software no longer ship.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Built on today's patched base software",
+      "text": "Every job and page is now built with the operating system's latest security updates, so fixed High and Critical vulnerabilities no longer ship.",
+      "action": "If your private network firewall allows only listed hosts, add archive.ubuntu.com and security.ubuntu.com to it before the update installs."
+    },
+    {
+      "title": "Online documentation matches the product",
+      "text": "The pages on invardia.com now match the product: the Conditional Access changes a SuperAdmin can make, every identity and its rights, all jobs, settings and install options."
+    }
+  ]
+}

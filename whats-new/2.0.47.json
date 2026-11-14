@@ -1,0 +1,10 @@
+{
+  "version": "2.0.47",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "You can now see why the update check did or did not ask about an update.",
+  "new": [
+    { "title": "Update check explains what it did", "text": "The update check's run log now always says whether it asked Invardia about updating now, and why not when it did not." }
+  ],
+  "fixes": []
+}

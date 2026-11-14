@@ -67,13 +67,31 @@ function ConvertFrom-EpsWorkerInstallState {
     @{ Ok = $true; Ring = $r; Version = $ver; Reason = '' }
 }
 
+$script:EpsWorkerRecheckSoonMinutes = 10
+function Get-EpsWorkerRecheckMinutes {
+    <# PURE. WORKER-RECHECK-1 (Invardia 2026-11-13: "fix the system rather than just waiting it out"): when the update check
+       WAITED because the install runs an older version than the ring's signed release (the install is updating), the next
+       check is in 10 minutes; anything else = the hourly check. The worker still never runs ahead of the install. #>
+    param([string]$Outcome, [bool]$Soon)
+    if ($Outcome -eq 'waiting' -and $Soon) { return $script:EpsWorkerRecheckSoonMinutes }
+    60
+}
+
+function Get-EpsWorkerUpdateTriggerPlan {
+    <# PURE. The update task's triggers for the next check: always the hourly repetition; plus ONE extra run at
+       -NowLocal + -Minutes when that is sooner than the hour (a one-time trigger, replaced at the next check). #>
+    param([int]$Minutes = 60, [datetime]$NowLocal = (Get-Date))
+    @{ Hourly = $true; Once = $(if ($Minutes -gt 0 -and $Minutes -lt 60) { $NowLocal.AddMinutes($Minutes) } else { $null }) }
+}
+
 function Get-EpsWorkerUpdateDecision {
     <#
       PURE. -Install (Read-EpsWorkerInstallState), -Running (the worker's VERSION), -Target (Get-EpsUpdateTarget for the
       install's ring). @{ Action = install | none | wait | refused; Reason }:
         none     the worker runs the install's version
         wait     nothing to do yet (the install has not said its version, the ring's signed release is not the install's
-                 version yet, Invardia unreachable, a held release) - asked again tomorrow
+                 version yet, Invardia unreachable, a held release) - asked again at the next check (hourly; 10 minutes
+                 once per hour while the ring is newer than the install, WORKER-RECHECK-1)
         refused  the answer did not verify, or it would move the worker backwards
         install  the signed release IS the install's version and newer than the worker's
     #>
@@ -87,7 +105,9 @@ function Get-EpsWorkerUpdateDecision {
     }
     $tv = "$($Target.Version)".Trim()
     if (-not $tv) { return @{ Action = 'wait'; Reason = "no signed release for ring $($Install.Ring) yet: $($Target.Reason)" } }
-    if ($tv -ne $Install.Version) { return @{ Action = 'wait'; Reason = "the signed release of ring $($Install.Ring) is $tv, the install runs $($Install.Version) - the worker follows the install" } }
+    # WORKER-RECHECK-1: the ring's signed release is NEWER than the install's version = the install is about to update - Soon =
+    # check again in 10 minutes, not in an hour (an install AHEAD of its ring, a test install, is not "updating": hourly)
+    if ($tv -ne $Install.Version) { return @{ Action = 'wait'; Soon = ((Compare-InvardiaReleaseVersion $tv $Install.Version) -gt 0); Reason = "the signed release of ring $($Install.Ring) is $tv, the install runs $($Install.Version) - the worker follows the install" } }
     if ("$Running".Trim() -and (Compare-InvardiaReleaseVersion $tv "$Running") -lt 0) { return @{ Action = 'refused'; Reason = "the install runs $tv, older than the worker's $Running - the worker never moves backwards" } }
     @{ Action = 'install'; Reason = "$($Target.Reason) - the version this install runs" }
 }
@@ -216,7 +236,7 @@ function Invoke-EpsWorkerUpdate {
     $t = Get-EpsUpdateTarget @tp
     $d = Get-EpsWorkerUpdateDecision -Install $inst -Running $running -Target $t
     if ($d.Action -eq 'none') { return (& $done 'current' $d.Reason) }
-    if ($d.Action -eq 'wait') { return (& $done 'waiting' $d.Reason) }
+    if ($d.Action -eq 'wait') { $r0 = & $done 'waiting' $d.Reason; $r0.RecheckMinutes = (Get-EpsWorkerRecheckMinutes -Outcome 'waiting' -Soon ([bool]$d.Soon)); return $r0 }
     if ($d.Action -eq 'refused') { return (& $done 'refused' $d.Reason) }
 
     # ---- install: download, verify, unpack next to the running version

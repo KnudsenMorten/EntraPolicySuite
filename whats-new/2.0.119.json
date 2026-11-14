@@ -1,0 +1,17 @@
+{
+  "version": "2.0.119",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "The product moves off software versions that no longer receive Microsoft security fixes.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Moved to supported .NET 10 and PowerShell 7.6",
+      "text": "Microsoft ended security fixes for the previous versions on 10 November 2026. Every job and page now runs on versions supported until November 2028."
+    },
+    {
+      "title": "Patched, slimmer sign-in page",
+      "text": "The sign-in page moves to a smaller, patched base. Nothing changes in your directory, data, rights or settings, and the update installs like any other."
+    }
+  ]
+}

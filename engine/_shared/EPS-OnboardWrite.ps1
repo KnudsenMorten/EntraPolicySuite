@@ -261,17 +261,17 @@ function Get-EpsServiceTagSource {
     $notes = [System.Collections.Generic.List[string]]::new(); $api = $null; $static = $null
     if ($SubscriptionId) {
         try {
-            $r = & $script:EpsHttp 'GET' "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Network/locations/$Region/serviceTags?api-version=$script:EpsServiceTagApi" @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } $null
+            $r = Invoke-EpsHttpRead 'GET' "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.Network/locations/$Region/serviceTags?api-version=$script:EpsServiceTagApi" @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } $null
             if ($r.Status -lt 300) { $api = & $toMap (($r.Body | ConvertFrom-Json -Depth 20).values) } else { $notes.Add("the service-tag API answered $($r.Status) - v1's fallback (the published file) is used") }
         } catch { $notes.Add("the service-tag API could not be read ($((("$($_.Exception.Message)") -split "`n")[0])) - v1's fallback is used") }
     } else { $notes.Add('no subscription for the service-tag API - v1''s fallback (the published file) is used') }
     $static = $null
     foreach ($page in $script:EpsServiceTagPages) {
         try {
-            $h = & $script:EpsHttp 'GET' $page @{} $null
+            $h = Invoke-EpsHttpRead 'GET' $page @{} $null
             $link = [regex]::Match("$($h.Body)", 'https://download\.microsoft\.com/download/[^"''\s<>]+?ServiceTags_Public_\d+\.json').Value
             if (-not $link) { continue }
-            $j = & $script:EpsHttp 'GET' $link @{} $null
+            $j = Invoke-EpsHttpRead 'GET' $link @{} $null
             if ($j.Status -lt 300) { $static = & $toMap (($j.Body | ConvertFrom-Json -Depth 20).values); break }
         } catch { $notes.Add("the published service-tag file could not be read from $page`: $((("$($_.Exception.Message)") -split "`n")[0])") }
     }

@@ -66,6 +66,22 @@ try {
 } catch { Say "schedule: the update task could not be moved to every hour ($($_.Exception.Message)) - it keeps its schedule" }
 try {
     $r = Invoke-EpsWorkerUpdate -Root $Root -ConnectionString $cfg.ConnectionString -WorkerName $cfg.WorkerName -SelfTest $runSelfTest -ApplyAcl $acl -Say { param($m) Say $m }
+    # WORKER-RECHECK-1 (Invardia 2026-11-13): the install is updating - check again in 10 minutes (one extra run next to the
+    # hourly one); otherwise the hourly check alone. Never ahead of the install: the decision above still decides.
+    try {
+        $plan = Get-EpsWorkerUpdateTriggerPlan -Minutes $(if ($r.RecheckMinutes) { [int]$r.RecheckMinutes } else { 60 })
+        $ut = @(Get-ScheduledTask -TaskName $script:EpsWorkerUpdateTask -ErrorAction SilentlyContinue)[0]
+        $hourly = if ($ut) { @($ut.Triggers | Where-Object { "$($_.Repetition.Interval)" -eq 'PT1H' })[0] }
+        # at most ONE extra check per hourly check (review): the extra run is added only when the task has its hourly trigger
+        # alone; the extra run itself (two triggers) resets to hourly - never a 10-minute loop while the install stays behind
+        $addOnce = $plan.Once -and @($ut.Triggers).Count -eq 1
+        if (-not $addOnce) { $plan.Once = $null }
+        if ($hourly -and ($addOnce -or @($ut.Triggers).Count -gt 1)) {
+            $trig = @($hourly) + @(if ($addOnce) { New-ScheduledTaskTrigger -Once -At $plan.Once })
+            Set-ScheduledTask -TaskName $ut.TaskName -TaskPath $ut.TaskPath -Trigger $trig | Out-Null
+            Say $(if ($plan.Once) { "schedule: the install is updating - the next check is at $($plan.Once.ToString('HH:mm')) (10 minutes), then every hour" } else { 'schedule: back to the hourly check only' })
+        }
+    } catch { Say "schedule: the extra check could not be set ($($_.Exception.Message)) - the hourly check stays" }
     exit $(if ($r.Outcome -in 'updated', 'current', 'waiting') { 0 } else { 1 })
 } catch {
     Say "FAILED: $($_.Exception.Message)"

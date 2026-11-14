@@ -1,0 +1,11 @@
+{
+  "version": "2.0.31",
+  "date": "2026-11-03",
+  "type": "feature",
+  "summary": "Finding the right page is quicker with six grouped menus.",
+  "new": [
+    { "title": "Six clear menus instead of sixteen tabs", "text": "Pages are grouped in six menus: Overview, Tagging, Conditional Access, Identity report, Jobs & runs and Administration. Each page has one line on what it is for." },
+    { "title": "Easier-to-read product name in the header", "text": "The full name next to EPS in the header is now light and easy to read." }
+  ],
+  "fixes": []
+}

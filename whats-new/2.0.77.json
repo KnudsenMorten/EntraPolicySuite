@@ -1,0 +1,18 @@
+{
+  "version": "2.0.77",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Invardia can now see the state of a private install's update build resources.",
+  "new": [
+    {
+      "title": "Private install build state reported",
+      "text": "An install on a private network now tells Invardia the state of the resources it uses to build updates. Other installs send nothing for this."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Smaller fixes: zero counts reported correctly",
+      "text": "A count of zero in the health report to Invardia is no longer dropped as empty."
+    }
+  ]
+}

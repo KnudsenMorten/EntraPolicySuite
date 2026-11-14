@@ -1,0 +1,13 @@
+{
+  "version": "2.0.25",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "You decide exactly which policies each persona and monitor covers.",
+  "new": [
+    { "title": "Leave any policy out of a persona", "text": "In Manage personas, untick a policy to keep it out of that persona, and tick it again to take it back." },
+    { "title": "Remove any policy from a monitor", "text": "Remove from monitor now works for every policy, and the confirmation says what happens to each. Add to monitor takes a left-out policy back." },
+    { "title": "Persona column shows your personas", "text": "On the Conditional Access page, the Persona column lists every persona that takes a policy, and filtering finds policies that are in several." },
+    { "title": "Personas are fully yours", "text": "The built-in personas are only a starting list, made once from your policies. After that you can change or delete any of them." }
+  ],
+  "fixes": []
+}

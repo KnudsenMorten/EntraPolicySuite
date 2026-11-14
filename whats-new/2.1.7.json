@@ -1,0 +1,13 @@
+{
+  "version": "2.1.7",
+  "date": "2026-11-11",
+  "type": "fix-only",
+  "summary": "Community installations share nothing with Invardia unless you agree.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "No daily edition check without your consent",
+      "text": "A Community installation no longer checks its edition with Invardia each day unless you agreed at install to connect. It simply runs the free features. Pro installations are unchanged."
+    }
+  ]
+}

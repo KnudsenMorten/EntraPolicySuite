@@ -89,6 +89,10 @@ function Read-EpsIdentitySources {
         $why = "$_"; if ($why -match '"Message"\s*:\s*"([^"]+)"') { $why = $Matches[1] -replace ' - Operation ID.*$', '' } else { $why = $why -replace '^.*-> ', '' }
         $noIntune = "the Intune devices could not be read ($why) - the engine needs DeviceManagementManagedDevices.Read.All (a new grant can take up to 24 h to reach the engine's token); the device counts and device gaps are empty this run"
     }
+    # TRUST-1 gap 5 (Invardia 2026-11-12): a 403 is "not applicable" ONLY when the Intune right is not in EPS's approved rights
+    # list; it IS approved = a MISSING RIGHT (RIGHTS-LIVE-1 identity-rights-missing): the run is PARTIAL and the last complete
+    # report stays (Invoke-EpsIdentityReportJob writes nothing)
+    $intunePartial = if ($noIntune) { (Get-EpsIntuneReadVerdict -Approved (Test-EpsRightApproved -Right 'DeviceManagementManagedDevices.Read.All')).Partial }
     & $Log 'Info' "$($devices.Count) managed device(s); reading the Exchange recipients"
     $recipients = Get-EpsExchangeRecipients -TenantId $TenantId
     # the service plans' names too (Pro licence optimisation: a plan switched off for every holder of a licence) - the same
@@ -99,7 +103,26 @@ function Read-EpsIdentitySources {
         foreach ($sp in @($s.servicePlans)) { if ($sp -and $sp.servicePlanId) { $planNames[[string]$sp.servicePlanId] = [string]$sp.servicePlanName } }
     }
     $admins = Get-EpsIdentityAdminMap -Log $Log
-    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; PlanNames = $planNames; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Admins = $admins.Map; Notes = @(@($noIntune) + @($admins.Note) | Where-Object { $_ }) }
+    @{ Users = $users; Registration = $reg; Devices = $devices; Recipients = $recipients; Skus = $skus; PlanNames = $planNames; SkuNames = (Get-EpsLicenseDisplayNames -Log $Log); AdUsers = $AdUsers; Admins = $admins.Map; Unexpanded = @($admins.Unexpanded); IntunePartial = $(if ($intunePartial) { "$noIntune" }); Notes = @(@($noIntune) + @($admins.Note) | Where-Object { $_ }) }
+}
+
+# the approved rights list, located when this file is dot-sourced (never from a parameter default)
+$script:EpsIdentityRightsPath = if ($PSScriptRoot) { Join-Path (Split-Path -Parent $PSScriptRoot) 'rights\eps-rights.json' } else { '' }
+
+function Test-EpsRightApproved {
+    # Is -Right in EPS's approved rights list (engine/rights/eps-rights.json) for an identity, "when" always? Never throws ($false).
+    param([Parameter(Mandatory)][string]$Right, [string]$Path = $script:EpsIdentityRightsPath)   # $PSScriptRoot is empty in a parameter default (live 2026-11-10)
+    try { $j = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 30 } catch { return $false }
+    $walk = { param($o) if ($o -is [System.Collections.IEnumerable] -and $o -isnot [string]) { foreach ($x in $o) { & $walk $x } } elseif ($o -is [pscustomobject]) { if ("$($o.right)" -eq $Right -and "$($o.when)" -eq 'always') { $script:__epsRightFound = $true }; foreach ($p in $o.PSObject.Properties) { & $walk $p.Value } } }
+    $script:__epsRightFound = $false; & $walk $j; $f0 = [bool]$script:__epsRightFound; $script:__epsRightFound = $false
+    $f0
+}
+
+function Get-EpsIntuneReadVerdict {
+    # PURE. A 403 on the Intune devices: -Approved (the right is in the approved list) = a MISSING RIGHT, the run partial;
+    # not approved = "not applicable" (the report runs without devices, said once).
+    param([bool]$Approved)
+    @{ Partial = $Approved; Kind = $(if ($Approved) { 'missing-right' } else { 'not-applicable' }) }
 }
 
 function Get-EpsIdentityAdminMap {
@@ -118,13 +141,16 @@ function Get-EpsIdentityAdminMap {
         $rows = @(Invoke-EpsGraph -Path 'v1.0/roleManagement/directory/roleAssignments?$select=principalId,roleDefinitionId' -All) +
                 @(Invoke-EpsGraph -Path 'v1.0/roleManagement/directory/roleEligibilitySchedules?$select=principalId,roleDefinitionId' -All)
         $add = { param($uid, $role) if (-not $map.ContainsKey($uid)) { $map[$uid] = [System.Collections.Generic.SortedSet[string]]::new() }; [void]$map[$uid].Add($role) }
-        $groupMembers = @{}; $roleGroups = @{}
+        $groupMembers = @{}; $roleGroups = @{}; $unexpanded = [System.Collections.Generic.List[string]]::new()
         foreach ($r in $rows) {
             $pid0 = [string]$r.principalId; $role = $(if ($names[[string]$r.roleDefinitionId]) { $names[[string]$r.roleDefinitionId] } else { [string]$r.roleDefinitionId })
             # a principal is a user, a group (role-assignable) or a service principal: a group's members inherit the role
             # (cached per principal: each role group is expanded once per run)
             if (-not $groupMembers.ContainsKey($pid0)) {
-                $groupMembers[$pid0] = try { @(Invoke-EpsGraph -Path "v1.0/groups/$pid0/transitiveMembers/microsoft.graph.user?`$select=id" -All | ForEach-Object { [string]$_.id }) } catch { $null }
+                # a 404 = the principal is not a group (a user or a service principal); ANY OTHER failure = a role group whose
+                # members are UNKNOWN (TRUST-1 point 3, 2.1.15): named in the note, never silently "nobody has the role"
+                $groupMembers[$pid0] = try { @(Invoke-EpsGraph -Path "v1.0/groups/$pid0/transitiveMembers/microsoft.graph.user?`$select=id" -All | ForEach-Object { [string]$_.id }) }
+                                       catch { if ("$_" -notmatch '-> 404') { $unexpanded.Add("$pid0 ($role)") }; $null }
             }
             if ($null -ne $groupMembers[$pid0]) { if (-not $roleGroups[$pid0]) { $roleGroups[$pid0] = [System.Collections.Generic.List[string]]::new() }; $roleGroups[$pid0].Add($role); foreach ($u in $groupMembers[$pid0]) { & $add $u $role } } else { & $add $pid0 $role }
         }
@@ -156,9 +182,13 @@ function Get-EpsIdentityAdminMap {
         }
         & $Log 'Info' "$($map.Count) user(s) can reach a directory role (active or eligible, groups expanded); $pimNote"
         $note = "Admins: active and eligible directory role assignments, role groups expanded; $pimNote"
+        if ($unexpanded.Count) {
+            $u0 = "eps-src-0102: $($unexpanded.Count) role principal(s) could not be expanded ($(@($unexpanded | Select-Object -First 5) -join ', ')) - their members' Admin role is UNKNOWN in this report, not 'no role'"
+            & $Log 'Warn' $u0; $note = "$note; $u0"
+        }
     } catch { $map = @{}; $note = "the directory role assignments could not be read ($($_.Exception.Message)) - Admin falls back to the registration report's isAdmin" }
     $out = @{}; foreach ($k in $map.Keys) { $out[$k] = (@($map[$k]) -join ', ') }
-    @{ Map = $out; Note = $note }
+    @{ Map = $out; Note = $note; Unexpanded = @($unexpanded) }
 }
 
 function Get-EpsLicenseDisplayNames {
@@ -469,6 +499,17 @@ $script:EpsIdentityAssumptions = @(
     @{ Key = 'hr'; Match = '\bUserIsCloudValidated\b'; Text = 'HR data = mobile phone, department and usage location in Entra.' }
     @{ Key = 'created'; Match = '\bCreatedDateTime\b'; Text = 'Accounts created within the inactive period (Settings) are left out - they have not had the time to sign in.' }
 )
+function Get-EpsIdentityAdminUnread {
+    <# PURE. How many role groups this snapshot could NOT read (TRUST-1 gap 7): the count in the engine's own coded note
+       "eps-src-0102: N role principal(s) could not be expanded" (Get-EpsIdentityAdminMap writes it into the snapshot notes).
+       0 when there is none or the notes do not parse. #>
+    param([AllowNull()][AllowEmptyString()][string]$NotesJson)
+    if (-not $NotesJson) { return 0 }
+    $notes = try { @($NotesJson | ConvertFrom-Json) } catch { @() }
+    foreach ($n in $notes) { $m = [regex]::Match("$n", 'eps-src-0102: (\d+) role principal'); if ($m.Success) { return [int]$m.Groups[1].Value } }
+    0
+}
+
 function Get-EpsIdentityViewAssumptions {
     param([Parameter(Mandatory)]$View)
     $src = "$($View.Test)"
@@ -754,6 +795,12 @@ function Invoke-EpsIdentityReportJob {
     $ad = Read-EpsAdUserSnapshotForReport -ConnectionString $ConnectionString -NowUtc $NowUtc
     & $Log 'Info' $(if ($null -eq $ad) { 'no fresh AD snapshot yet (the hybrid worker reads AD on its next cycle) - the AD columns stay empty this run' } else { "AD snapshot: $($ad.Count) user(s)" })
     $src = if ($Sources) { $Sources.AdUsers = $ad; $Sources } else { Read-EpsIdentitySources -TenantId $TenantId -AdUsers $ad -Log $Log }   # -Sources: a test's data
+    if ($src.IntunePartial) {
+        & $Log 'Warning' "eps-src-0103: partial run - $($src.IntunePartial). The last complete identity report stays as it is (nothing written, nothing mailed); grant the right and the next run is complete"
+        return [pscustomobject]@{ Users = @($src.Users).Count; Devices = 0; Gaps = 0; Counts = @{}; Mail = $null; Notes = @(); LogAnalytics = $null
+            Partial = $true; PartialWhy = "the Intune devices could not be read (403): the approved right DeviceManagementManagedDevices.Read.All is missing - the last complete report stays"
+            Codes = @('eps-src-0103'); Sources = @('intune-devices') }
+    }
     $rep = ConvertTo-EpsIdentityRows -Sources $src -Config $cfg -NowUtc $NowUtc
     foreach ($n in $rep.Notes) { & $Log 'Warn' $n }
     Add-EpsIdentitySignInMethods -ConnectionString $ConnectionString -Report $rep -Registration @($src.Registration) -Log $Log
@@ -784,7 +831,11 @@ function Invoke-EpsIdentityReportJob {
         $mail = Send-EpsMail -Config $mc -Subject (New-EpsMailSubject -Environment $mc.Environment -What 'Identity report') -Html $html -Attachments @(@{ Name = "Users-$($NowUtc.ToString('yyyyMMdd')).xlsx"; Bytes = $bytes; ContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
         & $Log $(if ($mail.Sent) { 'Info' } else { 'Warn' }) "workbook mail: $($mail.Reason)"
     }
-    [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes; LogAnalytics = $la }
+    # TRUST-1 point 3 (2.1.15): an enrichment that could not be read (a role group not expanded) = its value UNKNOWN, named
+    # in the notes, the run whole - with its catalogue code for the run record (eps-src-0102, MissingName role-group-members)
+    $unx = @($src.Unexpanded | Where-Object { $_ })
+    [pscustomobject]@{ Users = @($rep.Users).Count; Devices = @($rep.Devices).Count; Gaps = $gaps.Count; Counts = $w.Counts; Mail = $mail; Notes = $rep.Notes; LogAnalytics = $la
+        Codes = @(if ($unx.Count) { 'eps-src-0102' }); Sources = @(if ($unx.Count) { 'role-group-members' }) }
 }
 
 # ---- ID-ACTIONS: an action per user (owner 2026-11-03: "we need a way to add 4 fields per user: notes + action

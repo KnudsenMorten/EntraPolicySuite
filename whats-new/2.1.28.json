@@ -1,0 +1,21 @@
+{
+  "version": "2.1.28",
+  "date": "2026-11-14",
+  "type": "fix-only",
+  "summary": "A group-scoped test run never quietly covers fewer people.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A group-scoped run stops on an unclear group",
+      "text": "A tagging run limited to the members of an Entra group now stops with the reason when the group name matches more than one group, or its remembered group was deleted. Before, it ran on fewer people than asked."
+    },
+    {
+      "title": "Matched lists stay",
+      "text": "A rule's list of matched people from an earlier run no longer disappears when a later run failed or matched nobody."
+    },
+    {
+      "title": "Fewer repeated changes during an update",
+      "text": "An update that gets no answer from Azure sends its change at most once more."
+    }
+  ]
+}

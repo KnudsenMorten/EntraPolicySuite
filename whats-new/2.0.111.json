@@ -1,0 +1,13 @@
+{
+  "version": "2.0.111",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "The web app is easier to read, and its buttons make clear what each action does.",
+  "new": [
+    { "title": "Larger text and bigger buttons", "text": "Text in the web app is larger and the buttons are bigger, so every page is easier to read." },
+    { "title": "Risky actions stand out in red", "text": "The main action on each page is the filled button. Actions that write or remove something, such as Discard all or Disable, are red." },
+    { "title": "Clearer commit queue and policy pages", "text": "The commit queue names each field in words, and a policy page shows its current stage as a marker." },
+    { "title": "Smaller layout and wording improvements", "text": "The selected rule's panel stays in view, Settings highlights Save after a change, long explanations fold behind Read more, and Conditional Access groups say 'not read yet' instead of 0." }
+  ],
+  "fixes": []
+}

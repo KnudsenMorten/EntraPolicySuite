@@ -1,0 +1,11 @@
+{
+  "version": "2.0.100",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "Entra Policy Suite now carries its own logo.",
+  "new": [
+    { "title": "The Entra Policy Suite logo", "text": "The web app header shows the Community or Pro logo for your licence, and the browser tab shows the app icon. Alert mails carry the logo too." },
+    { "title": "One word for tags", "text": "The product's texts now say 'tag' everywhere they used to say 'label'." }
+  ],
+  "fixes": []
+}

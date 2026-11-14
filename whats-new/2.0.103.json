@@ -1,0 +1,8 @@
+{
+  "version": "2.0.103",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "No change to the product: this release adds an automatic secret scan to the public code repository.",
+  "new": [],
+  "fixes": []
+}

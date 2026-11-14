@@ -1,0 +1,10 @@
+{
+  "version": "2.0.92",
+  "date": "2026-11-07",
+  "type": "feature",
+  "summary": "Every installation gets the tamper check's time limit with its next update.",
+  "new": [],
+  "fixes": [
+    { "title": "Tamper check limit reaches every install", "text": "The update now sets the tamper check's one-hour time limit, so every installation gets it without a new install run." }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.10",
+  "date": "2026-11-12",
+  "type": "fix-only",
+  "summary": "Every mail now clearly identifies which environment sent it.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Mails name the environment unambiguously",
+      "text": "Mails now name the environment by its unique handle, as Invardia holds it, instead of a display name that could be just \"PROD\". The display name is added only when it says more."
+    }
+  ]
+}

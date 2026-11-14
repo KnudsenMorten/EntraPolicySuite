@@ -1,0 +1,14 @@
+{
+  "version": "2.0.82",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Deploy policies from templates, see your hybrid workers, and undo any change Entra Policy Suite makes.",
+  "new": [
+    { "title": "Deploy and upgrade templates", "text": "A SuperAdmin deploys a template as a new policy, off or report-only, and missing groups are created first. A newer template version is tested next to your policy before you promote it." },
+    { "title": "New Hybrid worker page", "text": "Administration > Hybrid worker shows each worker's state, version and last report, the AD changes waiting or failed, and the steps to add a worker. Several AD forests are supported." },
+    { "title": "Get started creates what is missing", "text": "Get started can create v1's authentication strengths, named locations and missing break-glass accounts, each after you review it and give a reason.", "action": "Run the install once more to grant the permission the authentication strengths need; Get started step 1 shows when it is granted." },
+    { "title": "Named locations from Azure service tags", "text": "A daily job keeps your Azure service tag named locations up to date. It is off by default and changes no other location or policy.", "action": "When you switch this job on in Settings, switch off v1's own named-locations job." },
+    { "title": "Backups / Undo", "text": "Your policies, named locations, strengths and tagging setup are backed up every night and before every change. You can restore from a backup or undo a change, always after approval." }
+  ],
+  "fixes": []
+}

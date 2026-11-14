@@ -1,0 +1,12 @@
+{
+  "version": "2.0.108",
+  "date": "2026-11-09",
+  "type": "feature",
+  "summary": "Older installations can move to the standard names, and the hybrid worker gets only the AD rights you choose.",
+  "new": [
+    { "title": "Older installs can adopt standard job names", "text": "An installation made before 2.0.55 can switch to the standard job names with one install run. Each new job is proven before the old one is removed." },
+    { "title": "Hybrid worker gets only the rights you list", "text": "The hybrid worker's AD rights now go to one permission group, for only the tag attributes you list. There is no default list any more.", "action": "When you set up the hybrid worker's AD rights, list the tag attributes it may write." },
+    { "title": "One table of names in the guide", "text": "The install guide lists, in one table, every name you will see in Azure and Entra ID." }
+  ],
+  "fixes": []
+}

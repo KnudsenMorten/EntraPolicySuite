@@ -1,0 +1,21 @@
+{
+  "version": "2.1.16",
+  "date": "2026-11-13",
+  "type": "fix-only",
+  "summary": "Every undo and restore is now fully recorded, and repeating analyzer problems no longer flood support.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Undo and restore are always recorded",
+      "text": "Undoing a tagging run and restoring a tampered tag now record each change before making it, then its outcome. No change is ever made without a record."
+    },
+    {
+      "title": "Analyzer gaps are counted and reported once",
+      "text": "When the CA Policy Analyzer cannot evaluate some users, the run says how many. If that repeats, Invardia support gets one item instead of one per run."
+    },
+    {
+      "title": "Partial analyzer runs are labelled reliably",
+      "text": "Whether a CA Policy Analyzer run was partial because of its sign-in limit is now recorded directly, so it is always shown correctly."
+    }
+  ]
+}

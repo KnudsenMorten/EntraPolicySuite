@@ -1,0 +1,13 @@
+{
+  "version": "2.0.120",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "Every part of Entra Policy Suite now runs on Microsoft-supported, patched software.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "sign-in page moves to .NET 10",
+      "text": "The web app's sign-in page now runs on a small, patched .NET 10 base. Signing in works as before, with nothing to change in your tenant."
+    }
+  ]
+}

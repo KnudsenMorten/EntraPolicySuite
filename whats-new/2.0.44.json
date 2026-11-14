@@ -1,0 +1,10 @@
+{
+  "version": "2.0.44",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "The product has one clear name everywhere you read it, with nothing renamed in Azure.",
+  "new": [
+    { "title": "Entra Policy Suite name used everywhere", "text": "The web app title, mails, alerts, help and documentation now say Entra Policy Suite. Your Azure resources keep their names, so an existing install updates in place." }
+  ],
+  "fixes": []
+}

@@ -1,0 +1,17 @@
+{
+  "version": "2.0.123",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "A stuck job no longer blocks work for hours; it is caught and restarted.",
+  "new": [
+    {
+      "title": "Hanging jobs are stopped and restarted",
+      "text": "A job that makes no progress for 60 minutes, or runs far longer than usual, is stopped and started once more. Before, it ran until its time limit."
+    },
+    {
+      "title": "Repeated hangs stop and get attention",
+      "text": "A job that hangs again within 24 hours stays stopped and shows on Runs with the reason. Invardia support is told at once. An update is never stopped half-way."
+    }
+  ],
+  "fixes": []
+}

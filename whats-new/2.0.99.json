@@ -1,0 +1,14 @@
+{
+  "version": "2.0.99",
+  "date": "2026-11-08",
+  "type": "feature",
+  "summary": "The product holds fewer standing rights, and the install checks your access before it starts.",
+  "new": [
+    { "title": "Write rights only while needed", "text": "Entra Policy Suite now reads users and devices with read-only rights, and holds write rights only while a feature that writes is on. The setup checks show which right is needed." },
+    { "title": "Install checks your access first", "text": "Before it creates anything, the install checks your Azure and Entra roles and the region's capacity, and lists everything missing at once." },
+    { "title": "Pro: clean-up disables only when allowed", "text": "Stale identities disables approved accounts only while a new SuperAdmin setting allows it. The setting is off by default." }
+  ],
+  "fixes": [
+    { "title": "Clear stop when a right is missing", "text": "Creating a break-glass account without the needed right now stops, names the right and shows how to grant it." }
+  ]
+}

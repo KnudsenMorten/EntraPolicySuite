@@ -1,0 +1,25 @@
+{
+  "version": "2.1.0",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "Entra Policy Suite 2.1 gathers recent improvements; nothing breaks and there is nothing to do.",
+  "new": [
+    {
+      "title": "Entra Policy Suite 2.1 installs by itself",
+      "text": "Your installation moves from 2.0 to 2.1 on its own, on its usual update ring. Nothing breaks and there is nothing for you to do."
+    },
+    {
+      "title": "Runs on Microsoft's current supported platform",
+      "text": "The whole product now runs on .NET 10 and PowerShell 7.6, both supported by Microsoft until November 2028."
+    },
+    {
+      "title": "Hanging jobs are restarted automatically",
+      "text": "A job that hangs is caught, stopped and started once more, and Invardia support is told at once."
+    },
+    {
+      "title": "Fewer false alarms from the support link",
+      "text": "One report to Invardia that could not be delivered no longer turns the Invardia support link amber, and you are never mailed about it."
+    }
+  ],
+  "fixes": []
+}

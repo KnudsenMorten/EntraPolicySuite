@@ -11,6 +11,19 @@ function Get-EpsHeader($r, [string]$name) {
     $null
 }
 
+function Test-EpsHttpTimeout {
+    <# PURE. Is this error a request that never answered (the HttpClient timeout, a cancelled task, a socket timeout)? It
+       is not an HTTP status: those come back as a status and are handled by the caller. #>
+    param($ErrorRecord)
+    $e = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    for ($x = $e; $x; $x = $x.InnerException) {
+        if ($x -is [System.TimeoutException] -or $x -is [System.Threading.Tasks.TaskCanceledException]) { return $true }
+        if ("$($x.Message)" -match 'HttpClient\.Timeout|request was canceled|operation was canceled|timed out') { return $true }
+        if ($x -isnot [Exception]) { break }
+    }
+    $false
+}
+
 function Invoke-EpsArm {
     <#
     .SYNOPSIS
@@ -19,13 +32,36 @@ function Invoke-EpsArm {
         throws with ARM's own code and message.
     #>
     param([string]$Method = 'GET', [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ApiVersion, $Body,
-          [switch]$AllowNotFound, [int]$MaxRetry = 6, [int]$WaitSeconds = 900, [int]$PollSeconds = 5)
+          [switch]$AllowNotFound, [int]$MaxRetry = 6, [int]$WaitSeconds = 900, [int]$PollSeconds = 5,
+          # 2.1.17: -TimeoutRetry 1 = a call that never answers is sent once more (idempotent methods only). Only the callers
+          # that ask (the update roll) - a DELETE / PUT elsewhere re-sent after it took effect would read as a false 404 / 409
+          [int]$TimeoutRetry = 0, [int]$ConflictWaitSeconds = 300)
     $uri = if ($Path -match '^https://') { $Path } else { "$script:EpsArmRoot/$($Path.TrimStart('/'))" }
     $uri += $(if ($uri -match '\?') { '&' } else { '?' }) + "api-version=$ApiVersion"
     $json = if ($null -ne $Body -and $Body -isnot [string]) { $Body | ConvertTo-Json -Depth 30 -Compress } else { $Body }
+    # 2.1.17 (Invardia 2026-11-13, found live at internal 2026-11-12 19:31Z + 2026-11-13 00:01Z): with -TimeoutRetry a call that
+    # never answers (HttpClient 120 s) is sent once more when it is idempotent - GET, PUT, PATCH, DELETE with the same body, and the poll of
+    # a long-running one. A POST (start a job, schedule a build) is never sent twice.
+    # backlog b (review H): the MAIN call's re-send budget is ONE for the whole Invoke-EpsArm - a 429 / 5xx retry no longer
+    # starts a new one (a PUT / DELETE could otherwise go out up to 1 + 2x MaxRetry times). A poll / read-back GET ($own) keeps
+    # its own once-per-read (harmless, and bounded by -WaitSeconds / -ConflictWaitSeconds)
+    $epsArmMainResends = @{ Left = $TimeoutRetry }   # a long name: the HTTP hook runs in a CHILD scope and sees it
+    $send = {
+        param($m, $u, $b, [switch]$own)
+        $epsArmResent = 0   # a long name: the HTTP hook runs in a CHILD scope and sees this (a short $n hid a test's own $n)
+        while ($true) {
+            try { return (& $script:EpsHttp $m $u @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } $b) }
+            catch {
+                $canResend = if ($own) { $epsArmResent -lt $TimeoutRetry } else { $epsArmMainResends.Left -gt 0 }
+                if ($m -ne 'POST' -and $canResend -and (Test-EpsHttpTimeout $_)) { $epsArmResent++; if (-not $own) { $epsArmMainResends.Left-- }; $script:EpsArmResentNow = $script:EpsArmResentNow -or -not $own; $line = "ARM $m $($u -replace '\?.*$', '') did not answer ($((("$($_.Exception.Message)") -split "`n")[0])) - sent once more (the same call)"; if ($script:EpsArmNotice) { try { & $script:EpsArmNotice $line } catch { Write-Warning $line } } else { Write-Warning $line }; continue }
+                throw
+            }
+        }
+    }
     $try = 0
+    $script:EpsArmResentNow = $false
     while ($true) {
-        $r = & $script:EpsHttp $Method $uri @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } $json
+        $r = & $send $Method $uri $json
         if (($r.Status -eq 429 -or $r.Status -ge 500) -and $try -lt $MaxRetry) {
             $try++; $wait = 0
             if (-not [int]::TryParse([string](Get-EpsHeader $r 'Retry-After'), [ref]$wait)) { $wait = [math]::Min(60, [math]::Pow(2, $try)) }
@@ -36,6 +72,21 @@ function Invoke-EpsArm {
         break
     }
     if ($r.Status -eq 404 -and $AllowNotFound) { return $null }
+    # 2.1.18 (Invardia 2026-11-13 (2)): the re-sent PUT / PATCH answers 409 because the FIRST one reached ARM and still
+    # provisions - "in progress", not a stop: wait for the resource to leave provisioning (at most -ConflictWaitSeconds),
+    # then it reads back like a finished call. A 409 that outlasts the wait (or a 409 without a resend) is a stop as before.
+    if ($r.Status -eq 409 -and $script:EpsArmResentNow -and $Method -in 'PUT', 'PATCH') {
+        $sw = [Diagnostics.Stopwatch]::StartNew(); $st = ''
+        while ($sw.Elapsed.TotalSeconds -lt $ConflictWaitSeconds) {
+            $g = & $send 'GET' $uri $null -own
+            $st = if ($g.Status -eq 200) { "$(try { ($g.Body | ConvertFrom-Json).properties.provisioningState } catch { '' })" } else { "HTTP $($g.Status)" }
+            if ($st -in 'Succeeded', 'Failed', 'Canceled') { break }
+            Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { [math]::Max(1, $PollSeconds) })
+        }
+        if ($st -eq 'Succeeded') { $line = "ARM $Method $($uri -replace '\?.*$', ''): the re-sent call answered 409 (the first one was still provisioning) - it finished, read back"; if ($script:EpsArmNotice) { try { & $script:EpsArmNotice $line } catch { Write-Warning $line } } else { Write-Warning $line }; return ($g.Body | ConvertFrom-Json -Depth 30) }
+        $e = try { ($r.Body | ConvertFrom-Json).error } catch { $null }
+        throw "ARM $Method $($uri -replace '\?.*$', '') -> 409 after a re-send: $(if ($e) { "$($e.code): $($e.message)" } else { $r.Body }) - $(if ($st -in 'Failed', 'Canceled') { "it ended '$st'" } else { "still '$st' after $ConflictWaitSeconds s" })"
+    }
     if ($r.Status -ge 400) {
         $e = try { ($r.Body | ConvertFrom-Json).error } catch { $null }
         throw "ARM $Method $($uri -replace '\?.*$', '') -> $($r.Status): $(if ($e) { "$($e.code): $($e.message)" } else { $r.Body })"
@@ -48,7 +99,7 @@ function Invoke-EpsArm {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         while ($sw.Elapsed.TotalSeconds -lt $WaitSeconds) {
             Start-Sleep -Seconds $PollSeconds
-            $p = & $script:EpsHttp 'GET' $(if ($async) { $async } else { $loc }) @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://management.azure.com/')" } $null
+            $p = & $send 'GET' $(if ($async) { $async } else { $loc }) $null -own
             if ($loc -and -not $async) { if ($p.Status -eq 202) { continue }; if ($p.Status -ge 400) { throw "ARM $Method $($uri -replace '\?.*$', '') failed: $($p.Body)" }; break }
             $st = try { ($p.Body | ConvertFrom-Json).status } catch { '' }
             if ($st -in 'Succeeded') { break }

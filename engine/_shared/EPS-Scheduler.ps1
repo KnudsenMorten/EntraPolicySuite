@@ -451,6 +451,30 @@ function Invoke-EpsTick {
                 } elseif ("$($rr.Reason)" -match 'next one from|repeat failure') { $decisions.Add(@{ Job = 'RollRetry'; Action = 'NotDue'; Reason = "$($rr.Reason)" }) }
             } catch { $decisions.Add(@{ Job = 'RollRetry'; Action = 'Skipped'; Reason = "the roll retry check failed: $($_.Exception.Message)" }) }
         }
+        # SEC-LANE-1 (owner via Invardia 2026-11-14: "when swap works we remove old"): an image-only swap waits for a job to
+        # SUCCEED on the new image; once one did, the update job is started to remove the previous images (Get-EpsPruneProofDecision)
+        if (-not (@($decisions | Where-Object { $_.Job -in 'Update', 'UpdateNow', 'RollRetry' -and $_.Action -eq 'Started' }).Count) -and $byJob['Update'] -and (Get-Command Get-EpsPruneProofDecision -ErrorAction SilentlyContinue)) {
+            try {
+                $pend = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'update.prune-pending'")"
+                if ($pend.Trim()) {
+                    $sw = Get-EpsPruneSwappedUtc -Pending $pend
+                    $proof = if ($sw) { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ s = $sw } -Query $script:EpsPruneProofSql) } else { 0 }
+                    $oldRun = if ($sw) { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ s = $sw } -Query $script:EpsPruneOldRunningSql) } else { 0 }
+                    # at most one start per 30 minutes (a clean-up that cannot finish never loops the tick)
+                    $updBusy = [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = N'Update' AND (Status = N'Running' OR StartedAtUtc > DATEADD(MINUTE, -30, SYSUTCDATETIME()))") -gt 0
+                    # a stale / expired mark is cleared by the update job's own check (the tick's identity only reads eps.Setting):
+                    # started once for it, then the 30-minute guard holds
+                    # the version check is the update job's own (it knows what it runs); the tick starts it for an unreadable or expired mark
+                    $pd = Get-EpsPruneProofDecision -Pending $pend -ProofRuns $proof -UpdateRunning $updBusy -OldRunning $oldRun
+                    if ($pd.Stale -and -not $updBusy) { $pd = @{ Start = $true; Reason = "clear the waiting mark: $($pd.Reason)" } }
+                    if ($pd.Start) {
+                        $why = & $blocked 'Update'
+                        if ($why) { $decisions.Add(@{ Job = 'ImageCleanup'; Action = 'Skipped'; Reason = "$why" }) }
+                        else { $d = & $start 'Update' "image clean-up: $($pd.Reason)" $false; $d.Job = 'ImageCleanup'; $decisions.Add($d) }
+                    }
+                }
+            } catch { $decisions.Add(@{ Job = 'ImageCleanup'; Action = 'Skipped'; Reason = "the image clean-up check failed: $($_.Exception.Message)" }) }
+        }
         $failed = @($decisions | Where-Object { $_.Action -eq 'StartFailed' }).Count
         $status = if ($failed) { 'PartlyFailed' } else { 'Succeeded' }
         # SUP-2026-00438 (Invardia 2026-11-07): the failed starts in words ("<job>: <reason>; ...") - the run record's

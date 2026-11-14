@@ -1,0 +1,12 @@
+{
+  "version": "2.0.23",
+  "date": "2026-11-02",
+  "type": "feature",
+  "summary": "Bulk changes finish faster, and pages make full use of your screen.",
+  "new": [
+    { "title": "Bulk changes apply in one go", "text": "Adopting many Conditional Access policies at once is now applied in one engine check, instead of one per check." },
+    { "title": "Status bar says what really happens", "text": "The bar at the top shows when changes are picked up and how many are applied or waiting. A second click no longer sends a change twice." },
+    { "title": "Pages use the full window width", "text": "Text, settings, tables and search use the full width of your screen, on laptops and desktops alike." }
+  ],
+  "fixes": []
+}

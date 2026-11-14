@@ -1,0 +1,21 @@
+{
+  "version": "2.0.78",
+  "date": "2026-11-05",
+  "type": "feature",
+  "summary": "Saving a monitor now gives clear feedback, so you always know where your change stands.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Notices are always visible",
+      "text": "\"Add to monitor...\" seemed to do nothing because its answer appeared out of sight. Notices now float at the bottom right, wherever you are on the page."
+    },
+    {
+      "title": "Waiting monitor changes are shown",
+      "text": "A new or changed monitor is applied within 5 minutes. The Monitors list now shows what is still waiting, and keeps following it after a reload."
+    },
+    {
+      "title": "One change never overwrites another",
+      "text": "\"Add to monitor...\" now shows monitors that are saved but not yet applied, and waits until a pending change is done before changing that monitor again."
+    }
+  ]
+}

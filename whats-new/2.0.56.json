@@ -1,0 +1,13 @@
+{
+  "version": "2.0.56",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Older installs now run with one less identity.",
+  "new": [
+    {
+      "title": "One less identity in older installs",
+      "text": "Installs made before 2.0.55 now run their scheduler as the engine, like new installs. Once that works, the old identity and its access are removed and checked."
+    }
+  ],
+  "fixes": []
+}

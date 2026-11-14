@@ -1,0 +1,18 @@
+{
+  "version": "2.0.64",
+  "date": "2026-11-04",
+  "type": "feature",
+  "summary": "Every change to support access is now recorded, and naming the first SuperAdmin needs no database rights.",
+  "new": [
+    {
+      "title": "Name a SuperAdmin without database rights",
+      "text": "When an install has no SuperAdmin, you can now name one without database rights. Admins and Readers are still given on the Access page."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Support access changes are now audited",
+      "text": "Every change to Invardia's support access, and every refused support session, is now recorded in Audit."
+    }
+  ]
+}

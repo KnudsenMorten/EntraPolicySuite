@@ -1,0 +1,13 @@
+{
+  "version": "2.1.30",
+  "date": "2026-11-14",
+  "type": "fix-only",
+  "summary": "A stopped update reaches Invardia support right away.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A stopped update is reported right away",
+      "text": "When an update stops while preparing the new version, your installation now tells Invardia support right away, not at its next scheduled report up to four hours later."
+    }
+  ]
+}

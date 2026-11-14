@@ -1,0 +1,30 @@
+{
+  "version": "2.0.117",
+  "date": "2026-11-10",
+  "type": "feature",
+  "summary": "You stay in control of rights: nothing is taken away unless you decide.",
+  "new": [
+    {
+      "title": "New Optional components page",
+      "text": "Administration > Optional components shows each optional part, whether it is on, which rights it lacks and the script that adds exactly those. The page only reads."
+    },
+    {
+      "title": "One script per component",
+      "text": "New scripts add the rights for user tagging, device tagging and Exchange one at a time. Each can show what it would add first, without changing anything."
+    },
+    {
+      "title": "Hybrid worker AD step completes itself",
+      "text": "The Hybrid worker confirms its Active Directory rights by itself, and the step clears once they are in place. Nobody has to mark it done."
+    }
+  ],
+  "fixes": [
+    {
+      "title": "Rights are never removed automatically",
+      "text": "Turning a feature off no longer takes its rights away; the install marks them as not needed and keeps them. You remove a right only when you choose to."
+    },
+    {
+      "title": "No false Tamper alerts for own changes",
+      "text": "Tamper no longer raises false alerts for Entra Policy Suite's own tag changes."
+    }
+  ]
+}

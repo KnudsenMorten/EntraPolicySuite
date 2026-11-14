@@ -218,6 +218,48 @@ function Get-EpsUpdateFacts {
        PrivateRegistry = ("$($acr.properties.publicNetworkAccess)" -eq 'Disabled'); RegistryId = "$($acr.id)"; Jobs = $jobs; Web = $web }
 }
 
+function Get-EpsMigratedImage {
+    <# 2.1.18 (Invardia 2026-11-13 (1)): is THIS version's migration already applied? = the database setup job runs -Image
+       AND its newest execution RAN -Image and Succeeded (review H: the job is PUT to the new image BEFORE it is started -
+       a run that stopped between the two leaves the job on the new image with only an OLD execution). Any doubt = not
+       done (the update then builds and migrates, as before): a read that fails, an execution without a start time or
+       without its image, more than one page of executions. @{ Done; Execution; Reason }. #>
+    param([object[]]$Jobs = @(), [string]$DbInitJob, [string]$Image, [string]$SubscriptionId, [string]$ResourceGroup)
+    try {
+        # read the setup job itself (it may not be in the update's job list - that one keeps only jobs tagged with the product)
+        $j = @($Jobs | Where-Object { "$($_.name)" -eq $DbInitJob })[0]
+        if (-not $j -and $SubscriptionId) { $j = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/jobs/$DbInitJob" -ApiVersion $script:EpsApi.acajob -AllowNotFound }
+        $no = { param($why) @{ Done = $false; Execution = ''; Reason = $why } }
+        if (-not $j) { return (& $no 'no setup job') }
+        $epsDbJobImage = "$(@($j.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
+        if ($epsDbJobImage -ne $Image) { return (& $no 'the setup job runs another image') }
+        $page = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.App/jobs/$DbInitJob/executions" -ApiVersion $script:EpsApi.acajob
+        if ("$($page.nextLink)") { return (& $no 'more than one page of executions') }
+        $ex = @(@($page.value) | Where-Object { $_ })
+        if (-not $ex.Count) { return (& $no 'no execution') }
+        $epsDbStart = { param($x) $d = [datetime]::MinValue; if ([datetime]::TryParse("$($x.properties.startTime)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$d)) { $d } else { $null } }
+        if (@($ex | Where-Object { $null -eq (& $epsDbStart $_) }).Count) { return (& $no 'an execution without a start time (just scheduled)') }
+        $newest = @($ex | Sort-Object { & $epsDbStart $_ } -Descending)[0]
+        $ranImage = "$(@($newest.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
+        if ($ranImage -ne $Image) { return (& $no "the newest execution $($newest.name) ran $(if ($ranImage) { $ranImage } else { 'an unknown image' })") }
+        if ("$($newest.properties.status)" -ne 'Succeeded') { return (& $no "the newest execution $($newest.name) is $($newest.properties.status)") }
+        @{ Done = $true; Execution = "$($newest.name)"; Reason = 'ran this image and Succeeded' }
+    } catch { @{ Done = $false; Execution = ''; Reason = "a read failed: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}
+
+function Get-EpsMixedRollText {
+    <# PURE. 2.1.17 (Invardia 2026-11-13): while a stopped roll leaves the install mixed, the run record says which
+       components are on which version, and that the tick finishes the roll within minutes (ROLL-RETRY-1). #>
+    # -Unknown: the component whose call did not answer - its change may or may not have been taken (live 2026-11-13: the
+    # PATCH was Accepted, the read-back never came), so it is neither "on the new" nor "on the old" version
+    param([string[]]$Rolled = @(), [string[]]$All = @(), [string]$Version, [string]$From, [string]$Unknown = '')
+    $on = @($Rolled | Where-Object { $_ })
+    $rest = @($All | Where-Object { $_ -and $_ -notin $on -and $_ -ne $Unknown })
+    $unk = if ($Unknown) { ", $Unknown not known (its call did not answer)" } else { '' }
+    if (-not $on.Count -and -not $Unknown) { return "nothing was moved (all on $From); the tick tries again within minutes (ROLL-RETRY-1)" }
+    "mixed: $($on.Count) on $Version$(if ($on.Count) { " ($($on -join ', '))" })$unk, $($rest.Count) on $From ($($rest -join ', ')); the tick finishes the roll within minutes (ROLL-RETRY-1)"
+}
+
 function Invoke-EpsUpdateApply {
     <#
       The apply. -Target = the verified manifest (Version, Sha256, Size, DownloadUrl). -Emit { param($step, $state, $message) }
@@ -227,26 +269,58 @@ function Invoke-EpsUpdateApply {
     #>
     param([Parameter(Mandatory)]$Target, [Parameter(Mandatory)][string]$RunningVersion, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId,
           [Parameter(Mandatory)][string]$ResourceGroup, [string]$SelfKey = 'caj-eps-update', [scriptblock]$Emit = { param($s, $st, $m) }, [scriptblock]$Log = { param($l, $m) },
-          [scriptblock]$Fetch, [int]$PollSeconds = 15)
+          [scriptblock]$Fetch, [int]$PollSeconds = 15, [hashtable]$Prune = $null,
+          # SEC-LANE-1 short path: the caller proved the release IMAGE-ONLY against what this install runs (Test-EpsImageOnlyMarker
+          # on the signed package) - no database step; the setup job's image is swapped too (never started); the previous images
+          # stay (the rollback point) until a job SUCCEEDED on the new image (the follow-up). The release is still downloaded, verified and built here.
+          [switch]$ImageOnly)
+    # -Prune (IMAGE-PRUNE CONTRACT, 2.1.12): @{ Switch = <EPS_Updater_ImagePrune>; SaveRecord = { param($record) } } - the
+    # clean-up after 'health' and before 'done' (its totals go to Invardia with the run); $null = no clean-up
     $step = 'download'
-    $fail = { param($s, $why) & $Emit $s 'failed' $why; & $Log 'Warning' "update to $($Target.Version) stopped at '$s': $why"; @{ Ok = $false; Step = $s; Reason = $why; Rolled = @() } }
+    $startedUtc = [datetime]::UtcNow
+    $fail = { param($s, $why) & $Emit $s 'failed' $why; & $Log 'Warning' "update to $($Target.Version) stopped at '$s': $why"; @{ Ok = $false; Step = $s; Reason = $why; Rolled = @(); Resent = @($resent) } }
     $work = $null
+    # 2.1.18 (Invardia 2026-11-13 (3)): a call sent once more (Invoke-EpsArm -TimeoutRetry) is said in the run log and the run
+    # record, not only on stdout
+    $resent = [System.Collections.Generic.List[string]]::new()
+    $savedNotice = $script:EpsArmNotice
+    $script:EpsArmNotice = { param($line) if ("$line" -match 'sent once more') { $resent.Add($line) }; & $Log 'Warning' $line }.GetNewClosure()
     try {
         & $Emit 'download' 'running' "downloading $($Target.Version)"
         $a = Save-EpsReleaseArchive -Url $Target.DownloadUrl -Sha256 $Target.Sha256 -Size $Target.Size -Version $Target.Version -Fetch $Fetch
         $work = $a.WorkDir
         if (-not $a.Ok) { return (& $fail 'verify' $a.Reason) }
         & $Emit 'download' 'ok' $a.Reason; & $Emit 'verify' 'ok' 'the size, SHA-256 and VERSION are as signed'
+        # SEC-LANE-1: the short path proves its marker on the package THIS apply downloaded, before anything is built or moved
+        if ($ImageOnly) { $mk = Test-EpsImageOnlyMarker -Root $a.Root -Version $Target.Version -RunningVersion $RunningVersion; if (-not $mk.ImageOnly) { return (& $fail 'verify' "the image-only marker does not hold on the downloaded package ($($mk.Reason)) - nothing was built or moved") } }
         $step = 'build'
         $f = Get-EpsUpdateFacts -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -SelfKey $SelfKey
         $n = $f.Names
         if (-not $f.Identities.DbInitIdentity) { return (& $fail 'migrate' "the database setup identity $($n.DbInitIdentity) is not there yet - this install needs one install run with 2.0.59 or later first (a setup step); nothing was changed") }
+        # IMAGE-PRUNE CONTRACT point 2: what ran BEFORE the roll, read now (before anything is built or moved)
+        $ranBefore = if ($Prune) { Get-EpsInstallRunningImages -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup } else { $null }
         $image = "$($n.Registry).azurecr.io/$($n.Image):$($Target.Version)"
+        # 2.1.18 (Invardia 2026-11-13 (1)): the RE-RUN of a stopped roll never builds or migrates again - the database setup
+        # job already runs this version's image (so the image is in the registry) and its newest execution Succeeded (so the
+        # migration of this version is applied). Only apply + health run. The signed release is still downloaded and
+        # verified: the front pin and what is rolled come from it, never from what the install happens to run.
+        $resume = Get-EpsMigratedImage -Jobs @($f.Jobs) -DbInitJob $n.DbInitJob -Image $image -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+        # review H: the sign-in front has to move too = build as before (only a build proves its image is in the registry)
+        if ($resume.Done -and $f.Web) {
+            $pinNow = try { Get-EpsSigninFrontPin -SolutionRoot $a.Root } catch { '' }
+            $curF = "$(@($f.Web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
+            if ($pinNow -and $curF -and $curF -ne "$($n.Registry).azurecr.io/signin-front:$pinNow") { $resume = @{ Done = $false; Execution = ''; Reason = 'the sign-in front has to move too' } }
+        }
+        if ($resume.Done) {
+            & $Log 'Info' "update: $($Target.Version) is already built and its database setup ran ($($resume.Execution)) - the roll is finished, nothing is built or migrated again"
+            & $Emit 'build' 'ok' "already built ($($n.Image):$($Target.Version) runs in $($n.DbInitJob)) - the roll of a stopped update is finished"
+        } else {
         & $Emit 'build' 'running' "building $($n.Image):$($Target.Version) in $($n.Registry)$(if ($f.PrivateRegistry) { " on its build pool $($n.AgentPool)" })"
         $ctxFile = New-EpsBuildContext -SolutionRoot $a.Root
         try { $b = Invoke-EpsAcrBuild -RegistryId $f.RegistryId -ContextPath $ctxFile -DockerFile 'SOLUTIONS/EntraPolicySuite/tools/eps-engine/Dockerfile' -ImageName "$($n.Image):$($Target.Version)" -BuildArgs @{ EPS_CONTENT_HASH = $Target.Version } -PollSeconds $PollSeconds -AgentPoolName $(if ($f.PrivateRegistry) { $n.AgentPool } else { '' }) }
         finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
         & $Emit 'build' 'ok' "built ($($b.Digest))"
+        }
         # IMAGE-PATCH-1 (2.0.120): the sign-in front follows the release's pin. Found live 2026-11-10 at internal: 2.0.119
         # pinned 1.4.6, the update left the web app on 1.4.5 - only an install run built the front. Built from the release's
         # own vendor/signin-front (only the pinned version is ever built); a front that cannot be built stops the update
@@ -269,6 +343,7 @@ function Invoke-EpsUpdateApply {
             }
         }
         $step = 'migrate'
+        if ($ImageOnly) { & $Emit 'migrate' 'ok' "image-only ($RunningVersion -> $($Target.Version), the same code): no database step" } elseif ($resume.Done) { & $Emit 'migrate' 'ok' "already applied ($($n.DbInitJob) $($resume.Execution) Succeeded on $($Target.Version))" } else {
         # framework §4.5 SQL-ADMIN-GROUP G2-G4 (the owner: "both setup and upd"): the database setup identity's membership of
         # the SQL admin group converged and renewed BEFORE its job starts; refused both ways = the job is NOT started
         try { $cv = Invoke-EpsSqlAdminGroupConverge -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; foreach ($l in $cv.Lines) { & $Log $(if ($l -match '^(WARNING|FINDING)|WARNING:') { 'Warning' } else { 'Info' }) "SQL admin group: $l" } }
@@ -277,6 +352,7 @@ function Invoke-EpsUpdateApply {
         $ctx = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId; Location = $f.Location; Names = $n; Version = $Target.Version; SolutionRoot = $a.Root; Identities = $f.Identities; PollSeconds = $PollSeconds }
         $j = Invoke-EpsDbInitJob -Ctx $ctx
         & $Emit 'migrate' 'ok' "$($n.DbInitJob) ($($j.Execution)) read every principal back"
+        }
         $step = 'apply'
         & $Emit 'apply' 'running' "rolling the jobs and the web app to $($Target.Version)"
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
@@ -287,85 +363,379 @@ function Invoke-EpsUpdateApply {
             $props = @{}; if ($s.Changed) { $props.template = $s.Template }
             # a job's own timeout converges here too (the tamper job: 1 h, never 7 days) - in the same PATCH as its image
             if ($cfg) { $props.configuration = $cfg.Configuration; & $Log 'Info' "$label`: replicaTimeout $($cfg.From) -> $($cfg.To) s" }
-            if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds) }
-            $back = Invoke-EpsArm -Path $path -ApiVersion $api
+            if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds -TimeoutRetry 1) }
+            $back = Invoke-EpsArm -Path $path -ApiVersion $api -TimeoutRetry 1
             $now = "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
             $nowFront = if ($front) { "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)" } else { '' }
             if ($now -eq $image -and (-not $front -or $nowFront -eq $front)) { $rolled.Add($label) } else { $left.Add("$label ($now$(if ($front) { ", front $nowFront" }))") }
         }
+        # 2.1.17: a component whose call fails is NAMED in the stop (found live 2026-11-13: "stopped at 'apply': The request
+        # was canceled ..." named no job; only the activity log showed which)
+        $rollAt = ''
         $others = @($f.Jobs | Where-Object { "$($_.name)" -notin $f.SelfName, $n.DbInitJob, $n.InsideCheckJob })
-        foreach ($x in $others) { & $roll "$rg/providers/Microsoft.App/jobs/$($x.name)" $script:EpsApi.acajob $x.properties.template $x.name (Get-EpsJobTimeoutPatch -Job $x -Key "$($x.name)") }
-        if ($f.Web) { & $roll "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca $f.Web.properties.template $n.WebApp $null $frontImage }
-        # the update job itself LAST: this execution goes on in the old image; the next run is the new one
-        & $roll "$rg/providers/Microsoft.App/jobs/$($f.SelfName)" $script:EpsApi.acajob $f.Self.properties.template $f.SelfName
+        # SEC-LANE-1: on the short path the setup job is not run, so its IMAGE is swapped here like any job (a later full update
+        # still migrates: its newest execution ran the old image, Get-EpsMigratedImage)
+        if ($ImageOnly) { $others = @($others) + @($f.Jobs | Where-Object { "$($_.name)" -eq $n.DbInitJob }) }
+        $allLabels = @(@($others | ForEach-Object { "$($_.name)" }) + @(if ($f.Web) { $n.WebApp }) + @($f.SelfName))
+        foreach ($x in $others) { $rollAt = "$($x.name)"; & $roll "$rg/providers/Microsoft.App/jobs/$($x.name)" $script:EpsApi.acajob $x.properties.template $x.name (Get-EpsJobTimeoutPatch -Job $x -Key "$($x.name)") }
+        if ($f.Web) { $rollAt = "$($n.WebApp)"; & $roll "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca $f.Web.properties.template $n.WebApp $null $frontImage }
+        # the update job itself LAST: this execution goes on in the old image; the next run is the new one. 2.1.17
+        # (ROLL-RETRY-1): only when EVERY other component read back on the new image - an updater on the new version with
+        # others left behind would say "up to date" and never finish the roll
+        if (-not $left.Count) { $rollAt = "$($f.SelfName)"; & $roll "$rg/providers/Microsoft.App/jobs/$($f.SelfName)" $script:EpsApi.acajob $f.Self.properties.template $f.SelfName }
+        $rollAt = ''
         $step = 'health'
-        if ($left.Count) { return (& $fail 'health' "not on $($Target.Version): $($left -join ', ') - the next run tries again") }
+        if ($left.Count) {
+            $r = & $fail 'health' "not on $($Target.Version): $($left -join ', ') - $(Get-EpsMixedRollText -Rolled @($rolled) -All $allLabels -Version $Target.Version -From $RunningVersion)"
+            $r.Rolled = @($rolled); $r.Mixed = $true; return $r
+        }
         & $Emit 'apply' 'ok' "$($rolled.Count) rolled: $($rolled -join ', ')"
         & $Emit 'health' 'ok' "every job and the web app read back on $image"
-        & $Emit 'done' 'ok' "$RunningVersion -> $($Target.Version)"
         & $Log 'Info' "updated $RunningVersion -> $($Target.Version): $($rolled.Count) components on the new image"
-        return @{ Ok = $true; Step = 'done'; Reason = "updated to $($Target.Version)"; Rolled = @($rolled) }
+        # IMAGE-PRUNE (contract point 1): only here - the update read back healthy; never fails the update (point 6)
+        $pr = $null
+        if ($Prune) {
+            $pr = try {
+                Invoke-EpsImagePruneAfterUpdate -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -Version $Target.Version -FromVersion $RunningVersion `
+                    -RanBefore @(if ($ranBefore.Ok) { $ranBefore.Images }) -RanBeforeReason "$($ranBefore.Reason)" -NotBefore $startedUtc -Switch "$($Prune.Switch)" -SaveRecord $Prune.SaveRecord -ReadRecord $Prune.ReadRecord -Log $Log
+            } catch { @{ Ok = $false; Off = $false; Deleted = 0; Left = 0; Lines = @("image prune: $((("$($_.Exception.Message)") -split "`n")[0])"); Table = @(); Summary = 'nothing deleted' } }
+        }
+        # the clean-up's totals ride on 'done' (one event per stage: a repeated stage Invardia might refuse would stop the
+        # run's tracking before 'done'); an incomplete clean-up says so in the text - the update itself IS healthy
+        & $Emit 'done' 'ok' "$RunningVersion -> $($Target.Version)$(if ($pr) { "; image clean-up: $($pr.Summary)" })"
+        return @{ Ok = $true; Step = 'done'; Reason = "updated to $($Target.Version)"; Rolled = @($rolled); Prune = $pr; Resent = @($resent); Resumed = [bool]$resume.Done; ImageOnly = [bool]$ImageOnly }
     } catch {
-        return (& $fail $step "$((("$($_.Exception.Message)") -split "`n")[0])")
-    } finally { if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
+        $msg = "$((("$($_.Exception.Message)") -split "`n")[0])"
+        if ($step -eq 'apply' -and $rollAt) {
+            # 2.1.17: which component, and which are on which version while the install is mixed (the run record says it)
+            $r = & $fail 'apply' "$rollAt`: $msg$(if ($resent.Count) { " (after $($resent.Count) call(s) sent once more)" }) - $(Get-EpsMixedRollText -Rolled @($rolled) -All $allLabels -Version $Target.Version -From $RunningVersion -Unknown $rollAt)"
+            $r.Rolled = @($rolled); $r.Mixed = $true; return $r
+        }
+        return (& $fail $step $msg)
+    } finally { $script:EpsArmNotice = $savedNotice; if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
 # ---------------------------------------------------------------------------------------------------- IMAGE-PRUNE
 # OWNER DECISION 2026-11-12 (framework IMAGE-PATCH-1 "IMAGE-PRUNE"; "why woud we need to keep old images" -> "agreed"):
 # each install's OWN registry keeps only the current release + 1 previous image. Defender scans every STORED image, so old
 # ones keep listing old CVEs; the rollback moves down one version (an older one rebuilds from its release).
+# 2.1.12 = the framework IMAGE-PRUNE CONTRACT (Invardia 3bc5e5bf; owner 2026-11-12: "prune images must be part of the
+# framework" / "we cannot loose a single row of data. stability + data quality is prio 1"):
+#   1 only after an update read back healthy, inside the update hold; the switch EPS_Updater_ImagePrune on the update job
+#     (default on; 'off' = nothing deleted, said) - set by Invardia through the Support app, kept by an install run
+#   2 kept = what the install RECORDS: every image a job / the web app / an active revision ran BEFORE the roll and runs
+#     AFTER it, written as the release record (eps.Setting update.release-record) BEFORE the first delete; every child
+#     manifest of a kept index; every referrer of a kept image (subject = it: Defender's scan attestations and their
+#     signatures, found live 2026-11-12 - 2.1.13); every image whose layers prefix a kept image (a base). Not recorded = delete NOTHING; any
+#     image that cannot be read = kept with its (unknowable) bases, i.e. nothing deleted in that repository
+#   3 only the install's own registry, only eps-engine + signin-front, REST only
+#   4 every registry call is watchdog progress (STALL-1 Step), so the run's progress moves at least once a minute
+#   5 per repository a BEFORE line ("N images, K kept, D to delete") and an AFTER line ("d deleted, L left"), each logged
+#     at once; the totals go to the run summary, the audit trail and the update run to Invardia
+#   6 never fails the update; at most $script:EpsPruneMaxPerRepo deletes per repository per update (the rest: the next one)
 $script:EpsPruneRepos = @('eps-engine', 'signin-front')   # the ONLY repositories ever pruned (the install's own images)
+$script:EpsPruneMaxPerRepo = 100                           # a large backlog spans updates (contract point 6)
+$script:EpsPruneSwitch = 'EPS_Updater_ImagePrune'          # the switch's name: an env var on the update job
+$script:EpsReleaseRecordSetting = 'update.release-record'  # eps.Setting: the durable release record (contract point 2)
+$script:EpsManifestAccept = 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+
+function Step-EpsPruneProgress {
+    # contract point 4: a registry call is progress for this run's watchdog (EPS-Watchdog.ps1); never throws
+    if ($script:EpsWatchOn) { try { [EpsRunWatchdog]::Step() } catch { } }
+}
+
+function Get-EpsShortDigest {
+    # PURE. 'sha256:<hex>' -> 'sha256:<first 12>' (-Bare: '<first 12>') for a log line; never throws on a short or odd value
+    param([AllowEmptyString()][string]$Digest, [switch]$Bare)
+    $d = "$Digest"; $h = if ($d.StartsWith('sha256:')) { $d.Substring(7) } else { $d }
+    $h = $h.Substring(0, [Math]::Min(12, $h.Length))
+    if ($Bare) { $h } else { "sha256:$h" }
+}
 
 function ConvertTo-EpsImageVersion {
-    # PURE. A version tag (2.1.10, 2.1.5.1) -> [version]; anything else $null (never pruned by its tag).
+    # PURE. A version tag (2.1.10, 2.1.5.1) -> [version]; anything else $null.
     param([string]$Tag)
     if ("$Tag" -match '^\d+(\.\d+){2,3}$') { try { return [version]$Tag } catch { } }   # 3 or 4 parts only - a release
     $null
 }
 
+function Get-EpsPruneSwitch {
+    # PURE. The switch's value -> 'on' | 'off'. Only an explicit off / false / 0 / no turns it off (framework default on).
+    param([AllowEmptyString()][string]$Value)
+    if ("$Value".Trim() -match '^(?i:off|false|0|no|disabled)$') { 'off' } else { 'on' }
+}
+
+function ConvertFrom-EpsImageRef {
+    # PURE. '<login>/<repo>:<tag>' or '<login>/<repo>@sha256:<hex>' on THIS registry -> @{ Repo; Tag; Digest }; else $null.
+    param([AllowEmptyString()][string]$Ref, [Parameter(Mandatory)][string]$LoginServer)
+    $r = "$Ref".Trim()
+    $p = "$LoginServer".ToLowerInvariant() + '/'
+    if (-not $r.ToLowerInvariant().StartsWith($p)) { return $null }
+    $rest = $r.Substring($p.Length)
+    if ($rest -match '^([a-z0-9][a-z0-9._/-]*)@(sha256:[0-9a-f]{64})$') { return @{ Repo = $Matches[1]; Tag = ''; Digest = $Matches[2] } }
+    if ($rest -match '^([a-z0-9][a-z0-9._/-]*):([A-Za-z0-9_][A-Za-z0-9._-]{0,127})$') { return @{ Repo = $Matches[1]; Tag = $Matches[2]; Digest = '' } }
+    $null
+}
+
+function Get-EpsTemplateImages {
+    # PURE. Every container image of the given ARM objects (jobs, apps, revisions: properties.template.containers).
+    param([object[]]$Items = @())
+    @(foreach ($i in @($Items)) { foreach ($c in @($i.properties.template.containers) + @($i.properties.template.initContainers)) { if ($c -and "$($c.image)") { "$($c.image)" } } }) | Select-Object -Unique
+}
+
+function Get-EpsInstallRunningImages {
+    <#
+      What the install RUNS now (contract point 2), read from Azure as the updater: every container image of every job of
+      the product in its resource group, of the web app, and of each ACTIVE revision of the web app. Reads only. Never
+      throws: @{ Ok; Images; Reason } - not Ok = the caller deletes nothing.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
+    try {
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+        # EVERY job and container app in the group (any product tag: an image of this registry counts wherever it runs),
+        # every page; each app's ACTIVE revisions (every page)
+        $jobs = @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/jobs" -ApiVersion $script:EpsApi.acajob)
+        $apps = @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/containerApps" -ApiVersion $script:EpsApi.aca)
+        $items = [System.Collections.Generic.List[object]]::new(); foreach ($j in $jobs + $apps) { if ($j) { $items.Add($j) } }
+        $revs = 0
+        foreach ($a in $apps) {
+            if (-not "$($a.name)") { continue }
+            foreach ($r in @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/containerApps/$($a.name)/revisions" -ApiVersion $script:EpsApi.aca)) { if ($r -and $r.properties.active) { $items.Add($r); $revs++ } }
+        }
+        $img = @(Get-EpsTemplateImages -Items @($items))
+        if (-not $img.Count) { return @{ Ok = $false; Images = @(); Reason = 'no job or app image could be read' } }
+        @{ Ok = $true; Images = $img; Reason = "$($jobs.Count) job(s), $($apps.Count) app(s), $revs active revision(s)" }
+    } catch { @{ Ok = $false; Images = @(); Reason = (("$($_.Exception.Message)") -split "`n")[0] } }
+}
+
+function Get-EpsArmAll {
+    # Every item of an ARM list, following nextLink (its own api-version is dropped - Invoke-EpsArm adds it). Throws when a
+    # page fails or the list does not end (an incomplete list never drives a delete).
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ApiVersion)
+    $out = [System.Collections.Generic.List[object]]::new(); $p = $Path; $pages = 0
+    while ($p) {
+        if (++$pages -gt 50) { throw "the list $Path did not end after 50 pages" }
+        $b = Invoke-EpsArm -Path $p -ApiVersion $ApiVersion
+        foreach ($x in @($b.value)) { if ($x) { $out.Add($x) } }
+        $p = if ("$($b.nextLink)" -match '^https://') { [regex]::Replace("$($b.nextLink)", '([?&])api-version=[^&]*&?', '$1').TrimEnd('?', '&') } else { $null }
+    }
+    @($out)
+}
+
+function ConvertFrom-EpsHttpBody {
+    # PURE. A response body as text: Invoke-WebRequest hands back a non-text media type (application/vnd.oci...+json) as
+    # bytes, which [string] turns into '123 34 ...'; that is decoded as UTF-8
+    param($Body)
+    if ($Body -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($Body) }
+    $s = "$Body"
+    if ($s -match '^\d{1,3}( \d{1,3})+$') { try { return [Text.Encoding]::UTF8.GetString([byte[]]@($s -split ' ' | ForEach-Object { [byte]$_ })) } catch { } }
+    $s
+}
+
 function Select-EpsImagePrune {
     <#
-      PURE. One repository's manifests (@{ digest; tags; createdTime }) and the tag it RUNS now (-Current) -> what to keep and
-      what to delete. Kept: the image with the current tag, the PREVIOUS (the highest version tag below it), any image with
-      a tag that is not a version, any image newer than the current. Deleted: every image whose tags are all versions below
-      the previous, and an untagged image created before the previous. The current tag not in the repository = nothing
-      pruned (never guess). Returns @{ Keep; Delete (@{ digest; tags }); Previous; Reason }.
+      PURE (contract point 2). One repository's manifests (@{ digest; tags; createdTime; mediaType; layers; children;
+      readOk }) + what the install RECORDS for it (-Recorded: @(@{ Tag; Digest })) -> what is kept (each with WHY) and
+      what is deleted. Kept: the recorded images, any tag that is not a release version, any version newer than
+      -CurrentVersion, anything created at or after -NotBefore (built during this update) or without a creation time - and
+      then, until stable, every child manifest of a kept index, every index holding a kept child, every image whose layer
+      list is a prefix of a kept image's (a base). Nothing recorded, a recorded image missing from the registry or ANY image
+      that cannot be read (its bases unknown) = Ok $false and NOTHING deleted. At most -Max deletes (oldest first); the
+      rest = Deferred.
+      Returns @{ Ok; Reason; Keep (@{ digest; tags; why }); Delete (@{ digest; tags; createdTime }); Deferred; Counts }.
     #>
-    param([object[]]$Manifests = @(), [Parameter(Mandatory)][string]$Current)
-    $cv = ConvertTo-EpsImageVersion $Current
-    $cur = @($Manifests | Where-Object { @($_.tags) -contains $Current })[0]
-    if (-not $cv -or -not $cur) { return @{ Keep = @($Manifests | ForEach-Object { "$($_.digest)" }); Delete = @(); Previous = ''; Reason = "the current tag $Current is not in the repository - nothing pruned" } }
-    $older = @(foreach ($m in $Manifests) { foreach ($tg in @($m.tags)) { $v = ConvertTo-EpsImageVersion $tg; if ($v -and $v -lt $cv) { [pscustomobject]@{ V = $v; Tag = $tg; M = $m } } } })
-    $prev = @($older | Sort-Object V -Descending)[0]
-    $keepD = @("$($cur.digest)"); if ($prev) { $keepD += "$($prev.M.digest)" }
-    $floorV = if ($prev) { $prev.V } else { $cv }
-    $floorM = if ($prev) { $prev.M } else { $cur }; $floorT = try { [datetimeoffset]"$($floorM.createdTime)" } catch { $null }
-    $keep = [System.Collections.Generic.List[string]]::new(); $del = [System.Collections.Generic.List[object]]::new()
-    foreach ($m in $Manifests) {
-        $d = "$($m.digest)"
-        if ($keepD -contains $d) { $keep.Add($d); continue }
-        $tags = @($m.tags | Where-Object { "$_" })
-        if ($tags.Count) {
-            $vs = @($tags | ForEach-Object { ConvertTo-EpsImageVersion $_ })
-            if (@($vs | Where-Object { $null -eq $_ }).Count -or @($vs | Where-Object { $_ -ge $floorV }).Count) { $keep.Add($d) } else { $del.Add(@{ digest = $d; tags = $tags }) }
-        } else {
-            $ct = try { [datetimeoffset]"$($m.createdTime)" } catch { $null }
-            if ($floorT -and $ct -and $ct -lt $floorT) { $del.Add(@{ digest = $d; tags = @() }) } else { $keep.Add($d) }
-        }
+    param([object[]]$Manifests = @(), [object[]]$Recorded = @(), [object[]]$KeepIfPresent = @(), [string]$CurrentVersion = '', $NotBefore = $null, [int]$Max = 100)
+    $none = { param($why) @{ Ok = $false; Reason = $why; Keep = @($Manifests | ForEach-Object { @{ digest = "$($_.digest)"; tags = @($_.tags); why = 'nothing pruned' } }); Delete = @(); Deferred = 0
+                             Counts = @{ Images = @($Manifests).Count; Kept = @($Manifests).Count; Recorded = 0; Children = 0; Referrers = 0; Bases = 0; Extra = 0; ToDelete = 0 } } }
+    $ms = @($Manifests | Where-Object { $_ -and "$($_.digest)" })
+    $rec = @($Recorded | Where-Object { $_ -and ("$($_.Tag)" -or "$($_.Digest)") })
+    if (-not $rec.Count) { return (& $none 'the install records no image in this repository - nothing deleted') }
+    $byD = @{}; foreach ($m in $ms) { $byD["$($m.digest)"] = $m }
+    $why = [ordered]@{}
+    foreach ($r in $rec) {
+        $m = if ("$($r.Digest)") { $byD["$($r.Digest)"] } else { @($ms | Where-Object { @($_.tags) -ccontains "$($r.Tag)" })[0] }   # registry tags are case-sensitive
+        if (-not $m) { return (& $none "the recorded image $(if ("$($r.Tag)") { ":$($r.Tag)" } else { (Get-EpsShortDigest $r.Digest) }) is not in the registry - nothing deleted (never a guess)") }
+        if (-not $why.Contains("$($m.digest)")) { $why["$($m.digest)"] = 'recorded (runs now or ran before this update)' }
     }
-    @{ Keep = @($keep); Delete = @($del); Previous = $(if ($prev) { $prev.Tag } else { '' }); Reason = "keeps $Current$(if ($prev) { " + $($prev.Tag)" } else { ' (no previous)' })" }
+    # -KeepIfPresent: the last release record's images - kept when they are there, never a reason to stop when gone
+    foreach ($r in @($KeepIfPresent | Where-Object { $_ -and ("$($_.Tag)" -or "$($_.Digest)") })) {
+        $m = if ("$($r.Digest)") { $byD["$($r.Digest)"] } else { @($ms | Where-Object { @($_.tags) -ccontains "$($r.Tag)" })[0] }
+        if ($m -and -not $why.Contains("$($m.digest)")) { $why["$($m.digest)"] = 'recorded (in the last release record)' }
+    }
+    $nRec = $why.Count
+    # an image that cannot be read: it is kept, and so are its bases - which cannot be known, so nothing in this
+    # repository is deleted (contract point 2; the next update reads it again)
+    $unread = @($ms | Where-Object { -not $_.readOk })
+    if ($unread.Count) { return (& $none "$($unread.Count) image(s) could not be read ($(@($unread | Select-Object -First 3 | ForEach-Object { (Get-EpsShortDigest $_.digest) }) -join ', ')) - their bases are unknown, nothing deleted") }
+    $cv = ConvertTo-EpsImageVersion $CurrentVersion
+    $nb = if ($NotBefore) { try { [datetimeoffset]$NotBefore } catch { $null } } else { $null }
+    # kept on their own: a tag that is not a release version, a newer version, built during this update, no creation time
+    $nExtra = 0
+    foreach ($m in $ms) {
+        $d = "$($m.digest)"; if ($why.Contains($d)) { continue }
+        $tags = @($m.tags | Where-Object { "$_" })
+        $ct = try { [datetimeoffset]"$($m.createdTime)" } catch { $null }
+        $w = if (@($tags | Where-Object { -not (ConvertTo-EpsImageVersion $_) }).Count) { "tag $(@($tags | Where-Object { -not (ConvertTo-EpsImageVersion $_) })[0]) is not a release version" }
+             elseif ($cv -and @($tags | Where-Object { (ConvertTo-EpsImageVersion $_) -gt $cv }).Count) { "newer than the current $CurrentVersion" }
+             elseif (-not $ct) { 'its creation time is not known' }
+             elseif ($nb -and $ct -ge $nb) { 'built during this update' }
+             else { '' }
+        if ($w) { $why[$d] = $w; $nExtra++ }
+    }
+    $nChild = 0; $nBase = 0; $nRef = 0
+    # the kept set grows until it is stable: children of kept indexes, indexes of kept children, bases of kept images
+    do {
+        $grew = $false
+        foreach ($d in @($why.Keys)) {
+            $k = $byD[$d]
+            foreach ($c in @($k.children)) { if ("$c" -and -not $why.Contains("$c") -and $byD.ContainsKey("$c")) { $why["$c"] = "child manifest of the kept $(Get-EpsShortDigest $d)"; $nChild++; $grew = $true } }
+        }
+        $keptLayers = @(foreach ($d in @($why.Keys)) { $k = $byD[$d]; if ($k -and @($k.layers).Count) { , @{ D = $d; L = @($k.layers) } } })
+        foreach ($m in $ms) {
+            $d = "$($m.digest)"; if ($why.Contains($d)) { continue }
+            # a referrer (an OCI manifest whose subject is a kept image: Defender's scan attestation, a signature) stays with it
+            if ("$($m.subject)" -and $why.Contains("$($m.subject)")) { $why[$d] = "a referrer (signature / scan) of the kept $(Get-EpsShortDigest $m.subject)"; $nRef++; $grew = $true; continue }
+            $kc = @(@($m.children) | Where-Object { $why.Contains("$_") })
+            if ($kc.Count) { $why[$d] = "an index of the kept $(Get-EpsShortDigest $kc[0])"; $nChild++; $grew = $true; continue }
+            $L = @($m.layers)
+            if ($L.Count) {
+                foreach ($k in $keptLayers) {
+                    if ($k.L.Count -ge $L.Count) { $same = $true; for ($i = 0; $i -lt $L.Count; $i++) { if ("$($L[$i])" -ne "$($k.L[$i])") { $same = $false; break } }
+                        if ($same) { $why[$d] = "a base of the kept $(Get-EpsShortDigest $k.D)"; $nBase++; $grew = $true; break } }
+                }
+            }
+        }
+    } while ($grew)
+    $cand = [System.Collections.Generic.List[object]]::new()
+    foreach ($m in $ms) {
+        $d = "$($m.digest)"; if ($why.Contains($d)) { continue }
+        $ct = try { [datetimeoffset]"$($m.createdTime)" } catch { $null }
+        $cand.Add(@{ digest = $d; tags = @($m.tags | Where-Object { "$_" }); createdTime = "$($m.createdTime)"; At = $ct })
+    }
+    $sorted = @($cand | Sort-Object { if ($_.At) { $_.At.UtcDateTime } else { [datetime]::MaxValue } })
+    $del = @($sorted | Select-Object -First ([Math]::Max(0, $Max)) | ForEach-Object { @{ digest = $_.digest; tags = $_.tags; createdTime = $_.createdTime } })
+    $keep = @(foreach ($d in $why.Keys) { @{ digest = $d; tags = @($byD[$d].tags); why = $why[$d] } })
+    @{ Ok = $true; Reason = "keeps $nRec recorded image(s) + $nChild child/index + $nRef referrer(s) + $nBase base(s) + $nExtra other"; Keep = $keep; Delete = $del; Deferred = [Math]::Max(0, $sorted.Count - $del.Count)
+       Counts = @{ Images = $ms.Count; Kept = $keep.Count; Recorded = $nRec; Children = $nChild; Referrers = $nRef; Bases = $nBase; Extra = $nExtra; ToDelete = $sorted.Count } }
+}
+
+function Test-EpsImageOnlyMarker {
+    <#
+      PURE (reads one file). SEC-LANE-1 point 7 (Invardia 2026-11-14 + EPS's binding): the signed package's tools/eps-engine/image-only.json
+      { imageOnly: true, version, fromVersion, imageDiff } allows the SHORT path only when imageOnly is true, its version is
+      THIS release and its fromVersion is EXACTLY the version this install runs (the same code). Anything else = the full
+      update. @{ ImageOnly; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$RunningVersion)
+    $p = Join-Path $Root 'tools\eps-engine\image-only.json'   # under tools/ - in both packages (Community stage, Pro allow-list)
+    if (-not (Test-Path -LiteralPath $p)) { return @{ ImageOnly = $false; Reason = 'no image-only marker in the release' } }
+    $j = try { Get-Content -LiteralPath $p -Raw | ConvertFrom-Json } catch { $null }
+    if (-not $j -or $j.imageOnly -isnot [bool] -or -not $j.imageOnly) { return @{ ImageOnly = $false; Reason = 'the image-only marker cannot be read' } }
+    if ("$($j.version)" -ne $Version) { return @{ ImageOnly = $false; Reason = "the image-only marker names $($j.version), not this release ($Version)" } }
+    if ("$($j.fromVersion)" -ne $RunningVersion) { return @{ ImageOnly = $false; Reason = "image-only from $($j.fromVersion), this install runs $RunningVersion (other code) - the full update" } }
+    @{ ImageOnly = $true; Reason = "image-only from $RunningVersion (the same code)" }
+}
+
+function ConvertTo-EpsRunningImageItems {
+    <#
+      PURE. SEC-LANE-1 (owner 2026-11-14: "patched" = what RUNS, read back per install; Invardia heartbeat Update.runningImages):
+      -Containers @(@{ Component; Image }) + -Resolved @{ '<repo>:<tag>' = @{ Digest; Dotnet } } -> the heartbeat items
+      [ordered]@{ component; repo; digest; dotnet; readUtc }, in Invardia's closed shape (component / repo slug, digest
+      sha256:<64 hex>, dotnet a version); a part that does not fit is LEFT OUT of that item (never guessed); at most 40, one
+      per component.
+    #>
+    param([object[]]$Containers = @(), [hashtable]$Resolved = @{}, [Parameter(Mandatory)][string]$LoginServer, [datetime]$NowUtc = [datetime]::UtcNow)
+    $out = [System.Collections.Generic.List[object]]::new(); $seen = @{}
+    foreach ($c in @($Containers)) {
+        if (-not $c -or $out.Count -ge 40) { continue }
+        $comp = "$($c.Component)".ToLowerInvariant()
+        if ($comp -notmatch '^[a-z0-9][a-z0-9._-]{0,79}$' -or $seen.ContainsKey($comp)) { continue }
+        $seen[$comp] = $true
+        $it = [ordered]@{ component = $comp }
+        $ref = ConvertFrom-EpsImageRef -Ref "$($c.Image)" -LoginServer $LoginServer
+        if ($ref -and $ref.Repo -match '^[a-z0-9][a-z0-9._/-]{0,79}$') { $it.repo = $ref.Repo }
+        $dg = if ($ref -and $ref.Digest) { $ref.Digest } elseif ($ref) { "$($Resolved["$($ref.Repo):$($ref.Tag)"].Digest)" } else { '' }
+        if ($dg -match '^sha256:[0-9a-f]{64}$') { $it.digest = $dg }
+        $dn = if ($ref) { "$($Resolved["$($ref.Repo):$($ref.Tag)"].Dotnet)" } else { '' }
+        if ($ref -and $ref.Digest) { $dn = "$($Resolved["$($ref.Repo)@$($ref.Digest)"].Dotnet)" }
+        if ($dn -match '^\d+\.\d+\.\d+$') { $it.dotnet = $dn }
+        $it.readUtc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $out.Add($it)
+    }
+    @($out)
+}
+
+function Get-EpsRunningImagesFact {
+    <#
+      SEC-LANE-1: what EVERY EPS job and the web app RUN now, each container's image resolved in the install's OWN registry
+      to its digest (GET /v2/<repo>/manifests/<tag>, Docker-Content-Digest) and its .NET runtime (the config's DOTNET_VERSION).
+      As the updater identity; reads only. Component = the job / app name, '<app>.signin-front' for the web app's front.
+      Never throws: @{ Ok; Items; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [datetime]$NowUtc = [datetime]::UtcNow)
+    try {
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+        $regs = @((Invoke-EpsArm -Path "$rg/providers/Microsoft.ContainerRegistry/registries" -ApiVersion '2023-07-01').value)
+        $login = "$(@($regs | Where-Object { "$($_.name)" -like 'acreps*' })[0].properties.loginServer)"
+        if (-not $login) { $login = "$(@($regs)[0].properties.loginServer)" }
+        if (-not $login) { return @{ Ok = $false; Items = @(); Reason = 'no registry in the resource group' } }
+        $cont = [System.Collections.Generic.List[object]]::new()
+        # the web app FIRST (review): the most exposed component is never the one the 4000-character store cuts
+        foreach ($a in @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/containerApps" -ApiVersion $script:EpsApi.aca) | Where-Object { "$($_.name)" -like 'ca-eps-*' }) {
+            foreach ($c in @($a.properties.template.containers)) { if ($c -and "$($c.image)") { $cont.Add(@{ Component = $(if ("$($c.name)" -in 'eps', '') { "$($a.name)" } else { "$($a.name).$($c.name)" }); Image = "$($c.image)" }) } }
+        }
+        foreach ($j in @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/jobs" -ApiVersion $script:EpsApi.acajob) | Where-Object { "$($_.name)" -like 'caj-eps-*' }) {
+            foreach ($c in @($j.properties.template.containers)) { if ($c -and "$($c.image)") { $cont.Add(@{ Component = $(if ("$($c.name)" -in 'eps', '') { "$($j.name)" } else { "$($j.name).$($c.name)" }); Image = "$($c.image)" }) } }
+        }
+        $res = @{}; $tok = @{}; $failed = 0
+        foreach ($c in $cont) {
+            $ref = ConvertFrom-EpsImageRef -Ref $c.Image -LoginServer $login
+            if (-not $ref) { continue }
+            $key = if ($ref.Digest) { "$($ref.Repo)@$($ref.Digest)" } else { "$($ref.Repo):$($ref.Tag)" }
+            if ($res.ContainsKey($key)) { continue }
+            try {
+                if (-not $tok.ContainsKey($ref.Repo)) { $tok[$ref.Repo] = Get-EpsAcrDataToken -LoginServer $login -TenantId $TenantId -Repo $ref.Repo -Actions 'pull' }
+                $h = @{ Authorization = "Bearer $($tok[$ref.Repo])"; Accept = $script:EpsManifestAccept }
+                $m = Invoke-EpsAcrCall 'GET' "https://$login/v2/$($ref.Repo)/manifests/$(if ($ref.Digest) { $ref.Digest } else { $ref.Tag })" $h $null
+                if ([int]$m.Status -ne 200) { $failed++; $res[$key] = @{ Digest = ''; Dotnet = '' }; continue }
+                $dg = if ($ref.Digest) { $ref.Digest } else { "$(@($m.Headers['Docker-Content-Digest'])[0])" }
+                $b = (ConvertFrom-EpsHttpBody $m.Body) | ConvertFrom-Json
+                if ($b.manifests) {   # an index: the linux/amd64 image's config
+                    $sub = "$(@(@($b.manifests) | Where-Object { $_.platform.os -eq 'linux' -and $_.platform.architecture -eq 'amd64' })[0].digest)"
+                    if ($sub) { $m2 = Invoke-EpsAcrCall 'GET' "https://$login/v2/$($ref.Repo)/manifests/$sub" $h $null; if ([int]$m2.Status -eq 200) { $b = (ConvertFrom-EpsHttpBody $m2.Body) | ConvertFrom-Json } }
+                }
+                $dn = ''
+                if ("$($b.config.digest)") {
+                    $cf = Invoke-EpsAcrCall 'GET' "https://$login/v2/$($ref.Repo)/blobs/$($b.config.digest)" @{ Authorization = "Bearer $($tok[$ref.Repo])" } $null
+                    if ([int]$cf.Status -eq 200) { $dn = "$(@(@(((ConvertFrom-EpsHttpBody $cf.Body) | ConvertFrom-Json).config.Env) | Where-Object { "$_" -like 'DOTNET_VERSION=*' })[0])" -replace '^DOTNET_VERSION=', '' }
+                }
+                $res[$key] = @{ Digest = $dg; Dotnet = $dn }
+            } catch { $failed++; $res[$key] = @{ Digest = ''; Dotnet = '' } }
+        }
+        $items = @(ConvertTo-EpsRunningImageItems -Containers @($cont) -Resolved $res -LoginServer $login -NowUtc $NowUtc)
+        if (-not $items.Count) { return @{ Ok = $false; Items = @(); Reason = 'no job or app image could be read' } }
+        @{ Ok = $true; Items = $items; Reason = "$($items.Count) component(s), $(@($items | Where-Object { $_.digest }).Count) with a digest$(if ($failed) { "; $failed image(s) could not be read in the registry" })" }
+    } catch { @{ Ok = $false; Items = @(); Reason = (("$($_.Exception.Message)") -split "`n")[0] } }
+}
+
+function Invoke-EpsAcrCall {
+    # one registry data-plane call: watchdog progress before and after (contract point 4)
+    param([string]$Method, [string]$Uri, [hashtable]$Headers, $Body)
+    Step-EpsPruneProgress
+    try { & $script:EpsHttp $Method $Uri $Headers $Body } finally { Step-EpsPruneProgress }
 }
 
 function Get-EpsAcrDataToken {
     # The registry's data-plane token for one repository, from the caller's Entra token (ARM audience) through the
     # registry's own exchange: POST /oauth2/exchange -> refresh token, POST /oauth2/token -> access token. Throws on refusal.
-    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$Repo, [string]$Actions = 'metadata_read,delete')
+    # pull: a manifest's own read (GET /v2/<repo>/manifests/<digest>) needs it - metadata_read covers only the /acr/v1 listing
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$Repo, [string]$Actions = 'pull,metadata_read,delete')
     $aad = Get-EpsToken -Resource 'https://management.azure.com'
     $form = @{ 'Content-Type' = 'application/x-www-form-urlencoded' }
-    $e = & $script:EpsHttp 'POST' "https://$LoginServer/oauth2/exchange" $form ("grant_type=access_token&service=$LoginServer&tenant=$TenantId&access_token=$([uri]::EscapeDataString($aad))")
+    $e = Invoke-EpsAcrCall 'POST' "https://$LoginServer/oauth2/exchange" $form ("grant_type=access_token&service=$LoginServer&tenant=$TenantId&access_token=$([uri]::EscapeDataString($aad))")
     if ([int]$e.Status -ne 200) { throw "the registry refused the token exchange (HTTP $($e.Status))" }
     $rt = ("$($e.Body)" | ConvertFrom-Json).refresh_token
-    $k = & $script:EpsHttp 'POST' "https://$LoginServer/oauth2/token" $form ("grant_type=refresh_token&service=$LoginServer&scope=$([uri]::EscapeDataString("repository:$($Repo):$Actions"))&refresh_token=$([uri]::EscapeDataString($rt))")
+    $k = Invoke-EpsAcrCall 'POST' "https://$LoginServer/oauth2/token" $form ("grant_type=refresh_token&service=$LoginServer&scope=$([uri]::EscapeDataString("repository:$($Repo):$Actions"))&refresh_token=$([uri]::EscapeDataString($rt))")
     if ([int]$k.Status -ne 200) { throw "the registry refused a token for $Repo (HTTP $($k.Status))" }
     ("$($k.Body)" | ConvertFrom-Json).access_token
 }
@@ -376,71 +746,144 @@ function Get-EpsAcrManifests {
     $out = [System.Collections.Generic.List[object]]::new(); $uri = "https://$LoginServer/acr/v1/$Repo/_manifests?n=500"; $pages = 0
     while ($uri -and $pages -lt 40) {
         $pages++
-        $r = & $script:EpsHttp 'GET' $uri @{ Authorization = "Bearer $Token" } $null
+        $r = Invoke-EpsAcrCall 'GET' $uri @{ Authorization = "Bearer $Token" } $null
         if ([int]$r.Status -eq 404) { break }
         if ([int]$r.Status -ne 200) { throw "listing $Repo answered HTTP $($r.Status)" }
-        foreach ($m in @(("$($r.Body)" | ConvertFrom-Json).manifests)) { if ($m) { $out.Add([pscustomobject]@{ digest = "$($m.digest)"; tags = @($m.tags); createdTime = "$($m.createdTime)" }) } }
+        foreach ($m in @(("$($r.Body)" | ConvertFrom-Json).manifests)) { if ($m) { $out.Add([pscustomobject]@{ digest = "$($m.digest)"; tags = @($m.tags | Where-Object { "$_" }); createdTime = "$($m.createdTime)" }) } }
         $link = "$(@($r.Headers['Link'])[0])"
         $uri = if ($link -match '<([^>]+)>;\s*rel="next"') { "https://$LoginServer$($Matches[1])" } else { $null }
     }
+    if ($uri) { throw "listing $Repo did not end after $pages pages" }   # an incomplete list never drives a delete
     @($out)
+}
+
+function Get-EpsAcrManifestDetail {
+    # One manifest's kind, layers and children (GET /v2/<repo>/manifests/<digest>). Never throws: @{ readOk; mediaType; layers; children }.
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$Repo, [Parameter(Mandatory)][string]$Token, [Parameter(Mandatory)][string]$Digest)
+    try {
+        $r = Invoke-EpsAcrCall 'GET' "https://$LoginServer/v2/$Repo/manifests/$Digest" @{ Authorization = "Bearer $Token"; Accept = $script:EpsManifestAccept } $null
+        if ([int]$r.Status -ne 200) { return @{ readOk = $false; mediaType = ''; layers = @(); children = @(); subject = '' } }
+        $b = (ConvertFrom-EpsHttpBody $r.Body) | ConvertFrom-Json
+        @{ readOk = $true; mediaType = "$($b.mediaType)"; layers = @(@($b.layers) | ForEach-Object { "$($_.digest)" } | Where-Object { $_ }); children = @(@($b.manifests) | ForEach-Object { "$($_.digest)" } | Where-Object { $_ }); subject = "$($b.subject.digest)" }
+    } catch { @{ readOk = $false; mediaType = ''; layers = @(); children = @(); subject = '' } }
 }
 
 function Invoke-EpsImagePrune {
     <#
-      IMAGE-PRUNE: for each of the install's own repositories (eps-engine, signin-front) in ITS registry: list, select
-      (Select-EpsImagePrune), delete the old manifests (DELETE /v2/<repo>/manifests/<digest>), read back what is left.
-      -Current: @{ <repo> = <the tag it runs now> }. Touches no other registry, repository or resource. Never throws:
-      @{ Ok; Deleted; Left; Lines }.
+      IMAGE-PRUNE (contract points 2-6) for the install's own repositories (eps-engine, signin-front) in ITS registry: per
+      repository list + read every manifest, select (Select-EpsImagePrune with what the install records), say the BEFORE
+      line, delete (DELETE /v2/<repo>/manifests/<digest>, oldest first, at most -Max), read back, say the AFTER line. Each
+      line goes to -Log AT ONCE (a failing log write never stops it). -Recorded: the image references the install records.
+      Touches no other registry, repository or resource. Never throws: @{ Ok; Deleted; Left; Lines; Table }.
     #>
-    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][hashtable]$Current)
-    $lines = [System.Collections.Generic.List[string]]::new(); $deleted = 0; $left = 0; $ok = $true
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [string[]]$Recorded = @(), [string[]]$KeepIfPresent = @(), [string]$CurrentVersion = '',
+          $NotBefore = $null, [int]$Max = $script:EpsPruneMaxPerRepo, [scriptblock]$Log = { param($l, $m) })
+    $lines = [System.Collections.Generic.List[string]]::new(); $table = [System.Collections.Generic.List[object]]::new(); $deleted = 0; $left = 0; $ok = $true
+    $say = { param($lvl, $msg) $lines.Add($msg); try { & $Log $lvl $msg } catch { } }
+    $refs = @(foreach ($r in $Recorded) { ConvertFrom-EpsImageRef -Ref $r -LoginServer $LoginServer })
+    # a reference ON THIS registry that cannot be read (e.g. repo:tag@sha256:... pinned by hand) names an image nothing here
+    # can match - so nothing is deleted anywhere (it could be the one a job runs)
+    $keepRefs = @(foreach ($r in $KeepIfPresent) { ConvertFrom-EpsImageRef -Ref $r -LoginServer $LoginServer })
+    $odd = @(@($Recorded) + @($KeepIfPresent) | Where-Object { "$_".Trim().ToLowerInvariant().StartsWith("$LoginServer".ToLowerInvariant() + '/') -and -not (ConvertFrom-EpsImageRef -Ref $_ -LoginServer $LoginServer) })
+    if ($odd.Count) {
+        & $say 'Warning' "image prune: $($odd.Count) image reference(s) on this registry could not be read ($(@($odd | Select-Object -First 3) -join ', ')) - nothing deleted"
+        return @{ Ok = $false; Deleted = 0; Left = 0; Lines = @($lines); Table = @() }
+    }
     foreach ($repo in $script:EpsPruneRepos) {
-        $cur = "$($Current[$repo])"
-        if (-not $cur) { $lines.Add("image prune $repo`: the running tag is not known - left as it is"); continue }
+        $mine = @($refs | Where-Object { $_.Repo -eq $repo })
+        if (-not $mine.Count) { & $say 'Notice' "image prune $repo`: the install records no image in it - left as it is"; continue }
+        $row = [ordered]@{ repo = $repo; before = 0; kept = 0; recorded = 0; children = 0; referrers = 0; bases = 0; extra = 0; toDelete = 0; deleted = 0; left = 0; deferred = 0; failed = 0; why = @() }
         try {
             $tok = Get-EpsAcrDataToken -LoginServer $LoginServer -TenantId $TenantId -Repo $repo
             $ms = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
-            if (-not $ms.Count) { $lines.Add("image prune $repo`: no images"); continue }
-            $sel = Select-EpsImagePrune -Manifests $ms -Current $cur
+            $row.before = $ms.Count
+            if (-not $ms.Count) { & $say 'Warning' "image prune $repo`: no images listed - nothing deleted"; $ok = $false; $table.Add($row); continue }
+            $full = @(foreach ($m in $ms) { $x = Get-EpsAcrManifestDetail -LoginServer $LoginServer -Repo $repo -Token $tok -Digest $m.digest
+                [pscustomobject]@{ digest = $m.digest; tags = @($m.tags); createdTime = $m.createdTime; mediaType = $x.mediaType; layers = @($x.layers); children = @($x.children); subject = "$($x.subject)"; readOk = $x.readOk } })
+            $sel = Select-EpsImagePrune -Manifests $full -Recorded @($mine | ForEach-Object { @{ Tag = $_.Tag; Digest = $_.Digest } }) -KeepIfPresent @($keepRefs | Where-Object { $_.Repo -eq $repo } | ForEach-Object { @{ Tag = $_.Tag; Digest = $_.Digest } }) -CurrentVersion $CurrentVersion -NotBefore $NotBefore -Max $Max
+            $c = $sel.Counts
+            $row.kept = $c.Kept; $row.recorded = $c.Recorded; $row.children = $c.Children; $row.referrers = $c.Referrers; $row.bases = $c.Bases; $row.extra = $c.Extra; $row.toDelete = $c.ToDelete; $row.deferred = $sel.Deferred
+            $row.why = @($sel.Keep | Where-Object { $_.why -notlike 'recorded*' } | Select-Object -First 30 | ForEach-Object { "$(Get-EpsShortDigest $_.digest -Bare)$(if (@($_.tags).Count) { " ($(@($_.tags) -join ','))" }): $($_.why)" })
+            if (-not $sel.Ok) { & $say 'Warning' "image prune $repo`: $($ms.Count) images - $($sel.Reason)"; $ok = $false; $row.kept = $ms.Count; $row.left = $ms.Count; $left += $ms.Count; $table.Add($row); continue }
+            & $say 'Notice' "image prune $repo`: $($ms.Count) images, $($c.Kept) kept ($($c.Recorded) recorded, $($c.Children) child/index manifests, $($c.Referrers) referrers, $($c.Bases) bases, $($c.Extra) other), $($c.ToDelete) to delete$(if ($sel.Deferred) { " - $(@($sel.Delete).Count) in this update, $($sel.Deferred) at the next (a large backlog spans updates)" })"
+            foreach ($w in $row.why) { & $say 'Notice' "image prune $repo kept: $w" }
             $gone = 0; $failed = [System.Collections.Generic.List[string]]::new()
             foreach ($d in $sel.Delete) {
-                $r = & $script:EpsHttp 'DELETE' "https://$LoginServer/v2/$repo/manifests/$($d.digest)" @{ Authorization = "Bearer $tok" } $null
-                if ([int]$r.Status -in 200, 202, 404) { $gone++ } else { $failed.Add("$(@($d.tags) -join ',')$(if (-not @($d.tags).Count) { $d.digest.Substring(0, [math]::Min(19, $d.digest.Length)) }) (HTTP $($r.Status))") }
+                $r = Invoke-EpsAcrCall 'DELETE' "https://$LoginServer/v2/$repo/manifests/$($d.digest)" @{ Authorization = "Bearer $tok" } $null
+                if ([int]$r.Status -in 200, 202, 404) { $gone++ } else { $failed.Add("$(if (@($d.tags).Count) { @($d.tags) -join ',' } else { (Get-EpsShortDigest $d.digest) }) (HTTP $($r.Status)$(if ([int]$r.Status -eq 405) { ', locked' }))") }
             }
             $after = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
-            $stillOld = @($after | Where-Object { @($sel.Delete | ForEach-Object { $_.digest }) -contains $_.digest })
-            $kept = @($after | Where-Object { @($_.tags) -contains $cur }).Count
+            $afterD = @($after | ForEach-Object { "$($_.digest)" })
+            $missing = @($sel.Keep | Where-Object { $afterD -notcontains "$($_.digest)" })
+            $row.deleted = $gone; $row.left = $after.Count; $row.failed = $failed.Count
             $deleted += $gone; $left += $after.Count
-            if ($failed.Count -or $stillOld.Count -or -not $kept) { $ok = $false }
-            $lines.Add("image prune $repo`: $($sel.Reason); deleted $gone of $(@($sel.Delete).Count), $($after.Count) left (read back)$(if ($failed.Count) { "; NOT deleted: $($failed -join ', ')" })$(if (-not $kept) { "; WARNING the current $cur did not read back" })")
+            if ($failed.Count -or $missing.Count) { $ok = $false }
+            & $say $(if ($failed.Count -or $missing.Count) { 'Warning' } else { 'Notice' }) "image prune $repo`: $gone deleted, $($after.Count) left (read back)$(if ($failed.Count) { "; NOT deleted: $($failed -join ', ')" })$(if ($missing.Count) { "; WARNING $($missing.Count) kept image(s) missing in the read-back: $(@($missing | ForEach-Object { (Get-EpsShortDigest $_.digest) }) -join ', ')" })"
         } catch {
             $ok = $false
-            $lines.Add("image prune $repo`: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing more deleted (the next update tries again)")
+            & $say 'Warning' "image prune $repo`: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing more deleted (the next update tries again)"
         }
+        $table.Add($row)
     }
-    @{ Ok = $ok; Deleted = $deleted; Left = $left; Lines = @($lines) }
+    @{ Ok = $ok; Deleted = $deleted; Left = $left; Lines = @($lines); Table = @($table) }
 }
 
 function Invoke-EpsImagePruneAfterUpdate {
     <#
-      IMAGE-PRUNE after an update that READ BACK healthy (the caller checks Applied.Ok): the current tags from what runs
-      now (the update's version for eps-engine; the web app's signin-front tag, read back from ARM), then Invoke-EpsImagePrune
-      on the install's own registry. Never throws.
+      IMAGE-PRUNE after an update that READ BACK healthy (called by Invoke-EpsUpdateApply after 'health', inside the update
+      hold): the switch (-Switch, the update job's EPS_Updater_ImagePrune); what ran BEFORE the roll (-RanBefore, read by
+      the apply) and what runs NOW (read here); the release record written through -SaveRecord BEFORE the first delete;
+      then Invoke-EpsImagePrune. Nothing recorded / the record not written = nothing deleted. Never throws:
+      @{ Ok; Off; Deleted; Left; Lines; Table; Summary }.
     #>
-    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [Parameter(Mandatory)][string]$Version)
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [Parameter(Mandatory)][string]$Version,
+          [string]$FromVersion = '', [string[]]$RanBefore = @(), [string]$RanBeforeReason = '', $NotBefore = $null, [AllowEmptyString()][string]$Switch = '',
+          [scriptblock]$SaveRecord, [scriptblock]$ReadRecord, [scriptblock]$Log = { param($l, $m) }, [int]$Max = $script:EpsPruneMaxPerRepo,
+          # SEC-LANE-1 (owner 2026-11-14: "i prefer we dont leave any old version out there as it makes noise in defender" /
+          # "when swap works we remove old"): ONLY what runs now is kept - NOT used by the short path yet (review 2026-11-14: a
+          # read-back of the configuration never RAN the new image; the removal waits for a proven run - the follow-up);
+          # the previous images (and the last record's) go. The record and every other guard stay as they are.
+          [switch]$OnlyCurrent)
+    # -ReadRecord { -> the stored record or $null }: the record the LAST update wrote - its images are kept too (contract
+    # point 2, "a durable release record of the previous release"); a read that fails = nothing deleted
+    $stop = { param($why, [bool]$off = $false)
+        try { & $Log $(if ($off) { 'Notice' } else { 'Warning' }) "image prune: $why" } catch { }
+        @{ Ok = $off; Off = $off; Deleted = 0; Left = 0; Lines = @("image prune: $why"); Table = @(); Summary = $(if ($off) { 'off' } else { 'nothing deleted' }) } }
     try {
+        if ((Get-EpsPruneSwitch $Switch) -eq 'off') { return (& $stop "off ($script:EpsPruneSwitch = $Switch on the update job) - nothing deleted" $true) }
+        $before = @($RanBefore | Where-Object { "$_" })
+        if (-not $before.Count) { return (& $stop "the previous release is not recorded (what ran before the update could not be read$(if ($RanBeforeReason) { ": $RanBeforeReason" })) - nothing deleted") }
+        $now = Get-EpsInstallRunningImages -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+        if (-not $now.Ok) { return (& $stop "what runs now could not be read ($($now.Reason)) - nothing deleted") }
         $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
         $acr = Invoke-EpsArm -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr
         $login = "$($acr.properties.loginServer)"
-        if ($login -notmatch '^[a-z0-9]{5,50}\.azurecr\.io$') { return @{ Ok = $false; Deleted = 0; Left = 0; Lines = @("image prune: the install's registry $($n.Registry) is not readable - nothing pruned") } }
-        $web = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca -AllowNotFound
-        $front = "$(@($web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
-        $cur = @{ 'eps-engine' = $(if ($n.Image -eq 'eps-engine') { $Version } else { '' }); 'signin-front' = $(if ($front -match '/signin-front:([0-9.]+)$') { $Matches[1] } else { '' }) }
-        Invoke-EpsImagePrune -LoginServer $login -TenantId $TenantId -Current $cur
-    } catch { @{ Ok = $false; Deleted = 0; Left = 0; Lines = @("image prune: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing pruned (the next update tries again)") } }
+        if ($login -notmatch '^[a-z0-9]{5,50}\.azurecr\.io$' -or "$($acr.id)" -notlike "$rg/*") { return (& $stop "the install's registry $($n.Registry) is not readable in its own resource group - nothing deleted") }
+        $record = [ordered]@{ atUtc = [datetime]::UtcNow.ToString('o'); registry = $login
+            current = [ordered]@{ version = $Version; images = @($now.Images) }; previous = [ordered]@{ version = $FromVersion; images = @($before) } }
+        if (-not $SaveRecord) { return (& $stop 'no release record writer - nothing deleted') }
+        $stored = @()
+        if ($ReadRecord) {
+            $old = try { & $ReadRecord } catch { return (& $stop "the stored release record could not be read ($((("$($_.Exception.Message)") -split "`n")[0])) - nothing deleted") }
+            if ($old) {
+                $o = if ($old -is [string]) { try { $old | ConvertFrom-Json } catch { $null } } else { $old }
+                if (-not $o) { return (& $stop 'the stored release record is not readable - nothing deleted') }
+                $stored = @(@($o.current.images) + @($o.previous.images) | Where-Object { "$_" })
+            }
+        }
+        try { & $SaveRecord $record } catch { return (& $stop "the release record could not be written ($((("$($_.Exception.Message)") -split "`n")[0])) - nothing deleted") }
+        try { & $Log 'Notice' "image prune: release record written ($Version runs: $(@($now.Images).Count) image(s); $FromVersion ran: $($before.Count); the last record kept: $($stored.Count)) - $($now.Reason)" } catch { }
+        $keepRec = if ($OnlyCurrent) { @($now.Images) } else { @(@($now.Images) + $before | Select-Object -Unique) }; $keepOld = if ($OnlyCurrent) { @() } else { $stored }
+        if ($OnlyCurrent) { try { & $Log 'Notice' "image prune: image-only swap read back healthy - only what runs now is kept, the previous images go (owner: when swap works we remove old)" } catch { } }
+        $p = Invoke-EpsImagePrune -LoginServer $login -TenantId $TenantId -Recorded $keepRec -KeepIfPresent $keepOld -CurrentVersion $Version -NotBefore $NotBefore -Max $Max -Log $Log
+        $deferred = 0; foreach ($row in @($p.Table)) { $deferred += [int]$row.deferred }
+        $p.Off = $false
+        $p.Summary = "$($p.Deleted) old deleted, $($p.Left) left$(if ($deferred) { ", $deferred at the next update" })$(if (-not $p.Ok) { ' (prune incomplete)' })"
+        $p
+    } catch { & $stop "$((("$($_.Exception.Message)") -split "`n")[0]) - nothing more deleted (the next update tries again)" }
 }
+
 function Test-EpsVaultPrivateShape {
     # PURE. framework installer rule 11: a PRIVATE install's vault = public access off, Deny, bypass AzureServices, no IP /
     # network rule. Returns @{ Ok; Drift (plain words) }.
