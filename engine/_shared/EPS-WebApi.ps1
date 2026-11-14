@@ -216,8 +216,8 @@ function Get-EpsWebRoutes {
            Role = 'Reader'; Handler = { param($c, $m)
             $p = @{ s = "$($c.Query.status)" }
             New-EpsWebResponse -Body @{ rows = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters $p -Query "SELECT TOP (2000) EventId, FoundAtUtc, ObjectType, ObjectName, ObjectId, TagType, Attribute, OldValue, NewValue, Severity, Initiator, InitiatorKind, FoundBy, Detail, Status, ResolvedBy, ResolvedAtUtc, AlertedAtUtc FROM eps.TamperEvent WHERE (@s = '' OR Status = @s) ORDER BY FoundAtUtc DESC")) } } }
-        @{ Method = 'POST'; Pattern = '^/api/tamper/(?<id>\d+)/accept$'; Summary = 'Accept an open tamper event: the new value stays.'; Public = $true
-           Role = 'Admin'; Action = 'tamper.event.accept'; NeedsReason = $true; Handler = { param($c, $m)
+        @{ Method = 'POST'; Pattern = '^/api/tamper/(?<id>\d+)/accept$'; Summary = 'Accept an open tamper event: the new value stays (the engine closes the event at its next run).'; Public = $true
+           Role = 'Admin'; Action = 'tamper.event.accept.request'; NeedsReason = $true; Handler = { param($c, $m)
             $id = [long]$m.id
             $before = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ id = $id } -Query 'SELECT EventId, Status, ObjectName, Attribute, OldValue, NewValue, Detail FROM eps.TamperEvent WHERE EventId = @id')[0]
             if (-not $before) { return New-EpsWebError 404 'no such event' }
@@ -225,8 +225,13 @@ function Get-EpsWebRoutes {
             # Invardia 2026-11-13 (e): a restore waiting for the hybrid worker would still write the old value after an accept
             if ("$($before.Detail)" -match '\[restore (queued for the hybrid worker|applied in AD)[^\]]*\]\s*$') { return New-EpsWebResponse -Status 409 -Body @{ error = 'a restore of this event is waiting for the hybrid worker - accept it after the restore is read back or marked not applied' } -Audit @{ Target = "TamperEvent|$id"; Outcome = 'refused'; OutcomeText = 'restore pending' } }
             $before = $before | Select-Object EventId, Status, ObjectName, Attribute, OldValue, NewValue   # the audit's Before as before (no Detail)
-            [void](Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -NonQuery -Parameters @{ id = $id; by = $c.Caller.identity } -Query "UPDATE eps.TamperEvent SET Status = 'Accepted', ResolvedBy = @by, ResolvedAtUtc = SYSUTCDATETIME() WHERE EventId = @id AND Status = 'Open'")
-            New-EpsWebResponse -Body @{ ok = $true } -Audit @{ Target = "TamperEvent|$id ($($before.ObjectName) $($before.Attribute))"; Before = $before; After = @{ Status = 'Accepted' } } } }
+            # SECURE-WEB-1 / review G point 5 (2.1.33): the web identity no longer writes eps.TamperEvent - closing a tamper
+            # alarm goes through the signed-request gate like a restore; the engine checks the admin's token and closes it
+            # one accept at a time per event (review of 2.1.33): a second click before the engine ran is refused, not queued
+            $waitAcc = Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Parameters @{ s = (@{ accept = @($id) } | ConvertTo-Json -Compress) } -Query "SELECT TOP 1 CONVERT(NVARCHAR(36), RequestId) FROM eps.JobRequest WHERE Job = 'TamperMonitor' AND Status IN ('Pending', 'Dispatched', 'Running') AND Scope = @s"
+            if ($waitAcc) { return New-EpsWebResponse -Status 409 -Body @{ error = 'this change is already being accepted - it closes at the next monitor run'; requestId = "$waitAcc" } -Audit @{ Target = "TamperEvent|$id"; Outcome = 'refused'; OutcomeText = 'an accept is already waiting' } }
+            $rq = New-EpsSignedJobRequest -Ctx $c -Job 'TamperMonitor' -Mode 'Apply' -Scope @{ accept = @($id) }
+            New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = 'The engine records the accept at its next run (within minutes).' } -Audit @{ Target = "TamperEvent|$id ($($before.ObjectName) $($before.Attribute))"; Before = $before; After = @{ requestId = $rq } } } }
         @{ Method = 'POST'; Pattern = '^/api/tamper/(?<id>\d+)/restore$'; Summary = 'Ask the engine to write the earlier value back for an open tamper event (at its next run).'; Public = $false
            Role = 'Admin'; Action = 'tamper.event.restore.request'; NeedsReason = $true; Handler = { param($c, $m)
             $id = [long]$m.id

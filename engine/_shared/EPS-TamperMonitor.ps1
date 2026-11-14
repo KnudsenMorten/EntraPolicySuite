@@ -253,6 +253,32 @@ function Restore-EpsTamperEvent {
     [pscustomobject]@{ EventId = $EventId; Restored = $ok; Queued = $queued; Pending = $queued; Value = $value; Error = $c.Error }
 }
 
+function Approve-EpsTamperEvent {
+    <#
+      SECURE-WEB-1 / review G point 5 (2.1.33): "Accept" of a tamper event, done by the ENGINE after the signed-request gate
+      (the web identity no longer writes eps.TamperEvent). Checked again here, at the moment it is closed: the event exists,
+      is Open, and has no restore waiting for the hybrid worker (it would still write the old value after the accept).
+      Nothing in the directory changes. Never throws: @{ EventId; Accepted; Error }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][long]$EventId, [Parameter(Mandatory)][string]$By)
+    try {
+        $e = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ id = $EventId } -Query 'SELECT EventId, Status, Detail FROM eps.TamperEvent WHERE EventId = @id')[0]
+        if (-not $e) { return @{ EventId = $EventId; Accepted = $false; Error = 'no such event' } }
+        # review of 2.1.33: a second click before the engine ran - the event IS accepted, so that request is not a failure
+        if ("$($e.Status)" -eq 'Accepted') { return @{ EventId = $EventId; Accepted = $true; Already = $true; Error = $null } }
+        if ("$($e.Status)" -ne 'Open') { return @{ EventId = $EventId; Accepted = $false; Error = "the event is $($e.Status), not Open" } }
+        if ((Get-EpsRestoreMarker -Detail $e.Detail).Kind -in 'queued', 'syncWait') { return @{ EventId = $EventId; Accepted = $false; Error = 'a restore of this event is waiting for the hybrid worker - accept it after the restore is read back or marked not applied' } }
+        # the marker is checked again IN the update (review of 2.1.33): a restore queued between the read and the write wins
+        $n = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $EventId; b = $By } -Query @"
+UPDATE eps.TamperEvent SET Status = 'Accepted', ResolvedBy = @b, ResolvedAtUtc = SYSUTCDATETIME()
+WHERE EventId = @id AND Status = 'Open'
+  AND ISNULL(Detail, N'') NOT LIKE N'%[[]restore queued for the hybrid worker%' AND ISNULL(Detail, N'') NOT LIKE N'%[[]restore applied in AD%'
+"@)
+        if ($n -ne 1) { return @{ EventId = $EventId; Accepted = $false; Error = 'the event changed while it was accepted (no longer Open, or a restore was queued) - nothing accepted' } }
+        @{ EventId = $EventId; Accepted = $true; Error = $null }
+    } catch { @{ EventId = $EventId; Accepted = $false; Error = (("$($_.Exception.Message)") -split "`n")[0] } }
+}
+
 function Get-EpsRestoreMarker {
     <# PURE. The restore marker at the end of a tamper event's Detail: "[restore queued for the hybrid worker since ...]",
        "[restore read back ...]" or "[restore not applied: ...]" -> @{ Kind = queued | readBack | notApplied | ''; Text; Base } #>

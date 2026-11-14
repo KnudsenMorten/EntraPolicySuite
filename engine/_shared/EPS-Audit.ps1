@@ -44,7 +44,8 @@ $script:EpsAuditActions = @(
     'config.export', 'config.import.check'         # CONFIG-IO-1: the configuration exported as one file (a READ mark), an import file checked (nothing written; the changes go through their own routes)
     'ca.documentation.export'       # the Conditional Access documentation (CSV / xlsx), ids resolved to names
     'identity.run.request', 'identity.export', 'view.save', 'view.delete'   # the identity report (read only) and saved views (LIST-1)
-    'tamper.event.accept'           # the change was legitimate (no outside change)
+    'tamper.event.accept.request'   # the GUI asks the engine to accept the change (a signed JobRequest, 2.1.33)
+    'tamper.event.accept'           # the change was legitimate (no outside change) - the engine closed the event (job)
     'tamper.event.restore.request'  # the GUI asks the engine to write the tag back (a signed JobRequest)
     'tamper.event.restore'          # the engine wrote it back (job)
     'audit.export', 'changes.export', 'runs.export'   # exports of audited data (AUDIT-1.2 item 4)

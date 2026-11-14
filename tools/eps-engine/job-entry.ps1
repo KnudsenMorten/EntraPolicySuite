@@ -104,7 +104,9 @@ try {
         # through ARM. Take ONE message (deleted at once); its per-run parameters are checked in Read-EpsJobMessage and
         # are the only way in - anything set in the environment for them before is dropped.
         foreach ($k in 'EPS_REQUEST_ID', 'EPS_CA_MONITOR', 'EPS_TAG_TRIGGER') { Remove-Item "env:$k" -ErrorAction SilentlyContinue }
-        $msg = Read-EpsJobMessage -StorageAccount $env:EPS_STORAGE_ACCOUNT -AcaJobName $env:EPS_ACA_JOB
+        # WEB-NO-JOB-RIGHTS (2.1.32): the wake queue's sender is the internet-facing web identity - its messages older than
+        # 15 min are refused by the reader, whatever TTL the sender set
+        $msg = Read-EpsJobMessage -StorageAccount $env:EPS_STORAGE_ACCOUNT -AcaJobName $env:EPS_ACA_JOB -MaxAgeMinutes $(if ($Job -eq 'Wake') { 15 } else { 0 })
         if ($null -eq $msg) {
             # the uplink job is also started directly (framework SECAUDIT-1a: the Support session starts the heartbeat once
             # so support begins without waiting an interval) - it takes no parameters, so it runs its normal cycle
@@ -112,7 +114,7 @@ try {
             Say "no message on the queue (a direct start) - the normal $($Job.ToLowerInvariant()) cycle"
         }
         elseif ($msg.Refused) { Say $msg.Refused; exit 0 }
-        else { foreach ($k in $msg.Keys) { Set-Item "env:$k" $msg[$k] } }
+        else { Say $msg.Note; foreach ($k in @($msg.Keys | Where-Object { $_ -ne 'Note' })) { Set-Item "env:$k" $msg[$k] } }
     }
     if ($Job -eq 'Wake') {
         # FAST-START: the web app's wake-up - one normal engine check now (claims, guards and the run record as every tick)
@@ -213,8 +215,9 @@ WHERE q.RequestId = @id AND q.Job = 'CAPolicyAnalyzer' AND q.Status = 'Dispatche
         exit $(if ($ok) { 0 } else { 1 })
     }
     if ($Job -eq 'TamperMonitor') {
-        # a restore the GUI asked for (one click on the Tamper page): the engine writes the tag back - signed first
-        Say 'requests from the GUI (test mail, restore)'
+        # a restore / an accept the GUI asked for (one click on the Tamper page): the engine writes the tag back or closes the
+        # event - signed first
+        Say 'requests from the GUI (test mail, restore, accept)'
         while ($q = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query @'
 UPDATE TOP (1) q SET Status = 'Running', UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
 OUTPUT INSERTED.RequestId, INSERTED.Mode, INSERTED.Scope, INSERTED.RequestedBy, DELETED.SignedToken, INSERTED.SignedVerifiedAtUtc, INSERTED.CorrelationId
@@ -229,18 +232,33 @@ WHERE q.Job = 'TamperMonitor' AND q.Status = 'Dispatched'
                 Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $(if ($x.Sent) { 'Done' } else { 'Failed' }); t = "test mail: $($x.Reason)" } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null
                 continue
             }
-            $ids = @(if ($sc) { $sc.restore })
-            $gate = Confirm-EpsJobRequest -Request $q -ConnectionString $ConnectionString -ChangesOutside:($ids.Count -gt 0)
-            Say "request $($q.RequestId) by $($q.RequestedBy): restore $($ids -join ', ') - $($gate.Text)"
+            # a request may carry restore, accept or both: a missing key is $null and never an event id
+            $ids = @(@(if ($sc) { $sc.restore }) | Where-Object { $null -ne $_ })
+            # 2.1.33 (SECURE-WEB-1, review G point 5): an accept closes a security alarm - it is signed like a restore
+            $acc = @(@(if ($sc) { $sc.accept }) | Where-Object { $null -ne $_ })
+            $gate = Confirm-EpsJobRequest -Request $q -ConnectionString $ConnectionString -ChangesOutside:(($ids.Count + $acc.Count) -gt 0)
+            Say "request $($q.RequestId) by $($q.RequestedBy): $(if ($ids.Count) { "restore $($ids -join ', ')" })$(if ($ids.Count -and $acc.Count) { '; ' })$(if ($acc.Count) { "accept $($acc -join ', ')" }) - $($gate.Text)"
             $done = [System.Collections.Generic.List[string]]::new()
             if ($gate.Allow) {
+                foreach ($id in $acc) {
+                    $x = Approve-EpsTamperEvent -ConnectionString $ConnectionString -EventId ([long]$id) -By $q.RequestedBy
+                    $done.Add("event $id`: $(if ($x.Already) { 'already accepted (an earlier request)' } elseif ($x.Accepted) { 'accepted (the new value stays)' } else { "accept FAILED: $($x.Error)" })")
+                    if ($x.Already) { continue }   # one audit row per accept, not per click
+                    Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'tamper.event.accept' -Actor $q.RequestedBy -ActorSource 'job' -Target "TamperEvent|$id" `
+                        -Outcome $(if ($x.Accepted) { 'ok' } else { 'error' }) -OutcomeText $(if (-not $x.Accepted) { "$($x.Error)" }) -After @{ Status = $(if ($x.Accepted) { 'Accepted' } else { 'Open' }) } -CorrelationId $q.CorrelationId
+                }
                 foreach ($id in $ids) {
-                    $x = Restore-EpsTamperEvent -ConnectionString $ConnectionString -EventId ([long]$id) -By $q.RequestedBy
+                    # review of 2.1.33: a restore of an event that is no longer Open (an accept or another restore came first)
+                    # throws - it fails THAT request, never the monitor run (its detection and alert still run)
+                    $x = try { Restore-EpsTamperEvent -ConnectionString $ConnectionString -EventId ([long]$id) -By $q.RequestedBy } catch { [pscustomobject]@{ EventId = $id; Restored = $false; Queued = $false; Pending = $false; Value = $null; Error = (("$($_.Exception.Message)") -split "`n")[0] } }
                     $done.Add("event $id`: $(if ($x.Queued) { "queued for the hybrid worker - it writes '$($x.Value)' to AD; the event closes when the value is read back" } elseif ($x.Pending) { "not queued again: $($x.Error)" } elseif ($x.Restored) { "restored '$($x.Value)'" } else { "FAILED: $($x.Error)" })")
                     Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'tamper.event.restore' -Actor $q.RequestedBy -ActorSource 'job' -Target "TamperEvent|$id" `
                         -Outcome $(if ($x.Restored -or $x.Queued) { 'ok' } else { 'error' }) -OutcomeText $(if ($x.Queued) { 'queued for the hybrid worker - not written yet; the event closes when the value is read back' } elseif (-not $x.Restored) { "$($x.Error)" }) -After @{ appliedBy = $(if ($x.Queued) { 'HybridWorker (queued)' } else { 'TamperMonitor' }); value = $x.Value; queued = [bool]$x.Queued } -CorrelationId $q.CorrelationId
                 }
             }
+            # review of 2.1.33: a request with no action this engine knows (e.g. written by a newer web app during a roll) is
+            # Failed and says so - never "Done" with nothing done
+            if (-not ($ids.Count + $acc.Count)) { $done.Add('FAILED: the request names no action this engine version knows (restore / accept / testMail) - nothing was done') }
             $st = if (-not $gate.Allow) { 'Refused' } elseif ($done | Where-Object { $_ -match 'FAILED' }) { 'Failed' } else { 'Done' }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $st; t = (@($gate.Text) + $done) -join '; ' } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null
             foreach ($d in $done) { Say "  $d" }

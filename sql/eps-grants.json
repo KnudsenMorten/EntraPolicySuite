@@ -102,7 +102,7 @@
     "eps_web": {
       "identity": "WebIdentity",
       "grants": {
-        "License": ["SELECT", "UPDATE"],
+        "License": ["SELECT", "UPDATE(ClaimAction, ClaimMessage, ClaimAtUtc, ClaimLicenceHash, RequestStatus)"],
         "AdUserSnapshotInfo": ["SELECT"],
         "AdminUnit": ["SELECT"],
         "AuditEvent": ["SELECT", "INSERT"],
@@ -156,7 +156,7 @@
         "TagType": ["SELECT"],
         "TargetGroup": ["SELECT"],
         "TagValue": ["SELECT"],
-        "TamperEvent": ["SELECT", "UPDATE(Status, ResolvedBy, ResolvedAtUtc)"],
+        "TamperEvent": ["SELECT"],
         "UplinkState": ["SELECT"],
         "UserTagRule": ["SELECT"],
         "UserTagRuleCondition": ["SELECT"],

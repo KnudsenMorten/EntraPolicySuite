@@ -1,0 +1,13 @@
+{
+  "version": "2.1.32",
+  "date": "2026-11-14",
+  "type": "fix-only",
+  "summary": "Start requests from the web app now expire after 15 minutes.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Old start requests are ignored",
+      "text": "When the web app asks the engine to check for work right away, the engine ignores a request older than 15 minutes. Each accepted or ignored request is logged."
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "version": "2.1.33",
+  "date": "2026-11-14",
+  "type": "security",
+  "summary": "Closing a tamper alarm now needs the admin's own sign-in.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Tamper alarms close only after checking your sign-in",
+      "text": "When you accept a change on the Tamper page, the engine checks your own sign-in before it closes the alarm. The alarm closes at the next monitor run, within minutes."
+    },
+    {
+      "title": "The web app cannot change the licence",
+      "text": "The web app can only reset a refused licence claim. The licence itself is written only by the update job."
+    }
+  ]
+}

@@ -207,8 +207,12 @@ function Read-EpsJobMessage {
       message; a message left behind would start another). Returns $null when there is none (an execution KEDA started
       for a message another execution took - nothing to do), else the per-run parameters, CHECKED: only the names this
       job takes, each in its own shape (a tick identity that is not ours can at most ask for a normal run).
+      -MaxAgeMinutes (WEB-NO-JOB-RIGHTS, framework §12.11f point 1, 2.1.32): a message the queue says was inserted longer
+      ago than this - or whose insertion time cannot be read - is refused. The sender's messagettl is the SENDER's choice,
+      so the reader checks the age itself. Used for the web's wake queue (an internet-facing sender). 0 = no age check.
+      An accepted message's id and age come back as Note (not a parameter; the caller logs it).
     #>
-    param([Parameter(Mandatory)][string]$StorageAccount, [Parameter(Mandatory)][string]$AcaJobName)
+    param([Parameter(Mandatory)][string]$StorageAccount, [Parameter(Mandatory)][string]$AcaJobName, [int]$MaxAgeMinutes = 0, [Nullable[datetime]]$NowUtc = $null)
     $q = Get-EpsJobQueueName $AcaJobName
     $base = "https://$StorageAccount.queue.core.windows.net/$q/messages"
     $h = @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://storage.azure.com/')"; 'x-ms-version' = '2021-08-06' }
@@ -221,6 +225,21 @@ function Read-EpsJobMessage {
     $txt = if ($x -match '<MessageText>([^<]*)</MessageText>') { $Matches[1] } else { '' }
     $d = & $script:EpsHttp 'DELETE' "$base/$id`?popreceipt=$([uri]::EscapeDataString([System.Net.WebUtility]::HtmlDecode($pop)))" $h $null
     if ($d.Status -ge 300 -and $d.Status -ne 404) { throw "queue $q`: delete HTTP $($d.Status)" }
+    $ageText = ''
+    if ($MaxAgeMinutes -gt 0) {
+        $now = if ($NowUtc) { [datetime]::SpecifyKind([datetime]$NowUtc, [DateTimeKind]::Utc) } else { [datetime]::UtcNow }
+        $ins = [datetimeoffset]::MinValue
+        $insText = if ($x -match '<InsertionTime>([^<]+)</InsertionTime>') { $Matches[1].Trim() } else { '' }
+        # the queue service writes RFC 1123 ("Sat, 14 Nov 2026 17:50:00 GMT"): parsed exactly, culture-independent
+        if (-not $insText -or -not [datetimeoffset]::TryParseExact($insText, 'r', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$ins)) {
+            return @{ Refused = "message $id has no readable insertion time - refused (older than $MaxAgeMinutes min cannot be ruled out)" }
+        }
+        $age = $now - $ins.UtcDateTime
+        if ($age.TotalMinutes -gt $MaxAgeMinutes) { return @{ Refused = "message $id is $([int][Math]::Ceiling($age.TotalMinutes)) min old (inserted $($ins.UtcDateTime.ToString('u'))) - older than $MaxAgeMinutes min, refused" } }
+        # a clock that runs behind would widen the window: an insertion time more than 5 min in the future is refused too
+        if ($age.TotalMinutes -lt -5) { return @{ Refused = "message $id has an insertion time $([int][Math]::Ceiling(-$age.TotalMinutes)) min in the future ($($ins.UtcDateTime.ToString('u'))) - this job's clock or the message cannot be trusted, refused" } }
+        $ageText = ", $([int][Math]::Max(0, $age.TotalSeconds)) s old"
+    }
     $allowed = @{
         EPS_REQUEST_ID  = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
         EPS_CA_MONITOR  = '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$'
@@ -234,6 +253,7 @@ function Read-EpsJobMessage {
         if (-not $allowed.ContainsKey($k) -or $v -notmatch $allowed[$k]) { return @{ Refused = "message $id carries a parameter this job does not take ($k) - refused" } }
         $out[$k] = $v
     }
+    $out.Note = "message $id accepted$ageText"
     $out
 }
 

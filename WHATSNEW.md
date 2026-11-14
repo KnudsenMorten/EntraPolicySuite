@@ -1,5 +1,30 @@
 # What's new in Entra Policy Suite
 
+## 2.1.33 · 2026-11-14 · Security
+
+Closing a tamper alarm now needs the admin's own sign-in.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Tamper alarms close only after checking your sign-in** - When you accept a change on the Tamper page, the engine checks your own sign-in before it closes the alarm. The alarm closes at the next monitor run, within minutes.
+- **The web app cannot change the licence** - The web app can only reset a refused licence claim. The licence itself is written only by the update job.
+
+## 2.1.32 · 2026-11-14 · Fix-only
+
+Start requests from the web app now expire after 15 minutes.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Old start requests are ignored** - When the web app asks the engine to check for work right away, the engine ignores a request older than 15 minutes. Each accepted or ignored request is logged.
+
 ## 2.1.31 · 2026-11-14 · Feature update
 
 Security updates from Microsoft install faster and leave no old images behind.

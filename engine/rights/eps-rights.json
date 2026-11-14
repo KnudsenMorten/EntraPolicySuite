@@ -306,6 +306,7 @@
     {
       "role": "web",
       "identity": "id-eps-web",
+      "internetFacing": true,
       "jobs": [],
       "app": "ca-eps-web",
       "oldNames": {

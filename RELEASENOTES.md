@@ -2,6 +2,17 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.33 - Security update: closing a tamper alarm needs the admin's own sign-in
+Builds on the owner's decision: "remember any security must go out without any dependency to my approval" (2026-11-14, relayed by Invardia)
+- Security update: when an admin accepts a change on the Tamper page, the engine now checks that admin's own sign-in
+  before it closes the alarm - the same check a restore already has. The web app itself can no longer close a tamper
+  alarm, and it can no longer change the stored licence (only reset a refused licence claim).
+- Change you will see: an accepted change closes at the next monitor run (within minutes), not at once.
+## 2.1.32 - Security update: the web app's start requests expire
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "remember any security must go out without any dependency to my approval" (2026-11-14, relayed by Invardia)
+- Security update: when the web app asks the engine to check for work right away, the engine now ignores a request
+  older than 15 minutes, whatever expiry the request carries. Accepted and ignored requests are written to the job's log.
 ## 2.1.31 - Security updates from Microsoft install faster
 Builds on the owner's decision: "we need to fix images in fast lane" (2026-11-14, relayed by Invardia, framework SEC-LANE-1)
 - New: a security update that only moves your installation onto Microsoft's newest images (the same code) installs at once:

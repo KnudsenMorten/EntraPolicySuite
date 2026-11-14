@@ -2549,7 +2549,7 @@ function schedPicker(current, job) {
   var AUDIT_TEXT = { 'auth.signin': 'Signed in', 'auth.request.refused': 'Sign-in refused', 'web.request.refused': 'Request refused', 'guard.trip': 'A guard stopped a change', 'identity.view': 'Looked at the identity report',
     'ca.analysis.view': 'Looked at an analysis', 'queue.stage': 'Staged a change', 'queue.commit': 'Committed changes', 'queue.discard': 'Discarded changes', 'queue.discard-all': 'Discarded every waiting change',
     'job.run.request': 'Asked for a job run', 'job.test.request': 'Started a test run', 'job.golive.request': 'Went live', 'job.run.undo': 'Undid a tagging run', 'config.request': 'Saved a change (applied by the engine)',
-    'tamper.event.accept': 'Accepted a foreign change', 'tamper.event.restore.request': 'Asked to restore a value', 'tamper.event.restore': 'Restored a value' };
+    'tamper.event.accept': 'Accepted a foreign change', 'tamper.event.accept.request': 'Asked to accept a foreign change', 'tamper.event.restore.request': 'Asked to restore a value', 'tamper.event.restore': 'Restored a value' };
   function auditActionText(a) {
     var s = textOf(a); if (AUDIT_TEXT[s]) return AUDIT_TEXT[s];
     var parts = s.split('.'), area = AUDIT_AREA[parts[0]] || parts[0];
@@ -4777,12 +4777,12 @@ function schedPicker(current, job) {
         if (isRole('Admin')) cols.unshift({ key: '_act', label: 'Action', nowrap: true, render: function (r) {
           if (r.Status !== 'Open') return null;
           return el('span', null,
-            el('button', { type: 'button', class: 'secondary', text: 'Accept', onclick: function () { withReason('Accept this change', r.ObjectName + ': ' + r.Attribute + ' = ' + r.NewValue + '. It stays as it is.', function (reason) { return api('POST', '/api/tamper/' + r.EventId + '/accept', { reason: reason }); }); } }), ' ',
+            el('button', { type: 'button', class: 'secondary', text: 'Accept', onclick: function () { withReason('Accept this change', r.ObjectName + ': ' + r.Attribute + ' = ' + r.NewValue + '. It stays as it is; the event closes at the next monitor run.', function (reason) { return api('POST', '/api/tamper/' + r.EventId + '/accept', { reason: reason }); }); } }), ' ',
             el('button', { type: 'button', text: 'Restore', onclick: function () { withReason('Restore the value', r.ObjectName + ': ' + r.Attribute + ' goes back to the engine\'s value at the next monitor run.', function (reason) { return api('POST', '/api/tamper/' + r.EventId + '/restore', { reason: reason }); }); } }));
         } });
         var openOnly = function (sel) { return sel.filter(function (r) { return r.Status === 'Open'; }); };
         p.appendChild(table(j.rows, cols, { sort: 'FoundAtUtc', dir: -1, empty: 'No foreign change found.', bulk: isRole('Admin') ? [
-          { label: 'Accept', run: function (sel) { var t = openOnly(sel); if (!t.length) { notice('None of the selected changes is open.'); return; } bulkAction('Accept changes', 'They stay as they are.', t, function (r, reason) { return api('POST', '/api/tamper/' + r.EventId + '/accept', { reason: reason }); }); } },
+          { label: 'Accept', run: function (sel) { var t = openOnly(sel); if (!t.length) { notice('None of the selected changes is open.'); return; } bulkAction('Accept changes', 'They stay as they are; the events close at the next monitor run.', t, function (r, reason) { return api('POST', '/api/tamper/' + r.EventId + '/accept', { reason: reason }); }); } },
           { label: 'Restore', run: function (sel) { var t = openOnly(sel); if (!t.length) { notice('None of the selected changes is open.'); return; } bulkAction('Restore values', 'The engine writes its value back at the next monitor run.', t, function (r, reason) { return api('POST', '/api/tamper/' + r.EventId + '/restore', { reason: reason }); }); } }] : [] }));
       });
     } },
