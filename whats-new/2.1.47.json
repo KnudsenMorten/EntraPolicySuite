@@ -1,0 +1,13 @@
+{
+  "version": "2.1.47",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "Each job report to Invardia support says when the job finished.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Job reports carry the time the job finished",
+      "text": "Each report to Invardia support now names when the job finished, not only when the report was sent, so an old problem is never mistaken for a new one."
+    }
+  ]
+}

@@ -1,5 +1,53 @@
 # What's new in Entra Policy Suite
 
+## 2.1.49 · 2026-11-15 · Fix-only
+
+The Key Vault check no longer counts the sign-in's public app id as a secret.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The Key Vault check is right again** - The check that every secret is kept in Key Vault counted the web app's public sign-in id as a secret. It no longer does; any real secret outside Key Vault is still counted.
+
+## 2.1.48 · 2026-11-15 · Fix-only
+
+After an update, the support link reports the new version within minutes.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The new version is reported right away** - After an update, the support link tells Invardia support the new version within minutes instead of at its next four-hourly report, and an update no longer holds the support link back.
+
+## 2.1.47 · 2026-11-15 · Fix-only
+
+Each job report to Invardia support says when the job finished.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Job reports carry the time the job finished** - Each report to Invardia support now names when the job finished, not only when the report was sent, so an old problem is never mistaken for a new one.
+
+## 2.1.46 · 2026-11-15 · Fix-only
+
+A short hiccup during an update no longer looks like a failure to Invardia support.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **A passing hiccup is reported as one** - When an update stops before it changes anything, because Azure or a download did not answer in time, the report says it will be tried again. Invardia support then waits for the next try instead of opening a ticket.
+
 ## 2.1.45 · 2026-11-15 · Fix-only
 
 The support link sends only job reports from the last day.

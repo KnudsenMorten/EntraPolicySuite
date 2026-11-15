@@ -1,0 +1,13 @@
+{
+  "version": "2.1.46",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "A short hiccup during an update no longer looks like a failure to Invardia support.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A passing hiccup is reported as one",
+      "text": "When an update stops before it changes anything, because Azure or a download did not answer in time, the report says it will be tried again. Invardia support then waits for the next try instead of opening a ticket."
+    }
+  ]
+}

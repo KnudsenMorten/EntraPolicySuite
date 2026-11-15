@@ -1,0 +1,13 @@
+{
+  "version": "2.1.48",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "After an update, the support link reports the new version within minutes.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The new version is reported right away",
+      "text": "After an update, the support link tells Invardia support the new version within minutes instead of at its next four-hourly report, and an update no longer holds the support link back."
+    }
+  ]
+}

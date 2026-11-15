@@ -310,7 +310,9 @@ function Invoke-EpsTick {
             $r = $byJob[$job]
             if (-not $r) { return 'no schedule row' }
             if (-not $impl[$job]) { return 'not in this release' }
-            if ($updateHold -and $job -ne 'Update') { return 'an update is being installed (update hold) - starts when it is done' }
+            # UPLINK-SLOT-1 (framework §8.4, 2.1.48): the Invardia support link is never held by an update - it reads, sends
+            # and writes only its own state, and a new version must be reported at once (the ring proof waits on it)
+            if ($updateHold -and $job -notin 'Update', 'Uplink') { return 'an update is being installed (update hold) - starts when it is done' }
             if ($alwaysOn[$job]) { return $null }   # the Config job: configuration changes always get applied (SEC-AUDIT-1 S1)
             if (-not $master) { return 'all jobs are switched off (Platform.JobsEnabled)' }
             if (-not $r.Enabled) { return 'the job is switched off' }

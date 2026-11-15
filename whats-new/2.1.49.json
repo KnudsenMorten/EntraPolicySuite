@@ -1,0 +1,13 @@
+{
+  "version": "2.1.49",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "The Key Vault check no longer counts the sign-in's public app id as a secret.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The Key Vault check is right again",
+      "text": "The check that every secret is kept in Key Vault counted the web app's public sign-in id as a secret. It no longer does; any real secret outside Key Vault is still counted."
+    }
+  ]
+}

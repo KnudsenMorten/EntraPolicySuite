@@ -2,6 +2,27 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.49 - Fix-only: the Key Vault check is right again
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "security, including leftovers" (2026-11-15, relayed by Invardia)
+- Fix: the check that every secret is kept in Key Vault counted the web app's public sign-in id (the client id
+  Microsoft's built-in sign-in needs) as a secret. It no longer does; any real secret outside Key Vault still counts.
+## 2.1.48 - Fix-only: the new version is reported right after an update
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)
+- Fix: after an update, the support link tells Invardia support the new version within minutes instead of at its next
+  four-hourly report; an update no longer holds the support link back or waits for it.
+## 2.1.47 - Fix-only: each job report says when the job finished
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)
+- Fix: each report to Invardia support names when the job finished, not only when the report was sent, so an old
+  problem is never mistaken for a new one.
+## 2.1.46 - Fix-only: a passing hiccup during an update is reported as one
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)
+- Fix: when an update stops before it changes anything because Azure or a download did not answer in time, the
+  report to Invardia support says it will be tried again, so support waits for the next try instead of opening a
+  ticket. A real failure (for example a build that cannot succeed) is reported as before.
 ## 2.1.45 - Fix-only: only recent job reports go to Invardia support
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)

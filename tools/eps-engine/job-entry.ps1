@@ -169,8 +169,10 @@ WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
         $sum = if ($u) { "$($u.Summary)" } else { 'the check failed - see its log' }
         # 2.1.17: a mixed roll names every component - never longer than the columns (NVARCHAR(1000)), or the run stays Running
         if ($sum.Length -gt 1000) { $sum = $sum.Substring(0, 997) + '...' }
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum; a = $(if ($u.Applied.Ok) { @($u.Applied.Rolled).Count } else { 0 }) } `
-            -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h WHERE RunId = @id' | Out-Null
+        # TRANSIENT-RETRY-1: a stop BEFORE the roll on a transient cause is kept on the run (SummaryJson.Retry) for the run record
+        $retry = if (-not $ok -and $u -and $u.Applied -and -not $u.Applied.Ok) { Get-EpsUpdateRetry -Step "$($u.Applied.Step)" -Reason "$($u.Applied.Reason)" -RunningVersion $version }
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'PartlyFailed' }); h = $sum; a = $(if ($u.Applied.Ok) { @($u.Applied.Rolled).Count } else { 0 }); js = $(if ($retry) { ([ordered]@{ Retry = $retry } | ConvertTo-Json -Compress) } else { [DBNull]::Value }) } `
+            -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Applied = @a, HeldReason = @h, SummaryJson = COALESCE(@js, SummaryJson) WHERE RunId = @id' | Out-Null
         if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $sum } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         exit $(if ($ok) { 0 } else { 1 })
     }

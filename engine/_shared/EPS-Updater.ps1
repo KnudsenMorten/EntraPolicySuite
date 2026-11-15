@@ -293,7 +293,8 @@ function Get-EpsUpdateRunGate {
 $script:EpsUpdateHold = @{ Scope = '{"updateHold":true}'; ExpireMinutes = 120; WaitMinutes = 45; PollSeconds = 30; StuckMinutes = 120
     # always running or part of the update itself - never waited for: the scheduler (dispatches nothing while held), the
     # support-access job (no schema use beyond its own row), the setup job (the update's own migrate) and the update job
-    NotWaitedFor = @('caj-eps-tick', 'caj-eps-engine', 'caj-eps-support', 'caj-eps-dbinit', 'caj-eps-update', 'caj-eps-updater') }
+    # UPLINK-SLOT-1 (2.1.48): nor the Invardia support link (it reads, sends and writes only its own state)
+    NotWaitedFor = @('caj-eps-tick', 'caj-eps-engine', 'caj-eps-support', 'caj-eps-dbinit', 'caj-eps-update', 'caj-eps-updater', 'caj-eps-uplink') }
 
 function Get-EpsUpdateHoldSql {
     <# PURE. The scheduler's read: is an update holding? (its own Running row, marked, not past the expiry). #>

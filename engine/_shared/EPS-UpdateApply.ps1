@@ -239,6 +239,30 @@ function Get-EpsMixedRollText {
     "mixed: $($on.Count) on $Version$(if ($on.Count) { " ($($on -join ', '))" })$unk, $($rest.Count) on $From ($($rest -join ', ')); the tick finishes the roll within minutes (ROLL-RETRY-1)"
 }
 
+function Get-EpsUpdateRetry {
+    <#
+      PURE. TRANSIENT-RETRY-1 (Invardia 2026-11-15): an update that stopped BEFORE the roll (download / verify / build -
+      nothing in the install moved) on a cause a retry fixes -> @{ transient; priorVersion; priorHealthy; willRetry; cause }
+      for the run record; anything else -> $null. A CLOSED list of causes, matched on the stop's own text. A failed image
+      build as such is NEVER one (2.1.24 / 2.1.25: "exit status 1" was a real defect - a retry never fixed it); an 'apply'
+      / 'health' / 'migrate' stop never is either (the install may be mixed, or the database moved). priorHealthy stays
+      false: the stop does not read the components back (Invardia treats it as not proven). willRetry: the tick starts
+      the update again.
+    #>
+    param([string]$Step, [string]$Reason, [string]$RunningVersion)
+    if ("$Step" -notin 'download', 'verify', 'build') { return $null }
+    if ("$RunningVersion" -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { return $null }
+    $t = "$Reason"
+    $cause = if ($t -match '(?i)mcr\.microsoft\.com' -and $t -match '(?i)time(d)? ?out|deadline exceeded|TLS handshake') { 'image-pull-timeout' }
+             elseif ($t -match '(?i)HttpClient\.Timeout|request timed out|operation timed out|\btimeout of \d+ seconds') { 'request-timeout' }
+             elseif ($t -match '-> 409\b|\b409: ') { 'arm-409' }
+             elseif ($t -match '-> 429\b|\b429: |TooManyRequests') { 'throttled' }
+             elseif ($t -match '-> 5\d\d\b|\b5\d\d: ') { 'server-error' }
+             else { $null }
+    if (-not $cause) { return $null }
+    [ordered]@{ transient = $true; priorVersion = "$RunningVersion"; priorHealthy = $false; willRetry = $true; cause = $cause }
+}
+
 function Invoke-EpsUpdateApply {
     <#
       The apply. -Target = the verified manifest (Version, Sha256, Size, DownloadUrl). -Emit { param($step, $state, $message) }
@@ -386,6 +410,14 @@ function Invoke-EpsUpdateApply {
         # the clean-up's totals ride on 'done' (one event per stage: a repeated stage Invardia might refuse would stop the
         # run's tracking before 'done'); an incomplete clean-up says so in the text - the update itself IS healthy
         & $Emit 'done' 'ok' "$RunningVersion -> $($Target.Version)$(if ($pr) { "; image clean-up: $($pr.Summary)" })"
+        # UPLINK-SLOT-1 (framework §8.4, 2.1.48): the support link is started NOW on the new image (as this identity - the
+        # tick may not), so its heartbeat reports the new version within minutes, not at the next 4-hourly slot. Never fails
+        # the update: a start that does not go = the next normal run reports it.
+        $ulName = @(@($f.Jobs) | ForEach-Object { "$($_.name)" } | Where-Object { $_ -eq 'caj-eps-uplink' })[0]
+        if ($ulName) {
+            try { [void](Invoke-EpsArm -Method POST -Path "$rg/providers/Microsoft.App/jobs/$ulName/start" -ApiVersion $script:EpsApi.acajob -Body @{} -WaitSeconds 60); & $Log 'Info' "support link: started now on $($Target.Version) - the new version goes to Invardia within minutes (UPLINK-SLOT-1)" }
+            catch { & $Log 'Warning' "support link: not started now ($((("$($_.Exception.Message)") -split "`n")[0])) - its next run reports $($Target.Version)" }
+        }
         return @{ Ok = $true; Step = 'done'; Reason = "updated to $($Target.Version)"; Rolled = @($rolled); Prune = $pr; Resent = @($resent); Resumed = [bool]$resume.Done; ImageOnly = [bool]$ImageOnly }
     } catch {
         $msg = "$((("$($_.Exception.Message)") -split "`n")[0])"
@@ -625,7 +657,8 @@ function Stop-EpsRunningWorkForSecurity {
       database setup job) is stopped - as the updater identity (Contributor on the resource group). A stopped run is
       started again by its schedule / queue after the update. Never throws: @{ Stopped; Failed; Lines }.
     #>
-    param([Parameter(Mandatory)][string]$JobsPath, [Parameter(Mandatory)][string]$ApiVersion, [string[]]$Keep = @('caj-eps-updater', 'caj-eps-update', 'caj-eps-dbinit'))
+    # UPLINK-SLOT-1 (2.1.48): the Invardia support link is kept too (it must report the new version at once)
+    param([Parameter(Mandatory)][string]$JobsPath, [Parameter(Mandatory)][string]$ApiVersion, [string[]]$Keep = @('caj-eps-updater', 'caj-eps-update', 'caj-eps-dbinit', 'caj-eps-uplink'))
     $lines = [System.Collections.Generic.List[string]]::new(); $stopped = 0; $failed = 0
     try {
         $jobs = @(@((Invoke-EpsArm -Path $JobsPath -ApiVersion $ApiVersion).value) | ForEach-Object { "$($_.name)" } | Where-Object { $_ -like 'caj-eps-*' -and $Keep -notcontains $_ })
@@ -946,9 +979,15 @@ function Measure-EpsPlainSecrets {
       connection string, a SAS signature, a bearer token). Never returns a name or a value: the count only.
     #>
     param([object[]]$Resources = @())
+    # 2.1.49 (internal 2026-11-15: keyvault-secrets-only 'missing', plain 1): Microsoft's built-in Container Apps sign-in
+    # needs the web identity's CLIENT ID in a container secret of exactly this name (the secretless federated credential,
+    # 2.1.35) - a public id, not a secret. A Key Vault reference would need a Key Vault right on the web identity, which
+    # the product removed on purpose. Only this one name, only on a container app; any other plain secret still counts.
+    $notSecret = @('override-use-mi-fic-assertion-client-id')
     $n = 0
     foreach ($r in @($Resources | Where-Object { $_ })) {
-        foreach ($s in @($r.properties.configuration.secrets | Where-Object { $_ })) { if (-not "$($s.keyVaultUrl)") { $n++ } }
+        $isApp = "$($r.type)" -eq 'Microsoft.App/containerApps' -or "$($r.id)" -match '/providers/Microsoft\.App/containerApps/'
+        foreach ($s in @($r.properties.configuration.secrets | Where-Object { $_ })) { if (-not "$($s.keyVaultUrl)" -and -not ($isApp -and $notSecret -contains "$($s.name)")) { $n++ } }
         foreach ($c in @($r.properties.template.containers | Where-Object { $_ })) {
             foreach ($e in @($c.env | Where-Object { $_ })) {
                 if ($e.secretRef -or -not "$($e.value)") { continue }

@@ -77,7 +77,10 @@ $script:EpsUplinkLists = @{
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
     heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion')
-    run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'FailedStep', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts', 'Reports')
+    # TRANSIENT-RETRY-1 (2.1.46): 'Retry' - Invardia's contract accepts it since 2026-11-15 (2d6b8a8c, invardia.com
+    # 1.0.1093; server-first: an unknown key would refuse the whole record)
+    # RUN-MONITOR-STALE-1 (2.1.47): 'EndedUtc' - accepted since 2026-11-15 (07a001b4, invardia.com 1.0.1094)
+    run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'FailedStep', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts', 'Reports', 'Retry', 'EndedUtc')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
@@ -93,6 +96,17 @@ function Get-EpsDocsVersion {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
     $v = try { ([IO.File]::ReadAllText($Path)).Trim() } catch { '' }
     if ($v -match '^\d+\.\d+\.\d+(\.\d+)?$') { $v } else { $null }
+}
+
+function Test-EpsUplinkVersionUnreported {
+    <#
+      PURE. UPLINK-SLOT-1 (framework §8.4, 2.1.48): does the install run a version its last SENT heartbeat did not report?
+      -State = eps.UplinkState ('heartbeat' = when the last one went, 'heartbeat.version' = the version it carried). False
+      when no heartbeat was ever sent (no key yet: nothing to hurry) or the version is not one.
+    #>
+    param([hashtable]$State = @{}, [string]$Version)
+    if ("$Version" -notmatch '^\d+\.\d+\.\d+(\.\d+)?$' -or -not "$($State['heartbeat'])") { return $false }
+    "$($State['heartbeat.version'])" -ne "$Version"
 }
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
@@ -770,7 +784,27 @@ function New-EpsUplinkRunRecord {
     } elseif ($o.Outcome -ne 'ok') { $o.ErrorText = ConvertTo-EpsUplinkRedacted -Text "$($Run.HeldReason)" -Key $Key -Max 2000 }
     $c = Limit-EpsUplinkCounts ([ordered]@{ objects = $Run.Objects; planned = $Run.Planned; overwrites = $Run.Overwrites; applied = $Run.Applied; failed = $Run.Failed; skipped = $Run.Skipped })
     if ($c.Count) { $o.Counts = $c }
+    # TRANSIENT-RETRY-1: the Update run's own Retry (SummaryJson, Get-EpsUpdateRetry) on a run that did not succeed - exactly
+    # Invardia's keys, each checked; the closed field list keeps it off the wire until Invardia accepts it (server-first)
+    $rt = ConvertTo-EpsUplinkRetry -Json $Run.RetryJson
+    if ($rt -and $o.Outcome -ne 'ok' -and "$($Run.Job)" -eq 'Update') { $o.Retry = $rt }
+    # RUN-MONITOR-STALE-1 (Invardia 2026-11-15): EndedUtc = the run's OWN end (eps.Run.EndedAtUtc), never the send time -
+    # a replayed old run is then stored, not ticketed (LastSeenUtc stays the envelope's send clock on every kind). The
+    # closed field list carries it once Invardia's contract accepts it (server-first)
+    $eu = ConvertTo-EpsUplinkIso $Run.EndedAtUtc
+    if ($eu) { $o.EndedUtc = $eu }
     Select-EpsUplinkRecord $o
+}
+$script:EpsUplinkRetryCauses = @('arm-409', 'image-pull-timeout', 'queue-start-timeout', 'request-timeout', 'throttled', 'server-error', 'other')
+function ConvertTo-EpsUplinkRetry {
+    # PURE. SummaryJson.Retry -> Invardia's Retry { transient, priorVersion, priorHealthy, willRetry, cause } or $null when
+    # any part is not the contract's (never a partial object: Invardia refuses the whole record on one bad value)
+    param($Json)
+    if (-not $Json -or $Json -is [DBNull]) { return $null }
+    $r = try { "$Json" | ConvertFrom-Json } catch { $null }
+    if (-not $r -or $r.transient -ne $true -or $r.priorHealthy -isnot [bool] -or $r.willRetry -isnot [bool]) { return $null }
+    if ("$($r.priorVersion)" -notmatch '^\d+\.\d+\.\d+(\.\d+)?$' -or $script:EpsUplinkRetryCauses -notcontains "$($r.cause)") { return $null }
+    [ordered]@{ transient = $true; priorVersion = "$($r.priorVersion)"; priorHealthy = [bool]$r.priorHealthy; willRetry = [bool]$r.willRetry; cause = "$($r.cause)" }
 }
 
 function Get-EpsUplinkRunPlan {
@@ -814,7 +848,7 @@ function Get-EpsUplinkDueRuns {
     # (2) a FULL window with nothing due moves the read on past it (at most $pages windows per call), never stuck again.
     $pages = 40
     for ($pg = 0; $pg -lt $pages; $pg++) {
-        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Codes') END AS Codes, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Sources') END AS Sources, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.FailedConditions') END AS FailedConditions, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc $(if ($pg) { '>=' } else { '>' }) @s AND Status <> 'Running' AND Job <> N'Uplink' AND NOT (Job IN (N'Tick', N'SupportAccess') AND Status = N'Succeeded') AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
+        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Codes') END AS Codes, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Sources') END AS Sources, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.FailedConditions') END AS FailedConditions, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Retry') END AS RetryJson FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc $(if ($pg) { '>=' } else { '>' }) @s AND Status <> 'Running' AND Job <> N'Uplink' AND NOT (Job IN (N'Tick', N'SupportAccess') AND Status = N'Succeeded') AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
         $plan = @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
         if ($plan.Count -or $rows.Count -lt $Top) { return $plan }
         $last = [datetime]$rows[-1].EndedAtUtc
@@ -1269,9 +1303,11 @@ function Invoke-EpsUplinkCycle {
         }
         $fail = { param($what, $r) $res.Stopped = "$what $($r.Reason)"; & $say 'Warning' "Invardia support link: $what to $host_ (identified) failed: $($r.Reason) - the cycle stops; the rest goes next cycle" }
 
-        # 1. the heartbeat (every 4 h; an interval is sent only on a 2xx)
+        # 1. the heartbeat (every 4 h; an interval is sent only on a 2xx) - UPLINK-SLOT-1 (2.1.48): and at once when the
+        # install runs a version the last heartbeat did not report (the ring proof and the fleet view wait on it)
         $lastHb = if ($st.heartbeat) { ConvertFrom-EpsUplinkTime $st.heartbeat }
-        if (-not $lastHb -or ($NowUtc - $lastHb).TotalMinutes -ge ($script:EpsUplinkHeartbeatHours * 60 - 10)) {
+        $newVer = Test-EpsUplinkVersionUnreported -State $st -Version $Version
+        if (-not $lastHb -or $newVer -or ($NowUtc - $lastHb).TotalMinutes -ge ($script:EpsUplinkHeartbeatHours * 60 - 10)) {
             $facts = Get-EpsUplinkHeartbeatFacts -ConnectionString $ConnectionString -Version $Version
             if ($script:EpsUplinkSendBacklog) { $facts.UplinkBacklog = Get-EpsUplinkBacklog -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc }
             $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc)
@@ -1291,7 +1327,8 @@ function Invoke-EpsUplinkCycle {
             } elseif ($r.Ok) { $res.Heartbeat = 'ok' }
             if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)
-            & $say 'Info' "Invardia support link: heartbeat sent ($($res.Heartbeat))"
+            if ("$Version" -match '^\d+\.\d+\.\d+(\.\d+)?$') { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat.version' -Value "$Version" }
+            & $say 'Info' "Invardia support link: heartbeat sent ($($res.Heartbeat))$(if ($newVer) { " - at once: the install runs $Version, the last heartbeat did not say it" })"
             # framework SUPPORT ACCESS point 2: the customer's consent level from THIS identified heartbeat's answer only
             # (TLS + the install key) - kept in eps.UplinkState (the web app may only read it); absent = the last one kept
             $con = ConvertFrom-EpsUplinkConsent -Body $r.Body
