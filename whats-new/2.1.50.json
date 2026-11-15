@@ -1,0 +1,13 @@
+{
+  "version": "2.1.50",
+  "date": "2026-11-15",
+  "type": "feature",
+  "summary": "The list of rights now says plainly which rights each optional feature needs.",
+  "new": [
+    {
+      "title": "Optional rights are marked by feature",
+      "text": "Each right that only an optional feature needs now names that feature in a fixed form, so checks of your install only expect it while the feature is switched on."
+    }
+  ],
+  "fixes": []
+}

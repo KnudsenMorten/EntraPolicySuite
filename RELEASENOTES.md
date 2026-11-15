@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.50 - Optional rights are marked by feature
+Builds on the owner's decision: "make sure all installs are config the same" (2026-11-15, relayed by Invardia)
+- New: each right that only an optional feature needs (user or device tagging, Exchange, the shared mailbox, Log
+  Analytics, the hybrid worker, support access) names that feature in a fixed form, so a check of an install only
+  expects the right while the feature is switched on. No right was added or removed.
 ## 2.1.49 - Fix-only: the Key Vault check is right again
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "security, including leftovers" (2026-11-15, relayed by Invardia)

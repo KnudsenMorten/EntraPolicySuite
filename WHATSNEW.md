@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.50 · 2026-11-15 · Feature update
+
+The list of rights now says plainly which rights each optional feature needs.
+
+### New features
+
+- **Optional rights are marked by feature** - Each right that only an optional feature needs now names that feature in a fixed form, so checks of your install only expect it while the feature is switched on.
+
+### Fixes
+
+None in this version.
+
 ## 2.1.49 · 2026-11-15 · Fix-only
 
 The Key Vault check no longer counts the sign-in's public app id as a secret.
