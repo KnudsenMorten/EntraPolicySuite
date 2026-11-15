@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.51 - Fix-only: the hybrid worker page counts only real AD writes
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "build pending so we close all today" (2026-11-15)
+- Fix: on the hybrid worker page, the daily count of written AD changes no longer includes changes the worker skipped
+  because a newer value for the same user came; those show in their own column.
 ## 2.1.50 - Optional rights are marked by feature
 Builds on the owner's decision: "make sure all installs are config the same" (2026-11-15, relayed by Invardia)
 - New: each right that only an optional feature needs (user or device tagging, Exchange, the shared mailbox, Log

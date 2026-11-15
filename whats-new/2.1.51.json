@@ -1,0 +1,13 @@
+{
+  "version": "2.1.51",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "The hybrid worker page counts only the AD changes it really wrote.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Written means written",
+      "text": "On the hybrid worker page, the daily count of written AD changes no longer includes changes skipped because a newer value came. Those now show in their own column."
+    }
+  ]
+}

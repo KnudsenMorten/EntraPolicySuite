@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.51 · 2026-11-15 · Fix-only
+
+The hybrid worker page counts only the AD changes it really wrote.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Written means written** - On the hybrid worker page, the daily count of written AD changes no longer includes changes skipped because a newer value came. Those now show in their own column.
+
 ## 2.1.50 · 2026-11-15 · Feature update
 
 The list of rights now says plainly which rights each optional feature needs.
