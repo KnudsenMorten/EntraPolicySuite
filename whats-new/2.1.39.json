@@ -1,0 +1,13 @@
+{
+  "version": "2.1.39",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "The engine can be given a much smaller Exchange right: the tag attributes only.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A smaller Exchange right for the engine",
+      "text": "A new setup script gives the engine an Exchange role that can only read recipients and write the tag attributes. It then removes the organization-wide Exchange Recipient Administrator role from the engine."
+    }
+  ]
+}

@@ -543,6 +543,23 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
         try { $bia = Invoke-EpsBuiltInAuthConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -PollSeconds $PollSeconds } finally { $global:EPS_TokenProvider = $saved6 }
         foreach ($l in $bia.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } elseif ($bia.State -eq 'switched') { 'Notice' } else { 'Info' }) $l }
     }
+    # 2.1.36 framework SECURE-WEB-1 ONE STANDARD + NO LEFTOVERS: every run READS the web app against the standard and
+    # reports DIFF / LEFTOVERS (nothing changed); as the updater identity, never fails the cycle
+    if ($updater -and -not $CheckOnly -and (Get-Command Invoke-EpsBuiltInAuthCheck -ErrorAction SilentlyContinue)) {
+        $saved7 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+        try {
+            $bic = Invoke-EpsBuiltInAuthCheck -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
+            # 2.1.41: the retired sign-in front's stored images, cleared by the product itself once no front runs (SECURE-WEB-1
+            # "who deletes what"); only while the check read the web app on Microsoft's built-in sign-in
+            if ("$($bic.State)" -in 'ok', 'diff' -and (Get-Command Remove-EpsRetiredFrontImages -ErrorAction SilentlyContinue)) {
+                $nm = Resolve-EpsInstallNames -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
+                $pinNow = try { Get-EpsSigninFrontPin -SolutionRoot $script:EpsUpdateApplySolutionRoot } catch { '' }
+                $rf = Remove-EpsRetiredFrontImages -LoginServer "$($nm.Registry).azurecr.io" -TenantId "$env:EPS_TENANT_ID" -FrontRuns $false -Pin "$pinNow"
+                $bic.Lines = @($bic.Lines) + @($rf.Lines)
+            }
+        } finally { $global:EPS_TokenProvider = $saved7 }
+        foreach ($l in $bic.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
+    }
     # IMAGE-PATCH-1 (2.0.120): a CURRENT install's sign-in front converges to the running release's pin (an older updater's
     # apply did not move the front) - as the updater identity, never fails the cycle
     if ($t.State -eq 'current' -and $updater -and -not $CheckOnly -and "$($bia.State)" -notin 'builtin', 'switched' -and (Get-Command Invoke-EpsFrontConverge -ErrorAction SilentlyContinue)) {
@@ -621,13 +638,24 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                 $pre = Save-EpsReleaseArchive -Url $t.DownloadUrl -Sha256 $t.Sha256 -Size $t.Size -Version $t.Version -Fetch $Fetch
                 # review: one brief download failure must not send a security fix down the slow path - read it once more
                 if (-not $pre.Ok) { if ($pre.WorkDir) { Remove-Item -LiteralPath $pre.WorkDir -Recurse -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds $script:EpsUpdateRereadSeconds; $pre = Save-EpsReleaseArchive -Url $t.DownloadUrl -Sha256 $t.Sha256 -Size $t.Size -Version $t.Version -Fetch $Fetch }
-                try { $mk = if ($pre.Ok) { Test-EpsImageOnlyMarker -Root $pre.Root -Version $t.Version -RunningVersion $Version } else { @{ ImageOnly = $false; Reason = "the package could not be read first ($($pre.Reason)) - the full update" } } }
+                try {
+                    $mk = if ($pre.Ok) { Test-EpsImageOnlyMarker -Root $pre.Root -Version $t.Version -RunningVersion $Version } else { @{ ImageOnly = $false; Reason = "the package could not be read first ($($pre.Reason)) - the full update" } }
+                    $sm = if ($pre.Ok -and (Get-Command Test-EpsSecurityReleaseMarker -ErrorAction SilentlyContinue)) { Test-EpsSecurityReleaseMarker -Root $pre.Root -Version $t.Version } else { @{ Security = $false; Reason = 'not read' } }
+                }
                 finally { if ($pre.WorkDir) { Remove-Item -LiteralPath $pre.WorkDir -Recurse -Force -ErrorAction SilentlyContinue } }
                 $isImageOnly = [bool]$mk.ImageOnly
                 & $Log 'Info' "update: $(if ($isImageOnly) { 'IMAGE-ONLY - the short path (no job wait, no database step): ' } else { 'the full update: ' })$($mk.Reason)"
             }
             $wq = @{ Probe = $QuietProbe; Log = $Log }; if ($WaitSleep) { $wq.Sleep = $WaitSleep }; if ($WaitNow) { $wq.Now = $WaitNow }
-            $quiet = if ($isImageOnly) { @{ Go = $true; Waited = 0; Running = @() } } else { Wait-EpsUpdateQuiet @wq }
+            # 2.1.38 SECURE-WEB-1 point 6c: a SECURITY release stops the running work and goes at once (no wait, no owner click)
+            $isSecurity = [bool]$sm.Security
+            if ($isSecurity -and -not $isImageOnly) {
+                & $Log 'Notice' "update: $($sm.Reason)"
+                $acaApiS = if ($script:EpsApi -and "$($script:EpsApi.acajob)") { "$($script:EpsApi.acajob)" } else { '2024-03-01' }
+                $so = Stop-EpsRunningWorkForSecurity -JobsPath "/subscriptions/$env:EPS_SUBSCRIPTION_ID/resourceGroups/$env:EPS_RESOURCE_GROUP/providers/Microsoft.App/jobs" -ApiVersion $acaApiS
+                foreach ($l in $so.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) "update: $l" }
+            }
+            $quiet = if ($isImageOnly -or ($isSecurity -and -not $so.Failed)) { @{ Go = $true; Waited = 0; Running = @() } } else { Wait-EpsUpdateQuiet @wq }
             if ($quiet.Go -and $quiet.Waited -gt 0) {
                 # UPD-STALE-LINK (found live 2026-11-06 at internal, 2.0.89 -> 2.0.90): the signed download link is short-lived -
                 # after a 21-min wait the Pro package answered 401. After ANY wait the release is read again for a fresh link;

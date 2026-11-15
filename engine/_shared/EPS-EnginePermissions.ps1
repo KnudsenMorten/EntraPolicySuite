@@ -10,7 +10,7 @@ Set-StrictMode -Off
 function Get-EpsEnginePermissionRequest {
     # PURE. What was asked, checked against the declared list. @{ Ok; Reason; Remove; Items = @(@{ Kind; What; Resource; Value }) }
     #   Kind: appRole (Resource = the API's application id, Value = the permission) | directoryRole (Value = the role template id)
-    param([string[]]$GraphPermission = @(), [switch]$Exchange, [switch]$Remove)
+    param([string[]]$GraphPermission = @(), [switch]$Exchange, [switch]$Remove, [switch]$TagRoleGroupInPlace)
     $asked = @($GraphPermission | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
     # SEC-02-GRAPH (2.0.99): the write rights are declared too, asked for BY NAME only (a feature that writes is on)
     $declared = @($script:EpsEngineGraphRoles) + @($script:EpsEngineGraphWriteRoles)
@@ -22,7 +22,9 @@ function Get-EpsEnginePermissionRequest {
     $items = @(foreach ($p in $asked) { @{ Kind = 'appRole'; What = "Graph $p"; Resource = '00000003-0000-0000-c000-000000000000'; Value = $p } })
     if ($Exchange) {
         $items += @{ Kind = 'appRole'; What = 'Exchange Exchange.ManageAsApp'; Resource = $script:EpsExchangeAppId; Value = 'Exchange.ManageAsApp' }
-        $items += @{ Kind = 'directoryRole'; What = 'Entra role Exchange Recipient Administrator'; Value = $script:EpsExchangeRecipientAdminRole }
+        # 2.1.39 (review G point 4): once the engine writes through the Exchange role group 'EPS Tag Writers', the org-wide
+        # Entra role is not granted again (a -Remove still takes it away)
+        if (-not $TagRoleGroupInPlace -or $Remove) { $items += @{ Kind = 'directoryRole'; What = 'Entra role Exchange Recipient Administrator'; Value = $script:EpsExchangeRecipientAdminRole } }
     }
     @{ Ok = $true; Reason = ''; Remove = [bool]$Remove; Items = $items }
 }

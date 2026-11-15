@@ -1,5 +1,132 @@
 # What's new in Entra Policy Suite
 
+## 2.1.45 · 2026-11-15 · Fix-only
+
+The support link sends only job reports from the last day.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Only recent job reports go to Invardia support** - The support link sends the reports of jobs that finished in the last 24 hours. Older reports are not sent, so an old problem that was solved long ago is never reported as new.
+
+## 2.1.44 · 2026-11-15 · Fix-only
+
+The support link sends the job reports again.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Job reports reach Invardia support again** - Since 8 November the support link sent only its regular status, not the reports of finished jobs. It now sends them again, the oldest first, and its count of reports still to send is right.
+
+## 2.1.43 · 2026-11-15 · Feature update
+
+The web app checks its own sign-in at start, and the support link reports which release its documentation describes.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The sign-in check proves itself at start** - At start, the web app runs the same check a sign-in takes, with Microsoft's library, on made-up input. If that fails, it does not start, so a problem shows right after an update, not at someone's first sign-in.
+- **The documentation's release is reported** - The regular report to Invardia support now names the release the shipped documentation describes, so out-of-date documentation is noticed automatically.
+
+## 2.1.42 · 2026-11-15 · Security
+
+Sign-ins are now checked with Microsoft's own library - no custom sign-in code is left.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Microsoft's library checks every sign-in** - The web app and the engine check each person's Microsoft sign-in with Microsoft's own library instead of code of ours. Microsoft's built-in sign-in still stands in front of the web app.
+- **The registry clean-up reports correctly** - Once the last earlier sign-in image is removed, the clean-up now reports the registry as empty instead of a warning.
+
+## 2.1.41 · 2026-11-15 · Security
+
+The earlier sign-in's leftovers are cleared, and your web session is renewed before it ends.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The earlier sign-in's images are removed** - Once the web app uses Microsoft's built-in sign-in, the update removes the earlier sign-in front's images from your registry. The install also removes its old key when the person running it may.
+- **Your web session is renewed in time** - The web app renews your sign-in a few minutes before it ends, so you are not asked to sign in again while you work.
+
+## 2.1.40 · 2026-11-15 · Security
+
+The last traces of the earlier sign-in are removed from your installation.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The earlier sign-in's database tables are removed** - The database setup removes the tables the earlier sign-in front kept, and the web app's right to make tables, once the web app uses Microsoft's built-in sign-in.
+- **Only Microsoft's sign-in address is kept** - The web app's sign-in registration now needs only the address of Microsoft's built-in sign-in; the earlier address is reported as a leftover.
+
+## 2.1.39 · 2026-11-15 · Security
+
+The engine can be given a much smaller Exchange right: the tag attributes only.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **A smaller Exchange right for the engine** - A new setup script gives the engine an Exchange role that can only read recipients and write the tag attributes. It then removes the organization-wide Exchange Recipient Administrator role from the engine.
+
+## 2.1.38 · 2026-11-15 · Security
+
+The update job holds fewer rights, and a security update no longer waits for running jobs.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The update job holds fewer rights** - The update job can no longer change who administers the database. It only checks that the database setup identity is still in the admin group, and reports it when it is not.
+- **Security updates install at once** - A security update now stops the jobs that are running and installs at once instead of waiting for them. The stopped jobs run again on their next schedule.
+
+## 2.1.37 · 2026-11-15 · Security
+
+Every public address of the install is checked for Microsoft's sign-in, and the old sign-in front is gone.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Every public address checked for sign-in** - Each update run now checks every address of your installation that the internet can reach, and reports any that is not behind Microsoft's sign-in.
+- **The old sign-in front is removed** - The release no longer carries the earlier sign-in front. Your web app already uses Microsoft's built-in sign-in.
+
+## 2.1.36 · 2026-11-15 · Security
+
+The move to Microsoft's sign-in is safer, and every install is checked against one standard.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **A safer move to Microsoft's sign-in** - The update now prepares the web app before it turns Microsoft's sign-in on, and waits while Azure is still busy with the app. A move that cannot finish leaves the earlier sign-in working.
+- **Every install checked against one standard** - Each update run now checks that the web app is set up exactly as the standard says, and lists anything the earlier sign-in left behind. It only reports; nothing is removed.
+
 ## 2.1.35 · 2026-11-14 · Security
 
 The web app now signs people in with Microsoft's built-in Container Apps sign-in.

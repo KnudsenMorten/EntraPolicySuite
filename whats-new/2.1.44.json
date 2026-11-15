@@ -1,0 +1,13 @@
+{
+  "version": "2.1.44",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "The support link sends the job reports again.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Job reports reach Invardia support again",
+      "text": "Since 8 November the support link sent only its regular status, not the reports of finished jobs. It now sends them again, the oldest first, and its count of reports still to send is right."
+    }
+  ]
+}

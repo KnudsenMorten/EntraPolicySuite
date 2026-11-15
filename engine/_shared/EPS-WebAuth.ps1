@@ -12,46 +12,9 @@
 # token with the time it verified it on every request that leads to an outside change; the job verifies it again
 # (signature, issuer, audience, iat <= verified <= exp, the user's role) before it acts.
 #
-# The JWT primitives are PIM's (engine/_shared/PIM-HostedAuth.ps1), copied - not shared - on purpose (isolation over DRY).
+# 2.1.42: the token's form, signature, issuer and audience are checked by MICROSOFT's library (JsonWebTokenHandler) - EPS has no hand-written JWT code.
 
 Set-StrictMode -Off
-
-function ConvertFrom-EpsBase64Url {
-    param([string]$Text)
-    $s = "$Text".Trim(); if (-not $s) { return $null }
-    $s = $s.Replace('-', '+').Replace('_', '/')
-    switch ($s.Length % 4) { 2 { $s += '==' } 3 { $s += '=' } 1 { return $null } }
-    try { [Convert]::FromBase64String($s) } catch { $null }
-}
-
-function Get-EpsJwtParts {
-    # a compact JWS -> header, payload, signature, the exact signing input; $null unless well-formed
-    param([string]$Token)
-    $parts = "$Token".Trim() -split '\.'
-    if ($parts.Count -ne 3 -or @($parts | Where-Object { -not $_ }).Count) { return $null }
-    $seg = { param($p) $b = ConvertFrom-EpsBase64Url $p; if ($null -eq $b) { return $null }; try { [Text.Encoding]::UTF8.GetString($b) | ConvertFrom-Json } catch { $null } }
-    $h = & $seg $parts[0]; $p = & $seg $parts[1]
-    if ($null -eq $h -or $null -eq $p) { return $null }
-    [pscustomobject]@{ header = $h; payload = $p; signature = $parts[2]; signingInput = "$($parts[0]).$($parts[1])" }
-}
-
-function Test-EpsJwtSignature {
-    # RS256/384/512 against a JWKS (@{ keys = @(@{ kid; kty; n; e }) }). 'none' and HMAC are refused (alg confusion).
-    param([Parameter(Mandatory)]$Jwt, $Jwks)
-    $hash = switch ("$($Jwt.header.alg)".ToUpperInvariant()) { 'RS256' { [Security.Cryptography.HashAlgorithmName]::SHA256 } 'RS384' { [Security.Cryptography.HashAlgorithmName]::SHA384 } 'RS512' { [Security.Cryptography.HashAlgorithmName]::SHA512 } default { $null } }
-    if (-not $hash) { return @{ valid = $false; reason = "alg '$($Jwt.header.alg)' refused (RS256/384/512 only)" } }
-    $kid = "$($Jwt.header.kid)"
-    $key = @(@($Jwks.keys) | Where-Object { $_ -and (-not $kid -or "$($_.kid)" -eq $kid) -and (-not "$($_.kty)" -or "$($_.kty)" -eq 'RSA') })[0]
-    if (-not $key) { return @{ valid = $false; reason = "no key for kid '$kid'"; unknownKid = $true } }
-    $n = ConvertFrom-EpsBase64Url "$($key.n)"; $e = ConvertFrom-EpsBase64Url "$($key.e)"; $sig = ConvertFrom-EpsBase64Url "$($Jwt.signature)"
-    if ($null -eq $n -or $null -eq $e -or $null -eq $sig) { return @{ valid = $false; reason = 'key or signature unreadable' } }
-    $rsa = [Security.Cryptography.RSA]::Create()
-    try {
-        $prm = [Security.Cryptography.RSAParameters]::new(); $prm.Modulus = $n; $prm.Exponent = $e; $rsa.ImportParameters($prm)
-        if ($rsa.VerifyData([Text.Encoding]::ASCII.GetBytes($Jwt.signingInput), $sig, $hash, [Security.Cryptography.RSASignaturePadding]::Pkcs1)) { return @{ valid = $true; reason = 'signature verified' } }
-        @{ valid = $false; reason = 'signature verification FAILED' }
-    } catch { @{ valid = $false; reason = "signature check errored: $($_.Exception.Message)" } } finally { $rsa.Dispose() }
-}
 
 function Get-EpsWebAuthConfig {
     # What a token must say. Both pins are REQUIRED: with no issuer any tenant's token verifies (Entra's keys are shared),
@@ -83,6 +46,90 @@ function Get-EpsJwks {
     $c.Keys
 }
 
+$script:EpsIdentityModelFiles = @('Microsoft.IdentityModel.Abstractions', 'Microsoft.IdentityModel.Logging', 'Microsoft.IdentityModel.Tokens', 'Microsoft.IdentityModel.JsonWebTokens')
+function Initialize-EpsIdentityModel {
+    <#
+      Loads Microsoft's token library once: the container image carries it pinned (EPS_IDENTITYMODEL_DIR, Dockerfile stage
+      'idm', each file's SHA-256 checked at build); a .NET SDK's own copy is used where no folder is set (the test runner).
+      Not loadable = $false and every token is refused (fail closed).
+    #>
+    if ('Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler' -as [type]) { return $true }
+    $dirs = @(@("$env:EPS_IDENTITYMODEL_DIR") | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+    if (-not $dirs.Count) {
+        $dirs = @(Get-ChildItem -Path '/usr/share/dotnet/sdk', "$env:ProgramFiles\dotnet\sdk" -Recurse -Filter 'Microsoft.IdentityModel.JsonWebTokens.dll' -ErrorAction SilentlyContinue |
+                  Sort-Object { $_.VersionInfo.FileVersion } -Descending | Select-Object -First 1 | ForEach-Object { $_.DirectoryName })
+    }
+    foreach ($d in $dirs) {
+        try {
+            foreach ($n in $script:EpsIdentityModelFiles) { $f = Join-Path $d "$n.dll"; if (Test-Path -LiteralPath $f) { [void][System.Reflection.Assembly]::LoadFrom($f) } }
+            if ('Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler' -as [type]) { return $true }
+        } catch { Write-Warning "[auth] Microsoft's token library could not be loaded from $d`: $($_.Exception.Message)" }
+    }
+    $false
+}
+
+function Test-EpsTokenWithMicrosoft {
+    <#
+      The token checked by Microsoft's JsonWebTokenHandler against the tenant's keys: signed (RS256/384/512 only), the
+      issuer and the audience pinned. The lifetime is the caller's step (it checks it at its own time). Returns
+      @{ valid; reason; unknownKid; payload } - payload = the claims Microsoft read (exp, nbf, iat, tid, scp, oid, ...).
+    #>
+    param([Parameter(Mandatory)][string]$Token, [Parameter(Mandatory)]$Jwks, [Parameter(Mandatory)]$Config)
+    if (-not (Initialize-EpsIdentityModel)) { return @{ valid = $false; reason = 'Microsoft''s token library is not available (failing closed)' } }
+    try {
+        $ks = [Microsoft.IdentityModel.Tokens.JsonWebKeySet]::new(($Jwks | ConvertTo-Json -Depth 8 -Compress))
+        $p = [Microsoft.IdentityModel.Tokens.TokenValidationParameters]::new()
+        $p.ValidIssuers = [string[]]@($Config.Issuers); $p.ValidAudiences = [string[]]@($Config.Audiences)
+        $p.IssuerSigningKeys = $ks.GetSigningKeys(); $p.ValidAlgorithms = [string[]]@('RS256', 'RS384', 'RS512')
+        $p.ValidateIssuer = $true; $p.ValidateAudience = $true; $p.ValidateIssuerSigningKey = $true; $p.RequireSignedTokens = $true
+        $p.ValidateLifetime = $false; $p.RequireExpirationTime = $true
+        $r = [Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler]::new().ValidateTokenAsync($Token, $p).GetAwaiter().GetResult()
+        if (-not $r.IsValid) {
+            $ex = $r.Exception; $kind = if ($ex) { $ex.GetType().Name } else { 'invalid' }
+            return @{ valid = $false; unknownKid = ($kind -eq 'SecurityTokenSignatureKeyNotFoundException'); reason = "Microsoft's token check refused it: $kind" }
+        }
+        $c = @{}; foreach ($k in $r.Claims.Keys) { $c[$k] = $r.Claims[$k] }
+        @{ valid = $true; reason = 'verified by Microsoft''s token library'; payload = [pscustomobject]$c }
+    } catch { @{ valid = $false; reason = "Microsoft's token check failed: $($_.Exception.GetType().Name)" } }
+}
+
+function Test-EpsIdentityModelSelfCheck {
+    <#
+      2.1.43 (Invardia 2026-11-15, the proof standard for a release of the web sign-in library): run at the web app's START,
+      with no person. Loads Microsoft's library and sends three made-up credentials through the SAME path a request takes
+      (Test-EpsAccessToken), with a throwaway key and made-up tenant / app ids that match nothing real:
+        1. one made with the throwaway key  -> must be ACCEPTED (the library loads and the whole path works)
+        2. one made with ANOTHER key        -> must be REFUSED by Microsoft's library
+        3. one with alg none                -> must be REFUSED
+      @{ ok; detail }. Not ok = the caller does not start (fail closed, shows as an unhealthy revision at ring 0).
+    #>
+    if (-not (Initialize-EpsIdentityModel)) { return @{ ok = $false; detail = 'Microsoft''s library could not be loaded' } }
+    $b64u = { param([byte[]]$b) [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
+    $tid = [guid]::NewGuid().ToString(); $app = [guid]::NewGuid().ToString()
+    $cfg = Get-EpsWebAuthConfig -TenantId $tid -ClientId $app
+    $good = [Security.Cryptography.RSA]::Create(2048); $other = [Security.Cryptography.RSA]::Create(2048)
+    try {
+        $rp = $good.ExportParameters($false)
+        $jwks = @{ keys = @(@{ kid = 'selfcheck'; kty = 'RSA'; use = 'sig'; n = (& $b64u $rp.Modulus); e = (& $b64u $rp.Exponent) }) }
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $body = & $b64u ([Text.Encoding]::UTF8.GetBytes(([ordered]@{ iss = "https://login.microsoftonline.com/$tid/v2.0"; tid = $tid; aud = $app; scp = $cfg.Scope
+            oid = [guid]::NewGuid().ToString(); preferred_username = 'selfcheck@example.invalid'; name = 'self-check'; iat = $now - 60; nbf = $now - 60; exp = $now + 600 } | ConvertTo-Json -Compress)))
+        $make = { param($key, $alg)
+            $h = & $b64u ([Text.Encoding]::UTF8.GetBytes((@{ alg = $alg; typ = 'JWT'; kid = 'selfcheck' } | ConvertTo-Json -Compress)))
+            if (-not $key) { return "$h.$body." }
+            "$h.$body.$(& $b64u ($key.SignData([Text.Encoding]::ASCII.GetBytes("$h.$body"), [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)))" }
+        $r1 = Test-EpsAccessToken -Token (& $make $good 'RS256') -Jwks $jwks -Config $cfg
+        if (-not $r1.trusted) { return @{ ok = $false; detail = "the accepted case was refused: $($r1.reason)" } }
+        $r2 = Test-EpsAccessToken -Token (& $make $other 'RS256') -Jwks $jwks -Config $cfg
+        if ($r2.trusted -or "$($r2.reason)" -notmatch 'Microsoft') { return @{ ok = $false; detail = "the other-key case was not refused by Microsoft's library: $($r2.reason)" } }
+        $r3 = Test-EpsAccessToken -Token (& $make $null 'none') -Jwks $jwks -Config $cfg
+        if ($r3.trusted) { return @{ ok = $false; detail = 'the alg none case was accepted' } }
+        $v = ([Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler].Assembly.GetName().Version)
+        @{ ok = $true; detail = "Microsoft's library $v loaded; 1 accepted, 2 refused as expected" }
+    } catch { @{ ok = $false; detail = "the self-check failed: $($_.Exception.GetType().Name): $($_.Exception.Message)" } }
+    finally { $good.Dispose(); $other.Dispose() }
+}
+
 function Test-EpsAccessToken {
     <#
       PURE given -Jwks: is this the front's access token for THIS app, from THIS tenant, now? @{ trusted; identity;
@@ -93,12 +140,15 @@ function Test-EpsAccessToken {
     $no = { param($why) @{ trusted = $false; identity = ''; objectId = ''; reason = $why } }
     if (-not $Config.Issuers.Count -or -not $Config.Audiences.Count -or -not $Config.Scope) { return (& $no 'the web app is not configured: EPS_TENANT_ID and EPS_WEB_CLIENT_ID must both be set (failing closed)') }
     if (-not "$Token".Trim()) { return (& $no 'no token on the request') }
-    $jwt = Get-EpsJwtParts -Token $Token
-    if (-not $jwt) { return (& $no 'the token is not a well-formed JWT') }
     if (-not $Jwks) { return (& $no 'the tenant''s signing keys are not available (failing closed)') }
-    $sig = Test-EpsJwtSignature -Jwt $jwt -Jwks $Jwks
-    if (-not $sig.valid) { $x = & $no "signature: $($sig.reason)"; $x.unknownKid = [bool]$sig.unknownKid; return $x }
-    $p = $jwt.payload
+    # 2.1.42 (owner 2026-11-15 "ms standard authn, not our own code"; framework c5704c10, option A): the token's FORM, its
+    # SIGNATURE against Entra's keys, the algorithm, the ISSUER and the AUDIENCE are checked by MICROSOFT's library
+    # (Microsoft.IdentityModel.JsonWebTokens JsonWebTokenHandler) - no hand-written JWT parsing or signature code. EPS keeps
+    # what is authorization or EPS-specific: the lifetime at a GIVEN time (the engine checks a queued request at the time
+    # the web app verified it), the tenant id, the scope and that the token names a person.
+    $ms = Test-EpsTokenWithMicrosoft -Token $Token -Jwks $Jwks -Config $Config
+    if (-not $ms.valid) { $x = & $no $ms.reason; $x.unknownKid = [bool]$ms.unknownKid; return $x }
+    $p = $ms.payload
     if ("$($p.exp)" -notmatch '^\d+$') { return (& $no 'no exp claim') }
     $exp = [DateTimeOffset]::FromUnixTimeSeconds([long]$p.exp).UtcDateTime
     if ($NowUtc -gt $exp.AddSeconds($SkewSeconds)) { return (& $no "expired at $($exp.ToString('o'))") }

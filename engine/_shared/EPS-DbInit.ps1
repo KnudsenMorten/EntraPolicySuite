@@ -29,7 +29,8 @@ function Read-EpsDbInitInput {
       not one of the principals, a drop that names a principal the list keeps, a SuperAdmin that is not "<upn>|<guid>".
     #>
     # -FrontVersion: per execution, the sign-in front the web app RUNS (OPEN-15) - recorded for the heartbeat
-    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion,
+    # -DropSignin (2.1.40): the web app runs NO sign-in front (Microsoft's built-in sign-in) - its old schema signin goes
+    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion, [string]$DropSignin,
           # a role renamed in the grant list (renamedFrom): a job set up before the rename still names the old one
           [hashtable]$RoleAliases = @{})
     $no = { param($r) @{ Ok = $false; Reason = $r } }
@@ -63,7 +64,7 @@ function Read-EpsDbInitInput {
     }
     $fv = "$FrontVersion".Trim()
     if ($fv -and $fv -notmatch '^[0-9A-Za-z.+]{1,50}$') { return (& $no "EPS_DBINIT_FRONT '$fv' is not a version") }
-    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); FrontVersion = $fv }
+    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); FrontVersion = $fv; DropSignin = ("$DropSignin" -eq '1') }
 }
 
 function Read-EpsDbInitSettings {
@@ -131,7 +132,10 @@ function Get-EpsDbInitPlan {
     $b.Add(@{ Name = 'roles and grants (sql/eps-grants.json)'; Sql = (Get-EpsGrantScript -GrantList $GrantList) })
     $b.Add(@{ Name = "database users ($(@($DbInput.Principals | ForEach-Object { "$($_.Name) in $($_.Role)" }) -join ', '))"
               Sql = (@(foreach ($x in $DbInput.Principals) { Get-EpsSqlUserScript -Name $x.Name -ClientId $x.ClientId -Role $x.Role }) -join "`n") })
-    $b.Add(@{ Name = "the sign-in front's state (schema signin owned by $($DbInput.WebUser))"; Sql = (Get-EpsSigninStateSql -WebUser $DbInput.WebUser) })
+    # 2.1.40 (owner 2026-11-14, Microsoft's built-in sign-in; Invardia 2026-11-15 "least privilege"): the old sign-in front's
+    # schema signin is no longer made; where the web app runs no front (-DropSignin) it is DROPPED with its tables, and the
+    # web user's CREATE TABLE goes - idempotent, read back. Without the flag it is left as it is (an install still on the front).
+    if ($DbInput.DropSignin) { $b.Add(@{ Name = "the old sign-in front's schema signin dropped (+ the web user's CREATE TABLE)"; Sql = (Get-EpsSigninDropSql -WebUser $DbInput.WebUser) }) }
     if ($DbInput.SuperAdmin) { $b.Add(@{ Name = "the first SuperAdmin $($DbInput.SuperAdmin.Upn) (only when there is none)"; Sql = (Get-EpsFirstSuperAdminSql -Upn $DbInput.SuperAdmin.Upn -ObjectId $DbInput.SuperAdmin.ObjectId) }) }
     foreach ($x in $DbInput.Drop) { $b.Add(@{ Name = "remove the database user $x"; Sql = "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$x') DROP USER [$x];" }) }
     if ($DbInput.FrontVersion) { $b.Add(@{ Name = "the sign-in front the web app runs: $($DbInput.FrontVersion)"; Sql = (Get-EpsUplinkStateMergeSql -Name 'signin.front' -Value $DbInput.FrontVersion) }) }
@@ -174,7 +178,8 @@ function Test-EpsDbInitReadBack {
     }
     foreach ($x in $DbInput.Drop) { if ($byName.ContainsKey($x)) { $problems.Add("$x is still a database user") } else { $lines.Add("read back: $x is gone") } }
     $owner = if ($byName.ContainsKey('#signin-owner')) { "$(@($byName['#signin-owner'])[0].RoleName)" } else { '' }
-    if ($owner -ne $DbInput.WebUser) { $problems.Add("schema signin is owned by '$owner', not $($DbInput.WebUser)") } else { $lines.Add("read back: schema signin owned by $owner") }
+    if ($DbInput.DropSignin) { if ($owner) { $problems.Add("schema signin is still there (owned by '$owner') after the drop") } else { $lines.Add('read back: schema signin removed / none') } }
+    else { $lines.Add("read back: schema signin $(if ($owner) { "left as it is (owned by $owner - the web app may still run the old sign-in front)" } else { 'none' })") }
     $sa = if ($byName.ContainsKey('#superadmins')) { [int]"0$(@($byName['#superadmins'])[0].RoleName)" } else { 0 }
     if ($DbInput.SuperAdmin -and $sa -lt 1) { $problems.Add('no SuperAdmin after the first SuperAdmin was asked for') }
     $ver = if ($byName.ContainsKey('#schema')) { "$(@($byName['#schema'])[0].RoleName)" } else { '' }
@@ -222,7 +227,7 @@ function Invoke-EpsDbInit {
     $e = { param($k) if ($Env.ContainsKey($k)) { "$($Env[$k])" } else { [Environment]::GetEnvironmentVariable($k) } }
     $gl = Get-EpsGrantList -SolutionRoot $SolutionRoot
     $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
-    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -RoleAliases $($al = @{}; foreach ($k in $gl.roles.Keys) { if ($gl.roles[$k].renamedFrom) { $al["$($gl.roles[$k].renamedFrom)"] = $k } }; $al) -FrontVersion (& $e 'EPS_DBINIT_FRONT')
+    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -RoleAliases $($al = @{}; foreach ($k in $gl.roles.Keys) { if ($gl.roles[$k].renamedFrom) { $al["$($gl.roles[$k].renamedFrom)"] = $k } }; $al) -FrontVersion (& $e 'EPS_DBINIT_FRONT') -DropSignin (& $e 'EPS_DBINIT_DROP_SIGNIN')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
     # SEC-08 row 7: per execution, the hybrid worker's identity as the database user eps-hybrid-worker in eps_worker
     # (EPS_DBINIT_WORKER = its client id), or 'remove' - the person who adds a worker needs no SQL right
@@ -564,7 +569,8 @@ function Invoke-EpsSqlAdminGroupConverge {
         $missing = @($script:EpsUpdaterGraphRoles | Where-Object { $roles -notcontains $_ })
         if ($missing.Count) { $lines.Add("WARNING G5: $($n.UpdaterIdentity) lacks $($missing -join ', ') - run the install again (it grants them; the update job never grants itself a right)") }
         else { $lines.Add("G5: $($n.UpdaterIdentity) holds $($script:EpsUpdaterGraphRoles -join ', ')") }
-        if ($roles -contains 'RoleManagement.ReadWrite.Directory') { $lines.Add("WARNING G5: $($n.UpdaterIdentity) holds RoleManagement.ReadWrite.Directory, which framework §4.5 G5 does not give an updater - remove it") }
+        # G5a (2.1.38): a standing updater holding any PIM-for-Groups write / schedule right is a SECURITY finding (SEC-09)
+        foreach ($nv in @($script:EpsUpdaterNeverGraphRoles | Where-Object { $roles -contains $_ })) { $lines.Add("WARNING G5a: $($n.UpdaterIdentity) holds $nv, which framework G5a does not give a standing updater - remove it (Invardia support)") }
     }
     $srv = Invoke-EpsArm -Path "$rg/providers/Microsoft.Sql/servers/$($n.SqlServer)" -ApiVersion $script:EpsApi.sql -AllowNotFound
     $a = if ($srv) { $srv.properties.administrators }
@@ -576,11 +582,15 @@ function Invoke-EpsSqlAdminGroupConverge {
     $mi = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.DbInitIdentity)" -ApiVersion $script:EpsApi.mi -AllowNotFound
     if (-not $mi) { $lines.Add("no $($n.DbInitIdentity) yet - nothing to converge (an install run makes it)"); return @{ Ok = $true; Lines = @($lines); Finding = $finding; MissingRoles = $missing } }
     $sp = "$($mi.properties.principalId)"
-    $how = Add-EpsSqlAdminMember -PrincipalId $sp -Who $n.DbInitIdentity -GroupId "$($g.id)" -By 'update'   # throws EPS-GROUP-ADD
-    $lines.Add("G2/G3: $($n.DbInitIdentity) in $($g.displayName): $how")
-    $rn = Update-EpsSqlAdminMemberRenewal -GroupId "$($g.id)" -PrincipalId $sp -Who $n.DbInitIdentity -NowUtc $NowUtc
-    $lines.Add("G4: $($rn.Text)")
-    @{ Ok = $true; Lines = @($lines); Finding = $finding; Renewal = $rn; MissingRoles = $missing }
+    # G5a (2.1.38): READ ONLY - the membership read from the identity's side (memberOf); missing = DRIFT, reported (the
+    # caller does not start the database setup job), never added or renewed by the updater (Invardia re-converges it)
+    $in = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$sp/memberOf?`$select=id" -All | Where-Object { "$($_.id)" -eq "$($g.id)" }).Count -gt 0
+    if (-not $in) {
+        $lines.Add("WARNING G5a: $($n.DbInitIdentity) is NOT a member of $($g.displayName) - membership drift; the updater no longer adds it (framework G5a): Invardia support or one install run puts it back as a direct permanent member")
+        return @{ Ok = $false; Lines = @($lines); Finding = $finding; Drift = $true; MissingRoles = $missing }
+    }
+    $lines.Add("G5a: $($n.DbInitIdentity) is a member of $($g.displayName) (read only)")
+    @{ Ok = $true; Lines = @($lines); Finding = $finding; Drift = $false; MissingRoles = $missing }
 }
 
 # ---- framework §4.5 SQL-ADMIN-GROUP G3a: moving the SQL server's admin to a (new) group ---------------------------------
@@ -801,7 +811,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed,
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$DropSignin, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed,
           # DBINIT-GRANTS-ONLY (framework §8.18): 'grants' = only roles, grants and users - may run beside a pipeline run
           [ValidateSet('', 'all', 'grants')][string]$Steps = '')
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
@@ -814,6 +824,7 @@ function Invoke-EpsDbInitJob {
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
     if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
+    if ($DropSignin) { $env.EPS_DBINIT_DROP_SIGNIN = '1' }
     if ($Worker) { $env.EPS_DBINIT_WORKER = $Worker }
     if ($Steps) { $env.EPS_DBINIT_STEPS = $Steps }
     if ($SupportSeed -and $SupportSeed.AppId) { $env.EPS_DBINIT_SUPPORT = "$($SupportSeed.AppId)|$($SupportSeed.Level)" }

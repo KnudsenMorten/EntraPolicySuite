@@ -5207,6 +5207,15 @@ function schedPicker(current, job) {
       authMode = 'builtin';
       var so = document.getElementById('signout'); if (so) so.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent('/');
       var oa = document.getElementById('otherAccount'); if (oa) oa.hidden = false;   // owner 2026-11-14: an admin account, not the office user
+      // 2.1.41 (owner 2026-11-15 "is token signin problem fixed ... discuss and validate"): the access token lives about 1 h,
+      // the session 8 h - it is renewed BEFORE it ends (the app never accepts an expired one): every 4 minutes the
+      // platform's /.auth/me says when it ends; under 6 minutes left = /.auth/refresh (offline_access at sign-in)
+      setInterval(function () {
+        fetch('/.auth/me', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (m) { return m.ok ? m.json() : null; }).then(function (j) {
+          var e = j && j[0] && j[0].expires_on ? Date.parse(j[0].expires_on) : NaN;
+          if (!isNaN(e) && e - Date.now() < 6 * 60 * 1000) refreshToken();
+        }, function () { });
+      }, 4 * 60 * 1000);
     }, function () { });
     document.getElementById('sessionReload').addEventListener('click', function () {
       if (authMode === 'builtin') { location.href = '/.auth/login/aad?post_login_redirect_uri=' + encodeURIComponent(location.pathname + location.search + location.hash); return; }

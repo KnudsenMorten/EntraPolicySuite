@@ -142,6 +142,7 @@ function Invoke-EpsFrontConverge {
         if (-not $SolutionRoot) { $SolutionRoot = $script:EpsUpdateApplySolutionRoot }
         if (-not $SolutionRoot) { return @{ State = 'error'; Lines = @('WARNING sign-in front: the release folder is not known - the front is left as it is') } }
         $pin = Get-EpsSigninFrontPin -SolutionRoot $SolutionRoot
+        if (-not $pin) { return @{ State = 'ok'; Lines = @('sign-in front: none in this release (Microsoft''s built-in sign-in)') } }
         $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
         $webPath = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"
@@ -326,9 +327,13 @@ function Invoke-EpsUpdateApply {
         # the SQL admin group converged and renewed BEFORE its job starts; refused both ways = the job is NOT started
         try { $cv = Invoke-EpsSqlAdminGroupConverge -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup; foreach ($l in $cv.Lines) { & $Log $(if ($l -match '^(WARNING|FINDING)|WARNING:') { 'Warning' } else { 'Info' }) "SQL admin group: $l" } }
         catch { return (& $fail 'migrate' "$((("$($_.Exception.Message)") -split "`n")[0]) - nothing was moved") }
+        # 2.1.38 G5a: the updater no longer adds the member - a membership drift stops the update BEFORE anything moves
+        if ($cv -and $cv.Drift) { return (& $fail 'migrate' "the database setup identity is not in the SQL admin group (membership drift, framework G5a) - Invardia support puts it back; nothing was moved") }
         & $Emit 'migrate' 'running' "the database setup job $($n.DbInitJob) on $($Target.Version)"
         $ctx = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId; Location = $f.Location; Names = $n; Version = $Target.Version; SolutionRoot = $a.Root; Identities = $f.Identities; PollSeconds = $PollSeconds }
-        $j = Invoke-EpsDbInitJob -Ctx $ctx
+        # 2.1.40: the web app runs no sign-in front (Microsoft's built-in sign-in) = its old schema signin is dropped
+        $noFront = $f.Web -and -not @($f.Web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' }).Count
+        $j = Invoke-EpsDbInitJob -Ctx $ctx -DropSignin:([bool]$noFront)
         & $Emit 'migrate' 'ok' "$($n.DbInitJob) ($($j.Execution)) read every principal back"
         }
         $step = 'apply'
@@ -597,6 +602,44 @@ function Select-EpsImagePrune {
        Counts = @{ Images = $ms.Count; Kept = $keep.Count; Recorded = $nRec; Children = $nChild; Referrers = $nRef; Bases = $nBase; Extra = $nExtra; ToDelete = $sorted.Count } }
 }
 
+function Test-EpsSecurityReleaseMarker {
+    <#
+      PURE (reads one file). 2.1.38, framework SECURE-WEB-1 point 6c (owner 2026-11-14: "stop and update the moment each
+      release passes ring 0"; Invardia 2026-11-15): the signed package's tools/eps-engine/security-release.json
+      { security: true, version } marks a SECURITY release - the update then STOPS the running work executions and rolls
+      at once (24x7, no owner click) instead of waiting for them. Bound to THIS release; anything else = the normal wait.
+      @{ Security; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Version)
+    $p = Join-Path $Root 'tools\eps-engine\security-release.json'
+    if (-not (Test-Path -LiteralPath $p)) { return @{ Security = $false; Reason = 'not marked as a security release' } }
+    $j = try { Get-Content -LiteralPath $p -Raw | ConvertFrom-Json } catch { $null }
+    if (-not $j -or $j.security -isnot [bool] -or -not $j.security) { return @{ Security = $false; Reason = 'the security marker cannot be read' } }
+    if ("$($j.version)" -ne $Version) { return @{ Security = $false; Reason = "the security marker names $($j.version), not this release ($Version)" } }
+    @{ Security = $true; Reason = "a SECURITY release ($Version): running work is stopped, no wait (SECURE-WEB-1 point 6c)" }
+}
+
+function Stop-EpsRunningWorkForSecurity {
+    <#
+      2.1.38: every RUNNING execution of the install's own work jobs (caj-eps-*, never the updater itself and never the
+      database setup job) is stopped - as the updater identity (Contributor on the resource group). A stopped run is
+      started again by its schedule / queue after the update. Never throws: @{ Stopped; Failed; Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$JobsPath, [Parameter(Mandatory)][string]$ApiVersion, [string[]]$Keep = @('caj-eps-updater', 'caj-eps-update', 'caj-eps-dbinit'))
+    $lines = [System.Collections.Generic.List[string]]::new(); $stopped = 0; $failed = 0
+    try {
+        $jobs = @(@((Invoke-EpsArm -Path $JobsPath -ApiVersion $ApiVersion).value) | ForEach-Object { "$($_.name)" } | Where-Object { $_ -like 'caj-eps-*' -and $Keep -notcontains $_ })
+        foreach ($j in $jobs) {
+            $ex = @(@((Invoke-EpsArm -Path "$JobsPath/$j/executions" -ApiVersion $ApiVersion).value) | Where-Object { "$($_.properties.status)" -eq 'Running' })
+            foreach ($e in $ex) {
+                try { Stop-EpsStuckJobExecution -JobsPath $JobsPath -Job $j -Execution "$($e.name)" -ApiVersion $ApiVersion; $stopped++; $lines.Add("stopped $j execution $($e.name) (a security release does not wait)") }
+                catch { $failed++; $lines.Add("WARNING could not stop $j execution $($e.name): $((("$($_.Exception.Message)") -split "`n")[0])") }
+            }
+        }
+    } catch { $failed++; $lines.Add("WARNING the running work could not be listed: $((("$($_.Exception.Message)") -split "`n")[0]) - the update waits as usual") }
+    @{ Stopped = $stopped; Failed = $failed; Lines = @($lines) }
+}
+
 function Test-EpsImageOnlyMarker {
     <#
       PURE (reads one file). SEC-LANE-1 point 7 (Invardia 2026-11-14 + EPS's binding): the signed package's tools/eps-engine/image-only.json
@@ -725,7 +768,7 @@ function Get-EpsAcrManifests {
     while ($uri -and $pages -lt 40) {
         $pages++
         $r = Invoke-EpsAcrCall 'GET' $uri @{ Authorization = "Bearer $Token" } $null
-        if ([int]$r.Status -eq 404) { break }
+        if ([int]$r.Status -eq 404) { $uri = $null; break }   # 2.1.42: no repository (ACR removes an emptied one) = EMPTY, never "did not end"
         if ([int]$r.Status -ne 200) { throw "listing $Repo answered HTTP $($r.Status)" }
         foreach ($m in @(("$($r.Body)" | ConvertFrom-Json).manifests)) { if ($m) { $out.Add([pscustomobject]@{ digest = "$($m.digest)"; tags = @($m.tags | Where-Object { "$_" }); createdTime = "$($m.createdTime)" }) } }
         $link = "$(@($r.Headers['Link'])[0])"
@@ -952,4 +995,147 @@ function Get-EpsBuildPoolFact {
         $fact = [ordered]@{ tier = "$($p.properties.tier)"; count = $n; building = ($n -gt 0); checkedUtc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
         @{ None = $false; Fact = $fact; Reason = "$($f.Names.AgentPool): $($fact.tier), $n instance(s)" }
     } catch { @{ None = $null; Fact = $null; Reason = "not read: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}
+
+# ======================================================================================================================
+# 2.1.36 - framework SECURE-WEB-1 "ONE STANDARD + NO LEFTOVERS" (owner via PIM 2026-11-14: "make sure all installs are
+# config the same" / "security, including leftovers"; Invardia runs the same check daily - SEC-SECOND-CHECK-1). The
+# UPDATER reads, on every run, whether the web app is exactly the standard (DIFF) and what the sign-in front era left
+# behind (LEFTOVERS) - and only REPORTS (removal on the owner's / Invardia's word, or an install run). PIM's reference
+# check (ops/builtin-auth-consistency.ps1) copied in EPS's own terms, not shared.
+# ======================================================================================================================
+function Get-EpsBuiltInAuthConsistency {
+    <#
+      PURE. -Facts @{ App; AuthConfig; SecretNames; Registration (incl. passwordCredentials / keyCredentials); Fics;
+      WebPrincipalId; WebClientId; WebRoles (every role assignment of the web identity in the resource group: id,
+      properties.scope, properties.roleDefinitionId); FrontKey (the vault's signin-front key or $null); FrontKeyRoles;
+      FrontManifests (count, or -1 = not read); TenantId; Storage } -> @{ Diff = @(...); Leftovers = @(...) }.
+    #>
+    param([Parameter(Mandatory)]$Facts)
+    $f = $Facts; $d = [System.Collections.Generic.List[string]]::new(); $l = [System.Collections.Generic.List[string]]::new()
+    $app = $f.App; $a = $f.AuthConfig.properties; $aad = $a.identityProviders.azureActiveDirectory
+    $ctr = @($app.properties.template.containers); $eps = @($ctr | Where-Object { "$($_.name)" -eq 'eps' })[0]
+    $ev = @{}; foreach ($x in @($eps.env)) { $ev["$($x.name)"] = "$($x.value)" }
+    $fqdn = "$($app.properties.configuration.ingress.fqdn)".ToLowerInvariant()
+    $appId = "$($f.Registration.appId)"
+    # ---- the standard
+    if ($ctr.Count -ne 1 -or -not $eps) { $d.Add("containers $(@($ctr | ForEach-Object name) -join '+') (want only eps)") }
+    if ("$($app.properties.configuration.ingress.targetPort)" -ne "$($script:EpsWeb.AppPort)" -or $ev.EPS_WEB_PORT -ne "$($script:EpsWeb.AppPort)") { $d.Add("port: ingress $($app.properties.configuration.ingress.targetPort), EPS_WEB_PORT $($ev.EPS_WEB_PORT) (want $($script:EpsWeb.AppPort))") }
+    if ($ev.EPS_WEB_LISTEN -ne 'all') { $d.Add("EPS_WEB_LISTEN=$($ev.EPS_WEB_LISTEN)") }
+    if ($ev.EPS_TENANT_ID -ne $f.TenantId -or $ev.EPS_WEB_CLIENT_ID -ne $appId) { $d.Add('the app''s pins (EPS_TENANT_ID / EPS_WEB_CLIENT_ID) are not this tenant / registration') }
+    if (@($f.SecretNames) -cnotcontains $script:EpsWeb.FicSecretName) { $d.Add("setting $($script:EpsWeb.FicSecretName) missing") }
+    if ($a.platform.enabled -ne $true) { $d.Add('platform sign-in OFF') }
+    if ("$($a.globalValidation.unauthenticatedClientAction)" -ne 'RedirectToLoginPage') { $d.Add("unauthenticatedClientAction=$($a.globalValidation.unauthenticatedClientAction)") }
+    if (@($a.globalValidation.excludedPaths | Where-Object { $_ }).Count) { $d.Add("excluded paths $(@($a.globalValidation.excludedPaths) -join ',') (none allowed)") }
+    if ("$($aad.registration.clientId)" -ne $appId) { $d.Add("sign-in clientId $($aad.registration.clientId) is not the registration") }
+    if ("$($aad.registration.clientSecretSettingName)" -cne $script:EpsWeb.FicSecretName) { $d.Add("clientSecretSettingName=$($aad.registration.clientSecretSettingName)") }
+    if ("$($aad.registration.openIdIssuer)" -ne "https://login.microsoftonline.com/$($f.TenantId)/v2.0") { $d.Add("openIdIssuer=$($aad.registration.openIdIssuer)") }
+    if ((@($aad.validation.allowedAudiences) -join ',') -ne "api://$appId,$appId") { $d.Add("allowedAudiences=$(@($aad.validation.allowedAudiences) -join ',')") }
+    if (@($aad.login.loginParameters) -notcontains 'prompt=select_account') { $d.Add('account picker (prompt=select_account) missing') }
+    if ("$(@($aad.login.loginParameters))" -notmatch [regex]::Escape("api://$appId/$($script:EpsWeb.Scope)")) { $d.Add('the app''s own scope is not asked at sign-in') }
+    if ($a.login.tokenStore.enabled -ne $true) { $d.Add('session store OFF') }
+    if ("$($a.login.tokenStore.azureBlobStorage.blobContainerUri)" -notmatch "^https://$([regex]::Escape("$($f.Storage)"))\.blob\.[^/]+/$([regex]::Escape($script:EpsWeb.TokenContainer))$") { $d.Add("session store container=$($a.login.tokenStore.azureBlobStorage.blobContainerUri)") }
+    if ("$($a.login.tokenStore.azureBlobStorage.managedIdentityResourceId)" -notmatch '(?i)/id-eps-web$') { $d.Add('the session store is not reached through id-eps-web') }
+    if ("$($a.login.tokenStore.azureBlobStorage.sasUrlSettingName)") { $d.Add('the session store uses a SAS setting') }
+    if ("$($a.login.cookieExpiration.convention)" -ne 'FixedTime' -or "$($a.login.cookieExpiration.timeToExpiration)" -ne ('{0:00}:00:00' -f [int]$script:EpsWeb.SessionHours)) { $d.Add("session $($a.login.cookieExpiration.convention) $($a.login.cookieExpiration.timeToExpiration) (want FixedTime 08:00:00)") }
+    $kvR = @(@($f.WebRoles) | Where-Object { "$($_.properties.scope)" -match '(?i)/Microsoft\.KeyVault/' })
+    if ($kvR.Count) { $d.Add("id-eps-web holds $($kvR.Count) Key Vault role(s)") }
+    $blob = @(@($f.WebRoles) | Where-Object { "$($_.properties.roleDefinitionId)" -like "*/$($script:EpsWeb.BlobDataRole)" })
+    if (-not @($blob | Where-Object { "$($_.properties.scope)" -match "/containers/$([regex]::Escape($script:EpsWeb.TokenContainer))$" }).Count) { $d.Add("no Storage Blob Data Contributor on $($script:EpsWeb.TokenContainer)") }
+    if (@($blob | Where-Object { "$($_.properties.scope)" -notmatch "/containers/$([regex]::Escape($script:EpsWeb.TokenContainer))$" }).Count) { $d.Add('Storage Blob Data Contributor ALSO on another scope') }
+    $w = $f.Registration.web
+    if ($w.implicitGrantSettings.enableIdTokenIssuance -ne $true) { $d.Add('ID-token issuance OFF') }
+    if ($w.implicitGrantSettings.enableAccessTokenIssuance -eq $true) { $d.Add('access-token issuance ON') }
+    if (@($w.redirectUris) -notcontains "https://$fqdn/.auth/login/aad/callback") { $d.Add('the sign-in address /.auth/login/aad/callback missing') }
+    if (-not @(@($f.Fics) | Where-Object { "$($_.subject)" -eq "$($f.WebPrincipalId)" -and @($_.audiences) -contains 'api://AzureADTokenExchange' }).Count) { $d.Add('no federated credential for id-eps-web') }
+    # 2.1.37 (owner 2026-11-15 "anything having public exposure like api mcp must be protected with similar"): EVERY
+    # external ingress of the install's resource group stands behind Microsoft's sign-in - none open, none anonymous
+    foreach ($ig in @($f.Ingresses)) {
+        if (-not $ig) { continue }
+        if (-not $ig.AuthOn) { $d.Add("external ingress $($ig.Name) has NO Microsoft sign-in") }
+        elseif ("$($ig.Action)" -eq 'AllowAnonymous') { $d.Add("external ingress $($ig.Name) lets requests through without a sign-in (AllowAnonymous)") }
+        elseif (@($ig.Excluded | Where-Object { $_ }).Count) { $d.Add("external ingress $($ig.Name) has paths without a sign-in: $(@($ig.Excluded | Where-Object { $_ }) -join ',')") }
+    }
+    # ---- the leftovers
+    foreach ($pc in @($f.Registration.passwordCredentials)) { if ($pc) { $l.Add("app registration client secret '$($pc.displayName)'") } }
+    foreach ($kc in @($f.Registration.keyCredentials)) { if ($kc) { $l.Add("app registration certificate '$($kc.displayName)'") } }
+    foreach ($ru in @($w.redirectUris | Where-Object { $_ -and $_ -notmatch '/\.auth/login/aad/callback$' })) { $l.Add("sign-in address $ru (not the built-in sign-in)") }
+    foreach ($sn in @($f.SecretNames | Where-Object { $_ -cne $script:EpsWeb.FicSecretName })) { $l.Add("container app setting '$sn'") }
+    foreach ($c in @($ctr | Where-Object { "$($_.name)" -ne 'eps' })) { $l.Add("container '$($c.name)'") }
+    foreach ($k in @($ev.Keys | Where-Object { $_ -match '^SIGNIN_' })) { $l.Add("app setting $k") }
+    if ($f.FrontKey) { $l.Add("Key Vault key $($script:EpsWeb.KeyName) still exists") }
+    if (@($f.FrontKeyRoles).Count) { $l.Add("$(@($f.FrontKeyRoles).Count) role assignment(s) on that key") }
+    if ([int]$f.FrontManifests -gt 0) { $l.Add("$($f.FrontManifests) signin-front image(s) still stored in the registry") }
+    elseif ([int]$f.FrontManifests -lt 0) { $l.Add('the stored signin-front images could not be read') }
+    @{ Diff = @($d); Leftovers = @($l) }
+}
+
+function Invoke-EpsBuiltInAuthCheck {
+    <#
+      2.1.36, the UPDATER, every run: READS the facts (Contributor on the resource group, Application.Read.All, AcrPull)
+      and returns the lines - "sign-in standard: OK" or "WARNING sign-in standard: DIFF ...", and "WARNING sign-in
+      leftovers: ..." when there are any. Changes NOTHING. Skipped while the install still runs the sign-in front (the
+      switch says what it waits for). Never throws: @{ State (ok | diff | front | none | error); Diff; Leftovers; Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
+    try {
+        $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"; $appPath = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"
+        $app = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca -AllowNotFound
+        if (-not $app) { return @{ State = 'none'; Diff = @(); Leftovers = @(); Lines = @('sign-in standard: this install has no web app') } }
+        $ac = Invoke-EpsArm -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -AllowNotFound
+        if ((Get-EpsWebSigninMode -App $app -AuthConfig $ac) -eq 'front') { return @{ State = 'front'; Diff = @(); Leftovers = @(); Lines = @('sign-in standard: still the sign-in front - checked after the switch') } }
+        $sec = @(@((Invoke-EpsArm -Method POST -Path "$appPath/listSecrets" -ApiVersion $script:EpsApi.aca -Body @{}).value) | ForEach-Object { "$($_.name)" })
+        $reg = @(Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:t eq 'eps-install-$($n.Suffix)')&`$select=id,appId,web,passwordCredentials,keyCredentials" -All)[0]
+        $fics = if ($reg) { @(Invoke-EpsGraph -Path "v1.0/applications/$($reg.id)/federatedIdentityCredentials" -All) } else { @() }
+        $wi = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.WebIdentity)" -ApiVersion $script:EpsApi.mi -AllowNotFound
+        $wp = "$($wi.properties.principalId)"
+        $roles = @(@((Invoke-EpsArm -Path "$rg/providers/Microsoft.Authorization/roleAssignments?`$filter=principalId eq '$wp'" -ApiVersion $script:EpsApi.rbac).value) | Where-Object { "$($_.properties.principalId)" -eq $wp })
+        $keyPath = "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)/keys/$($script:EpsWeb.KeyName)"
+        $key = try { Invoke-EpsArm -Path $keyPath -ApiVersion $script:EpsWeb.KvApi -AllowNotFound } catch { $null }
+        $keyRoles = if ($key) { @(@((Invoke-EpsArm -Path "$keyPath/providers/Microsoft.Authorization/roleAssignments" -ApiVersion $script:EpsApi.rbac).value) | Where-Object { "$($_.properties.scope)" -like "*/keys/$($script:EpsWeb.KeyName)" }) } else { @() }
+        $ms = try { $login = "$($n.Registry).azurecr.io"; @(Get-EpsAcrManifests -LoginServer $login -Repo 'signin-front' -Token (Get-EpsAcrDataToken -LoginServer $login -TenantId $TenantId -Repo 'signin-front' -Actions 'metadata_read')).Count } catch { -1 }
+        # every container app of the resource group with an EXTERNAL ingress, and its sign-in
+        $ings = foreach ($ca in @(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/containerApps" -ApiVersion $script:EpsApi.aca)) {
+            if ($ca.properties.configuration.ingress.external -ne $true) { continue }
+            $cac = Invoke-EpsArm -Path "$($ca.id)/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -AllowNotFound
+            [pscustomobject]@{ Name = "$($ca.name)"; AuthOn = ($cac.properties.platform.enabled -eq $true); Action = "$($cac.properties.globalValidation.unauthenticatedClientAction)"; Excluded = @($cac.properties.globalValidation.excludedPaths) }
+        }
+        $r = Get-EpsBuiltInAuthConsistency -Facts @{ Ingresses = @($ings); App = $app; AuthConfig = $ac; SecretNames = $sec; Registration = $reg; Fics = $fics; WebPrincipalId = $wp; WebClientId = "$($wi.properties.clientId)"
+                                                     WebRoles = $roles; FrontKey = $key; FrontKeyRoles = $keyRoles; FrontManifests = $ms; TenantId = $TenantId; Storage = $n.Storage }
+        $lines = @(if ($r.Diff.Count) { "WARNING sign-in standard: DIFF - $($r.Diff -join ' | ')" } else { "sign-in standard: OK (Microsoft's built-in sign-in exactly as the standard)" })
+        if ($r.Leftovers.Count) { $lines += "WARNING sign-in leftovers (reported, nothing removed): $($r.Leftovers -join ' | ')" }
+        @{ State = $(if ($r.Diff.Count) { 'diff' } else { 'ok' }); Diff = $r.Diff; Leftovers = $r.Leftovers; Lines = $lines }
+    } catch { @{ State = 'error'; Diff = @(); Leftovers = @(); Lines = @("WARNING sign-in standard: not read - $((("$($_.Exception.Message)") -split "`n")[0])") } }
+}
+
+function Remove-EpsRetiredFrontImages {
+    <#
+      2.1.41 (framework SECURE-WEB-1 "LEFTOVER CLEANUP - WHO DELETES WHAT", Invardia 2026-11-15: the PRODUCT clears its own
+      data plane): once the web app runs NO sign-in front and the release pins none, every image still stored in the
+      install's OWN repository 'signin-front' is deleted by the updater (the same data-plane right as IMAGE-PRUNE) and read
+      back. Touches no other repository and no other registry. Never throws: @{ State (removed | none | kept | error); Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$LoginServer, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][bool]$FrontRuns, [string]$Pin = '', [int]$Passes = 3)
+    if ($FrontRuns -or $Pin) { return @{ State = 'kept'; Lines = @("retired sign-in front images: kept - $(if ($FrontRuns) { 'the web app still runs the sign-in front' } else { "this release pins signin-front $Pin" })") } }
+    try {
+        $repo = 'signin-front'
+        $tok = Get-EpsAcrDataToken -LoginServer $LoginServer -TenantId $TenantId -Repo $repo
+        $before = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
+        if (-not $before.Count) { return @{ State = 'none'; Lines = @('retired sign-in front images: none stored') } }
+        $failed = [System.Collections.Generic.List[string]]::new()
+        for ($k = 0; $k -lt $Passes; $k++) {
+            $now = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
+            if (-not $now.Count) { break }
+            $failed.Clear()
+            # an index first, then what is left (a child that an index still names answers 4xx until its index is gone)
+            foreach ($m in @($now | Sort-Object { -(@($_.tags).Count) })) {
+                $r = Invoke-EpsAcrCall 'DELETE' "https://$LoginServer/v2/$repo/manifests/$($m.digest)" @{ Authorization = "Bearer $tok" } $null
+                if ([int]$r.Status -notin 200, 202, 404) { $failed.Add("$(Get-EpsShortDigest $m.digest) (HTTP $($r.Status))") }
+            }
+        }
+        $after = @(Get-EpsAcrManifests -LoginServer $LoginServer -Repo $repo -Token $tok)
+        if ($after.Count) { return @{ State = 'error'; Lines = @("WARNING retired sign-in front images: $($before.Count) stored, $($after.Count) still there after the clean-up (read back)$(if ($failed.Count) { "; not deleted: $($failed -join ', ')" }) - the next update run tries again") } }
+        @{ State = 'removed'; Lines = @("retired sign-in front images: $($before.Count) removed from $LoginServer/$repo (read back: none left)") }
+    } catch { @{ State = 'error'; Lines = @("WARNING retired sign-in front images: $((("$($_.Exception.Message)") -split "`n")[0]) - the next update run tries again") } }
 }

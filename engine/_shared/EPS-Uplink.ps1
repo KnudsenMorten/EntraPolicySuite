@@ -76,14 +76,24 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion')
     run      = $script:EpsUplinkEnvelope + @('Job', 'Outcome', 'DurationMs', 'FailedStep', 'ErrorClass', 'FixKind', 'ErrorText', 'Counts', 'Reports')
     # an alert carries Invardia's ALERT_FIELDS only (packages/core/src/uplinkalert.ts): NOT Hosting / RuntimeIdentity - a record with
     # them was refused 422 (internal, 2026-11-03 06:51, eps.tamper.foreign-change) and retried every run
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion')
+# DOCS-FRESH (framework ALIGN-AUTO-ALL item 3, Invardia 2026-11-15): the version the shipped docs/REQUIREMENTS.md §0 names
+# live, on its "Live version:" line. The packages leave docs/ out, so engine/docs-version.txt carries it; the release
+# refuses to tag unless that file, the §0 line and VERSION are the same version. No file / not a version = left out.
+$script:EpsDocsVersionFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'docs-version.txt'
+function Get-EpsDocsVersion {
+    param([string]$Path = $script:EpsDocsVersionFile)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $v = try { ([IO.File]::ReadAllText($Path)).Trim() } catch { '' }
+    if ($v -match '^\d+\.\d+\.\d+(\.\d+)?$') { $v } else { $null }
+}
 
 function Get-EpsUplinkLists { $script:EpsUplinkLists }
 function Get-EpsUplinkAllowedFields { param([Parameter(Mandatory)][string]$Kind) @($script:EpsUplinkFields[$Kind]) }
@@ -435,6 +445,8 @@ function New-EpsUplinkHeartbeat {
             $p.longRun = $l
             $o.Pipeline = $p
         }
+        # DOCS-FRESH: docsVersion = what the shipped §0 names live (Get-EpsDocsVersion); left out when not a version
+        if ("$($Facts.DocsVersion)" -match '^\d+\.\d+\.\d+(\.\d+)?$') { $o.docsVersion = "$($Facts.DocsVersion)" }
     }
     # a field Invardia named in its refusal (422 { fields }) is left out of the one resend - the rest still goes
     foreach ($d in @($Drop)) { if ("$d" -and $o.Contains("$d")) { $o.Remove("$d") } }
@@ -608,6 +620,7 @@ function Get-EpsUplinkHeartbeatFacts {
     $lastMail = & $q 'SELECT MAX(t) FROM (SELECT MAX(AlertedAtUtc) AS t FROM eps.TamperEvent UNION ALL SELECT MAX(AlertedAtUtc) FROM eps.CaFinding) x'
     @{
         Counts = $counts
+        DocsVersion = (Get-EpsDocsVersion)
         EnvironmentName = (Get-EpsEnvironmentName -ConnectionString $ConnectionString)
         Jobs = @($jobs)
         # UPD-HOLD: the last update run's give-up line ("... waited 45 min for running jobs ..., retries next night"), only
@@ -769,9 +782,12 @@ function Get-EpsUplinkRunPlan {
       runs are not reported (the heartbeat says them); their failures are.
     #>
     param([object[]]$Runs, [hashtable]$Watermarks = @{}, [Parameter(Mandatory)][datetime]$DefaultSinceUtc)
+    # 2.1.45 (Invardia 2026-11-15, after 2.1.44 sent week-old records and each failed one opened a ticket): a run that ended
+    # before -DefaultSinceUtc (now - 24 h) is never sent, whatever its job's watermark says - an old run is not a new incident
     $due = @($Runs | Where-Object {
         $_ -and $_.EndedAtUtc -and $_.EndedAtUtc -isnot [DBNull] -and "$($_.Status)" -ne 'Running' -and "$($_.Job)" -ne 'Uplink' -and
         -not ("$($_.Job)" -in 'Tick', 'SupportAccess' -and "$($_.Status)" -eq 'Succeeded') -and
+        ([datetime]$_.EndedAtUtc) -gt $DefaultSinceUtc -and
         ([datetime]$_.EndedAtUtc) -gt $(if ($Watermarks.ContainsKey((Get-EpsUplinkJobId "$($_.Job)"))) { [datetime]$Watermarks[(Get-EpsUplinkJobId "$($_.Job)")] } else { $DefaultSinceUtc })
     } | Sort-Object { [datetime]$_.EndedAtUtc })
     # framework §8.4 (Invardia 2026-11-05): a job that holds an Update run or a run that did not succeed goes FIRST -
@@ -789,9 +805,23 @@ function Get-EpsUplinkDueRuns {
     # 2.0.93: the scheduler's runs were eps-tick, now eps-engine - the old watermark carries on (nothing sent twice)
     if (-not $wm.ContainsKey('eps-engine') -and $wm.ContainsKey('eps-tick')) { $wm['eps-engine'] = $wm['eps-tick'] }
     $default = $NowUtc.AddHours(-$script:EpsUplinkFirstRunsHours)
-    $since = @(@($wm.Values) + $default | Sort-Object)[0]
-    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Codes') END AS Codes, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Sources') END AS Sources, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.FailedConditions') END AS FailedConditions, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc > @s AND Status <> 'Running' AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
-    @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
+    # 2.1.45: never before now - 24 h (a run older than that is not sent - Get-EpsUplinkRunPlan)
+    $since = @(@(@($wm.Values) + $default | Sort-Object)[0], $default | Sort-Object)[-1]
+    # 2.1.44 (internal 2026-11-15: no run record sent since 2026-11-08 13:50Z, the backlog read 0): the read starts at the
+    # OLDEST watermark, and one that never moves (eps-tick: the renamed scheduler's, moved only by a failed tick) pinned it.
+    # The TOP window then held only runs already sent, the plan was empty every cycle - for a week. Now (1) the rows that
+    # are never reported (the uplink's own, the tick's and the support access job's successes) are not read at all, and
+    # (2) a FULL window with nothing due moves the read on past it (at most $pages windows per call), never stuck again.
+    $pages = 40
+    for ($pg = 0; $pg -lt $pages; $pg++) {
+        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $since } -Query "SELECT TOP ($([int]$Top)) RunId, Job, Status, StartedAtUtc, EndedAtUtc, HeldReason, Objects, Planned, Overwrites, Applied, Failed, Skipped, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Codes') END AS Codes, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.Sources') END AS Sources, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_QUERY(SummaryJson, '$.FailedConditions') END AS FailedConditions, CASE WHEN ISJSON(SummaryJson) = 1 THEN JSON_VALUE(SummaryJson, '$.PartialKind') END AS PartialKind FROM eps.Run WHERE EndedAtUtc IS NOT NULL AND EndedAtUtc $(if ($pg) { '>=' } else { '>' }) @s AND Status <> 'Running' AND Job <> N'Uplink' AND NOT (Job IN (N'Tick', N'SupportAccess') AND Status = N'Succeeded') AND (HeldReason IS NULL OR HeldReason NOT LIKE 'stalled (stopping)%') ORDER BY EndedAtUtc")   # STALL-1: reported once its outcome (started once more or not) is written
+        $plan = @(Get-EpsUplinkRunPlan -Runs $rows -Watermarks $wm -DefaultSinceUtc $default)
+        if ($plan.Count -or $rows.Count -lt $Top) { return $plan }
+        $last = [datetime]$rows[-1].EndedAtUtc
+        if ($last -le $since -and $pg) { return $plan }   # a whole window at one instant: nothing more to learn this call
+        $since = $last
+    }
+    @()
 }
 function Get-EpsUplinkBacklog {
     # §8.4 (4): the run records not sent yet, as checked now - @{ Pending; OldestUtc; CheckedUtc }; $null when unreadable

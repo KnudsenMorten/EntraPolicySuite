@@ -35,7 +35,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Write-Host 'Documentation: https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Grant-EpsEnginePermissions when EPS is public there (DOC-LINKS)
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-EnginePermissions') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-EnginePermissions', 'EPS-Exchange', 'EPS-ExchangeTagRole') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
 
 # the request: only rights Entra Policy Suite declares for its engine (least privilege - never a free-form permission)
@@ -50,6 +50,12 @@ $names = Resolve-EpsInstallNames -TenantId "$TenantId" -SubscriptionId "$Subscri
 $mi = Invoke-EpsArm -Path "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($names.EngineIdentity)" -ApiVersion '2023-01-31' -AllowNotFound
 if (-not $mi -or "$($mi.properties.principalId)" -notmatch '^[0-9a-fA-F-]{36}$') { Write-Host "No engine identity $($names.EngineIdentity) in $ResourceGroup - is Entra Policy Suite installed there?" -ForegroundColor Red; exit 2 }
 $engine = "$($mi.properties.principalId)"
+# 2.1.39 (review G point 4): the engine writes the tag attributes through the Exchange role group 'EPS Tag Writers' once it
+# is in place - then the org-wide Entra role Exchange Recipient Administrator is not granted again (not readable = as before)
+if ($Exchange -and -not $Remove) {
+    $inPlace = try { -not (Get-EpsTagRolePlan -AppId "$($mi.properties.clientId)" -ObjectId $engine -State (Get-EpsTagRoleState -TenantId "$TenantId")).Steps.Count } catch { $false }
+    if ($inPlace) { $req = Get-EpsEnginePermissionRequest -GraphPermission $GraphPermission -Exchange -TagRoleGroupInPlace; Write-Host "The engine writes the tag attributes through the Exchange role group '$($script:EpsTagRole.Group)' - the Entra role Exchange Recipient Administrator is not granted." -ForegroundColor Yellow }
+}
 Write-Host "Engine identity: $($names.EngineIdentity) (object id $engine) - $(if ($Remove) { 'remove' } else { 'grant' }): $(@($req.Items | ForEach-Object What) -join ', ')" -ForegroundColor Cyan
 
 $rows = Invoke-EpsEnginePermissionPlan -EngineObjectId $engine -Request $req -PlanOnly:$what

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.45",
+  "date": "2026-11-15",
+  "type": "fix-only",
+  "summary": "The support link sends only job reports from the last day.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Only recent job reports go to Invardia support",
+      "text": "The support link sends the reports of jobs that finished in the last 24 hours. Older reports are not sent, so an old problem that was solved long ago is never reported as new."
+    }
+  ]
+}

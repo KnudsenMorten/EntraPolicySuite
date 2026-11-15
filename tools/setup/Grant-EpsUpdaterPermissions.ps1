@@ -7,9 +7,9 @@
     The install grants the update identity its rights once. The update job never grants itself a right, so run this
     when one is missing afterwards (the install ran as an account that could not grant it, or a release declares a new
     one). Only the rights Entra Policy Suite declares for its updater can be granted - anything else is refused:
-    PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup and .Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup
-    (it keeps the database setup identity in the SQL admin group), GroupMember.Read.All and Application.Read.All (it reads
-    them back). It holds no right to change the web app's sign-in registration.
+    GroupMember.Read.All and Application.Read.All - both read only: the updater checks
+    that the database setup identity is in the SQL admin group and reports it when not. It holds no right to change that
+    membership (framework G5a, 2.1.38) or the web app's sign-in registration.
     -GraphPermission: the permissions (none given: every one the updater needs).
     You sign in in a browser (no module). -WhatIf: the plan - what is there, what would be granted or removed - nothing
     changed. It prints per right: granted / already there / removed / not there / refused (with the reason), and exits 1

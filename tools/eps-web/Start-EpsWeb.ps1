@@ -23,6 +23,12 @@ $cfg = Get-EpsWebAuthConfig
 if (-not $cfg.Issuers.Count -or -not $cfg.Audiences.Count) { Write-Host '[eps web] EPS_TENANT_ID and EPS_WEB_CLIENT_ID must be set - not starting (fail closed)'; exit 2 }
 if (-not $ConnectionString) { Write-Host '[eps web] EPS_SQL_CONNECTION is not set - not starting'; exit 2 }
 $ctx = @{ ConnectionString = $ConnectionString; AuthConfig = $cfg; Version = $version; StaticRoot = (Join-Path $PSScriptRoot 'www') }
+# 2.1.43 (Invardia 2026-11-15): the sign-in check proves itself at START, with no person - Microsoft's library loaded and
+# the request path run on made-up input; not ok = not starting (fail closed: an unhealthy revision at ring 0, never a
+# web app that refuses every person later)
+$self = Test-EpsIdentityModelSelfCheck
+if (-not $self.ok) { Write-Host "[eps web] identity-model self-check FAILED: $($self.detail) - not starting (fail closed)"; exit 3 }
+Write-Host "[eps web] identity-model self-check OK: $($self.detail)"
 
 $listener = [System.Net.HttpListener]::new()
 # 2.1.35 (owner 2026-11-14, Microsoft's built-in Container Apps sign-in): EPS_WEB_LISTEN = 'all' when the app itself is

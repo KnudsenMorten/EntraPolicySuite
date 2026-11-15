@@ -249,11 +249,20 @@
           "scope": "/",
           "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition",
           "featureKey": "exchange",
-          "feature": "as above (Exchange.ManageAsApp needs a role to act)",
+          "feature": "as above (Exchange.ManageAsApp needs a role to act) - REPLACED from 2.1.39 by the Exchange role group below once an Exchange admin ran Initialize-EpsExchangeTagRole (step 2 removes this role; the install then does not grant it again)",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "as Exchange.ManageAsApp"
         },
         {
+          "kind": "exchange",
+          "right": "member of the Exchange role group 'EPS Tag Writers' (custom role 'EPS Tag Writer': Get-Recipient; Set-Mailbox / Set-MailUser with -Identity and -CustomAttribute1..15 only)",
+          "scope": "the recipients of the organization - the tag attributes only",
+          "when": "UserTagging.Enabled or IdentityReport.Enabled or a rule with a Mailbox_* condition, once an Exchange admin ran Initialize-EpsExchangeTagRole",
+          "featureKey": "exchange",
+          "feature": "mailbox tags and mailbox types through Exchange - least privilege (review G point 4): no forwarding, no permissions, no other setting",
+          "approval": "Invardia 2026-11-15 (review G point 4, the shape approved; owner: least privilege is critical)",
+          "recorded": "REQUIREMENTS §0 2026-11-15 (G4)"
+        },        {
           "kind": "exchange",
           "right": "Application Mail.Send",
           "scope": "the sender mailbox only (management scope <sender>-SendScope)",
@@ -357,18 +366,16 @@
           "feature": "the web app's tables (object grants: sql/eps-grants.json)",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
-        },
-        {
-          "kind": "sql",
-          "right": "owner of schema signin",
-          "scope": "<sql>/eps",
-          "when": "always",
-          "feature": "the sign-in front's own session tables",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
         }
       ],
       "removedRights": [
+        {
+          "kind": "sql",
+          "right": "owner of schema signin (+ CREATE TABLE)",
+          "scope": "<sql>/eps",
+          "removed": "2.1.40 - the old sign-in front's schema is dropped by the database setup job where the web app runs no front; read back",
+          "approval": "Invardia 2026-11-15 (least privilege; EPS drops it in its own code)"
+        },
         {
           "kind": "keyVault",
           "right": "Key Vault Crypto Service Encryption User",
@@ -447,30 +454,6 @@
           "feature": "install an approved release: build the image, patch the jobs and the web app",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "owner 2026-11-03: \"Contributor, like SI/PIM\" (DESIGN)"
-        },
-        {
-          "kind": "graph",
-          "right": "PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup",
-          "when": "always",
-          "feature": "renew the database job's SQL admin group membership (framework 4.5 G5)",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "owner 2026-11-05: \"both setup and upd\", \"invardia must control this\"; Invardia a1a10738 (G5)"
-        },
-        {
-          "kind": "graph",
-          "right": "PrivilegedAssignmentSchedule.Read.AzureADGroup",
-          "when": "always",
-          "feature": "as above",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "as above"
-        },
-        {
-          "kind": "graph",
-          "right": "RoleManagementPolicy.Read.AzureADGroup",
-          "when": "always",
-          "feature": "as above",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "as above"
         },
         {
           "kind": "graph",

@@ -1,0 +1,17 @@
+{
+  "version": "2.1.37",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "Every public address of the install is checked for Microsoft's sign-in, and the old sign-in front is gone.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Every public address checked for sign-in",
+      "text": "Each update run now checks every address of your installation that the internet can reach, and reports any that is not behind Microsoft's sign-in."
+    },
+    {
+      "title": "The old sign-in front is removed",
+      "text": "The release no longer carries the earlier sign-in front. Your web app already uses Microsoft's built-in sign-in."
+    }
+  ]
+}

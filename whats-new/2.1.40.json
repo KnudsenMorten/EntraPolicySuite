@@ -1,0 +1,17 @@
+{
+  "version": "2.1.40",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "The last traces of the earlier sign-in are removed from your installation.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The earlier sign-in's database tables are removed",
+      "text": "The database setup removes the tables the earlier sign-in front kept, and the web app's right to make tables, once the web app uses Microsoft's built-in sign-in."
+    },
+    {
+      "title": "Only Microsoft's sign-in address is kept",
+      "text": "The web app's sign-in registration now needs only the address of Microsoft's built-in sign-in; the earlier address is reported as a leftover."
+    }
+  ]
+}

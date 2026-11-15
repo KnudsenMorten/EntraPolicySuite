@@ -1,0 +1,17 @@
+{
+  "version": "2.1.43",
+  "date": "2026-11-15",
+  "type": "feature",
+  "summary": "The web app checks its own sign-in at start, and the support link reports which release its documentation describes.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The sign-in check proves itself at start",
+      "text": "At start, the web app runs the same check a sign-in takes, with Microsoft's library, on made-up input. If that fails, it does not start, so a problem shows right after an update, not at someone's first sign-in."
+    },
+    {
+      "title": "The documentation's release is reported",
+      "text": "The regular report to Invardia support now names the release the shipped documentation describes, so out-of-date documentation is noticed automatically."
+    }
+  ]
+}

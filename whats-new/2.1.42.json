@@ -1,0 +1,17 @@
+{
+  "version": "2.1.42",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "Sign-ins are now checked with Microsoft's own library - no custom sign-in code is left.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Microsoft's library checks every sign-in",
+      "text": "The web app and the engine check each person's Microsoft sign-in with Microsoft's own library instead of code of ours. Microsoft's built-in sign-in still stands in front of the web app."
+    },
+    {
+      "title": "The registry clean-up reports correctly",
+      "text": "Once the last earlier sign-in image is removed, the clean-up now reports the registry as empty instead of a warning."
+    }
+  ]
+}

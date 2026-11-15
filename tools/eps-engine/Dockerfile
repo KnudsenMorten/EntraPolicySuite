@@ -34,6 +34,22 @@ RUN dotnet new classlib -n shim -o shim \
  && dotnet publish -c Release -o /drv/out \
  && test -f /usr/share/zoneinfo/Europe/Copenhagen
 
+# ---- stage 1b (2.1.42, framework c5704c10): MICROSOFT's token library, pinned - the web app and the engine verify a
+# person's token with Microsoft.IdentityModel.JsonWebTokens (no hand-written JWT code). Its own folder (never mixed with
+# the SQL driver's copies); every file's SHA-256 is checked here, so a different build of the package fails the image.
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS idm
+WORKDIR /idm
+RUN dotnet new classlib -n shim -o shim \
+ && cd shim \
+ && dotnet add package Microsoft.IdentityModel.JsonWebTokens --version 8.14.0 \
+ && dotnet publish -c Release -o /idm/out \
+ && cd /idm/out \
+ && echo "7761c80de8e9cb0f01d74ffcddd3fc620e1cc92bddc6f7fcacc342acfb0077d2  Microsoft.IdentityModel.JsonWebTokens.dll" | sha256sum -c - \
+ && echo "da667d128077d2ae0141a562e73871db157639747fbfa30d0ebdb693adce718a  Microsoft.IdentityModel.Tokens.dll" | sha256sum -c - \
+ && echo "3fe5d858fe4a698281cad38a9535b535ed626a874d060a6763c085544b1089ee  Microsoft.IdentityModel.Logging.dll" | sha256sum -c - \
+ && echo "24e97b54b6b5c234a124a336757e3116617ac6c30b655cdae74517dc2ecb5746  Microsoft.IdentityModel.Abstractions.dll" | sha256sum -c - \
+ && mkdir -p /idm/keep \
+ && cp Microsoft.IdentityModel.JsonWebTokens.dll Microsoft.IdentityModel.Tokens.dll Microsoft.IdentityModel.Logging.dll Microsoft.IdentityModel.Abstractions.dll /idm/keep/
 # ---- stage 2: the solution tree, pruned to what runs in a container ----
 FROM mcr.microsoft.com/dotnet/sdk:10.0-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS src
 COPY SOLUTIONS/EntraPolicySuite /src/EntraPolicySuite
@@ -82,6 +98,8 @@ RUN groupadd --system --gid 10001 eps \
 
 COPY --from=sqldriver /drv/out/*.dll /opt/sqlclient/
 ENV EPS_SQLCLIENT_DLL=/opt/sqlclient/Microsoft.Data.SqlClient.dll
+COPY --from=idm /idm/keep/*.dll /opt/identitymodel/
+ENV EPS_IDENTITYMODEL_DIR=/opt/identitymodel
 
 # the time-zone database: the PowerShell base image has none, so a 'daily 01:00' schedule in Platform.TimeZone
 # (e.g. Europe/Copenhagen) could not be computed (found live 2026-10-31: "schedule error ... not found"). Copied from

@@ -1,0 +1,17 @@
+{
+  "version": "2.1.38",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "The update job holds fewer rights, and a security update no longer waits for running jobs.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The update job holds fewer rights",
+      "text": "The update job can no longer change who administers the database. It only checks that the database setup identity is still in the admin group, and reports it when it is not."
+    },
+    {
+      "title": "Security updates install at once",
+      "text": "A security update now stops the jobs that are running and installs at once instead of waiting for them. The stopped jobs run again on their next schedule."
+    }
+  ]
+}

@@ -60,7 +60,11 @@ $script:EpsEngineGraphRoles = @('User.Read.All', 'Device.Read.All', 'GroupMember
 # NEVER RoleManagement.ReadWrite.Directory (G5: the PIM-for-Groups rights alone add and read back a member - SI at JBH).
 # GroupMember.Read.All (read only, G5 as changed 2026-11-05): reading the membership back is refused without it.
 # Not left out by -ExcludeGraphRole: G5 is binding for every product.
-$script:EpsUpdaterGraphRoles = @('PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup', 'PrivilegedAssignmentSchedule.Read.AzureADGroup', 'RoleManagementPolicy.Read.AzureADGroup', 'GroupMember.Read.All', 'Application.Read.All')
+# 2.1.38 framework G5a (Invardia 2026-11-15, review G point 1; owner: least privilege is critical): the STANDING updater
+# holds NO PIM-for-Groups write and no schedule read - id-eps-dbinit is a DIRECT PERMANENT member of the role-assignable
+# SQL admin group, set by the install; the updater only READS the membership and reports drift (Invardia re-converges it).
+$script:EpsUpdaterGraphRoles = @('GroupMember.Read.All', 'Application.Read.All')   # framework G5a 8189d376: no PIM policy read either (a direct permanent member has none)
+$script:EpsUpdaterNeverGraphRoles = @('PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup', 'PrivilegedAssignmentSchedule.Read.AzureADGroup', 'RoleManagementPolicy.Read.AzureADGroup', 'RoleManagement.ReadWrite.Directory')
 # SECAUDIT-1a (Invardia ruling 2026-11-07) gave the updater Application.ReadWrite.OwnedBy to keep the registration it owns current.
 # 2.1.35 (review G point 2, Invardia 2026-11-14): DROPPED with Microsoft's built-in sign-in - the updater only READS the
 # registration now (Sync-EpsWebRegistrationAsOwner); the install run makes its settings. Not granted any more; an install
@@ -933,7 +937,7 @@ function Invoke-EpsInstallStep {
             $mode = if ($Ctx.DbJob) { $Ctx.DbJob } else { Initialize-EpsSqlAdminGroup -Ctx $Ctx -NoCreate }
             $sa = if ("$($Ctx.Person.PrincipalType)" -in '', 'User' -and $Ctx.Person.ObjectId) { @{ Upn = $Ctx.Person.Upn; ObjectId = $Ctx.Person.ObjectId } }
             if ($mode.Use) {
-                $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa -SupportSeed $Ctx.SupportSeed
+                $j = Invoke-EpsDbInitJob -Ctx $Ctx -SuperAdmin $sa -SupportSeed $Ctx.SupportSeed -DropSignin   # 2.1.40: the install makes the web app with Microsoft's built-in sign-in - no front
                 # OPEN-01: the support-access job (every 5 min, as the same identity) - only where the setup job can run
                 $sj = Get-EpsSupportJobBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)"
                 [void](Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/jobs/$($sj.Name)" -ApiVersion $script:EpsApi.acajob -Body $sj.Body)
@@ -943,7 +947,7 @@ function Invoke-EpsInstallStep {
             # the roles first (a member needs its role), each user in its own role only
             $gl = Get-EpsGrantList -SolutionRoot $Ctx.SolutionRoot
             Invoke-EpsSetupSql -Ctx $Ctx -Script ((@(Get-EpsGrantScript -GrantList $gl) + @(foreach ($p in Get-EpsDbInitPrincipals -Ctx $Ctx -GrantList $gl) { Get-EpsSqlUserScript -Name $p.name -ClientId $p.clientId -Role $p.role })) -join "`n")
-            $sqlText = Get-EpsSigninStateSql -WebUser $n.WebIdentity
+            $sqlText = Get-EpsSigninDropSql -WebUser $n.WebIdentity   # 2.1.40: no sign-in front - its old schema goes
             if ($sa) { $sqlText += "`n" + (Get-EpsFirstSuperAdminSql -Upn $sa.Upn -ObjectId $sa.ObjectId) }
             Invoke-EpsSetupSql -Ctx $Ctx -Script $sqlText
             return @{ Note = "as you, the server's admin - $($mode.Why)" }
@@ -1126,8 +1130,15 @@ function Invoke-EpsInstallStep {
             $Ctx.ExchangeNeed = $need
             if ($need.Known -and $need.Needed) {
                 [void](Grant-EpsAppRoles -PrincipalId $p -ResourceAppId $script:EpsExchangeAppId -Roles @('Exchange.ManageAsApp'))
+                # 2.1.39 (review G point 4): once the engine writes through the Exchange role group 'EPS Tag Writers'
+                # (Initialize-EpsExchangeTagRole.ps1), the org-wide Entra role is NOT granted again; not readable = as before
+                $tagGroup = $false
+                if (Get-Command Get-EpsTagRoleState -ErrorAction SilentlyContinue) {
+                    try { $tst = Get-EpsTagRoleState -TenantId $Ctx.TenantId; $tagGroup = -not (Get-EpsTagRolePlan -AppId "$($Ctx.Identities.EngineIdentity.ClientId)" -ObjectId $p -State $tst).Steps.Count } catch { $tagGroup = $false }
+                }
                 $have = @(Invoke-EpsGraph -Path "v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '$p' and roleDefinitionId eq '$($script:EpsExchangeRecipientAdminRole)'" -All)
-                if (-not $have.Count) { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/roleManagement/directory/roleAssignments' -Body @{ principalId = $p; roleDefinitionId = $script:EpsExchangeRecipientAdminRole; directoryScopeId = '/' }) }
+                if ($tagGroup) { Write-Host "  note     the engine writes the tag attributes through the Exchange role group '$($script:EpsTagRole.Group)' - the Entra role Exchange Recipient Administrator is not granted$(if ($have.Count) { ' (still held: remove it with Initialize-EpsExchangeTagRole.ps1 -RemoveRecipientAdministrator)' })" -ForegroundColor Yellow }
+                elseif (-not $have.Count) { [void](Invoke-EpsGraph -Method POST -Path 'v1.0/roleManagement/directory/roleAssignments' -Body @{ principalId = $p; roleDefinitionId = $script:EpsExchangeRecipientAdminRole; directoryScopeId = '/' }) }
             } elseif ($need.Known) {
                 # RIGHTS-1.7 point 5, option A (Invardia ruling 2026-11-09): not needed = reported, kept if held - nothing is removed
                 Write-Host "  note     the Exchange rights are not needed now ($($need.Why)) - kept if held; nothing is removed (RIGHTS-1.7)" -ForegroundColor Yellow

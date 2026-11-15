@@ -1,0 +1,17 @@
+{
+  "version": "2.1.41",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "The earlier sign-in's leftovers are cleared, and your web session is renewed before it ends.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The earlier sign-in's images are removed",
+      "text": "Once the web app uses Microsoft's built-in sign-in, the update removes the earlier sign-in front's images from your registry. The install also removes its old key when the person running it may."
+    },
+    {
+      "title": "Your web session is renewed in time",
+      "text": "The web app renews your sign-in a few minutes before it ends, so you are not asked to sign in again while you work."
+    }
+  ]
+}

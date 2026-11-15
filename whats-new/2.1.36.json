@@ -1,0 +1,17 @@
+{
+  "version": "2.1.36",
+  "date": "2026-11-15",
+  "type": "security",
+  "summary": "The move to Microsoft's sign-in is safer, and every install is checked against one standard.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A safer move to Microsoft's sign-in",
+      "text": "The update now prepares the web app before it turns Microsoft's sign-in on, and waits while Azure is still busy with the app. A move that cannot finish leaves the earlier sign-in working."
+    },
+    {
+      "title": "Every install checked against one standard",
+      "text": "Each update run now checks that the web app is set up exactly as the standard says, and lists anything the earlier sign-in left behind. It only reports; nothing is removed."
+    }
+  ]
+}

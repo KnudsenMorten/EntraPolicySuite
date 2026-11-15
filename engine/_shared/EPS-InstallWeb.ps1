@@ -23,7 +23,9 @@ function Get-EpsSigninFrontPin {
     # the sign-in front version this release pins (framework §12.11g: products pin; 1.4.4 - never 1.3.0, 1.4.0, 1.4.1)
     param([Parameter(Mandatory)][string]$SolutionRoot)
     $v = "$(Get-Content -LiteralPath (Join-Path $SolutionRoot 'tools\eps-web\signin-front.version') -Raw -ErrorAction SilentlyContinue)".Trim([char]0xFEFF).Trim()
-    if ($v -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'this release pins no sign-in front version (tools/eps-web/signin-front.version)' }
+    # 2.1.37: Microsoft's built-in sign-in - the release carries NO sign-in front: no pin = '' (nothing is built, nothing moves)
+    if (-not $v) { return '' }
+    if ($v -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw 'the sign-in front pin is not a version (tools/eps-web/signin-front.version)' }
     if ($v -in '1.3.0', '1.4.0', '1.4.1') { throw "sign-in front $v is a version the framework forbids (§12.11g item 10) - pin 1.4.2 or later" }
     $v
 }
@@ -109,7 +111,8 @@ function Get-EpsWebRedirectUris {
     #>
     param([Parameter(Mandatory)][string]$Fqdn, [string[]]$Existing = @())
     $f = "$Fqdn".Trim().ToLowerInvariant()
-    $want = @("https://$f/signin-oidc", "https://$f/.auth/login/aad/callback")
+    # 2.1.40: the built-in sign-in's address only - /signin-oidc is a leftover of the old front (never added back)
+    $want = @("https://$f/.auth/login/aad/callback")
     [pscustomobject]@{
         Want    = $want
         Missing = @($want | Where-Object { @($Existing) -notcontains $_ })
@@ -136,6 +139,23 @@ function New-EpsKeyVaultBody {
     # without it: 400 ForbiddenByConnection) + no IP / network rules; reached through its private endpoint
     if ($Private) { $b.properties.publicNetworkAccess = 'Disabled'; $b.properties.networkAcls = [ordered]@{ defaultAction = 'Deny'; bypass = 'AzureServices'; ipRules = @(); virtualNetworkRules = @() } }
     $b
+}
+
+function Get-EpsSigninDropSql {
+    <# PURE. 2.1.40: the old sign-in front's schema signin - its foreign keys, its tables, the schema - and the web user's
+       CREATE TABLE, dropped. Idempotent (nothing there = nothing done). #>
+    param([Parameter(Mandatory)][string]$WebUser)
+    if ($WebUser -notmatch '^[A-Za-z0-9-]{1,128}$') { throw "unsafe database user name '$WebUser'" }
+    @(
+        "IF SCHEMA_ID(N'signin') IS NOT NULL"
+        "BEGIN"
+        "  DECLARE @fk NVARCHAR(MAX) = N''; SELECT @fk += N'ALTER TABLE signin.' + QUOTENAME(OBJECT_NAME(parent_object_id)) + N' DROP CONSTRAINT ' + QUOTENAME(name) + N';' FROM sys.foreign_keys WHERE schema_id = SCHEMA_ID(N'signin'); IF @fk <> N'' EXEC (@fk);"
+        "  DECLARE @tb NVARCHAR(MAX) = N''; SELECT @tb += N'DROP TABLE signin.' + QUOTENAME(name) + N';' FROM sys.tables WHERE schema_id = SCHEMA_ID(N'signin'); IF @tb <> N'' EXEC (@tb);"
+        "  DECLARE @ob NVARCHAR(MAX) = N''; SELECT @ob += CASE type WHEN 'V' THEN N'DROP VIEW ' WHEN 'P' THEN N'DROP PROCEDURE ' WHEN 'FN' THEN N'DROP FUNCTION ' WHEN 'IF' THEN N'DROP FUNCTION ' WHEN 'TF' THEN N'DROP FUNCTION ' ELSE N'' END + N'signin.' + QUOTENAME(name) + N';' FROM sys.objects WHERE schema_id = SCHEMA_ID(N'signin') AND type IN ('V', 'P', 'FN', 'IF', 'TF'); IF @ob <> N'' EXEC (@ob);"
+        "  EXEC (N'DROP SCHEMA signin');"
+        "END"
+        "IF EXISTS (SELECT 1 FROM sys.database_permissions p WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID(N'$WebUser') AND p.permission_name = 'CREATE TABLE' AND p.state IN ('G', 'W')) REVOKE CREATE TABLE FROM [$WebUser];"
+    ) -join "`n"
 }
 
 function Get-EpsSigninStateSql {
@@ -427,6 +447,29 @@ function Invoke-EpsKeyVaultStep {
     # older install's Crypto Service Encryption User for the web identity is REMOVED here - wherever in the vault it is -
     # and read back. (The key itself is left: deleting a key is not needed to close the path.)
     Remove-EpsWebKeyVaultRights -Ctx $Ctx -VaultPath $vaultPath
+    # 2.1.41 (SECURE-WEB-1 "who deletes what", Invardia 2026-11-15): the old sign-in front's key is a dormant leftover; it is
+    # deleted HERE, in the person's install run, when the person may (Key Vault data plane: Key Vault Administrator / Crypto
+    # Officer) - no product identity is given a Key Vault right for it. Refused = said, the install goes on (it is harmless)
+    [void](Remove-EpsRetiredFrontKey -Ctx $Ctx)
+}
+
+function Remove-EpsRetiredFrontKey {
+    # never throws; @{ State (removed | none | refused | error); Line }
+    param([Parameter(Mandatory)]$Ctx)
+    $n = $Ctx.Names; $kv = "https://$("$($n.KeyVault)".ToLowerInvariant()).vault.azure.net"
+    $say = { param($c, $t) Write-Host "  $t" -ForegroundColor $c }
+    try {
+        $h = @{ Authorization = "Bearer $(Get-EpsToken -Resource 'https://vault.azure.net')" }
+        $g = & $script:EpsHttp 'GET' "$kv/keys/$($script:EpsWeb.KeyName)?api-version=7.4" $h $null
+        if ([int]$g.Status -eq 404) { return @{ State = 'none'; Line = 'the old sign-in front key: none' } }
+        if ([int]$g.Status -in 401, 403) { & $say 'Yellow' "note     the old sign-in front key '$($script:EpsWeb.KeyName)' is left (no right to remove it - a Key Vault Administrator can, in an install run; it is harmless: no one holds a role on it)"; return @{ State = 'refused'; Line = 'refused' } }
+        $d = & $script:EpsHttp 'DELETE' "$kv/keys/$($script:EpsWeb.KeyName)?api-version=7.4" $h $null
+        if ([int]$d.Status -in 401, 403) { & $say 'Yellow' "note     the old sign-in front key '$($script:EpsWeb.KeyName)' is left (no right to remove it - a Key Vault Administrator can, in an install run)"; return @{ State = 'refused'; Line = 'refused' } }
+        if ([int]$d.Status -notin 200, 404) { return @{ State = 'error'; Line = "the old sign-in front key could not be removed (HTTP $($d.Status))" } }
+        $b = & $script:EpsHttp 'GET' "$kv/keys/$($script:EpsWeb.KeyName)?api-version=7.4" $h $null
+        & $say 'Green' "removed  the old sign-in front key '$($script:EpsWeb.KeyName)' (read back: $(if ([int]$b.Status -eq 404) { 'gone' } else { "HTTP $($b.Status)" }); soft-deleted for 90 days - purge protection)"
+        @{ State = 'removed'; Line = 'removed' }
+    } catch { & $say 'Yellow' "note     the old sign-in front key could not be read: $((("$($_.Exception.Message)") -split "`n")[0])"; @{ State = 'error'; Line = 'error' } }
 }
 
 function Remove-EpsWebKeyVaultRights {
@@ -454,9 +497,22 @@ function Invoke-EpsWebAppStep {
     $contPath = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)/blobServices/default/containers/$($script:EpsWeb.TokenContainer)"
     if (-not (Invoke-EpsArm -Path $contPath -ApiVersion $script:EpsApi.st -AllowNotFound)) { [void](Invoke-EpsArm -Method PUT -Path $contPath -ApiVersion $script:EpsApi.st -Body @{ properties = @{ publicAccess = 'None' } }) }
     Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $contPath -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsWeb.BlobDataRole)" -PrincipalId $Ctx.Identities.WebIdentity.PrincipalId }
-    [void](Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body (New-EpsWebAuthConfigBody -TenantId $Ctx.TenantId -ClientId $Ctx.Web.ClientId -StorageAccount $n.Storage -WebIdentityId $Ctx.Identities.WebIdentity.Id))
+    # 2.1.36: the platform refuses a sign-in config whose setting the app does not hold yet (AuthConfigSecretRefNotFound,
+    # internal 2026-11-14) - an EXISTING app gets the setting first, then the sign-in config (while its old front still
+    # runs), then the new shape; a NEW app is made first (with the setting), then its sign-in config
+    $authBody = New-EpsWebAuthConfigBody -TenantId $Ctx.TenantId -ClientId $Ctx.Web.ClientId -StorageAccount $n.Storage -WebIdentityId $Ctx.Identities.WebIdentity.Id
     $body = New-EpsBuiltInWebAppBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)" -ClientId $Ctx.Web.ClientId
-    $app = Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body $body
+    $had = Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { 10 })
+    if ($had) {
+        [void](Set-EpsWebFicSetting -AppPath $appPath -WebClientId "$($Ctx.Identities.WebIdentity.ClientId)")
+        [void](Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { 10 }))
+        [void](Invoke-EpsArmOn409 { Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body $authBody })
+        $app = Invoke-EpsArmOn409 { Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body $body }
+    } else {
+        $app = Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body $body
+        [void](Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { 10 }))
+        [void](Invoke-EpsArmOn409 { Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body $authBody })
+    }
     if (-not $app.properties.configuration.ingress.fqdn) { $app = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca }
     $fqdn = "$($app.properties.configuration.ingress.fqdn)".Trim().ToLowerInvariant()
     if (-not $fqdn) { throw "the web app $($n.WebApp) has no address yet (provisioning $($app.properties.provisioningState))" }
@@ -643,6 +699,43 @@ function Test-EpsBuiltInSigninAnswers {
     @{ Ok = $true; Page = 302; Api = 401; Reason = "Microsoft's sign-in stands in front of the app: a page without a session goes to Entra, an API call without a token gets 401" }
 }
 
+function Wait-EpsWebAppSucceeded {
+    <# 2.1.36 (Invardia review of 2.1.35 - SI's switch failed so right after an image roll): the app is changed only once it
+       reads Succeeded (bounded); returns the app as read. Throws when it never settles (the caller says it, nothing changed). #>
+    param([Parameter(Mandatory)][string]$AppPath, [int]$PollSeconds = 10, [int]$MaxPolls = 36)
+    for ($i = 0; $i -le $MaxPolls; $i++) {
+        $a = Invoke-EpsArm -Path $AppPath -ApiVersion $script:EpsApi.aca -AllowNotFound
+        if (-not $a -or "$($a.properties.provisioningState)" -in 'Succeeded', 'Failed', 'Canceled') { return $a }
+        if ($i -lt $MaxPolls) { Start-Sleep -Seconds $PollSeconds }
+    }
+    throw "the web app is still '$($a.properties.provisioningState)' after $($MaxPolls * $PollSeconds) s - not changed now"
+}
+
+function Invoke-EpsArmOn409 {
+    <# 2.1.36: an ARM write the platform refuses with 409 (ContainerAppOperationInProgress - another operation still runs)
+       is sent again after a back-off (default 20 / 40 / 60 s); any other error is thrown at once. #>
+    param([Parameter(Mandatory)][scriptblock]$Do, [int[]]$Waits = @(20, 40, 60))
+    foreach ($w in @($Waits) + @(-1)) {
+        try { return (& $Do) } catch {
+            if ($w -lt 0 -or "$($_.Exception.Message)" -notmatch '409|OperationInProgress|ContainerAppOperationInProgress') { throw }
+            Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { $w })
+        }
+    }
+}
+
+function Set-EpsWebFicSetting {
+    <# 2.1.36 (the 2.1.35 switch at internal: AuthConfigSecretRefNotFound): the platform refuses a sign-in config whose
+       clientSecretSettingName the app does not hold YET - so the setting (the web identity's CLIENT id, not a credential)
+       goes on the app FIRST, keeping every setting the app has. Returns $true when it was added. #>
+    param([Parameter(Mandatory)][string]$AppPath, [Parameter(Mandatory)][string]$WebClientId)
+    $cur = @((Invoke-EpsArm -Method POST -Path "$AppPath/listSecrets" -ApiVersion $script:EpsApi.aca -Body @{}).value)
+    $mine = @($cur | Where-Object { "$($_.name)" -ceq $script:EpsWeb.FicSecretName })[0]
+    if ($mine -and "$($mine.value)" -eq $WebClientId) { return $false }
+    $list = @(@($cur | Where-Object { "$($_.name)" -cne $script:EpsWeb.FicSecretName } | ForEach-Object { @{ name = "$($_.name)"; value = "$($_.value)" } }) + @(@{ name = $script:EpsWeb.FicSecretName; value = $WebClientId }))
+    [void](Invoke-EpsArmOn409 { Invoke-EpsArm -Method PATCH -Path $AppPath -ApiVersion $script:EpsApi.aca -Body @{ properties = @{ configuration = @{ secrets = $list } } } })
+    $true
+}
+
 function Invoke-EpsBuiltInAuthConverge {
     <#
       2.1.35, the UPDATER (Contributor on the install's resource group; no role-assignment write, no registration write):
@@ -677,8 +770,14 @@ function Invoke-EpsBuiltInAuthConverge {
         if (-not $img) { return @{ State = 'error'; Lines = @('WARNING sign-in: the web app has no eps container - nothing changed') } }
         $ctx = @{ Names = $n; SubscriptionId = $SubscriptionId; TenantId = $TenantId; Location = "$($app.location)"
                   Identities = @{ WebIdentity = @{ Id = "$($wi.id)"; ClientId = "$($wi.properties.clientId)"; PrincipalId = $pid0 } } }
-        [void](Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body (New-EpsWebAuthConfigBody -TenantId $TenantId -ClientId "$($reg.appId)" -StorageAccount $n.Storage -WebIdentityId "$($wi.id)"))
-        $put = Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body (New-EpsBuiltInWebAppBody -Ctx $ctx -Image $img -ClientId "$($reg.appId)")
+        # PIM's proven order (Invardia must-fix): the setting -> the sign-in config ON while the front still runs -> the app
+        # without the front. Each write only once the app reads Succeeded; a 409 (an operation still running) is sent again.
+        $app = Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $PollSeconds
+        [void](Set-EpsWebFicSetting -AppPath $appPath -WebClientId "$($wi.properties.clientId)")
+        $app = Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $PollSeconds
+        [void](Invoke-EpsArmOn409 { Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body (New-EpsWebAuthConfigBody -TenantId $TenantId -ClientId "$($reg.appId)" -StorageAccount $n.Storage -WebIdentityId "$($wi.id)") })
+        $app = Wait-EpsWebAppSucceeded -AppPath $appPath -PollSeconds $PollSeconds
+        $put = Invoke-EpsArmOn409 { Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body (New-EpsBuiltInWebAppBody -Ctx $ctx -Image $img -ClientId "$($reg.appId)") }
         for ($i = 0; "$($put.properties.provisioningState)" -in 'InProgress', 'Updating', '' -and $i -lt 40; $i++) { Start-Sleep -Seconds $PollSeconds; $put = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca }
         $back = Get-EpsWebSigninMode -App $put -AuthConfig (Invoke-EpsArm -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -AllowNotFound)
         if ($back -ne 'builtin' -or "$($put.properties.provisioningState)" -ne 'Succeeded') { return @{ State = 'error'; Lines = @("WARNING sign-in: the switch to Microsoft's built-in sign-in reads back '$back' (provisioning $($put.properties.provisioningState)) - the next update run tries again") } }

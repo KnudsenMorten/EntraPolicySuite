@@ -199,7 +199,7 @@ $ErrorActionPreference = 'Stop'
 $docUrl = 'https://github.com/KnudsenMorten/EntraPolicySuite#readme'   # invardia.com/docs/eps/scripts/Install-EntraPolicySuite when EPS is public there (DOC-LINKS)
 Write-Host "Documentation: $docUrl"
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-Onboarding', 'EPS-EnginePermissions') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-Graph', 'EPS-Arm', 'EPS-SignIn', 'EPS-Scheduler', 'EPS-Install', 'EPS-Onboarding', 'EPS-EnginePermissions', 'EPS-Exchange', 'EPS-ExchangeTagRole') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 $version = (Get-Content -LiteralPath (Join-Path $sol 'VERSION') -Raw).Trim()
 $what = [bool]$WhatIfPreference
 $WhatIfPreference = $false   # the install decides what -WhatIf means: read, plan, change nothing (its own calls stay real reads)
@@ -277,8 +277,9 @@ if ($ctx.Edition -ne 'pro') {
 }
 # the web app's sign-in front is built from the source this release carries, at the version it pins - checked BEFORE
 # anything is created, so an install never stops half-way for it
-$front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin (Get-EpsSigninFrontPin -SolutionRoot $sol)
-if (-not $front.Ok -and -not $what) { Finish 2 "The web app's sign-in front cannot be built: $($front.Reason). Use a complete Entra Policy Suite release." }
+# 2.1.37: Microsoft's built-in sign-in - no sign-in front is shipped or built (an older release's pin, if one is there, is checked as before)
+$frontPin = Get-EpsSigninFrontPin -SolutionRoot $sol
+if ($frontPin) { $front = Get-EpsSigninFrontSource -SolutionRoot $sol -Pin $frontPin; if (-not $front.Ok -and -not $what) { Finish 2 "The web app's sign-in front cannot be built: $($front.Reason). Use a complete Entra Policy Suite release." } }
 
 if (-not $StatePath) {
     $base = if ((Test-EpsCloudShell) -and (Test-Path (Join-Path $HOME 'clouddrive'))) { Join-Path $HOME 'clouddrive/invardia' } else { Join-Path $HOME 'invardia' }

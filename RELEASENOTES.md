@@ -2,6 +2,74 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.45 - Fix-only: only recent job reports go to Invardia support
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)
+- Fix: the support link sends the reports of jobs that finished in the last 24 hours only. Older reports are not sent,
+  so a problem solved long ago is never reported as a new one.
+## 2.1.44 - Fix-only: the job reports reach Invardia support again
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must run 24x7 so my customers are protected" (2026-11-14, relayed by Invardia)
+- Fix: since 8 November the support link sent only its regular status, not the reports of finished jobs - an old
+  marker from a renamed job held the reading back. It now sends them again, oldest first, and its count of reports
+  still to send is right.
+## 2.1.43 - The sign-in check proves itself at start; the documentation's release is reported
+Builds on the owner's decision: "any security must go out without any dependency to my approval" / "tell them all to update docs" (2026-11-14 / 2026-11-15, relayed by Invardia)
+- Fix: when the web app starts, it loads Microsoft's sign-in library and runs the same check a sign-in takes on made-up
+  input (one accepted, two refused). If that fails, the web app does not start - a problem shows right after an update,
+  not at someone's first sign-in.
+- Fix: the regular report to Invardia support names the release the shipped documentation describes, so documentation
+  that falls behind the releases is noticed automatically.
+## 2.1.42 - Security update: sign-ins checked with Microsoft's own library
+Builds on the owner's decision: "ms standard authn, not our own code, no more defender alerts where our own code is unsafe" (2026-11-15, relayed by Invardia)
+- Security update: the web app and the engine now check each person's Microsoft sign-in with Microsoft's own library
+  (Microsoft.IdentityModel), pinned and checked in the image, instead of code of ours. Microsoft's built-in sign-in
+  still stands in front of the web app; proven: it refuses a missing, forged or foreign token before the app.
+- Fix: once the last of the earlier sign-in front's images is removed, the registry clean-up reports it as empty
+  instead of a warning.
+## 2.1.41 - Security update: the earlier sign-in's leftovers cleared, and the web session renewed in time
+Builds on the owner's decision: "security, including leftovers" / "is token signin problem fixed" (2026-11-14 / 2026-11-15, relayed by PIM and Invardia)
+- Security update: once the web app uses Microsoft's built-in sign-in, the update removes the earlier sign-in front's
+  images from your container registry and checks they are gone. An install run also removes the front's old Key Vault
+  key when the person running it may (no product identity is given a Key Vault right for it).
+- Change you will see: the web app renews your sign-in a few minutes before it ends, so you are not asked to sign in
+  again while you work. An expired sign-in is still never accepted.
+## 2.1.40 - Security update: the last traces of the earlier sign-in removed
+Builds on the owner's decision: "make sure all installs are config the same" / "security, including leftovers" (2026-11-14, relayed by PIM and Invardia)
+- Security update: where the web app uses Microsoft's built-in sign-in, the database setup removes the tables the
+  earlier sign-in front kept, and the web app's right to create tables. It is checked afterwards.
+- Change: the web app's sign-in registration now needs only the address of Microsoft's built-in sign-in; the earlier
+  address is reported as a leftover and never added back.
+## 2.1.39 - Security update: the engine's Exchange right cut down to the tag attributes
+Builds on the owner's decision: "remember any security must go out without any dependency to my approval" (2026-11-14, relayed by Invardia)
+- Security update: the new setup script Initialize-EpsExchangeTagRole.ps1 (run once by an Exchange administrator)
+  gives the engine an Exchange role that can only read recipients and write CustomAttribute1 to CustomAttribute15 -
+  no forwarding, no mailbox permissions, no other setting. Its second step then removes the engine's
+  organization-wide Entra role Exchange Recipient Administrator.
+- Change: once that role group is in place, the install and the engine-permission script no longer grant the
+  Exchange Recipient Administrator role again.
+## 2.1.38 - Security update: fewer rights for the update job, and security updates install at once
+Builds on the owner's decision: "remember any security must go out without any dependency to my approval" / "stop and update the moment each release passes ring 0" (2026-11-14, relayed by Invardia)
+- Security update: the update job no longer holds any right to change the membership of the database's admin group.
+  The installation makes the database setup identity a permanent member; the update job only checks that membership
+  and reports it when it is gone. An update that needs the database setup then stops before anything moves.
+- Security update: a security update now stops the jobs that are running and installs at once instead of waiting up to
+  45 minutes for them. The stopped jobs run again on their next schedule. Other updates still wait.
+## 2.1.37 - Security update: every public address behind Microsoft's sign-in
+Builds on the owner's decision: "anything having public exposure like api mcp must be protected with similar" (2026-11-15, relayed by Invardia)
+- Security update: each update run now checks every address of your installation that the internet can reach - the
+  web app, its scripting interface and its AI-assistant interface (MCP) - and reports any that is not behind
+  Microsoft's sign-in, lets requests through without one, or leaves a path open.
+- Change: the release no longer carries the earlier sign-in front; your web app already uses Microsoft's built-in
+  sign-in since 2.1.35.
+## 2.1.36 - Security update: a safer move to Microsoft's sign-in, and one standard for every install
+Builds on the owner's decision: "make sure all installs are config the same" / "security, including leftovers" (2026-11-14, relayed by PIM and Invardia)
+- Security update: the move to Microsoft's built-in sign-in now prepares the web app first, then turns the sign-in on,
+  and only then changes the app. It waits while Azure is still busy with the app and tries again when Azure asks it to.
+  A move that cannot finish leaves the earlier sign-in working and says why.
+- Security update: each update run checks that the web app is set up exactly as the standard says (one container,
+  Microsoft's sign-in with no secret, the account picker, the sign-in sessions in one storage container, no Key Vault
+  right for the web app) and lists anything the earlier sign-in left behind. It only reports - nothing is removed.
 ## 2.1.35 - Security update: Microsoft's built-in sign-in in front of the web app
 Builds on the owner's decision: "are we only exposing entra + azure auth now to internet and no custom auth code ? give me certaintity that we follow ms best practice so i dont get another hit by defender" (2026-11-14, relayed by Invardia)
 - Security update: Microsoft's own Container Apps sign-in now stands in front of the web app. A request without a

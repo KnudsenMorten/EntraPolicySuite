@@ -85,10 +85,10 @@
       "target": "Entra",
       "action": "grant",
       "object": "id-eps-updater (assigned to the update job only)",
-      "permission": "Microsoft Graph application permissions PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup, PrivilegedAssignmentSchedule.Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup, GroupMember.Read.All and Application.Read.All (both read only)",
+      "permission": "Microsoft Graph application permissions GroupMember.Read.All and Application.Read.All (both read only)",
       "scope": "the tenant (used only for the SQL admin group's membership)",
-      "why": "the SQL admin group is role-assignable; the update job keeps the database setup identity a member of it through a Privileged Identity Management for Groups assignment and renews a time-limited one before it ends; it owns the web app's sign-in registration (the install hands the ownership to it) and keeps that registration's own settings as they should be",
-      "undo": "remove the app role assignments (the update job then only reports the membership; run the install to renew it)"
+      "why": "the SQL admin group is role-assignable; the install makes the database setup identity a direct permanent member, and the update job checks that membership read only and reports it when it is gone (it cannot change it); it owns the web app's sign-in registration (the install hands the ownership to it) and only reads it",
+      "undo": "remove the app role assignments (the update job then cannot check the membership)"
     },
     {
       "target": "Azure",
@@ -156,27 +156,27 @@
     {
       "target": "Entra",
       "action": "create",
-      "object": "app registration 'Entra Policy Suite' + its enterprise application: single tenant, code flow only (no implicit grant), no groups claim, NO secret and NO certificate; its own delegated scope api://<app id>/user_impersonation; assignment required, you assigned; a federated credential for id-eps-web",
+      "object": "app registration 'Entra Policy Suite' + its enterprise application: single tenant, ID-token issuance on for Microsoft's sign-in (no access-token implicit grant), no groups claim, NO secret and NO certificate; the sign-in address https://<web app>/.auth/login/aad/callback; its own delegated scope api://<app id>/user_impersonation; assignment required, you assigned; a federated credential for id-eps-web",
       "permission": "admin consent: Microsoft Graph delegated openid, profile, offline_access, User.Read; the app's own user_impersonation to itself",
       "scope": "the tenant",
-      "why": "the shared sign-in front signs people in to the web app with it (the web identity is its client credential - no secret)",
+      "why": "Microsoft's built-in Container Apps sign-in signs people in to the web app with it (the web identity is its client credential - no secret)",
       "undo": "delete the app registration"
     },
     {
       "target": "Azure",
       "action": "create",
-      "object": "Key Vault kv-eps-<suffix> (Standard, RBAC, soft delete 90 days, purge protection) with one RSA key 'signin-front' (wrap / unwrap only); the install stores no secret there (Invardia may add one: the per-install Invardia support link key 'uplink-key')",
+      "object": "Key Vault kv-eps-<suffix> (Standard, RBAC, soft delete 90 days, purge protection); the install stores no secret there (Invardia may add one: the per-install Invardia support link key 'uplink-key'); the web identity holds NO right on it - an older install's right is removed",
       "scope": "the resource group",
-      "why": "the sign-in front wraps the keys that protect its sessions with it",
+      "why": "the Invardia support link key (only the engine reads it)",
       "undo": "delete the vault (it stays recoverable for 90 days - purge protection)"
     },
     {
       "target": "Azure",
       "action": "grant",
       "object": "id-eps-web",
-      "permission": "Key Vault Crypto Service Encryption User",
-      "scope": "the key 'signin-front' only",
-      "why": "the sign-in front wraps and unwraps its keys",
+      "permission": "Storage Blob Data Contributor",
+      "scope": "the storage container 'eps-signin-sessions' only (made by the install; shared keys are off)",
+      "why": "Microsoft's built-in sign-in keeps each person's sign-in session there, through the web identity",
       "undo": "remove the role assignment"
     },
     {
@@ -191,7 +191,7 @@
     {
       "target": "Azure",
       "action": "create",
-      "object": "Container App ca-eps-web: the sign-in front (signin-front:<pinned version>, built in the registry from the release's source) on the public HTTPS ingress, the GUI (the engine image, EPS_JOB = Web) on 127.0.0.1 behind it, as id-eps-web; scale 0-1; never Easy Auth",
+      "object": "Container App ca-eps-web: the GUI, the script API and the MCP server (the engine image, EPS_JOB = Web) on the public HTTPS ingress behind Microsoft's built-in Container Apps sign-in (required on every path; the web identity as its credential; the account picker; sessions 8 h in eps-signin-sessions), as id-eps-web; scale 0-1",
       "scope": "the resource group",
       "why": "the web app",
       "undo": "delete the app"
@@ -199,9 +199,9 @@
     {
       "target": "SQL",
       "action": "create",
-      "object": "by the database setup job caj-eps-dbinit: schema signin owned by id-eps-web + CREATE TABLE (the front's two state tables); you as the web app's first SuperAdmin in eps.WebAccess (audited)",
+      "object": "by the database setup job caj-eps-dbinit: you as the web app's first SuperAdmin in eps.WebAccess (audited); the schema signin (an earlier sign-in's state, kept until its cleanup)",
       "scope": "the database eps",
-      "why": "the sign-in front keeps its sessions there; someone must be able to grant access in the app",
+      "why": "someone must be able to grant access in the app",
       "undo": "drop the schema; remove the access row"
     },
     {
