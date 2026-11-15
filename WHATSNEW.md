@@ -1,5 +1,30 @@
 # What's new in Entra Policy Suite
 
+## 2.1.35 · 2026-11-14 · Security
+
+The web app now signs people in with Microsoft's built-in Container Apps sign-in.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Microsoft's sign-in now guards the web app** - Microsoft's own Container Apps sign-in now stands in front of the web app, so a request without a sign-in never reaches it. No secret is used, and the app still checks each sign-in itself.
+- **Fewer rights for the web app** - The web app's identity holds no Key Vault right any more, and the update job can no longer change the web app's sign-in registration.
+
+## 2.1.34 · 2026-11-14 · Security
+
+Prepares the move to Microsoft's built-in sign-in for the web app.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Ready for Microsoft's built-in sign-in** - The web app's sign-in registration now also holds the address Microsoft's built-in Container Apps sign-in uses. Nothing changes for you today. The coming switch then needs no step from an admin.
+
 ## 2.1.33 · 2026-11-14 · Security
 
 Closing a tamper alarm now needs the admin's own sign-in.

@@ -1,9 +1,10 @@
 # EntraPolicySuite -- who is calling the web app, and what may they do (DESIGN §2; framework §12.11g + §12.11f).
 #
-# The web app runs ONLY behind the shared sign-in front (FRAMEWORK/signin-front, 1.4.x): the front is the only thing the
-# ingress reaches, this app listens on 127.0.0.1, and the front forwards exactly one identity - 'Authorization: Bearer
-# <access token for this app's own API scope>'. No Easy Auth (owner 2026-10-30: "we are not using easy auth"), no
-# X-MS-* header is ever read. The front's contract item 4: the app verifies that token ITSELF on every request (RS256
+# 2.1.35 (owner 2026-11-14, superseding his 2026-10-30 "we are not using easy auth"): the web app runs behind
+# Microsoft's BUILT-IN Container Apps sign-in. A browser session's access token for this app's own API scope arrives in
+# the platform's X-MS-TOKEN-AAD-ACCESS-TOKEN (its token store); a script / MCP client sends its own 'Authorization:
+# Bearer'. The platform's principal headers are never read. (An install not switched yet still runs behind the
+# older sign-in front, which forwards the bearer.) Either way the app verifies the token ITSELF on every request (RS256
 # against the tenant's keys, issuer pinned to the tenant, audience pinned to this app, exp / nbf, the scope) and refuses
 # anything else. The older ID-token form (front < 1.4.0) is NOT accepted: a new product starts on the recommended one.
 #
@@ -116,9 +117,12 @@ function Test-EpsAccessToken {
 }
 
 function Resolve-EpsWebCaller {
-    # The request's caller from its Authorization header; an unknown kid re-reads the keys once (Entra rolls them).
-    param([string]$Authorization, [Parameter(Mandatory)]$Config)
-    $tok = if ("$Authorization" -match '^\s*Bearer\s+(\S+)\s*$') { $Matches[1] } else { '' }
+    # The request's caller; an unknown kid re-reads the keys once (Entra rolls them). The token is the Authorization
+    # header's bearer (a script / MCP client, or the sign-in front), else - 2.1.35, Microsoft's built-in Container Apps
+    # sign-in (owner 2026-11-14) - the platform's X-MS-TOKEN-AAD-ACCESS-TOKEN from its token store (a browser session).
+    # Either way the SAME verification below (signature, issuer, audience, time, scope): a header is never trusted as such.
+    param([string]$Authorization, [string]$PlatformAccessToken, [Parameter(Mandatory)]$Config)
+    $tok = if ("$Authorization" -match '^\s*Bearer\s+(\S+)\s*$') { $Matches[1] } elseif ("$PlatformAccessToken" -match '^\s*(\S+)\s*$') { $Matches[1] } else { '' }
     $r = Test-EpsAccessToken -Token $tok -Jwks (Get-EpsJwks -Config $Config) -Config $Config
     if (-not $r.trusted -and $r.unknownKid) { $r = Test-EpsAccessToken -Token $tok -Jwks (Get-EpsJwks -Config $Config -Refresh) -Config $Config }
     $r.token = $(if ($r.trusted) { $tok } else { '' })

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.34",
+  "date": "2026-11-14",
+  "type": "security",
+  "summary": "Prepares the move to Microsoft's built-in sign-in for the web app.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Ready for Microsoft's built-in sign-in",
+      "text": "The web app's sign-in registration now also holds the address Microsoft's built-in Container Apps sign-in uses. Nothing changes for you today. The coming switch then needs no step from an admin."
+    }
+  ]
+}

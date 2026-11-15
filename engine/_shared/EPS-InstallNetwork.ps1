@@ -800,7 +800,7 @@ function Invoke-EpsAgentPoolStep {
 
 function Get-EpsInsideCheckScript {
     # PURE. What the one-time job runs INSIDE the environment, as the engine identity: every private name resolves to a
-    # private address, the web app answers (/healthz 200, a page without a session -> the Entra sign-in), and each work
+    # private address, the web app answers (Microsoft's sign-in: an API call without a token 401, a browser page without a session -> the Entra sign-in), and each work
     # job's queue is readable through the queue's private endpoint (the path the queue trigger - KEDA, managed identity -
     # takes for every job type). Exit 0 = proven, 1 = what failed is printed.
     @'
@@ -810,7 +810,9 @@ foreach ($h in ($env:EPS_CHECK_HOSTS -split ',' | Where-Object { $_ })) {
     if (-not @($a | Where-Object { $_ -match '^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)' }).Count) { $bad += "dns $h -> $($a -join ' ')" }
 }
 $hc = [Net.Http.HttpClient]::new([Net.Http.HttpClientHandler]@{ AllowAutoRedirect = $false }); $hc.Timeout = [TimeSpan]::FromSeconds(20)
-try { $r = $hc.GetAsync("https://$env:EPS_CHECK_WEB/healthz").GetAwaiter().GetResult(); if ([int]$r.StatusCode -ne 200) { $bad += "web /healthz $([int]$r.StatusCode)" } } catch { $bad += "web /healthz $($_.Exception.GetBaseException().Message)" }
+# 2.1.35: Microsoft's built-in sign-in stands in front of every path - an API call without a token = 401 (the sign-in answered)
+try { $r = $hc.GetAsync("https://$env:EPS_CHECK_WEB/api/me").GetAwaiter().GetResult(); if ([int]$r.StatusCode -ne 401) { $bad += "web /api/me without a token $([int]$r.StatusCode) (expected 401)" } } catch { $bad += "web /api/me $($_.Exception.GetBaseException().Message)" }
+$hc.DefaultRequestHeaders.TryAddWithoutValidation('Accept', 'text/html') | Out-Null; $hc.DefaultRequestHeaders.TryAddWithoutValidation('User-Agent', 'Mozilla/5.0 (Entra Policy Suite inside check)') | Out-Null
 try { $r = $hc.GetAsync("https://$env:EPS_CHECK_WEB/").GetAwaiter().GetResult(); if ([int]$r.StatusCode -ne 302 -or "$($r.Headers.Location)" -notmatch '^https://login\.microsoftonline\.com/') { $bad += "web / $([int]$r.StatusCode) $($r.Headers.Location)" } } catch { $bad += "web / $($_.Exception.GetBaseException().Message)" }
 $tok = try { (Invoke-RestMethod -Uri "$($env:IDENTITY_ENDPOINT)?api-version=2019-08-01&resource=https://storage.azure.com/&client_id=$($env:EPS_ManagedIdentityClientId)" -Headers @{ 'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER }).access_token } catch { $bad += "token $($_.Exception.Message)"; '' }
 foreach ($q in ($env:EPS_CHECK_QUEUES -split ',' | Where-Object { $_ })) {
@@ -866,7 +868,7 @@ function Invoke-EpsInsideCheckStep {
     finally { try { [void](Invoke-EpsArm -Method DELETE -Path $jp -ApiVersion $script:EpsApi.acajob -AllowNotFound) } catch { } }
     if ($job.Ran -and $job.Status -ne 'Succeeded') { throw "the inside check ($($n.InsideCheckJob), $($job.Reason)) ran INSIDE the network and ended '$($job.Status)': a private name, the web app or a job queue cannot be reached from there - see its log in $($n.Logs) (lines 'INSIDE-CHECK FAIL')" }
     $r = if ($job.Ran) { @{ Ok = $true; How = "inside the environment ($($n.InsideCheckJob)): private DNS, the web app and every job queue through its endpoint" } }
-         elseif ((Test-EpsWebAppAnswers -Fqdn $fqdn -WaitSeconds ($Ctx.InsideMachineWaitSeconds ?? 60) -PollSeconds ($Ctx.PollSeconds ?? 10)).Ok) { @{ Ok = $true; How = "from this machine: the web app answers at https://$fqdn/ (the inside job did not run: $($job.Reason))" } }
+         elseif ((Test-EpsBuiltInSigninAnswers -Fqdn $fqdn -WaitSeconds ($Ctx.InsideMachineWaitSeconds ?? 60) -PollSeconds ($Ctx.PollSeconds ?? 10)).Ok) { @{ Ok = $true; How = "from this machine: the web app answers at https://$fqdn/ (the inside job did not run: $($job.Reason))" } }
          elseif ($Ctx.Network.ConfirmedFromInside) { @{ Ok = $true; How = "-ConfirmedFromInside (the inside job did not run: $($job.Reason); this machine cannot reach the web app)" } }
          else { throw "EPS-WAITING: the private install is not proven from inside the network: the inside job did not run ($($job.Reason)) and this machine cannot reach https://$fqdn/. Run the install again from a machine in your network, or check the web app from one and run again with -ConfirmedFromInside" }
     $Ctx.Network.InsideCheck = $r; $r
@@ -894,7 +896,7 @@ function Invoke-EpsRetireOldEnvStep {
     if ($dom -and $Ctx.Web.AppObjectId) {
         $reg = Invoke-EpsGraph -Path "v1.0/applications/$($Ctx.Web.AppObjectId)?`$select=web"
         $keep = @(@($reg.web.redirectUris) | Where-Object { $_ -and "$_".ToLowerInvariant() -notlike "*.$dom/*" })
-        $logout = if ("$($reg.web.logoutUrl)".ToLowerInvariant() -like "*.$dom/*") { "https://$($Ctx.Web.Fqdn)/signout-callback-oidc" } else { "$($reg.web.logoutUrl)" }
+        $logout = if ("$($reg.web.logoutUrl)".ToLowerInvariant() -like "*.$dom/*") { "https://$($Ctx.Web.Fqdn)/.auth/logout" } else { "$($reg.web.logoutUrl)" }   # 2.1.35: Microsoft's built-in sign-in signs out at /.auth/logout
         if ($keep.Count -ne @($reg.web.redirectUris | Where-Object { $_ }).Count -or $logout -ne "$($reg.web.logoutUrl)") {
             [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $keep; logoutUrl = $logout; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } })
         }

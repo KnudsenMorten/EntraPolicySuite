@@ -95,7 +95,8 @@ try {
         exit $(if ($sr.Outcome -eq 'error') { 1 } else { 0 })
     }
     if ($Job -eq 'Web') {
-        # the GUI (DESIGN §2): behind the shared sign-in front, on 127.0.0.1 only - it never returns
+        # the GUI (DESIGN §2): behind Microsoft's built-in sign-in (2.1.35, EPS_WEB_LISTEN=all) or the older sign-in
+        # front (127.0.0.1 only); every request verified by the app itself - it never returns
         & (Join-Path $sol 'tools\eps-web\Start-EpsWeb.ps1') -ConnectionString $ConnectionString
         exit $LASTEXITCODE
     }

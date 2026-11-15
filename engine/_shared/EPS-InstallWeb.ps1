@@ -100,6 +100,23 @@ function Get-EpsWebPreAuthPatch {
     [ordered]@{ api = [ordered]@{ oauth2PermissionScopes = @($scopes); preAuthorizedApplications = @($pre) } }
 }
 
+function Get-EpsWebRedirectUris {
+    <#
+      PURE. The sign-in addresses the web app registration must hold for this web app address: the sign-in front's
+      /signin-oidc, and - owner 2026-11-14 ~21:10Z, Microsoft's built-in Container Apps sign-in replaces the front (framework
+      SECURE-WEB-1 points 5-7, EPS point 5) - the built-in sign-in's /.auth/login/aad/callback, registered ONE RELEASE
+      BEFORE the switch so switch day needs no admin step. Other addresses already on the registration are kept.
+    #>
+    param([Parameter(Mandatory)][string]$Fqdn, [string[]]$Existing = @())
+    $f = "$Fqdn".Trim().ToLowerInvariant()
+    $want = @("https://$f/signin-oidc", "https://$f/.auth/login/aad/callback")
+    [pscustomobject]@{
+        Want    = $want
+        Missing = @($want | Where-Object { @($Existing) -notcontains $_ })
+        All     = @(@(@($Existing) + $want) | Where-Object { $_ } | Select-Object -Unique)
+    }
+}
+
 function Get-EpsFicSpec {
     # PURE. The federated credential: the web identity IS the registration's client credential (no secret)
     param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$PrincipalId)
@@ -405,26 +422,48 @@ function Invoke-EpsKeyVaultStep {
             if ("$($vault.properties.publicNetworkAccess)" -ne 'Disabled' -or "$($acl.bypass)" -ne 'AzureServices' -or "$($acl.defaultAction)" -ne 'Deny') { throw "the Key Vault $($n.KeyVault) could not be set private (public access off, deny, bypass AzureServices): it reads back public '$($vault.properties.publicNetworkAccess)', bypass '$($acl.bypass)'" }
         }
     }
-    $keyPath = "$vaultPath/keys/$($script:EpsWeb.KeyName)"
-    $key = Invoke-EpsArm -Path $keyPath -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
-    if (-not $key) { $key = Invoke-EpsArm -Method PUT -Path $keyPath -ApiVersion $script:EpsWeb.KvApi -Body @{ properties = @{ kty = 'RSA'; keySize = 2048; keyOps = @('wrapKey', 'unwrapKey') } } }
-    Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $keyPath -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsWeb.CryptoUserRole)" -PrincipalId $Ctx.Identities.WebIdentity.PrincipalId }
-    $Ctx.Web.KeyId = $(if ("$($key.properties.keyUri)".Trim()) { "$($key.properties.keyUri)".Trim() } else { "https://$($n.KeyVault).vault.azure.net/keys/$($script:EpsWeb.KeyName)" })
+    # 2.1.35 (owner 2026-11-14, SECURE-WEB-1; Invardia: "the lateral movement to Key Vault edge is gone by rule"): the
+    # internet-facing web identity holds NO Key Vault right. The sign-in front's wrap key is not made any more, and an
+    # older install's Crypto Service Encryption User for the web identity is REMOVED here - wherever in the vault it is -
+    # and read back. (The key itself is left: deleting a key is not needed to close the path.)
+    Remove-EpsWebKeyVaultRights -Ctx $Ctx -VaultPath $vaultPath
+}
+
+function Remove-EpsWebKeyVaultRights {
+    # every role assignment the web identity holds in the install's vault (the vault, its keys, its secrets) - removed,
+    # read back; throws when one is still there (the install stops: a web identity with a Key Vault right is not shipped)
+    param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$VaultPath)
+    $wp = "$($Ctx.Identities.WebIdentity.PrincipalId)"
+    if (-not $wp) { return }
+    $list = { @(@((Invoke-EpsArm -Path "$VaultPath/providers/Microsoft.Authorization/roleAssignments?`$filter=principalId eq '$wp'" -ApiVersion $script:EpsApi.rbac -AllowNotFound).value) | Where-Object { $_ -and "$($_.properties.principalId)" -eq $wp -and ("$($_.properties.scope)" -like "$VaultPath*" -or "$($_.id)" -like "$VaultPath*") }) }
+    foreach ($ra in (& $list)) { [void](Invoke-EpsArm -Method DELETE -Path "$($ra.id)" -ApiVersion $script:EpsApi.rbac -AllowNotFound); Write-Host "  removed  $($Ctx.Names.WebIdentity): its Key Vault right at $(("$($ra.properties.scope)" -split '/providers/')[-1]) (2.1.35: the web identity holds no Key Vault right)" -ForegroundColor Yellow }
+    $left = @(& $list)
+    if ($left.Count) { throw "the web identity $($Ctx.Names.WebIdentity) still holds $($left.Count) Key Vault role assignment(s) after the removal - run the install again" }
 }
 
 function Invoke-EpsWebAppStep {
-    # the app, then its address into the registration's redirect URIs; then the front must answer /healthz
+    <#
+      2.1.35 - the web app behind Microsoft's built-in sign-in: the token container + the web identity's Storage Blob Data
+      Contributor on THAT container only, the sign-in config (authConfigs/current), the app (one container), then its
+      address into the registration (both sign-in addresses, ID-token issuance ON - Microsoft's sign-in starts with
+      code + id_token - access-token issuance OFF; never turned off again by any step). The verify step proves it answers.
+    #>
     param([Parameter(Mandatory)]$Ctx, [int]$WaitSeconds = 300)
-    $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
-    $body = New-EpsWebAppBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)" -FrontImage "$($n.Registry).azurecr.io/signin-front:$($Ctx.Web.FrontVersion)" -ClientId $Ctx.Web.ClientId -KeyId $Ctx.Web.KeyId
-    $app = Invoke-EpsArm -Method PUT -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca -Body $body
-    if (-not $app.properties.configuration.ingress.fqdn) { $app = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca }
+    $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"; $sub = "/subscriptions/$($Ctx.SubscriptionId)"
+    $appPath = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"
+    $contPath = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)/blobServices/default/containers/$($script:EpsWeb.TokenContainer)"
+    if (-not (Invoke-EpsArm -Path $contPath -ApiVersion $script:EpsApi.st -AllowNotFound)) { [void](Invoke-EpsArm -Method PUT -Path $contPath -ApiVersion $script:EpsApi.st -Body @{ properties = @{ publicAccess = 'None' } }) }
+    Invoke-EpsWithRetry { Add-EpsRoleAssignment -Scope $contPath -RoleDefinitionId "$sub/providers/Microsoft.Authorization/roleDefinitions/$($script:EpsWeb.BlobDataRole)" -PrincipalId $Ctx.Identities.WebIdentity.PrincipalId }
+    [void](Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body (New-EpsWebAuthConfigBody -TenantId $Ctx.TenantId -ClientId $Ctx.Web.ClientId -StorageAccount $n.Storage -WebIdentityId $Ctx.Identities.WebIdentity.Id))
+    $body = New-EpsBuiltInWebAppBody -Ctx $Ctx -Image "$($n.Registry).azurecr.io/$($n.Image):$($Ctx.Version)" -ClientId $Ctx.Web.ClientId
+    $app = Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body $body
+    if (-not $app.properties.configuration.ingress.fqdn) { $app = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca }
     $fqdn = "$($app.properties.configuration.ingress.fqdn)".Trim().ToLowerInvariant()
     if (-not $fqdn) { throw "the web app $($n.WebApp) has no address yet (provisioning $($app.properties.provisioningState))" }
     $reg = Invoke-EpsGraph -Path "v1.0/applications/$($Ctx.Web.AppObjectId)?`$select=web"
-    $uris = @(@(@($reg.web.redirectUris) + "https://$fqdn/signin-oidc") | Where-Object { $_ } | Select-Object -Unique)
-    if (@($reg.web.redirectUris) -notcontains "https://$fqdn/signin-oidc" -or "$($reg.web.logoutUrl)" -ne "https://$fqdn/signout-callback-oidc" -or $reg.web.implicitGrantSettings.enableIdTokenIssuance -or $reg.web.implicitGrantSettings.enableAccessTokenIssuance) {
-        Invoke-EpsOwnedRegistrationWrite -What "the sign-in address https://$fqdn/signin-oidc" -Do { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $uris; logoutUrl = "https://$fqdn/signout-callback-oidc"; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } }) }
+    $ru = Get-EpsWebRedirectUris -Fqdn $fqdn -Existing @($reg.web.redirectUris)
+    if ($ru.Missing.Count -or "$($reg.web.logoutUrl)" -ne "https://$fqdn/.auth/logout" -or $reg.web.implicitGrantSettings.enableIdTokenIssuance -ne $true -or $reg.web.implicitGrantSettings.enableAccessTokenIssuance) {
+        Invoke-EpsOwnedRegistrationWrite -What "the sign-in addresses $($ru.Want -join ' + ') and ID-token issuance" -Do { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($Ctx.Web.AppObjectId)" -Body @{ web = @{ redirectUris = $ru.All; logoutUrl = "https://$fqdn/.auth/logout"; implicitGrantSettings = @{ enableIdTokenIssuance = $true; enableAccessTokenIssuance = $false } } }) }
     }
     $Ctx.Web.Fqdn = $fqdn
     $Ctx.Web.Url = "https://$fqdn/"
@@ -469,4 +508,182 @@ function Test-EpsWebAppAnswers {
     $p = & $get "https://$Fqdn/"
     if ($p.Status -ne 302 -or $p.Location -notmatch '^https://login\.microsoftonline\.com/') { return @{ Ok = $false; Health = 200; Page = $p.Status; Reason = "a page without a session answered $($p.Status) ($($p.Location)) - expected a redirect to the Entra sign-in" } }
     @{ Ok = $true; Health = 200; Page = 302; Reason = 'the front answers, a page without a session goes to the Entra sign-in' }
+}
+
+# ======================================================================================================================
+# 2.1.35 - Microsoft's BUILT-IN Container Apps sign-in replaces the sign-in front (owner 2026-11-14 ~21:10Z, via
+# Invardia: "are we only exposing entra + azure auth now to internet and no custom auth code ? give me certaintity that
+# we follow ms best practice so i dont get another hit by defender"; framework SECURE-WEB-1 points 5-7). The shape was
+# PROVEN live at internal 2026-11-14 (EPS ca-eps-authproof + PIM ca-pim-authproof): the web identity is the
+# registration's client credential through its federated credential (no secret anywhere); the platform keeps the
+# session and its tokens in ONE blob container the web identity alone may use (no SAS, no account key); an
+# unauthenticated request never reaches EPS code (a browser page 302 to Entra, anything else 401). The app still verifies
+# the access token itself on EVERY request (defence in depth, EPS-WebAuth) and the engine re-verifies it before a tenant
+# change.
+# ======================================================================================================================
+$script:EpsWeb.TokenContainer = 'eps-signin-sessions'
+$script:EpsWeb.BlobDataRole   = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'     # Storage Blob Data Contributor (the ONE token container)
+$script:EpsWeb.FicSecretName  = 'override-use-mi-fic-assertion-client-id'  # lowercase: the App Service name fails on Container Apps
+$script:EpsWeb.AuthApi        = '2024-10-02-preview'                       # the token store with a managed identity
+$script:EpsWeb.AppPort        = 8080
+
+function New-EpsBuiltInWebAppBody {
+    <#
+      PURE. ONE Container App, ONE container 'eps' (the same image as the jobs, EPS_JOB = Web) as the ingress target on
+      8080, listening on all addresses (EPS_WEB_LISTEN = all) - the platform's sign-in stands in front of it. The only
+      secret-like value is the web identity's CLIENT id (not a credential), under the name the platform's federated
+      credential path reads. Probes on /healthz hit the replica directly (not through the ingress, so not the sign-in).
+    #>
+    param([Parameter(Mandatory)]$Ctx, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ClientId)
+    $n = $Ctx.Names; $w = $Ctx.Identities.WebIdentity
+    $fqdn = "$($n.SqlServer).database.windows.net"
+    $envId = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)/providers/Microsoft.App/managedEnvironments/$($n.Environment)"
+    $port = $script:EpsWeb.AppPort
+    $probe = { param($t) [ordered]@{ type = $t; httpGet = [ordered]@{ path = '/healthz'; port = $port; scheme = 'HTTP' }; initialDelaySeconds = 3; periodSeconds = 10; failureThreshold = 3; timeoutSeconds = 3 } }
+    $e = { param([hashtable]$h) @($h.Keys | Sort-Object | ForEach-Object { [ordered]@{ name = $_; value = "$($h[$_])" } }) }
+    [ordered]@{
+        location = $Ctx.Location; tags = @{ product = 'EntraPolicySuite'; role = 'web' }
+        identity = @{ type = 'UserAssigned'; userAssignedIdentities = @{ $w.Id = @{} } }
+        properties = [ordered]@{ environmentId = $envId; workloadProfileName = 'Consumption'
+            configuration = [ordered]@{ activeRevisionsMode = 'Single'
+                ingress = [ordered]@{ external = $true; targetPort = $port; transport = 'auto'; allowInsecure = $false; traffic = @(@{ latestRevision = $true; weight = 100 }) }
+                registries = @(@{ server = "$($n.Registry).azurecr.io"; identity = $w.Id })
+                secrets = @(@{ name = $script:EpsWeb.FicSecretName; value = "$($w.ClientId)" }) }
+            template = [ordered]@{
+                containers = @(
+                    [ordered]@{ name = 'eps'; image = $Image; resources = @{ cpu = 0.5; memory = '1Gi' }; probes = @((& $probe 'Liveness'), (& $probe 'Readiness'))
+                        env = & $e @{ EPS_JOB = 'Web'; EPS_SQL_CONNECTION = "Server=tcp:$fqdn,1433;Database=$($n.Database);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30"
+                            EPS_TENANT_ID = $Ctx.TenantId; EPS_STORAGE_ACCOUNT = $n.Storage; EPS_WEB_CLIENT_ID = $ClientId; EPS_WEB_PORT = $port; EPS_WEB_LISTEN = 'all'; EPS_ManagedIdentityClientId = $w.ClientId } }
+                )
+                scale = @{ minReplicas = 0; maxReplicas = 1 }
+            }
+        }
+    }
+}
+
+function New-EpsWebAuthConfigBody {
+    <#
+      PURE. authConfigs/current (api 2024-10-02-preview) - the body proven at internal 2026-11-14, as PIM's: sign-in
+      required on every path (a browser goes to Entra, anything else gets 401), the Entra v2.0 issuer, the registration's
+      own client id with the web identity as its credential, the app's own scope requested so the access token EPS
+      verifies comes back, the session 8 h, the token store in the install's storage account through the web identity.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$ClientId, [Parameter(Mandatory)][string]$StorageAccount, [Parameter(Mandatory)][string]$WebIdentityId)
+    [ordered]@{ properties = [ordered]@{
+        platform = [ordered]@{ enabled = $true }
+        globalValidation = [ordered]@{ unauthenticatedClientAction = 'RedirectToLoginPage'; redirectToProvider = 'azureactivedirectory' }
+        identityProviders = [ordered]@{ azureActiveDirectory = [ordered]@{ enabled = $true
+            registration = [ordered]@{ clientId = $ClientId; clientSecretSettingName = $script:EpsWeb.FicSecretName; openIdIssuer = "https://login.microsoftonline.com/$TenantId/v2.0" }
+            validation = [ordered]@{ allowedAudiences = @("api://$ClientId", $ClientId) }
+            login = [ordered]@{ loginParameters = @("scope=openid profile email offline_access api://$ClientId/$($script:EpsWeb.Scope)", 'prompt=select_account') } } }   # owner 2026-11-14: "many places we use an admin account, not the office user that the admin is logged in with" - Entra always shows the account picker
+        login = [ordered]@{
+            cookieExpiration = [ordered]@{ convention = 'FixedTime'; timeToExpiration = ('{0:00}:00:00' -f [int]$script:EpsWeb.SessionHours) }
+            tokenStore = [ordered]@{ enabled = $true; azureBlobStorage = [ordered]@{ blobContainerUri = "https://$StorageAccount.blob.core.windows.net/$($script:EpsWeb.TokenContainer)"; managedIdentityResourceId = $WebIdentityId } } }
+    } }
+}
+
+function Get-EpsWebSigninMode {
+    <# PURE. Which sign-in the RUNNING web app has: 'builtin' (no front container, the platform sign-in on), 'front' (the
+       sign-in front container, the platform sign-in off), 'partial' (anything else). #>
+    param($App, $AuthConfig)
+    $front = [bool]@($App.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' }).Count
+    $on = ($AuthConfig.properties.platform.enabled -eq $true)
+    if ($front -and -not $on) { 'front' } elseif (-not $front -and $on) { 'builtin' } else { 'partial' }
+}
+
+function Get-EpsBuiltInAuthReadiness {
+    <#
+      PURE. Whether an install may switch to the built-in sign-in NOW - every precondition read, nothing guessed. The
+      updater holds no right to make any of them (no role-assignment write, no registration write - review G point 2):
+      the install run (or Invardia support at an install it runs) makes them; until then the updater only says what is
+      missing. @{ Ready; Missing (plain words) }.
+    #>
+    param($Registration, [string]$Fqdn, $Fics, $FicSpec, [bool]$ContainerExists, $RoleAssignments, [string]$WebPrincipalId, [string]$BlobRoleId)
+    $miss = [System.Collections.Generic.List[string]]::new()
+    $cb = "https://$("$Fqdn".ToLowerInvariant())/.auth/login/aad/callback"
+    if (-not $Fqdn) { $miss.Add('the web app has no address') }
+    elseif (@($Registration.web.redirectUris) -notcontains $cb) { $miss.Add("the sign-in address $cb on the registration") }
+    if ($Registration.web.implicitGrantSettings.enableIdTokenIssuance -ne $true) { $miss.Add("ID-token issuance on the registration (Microsoft's sign-in starts with code + id_token)") }
+    if ($Registration.web.implicitGrantSettings.enableAccessTokenIssuance -eq $true) { $miss.Add('access-token issuance OFF on the registration') }
+    if (-not $FicSpec -or -not @(@($Fics) | Where-Object { $_.issuer -eq $FicSpec.issuer -and $_.subject -eq $FicSpec.subject }).Count) { $miss.Add("the web identity's federated credential on the registration") }
+    if (-not $ContainerExists) { $miss.Add("the token container $($script:EpsWeb.TokenContainer)") }
+    elseif (-not @(@($RoleAssignments) | Where-Object { "$($_.properties.principalId)" -eq $WebPrincipalId -and "$($_.properties.roleDefinitionId)" -like "*/$BlobRoleId" }).Count) { $miss.Add('Storage Blob Data Contributor for the web identity on the token container') }
+    @{ Ready = ($miss.Count -eq 0); Missing = @($miss) }
+}
+
+function Get-EpsWebSigninCheckClient {
+    # an HTTP GET with redirects OFF (a 302 is the answer, not an error); -Browser sends what a browser sends
+    { param($u, [switch]$Browser)
+        $hc = [System.Net.Http.HttpClient]::new([System.Net.Http.HttpClientHandler]@{ AllowAutoRedirect = $false }); $hc.Timeout = [TimeSpan]::FromSeconds(20)
+        try {
+            $m = [System.Net.Http.HttpRequestMessage]::new('GET', $u)
+            if ($Browser) { [void]$m.Headers.TryAddWithoutValidation('Accept', 'text/html,application/xhtml+xml'); [void]$m.Headers.TryAddWithoutValidation('User-Agent', 'Mozilla/5.0 (Entra Policy Suite sign-in check)') }
+            else { [void]$m.Headers.TryAddWithoutValidation('Accept', 'application/json') }
+            $r = $hc.SendAsync($m).GetAwaiter().GetResult(); @{ Status = [int]$r.StatusCode; Location = "$($r.Headers.Location)" }
+        } catch { @{ Status = 0; Location = ''; Error = "$($_.Exception.GetBaseException().Message)" } } finally { $hc.Dispose() } }
+}
+
+function Test-EpsBuiltInSigninAnswers {
+    <#
+      The proof that the built-in sign-in stands in front of the app: a browser page without a session goes to Entra
+      (302 to login.microsoftonline.com) and an API call without a token is refused (401) - by the platform, before EPS
+      code. /healthz is NOT asked through the ingress: it is behind the sign-in like every path (the replica's probes use it).
+    #>
+    param([Parameter(Mandatory)][string]$Fqdn, [int]$WaitSeconds = 300, [int]$PollSeconds = 10)
+    $get = if ($global:EPS_WebProbeOverride) { $global:EPS_WebProbeOverride } else { Get-EpsWebSigninCheckClient }
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $p = $null
+    while ($true) {
+        $p = & $get "https://$Fqdn/" -Browser
+        if (($p.Status -eq 302 -and $p.Location -match '^https://login\.microsoftonline\.com/') -or $sw.Elapsed.TotalSeconds -ge $WaitSeconds) { break }
+        Start-Sleep -Seconds $PollSeconds
+    }
+    if ($p.Status -ne 302 -or $p.Location -notmatch '^https://login\.microsoftonline\.com/') { return @{ Ok = $false; Page = $p.Status; Reason = "a browser page without a session answered $($p.Status) ($($p.Location)$($p.Error)) within $WaitSeconds s - expected a redirect to the Entra sign-in" } }
+    $a = & $get "https://$Fqdn/api/me"
+    if ($a.Status -ne 401) { return @{ Ok = $false; Page = 302; Api = $a.Status; Reason = "an API call without a token answered $($a.Status) - expected 401 from Microsoft's sign-in" } }
+    @{ Ok = $true; Page = 302; Api = 401; Reason = "Microsoft's sign-in stands in front of the app: a page without a session goes to Entra, an API call without a token gets 401" }
+}
+
+function Invoke-EpsBuiltInAuthConverge {
+    <#
+      2.1.35, the UPDATER (Contributor on the install's resource group; no role-assignment write, no registration write):
+      an install still behind the sign-in front is switched to Microsoft's built-in sign-in ONLY when every precondition
+      reads true (Get-EpsBuiltInAuthReadiness) - otherwise NOTHING changes and the run log says what is missing (it reaches
+      Invardia). The switch: the sign-in config first (for a moment the platform's sign-in stands in front of the front -
+      nobody gets in unverified), then the app as ONE container (the eps image it runs now), then read back and proven.
+      A switch that does not prove = a WARNING line (Invardia sees it). Never throws:
+      @{ State (builtin | switched | waiting | error | none); Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [int]$WaitSeconds = 300, [int]$PollSeconds = 10)
+    try {
+        $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+        $appPath = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"
+        $app = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca -AllowNotFound
+        if (-not $app) { return @{ State = 'none'; Lines = @('sign-in: this install has no web app') } }
+        $ac = Invoke-EpsArm -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -AllowNotFound
+        if ((Get-EpsWebSigninMode -App $app -AuthConfig $ac) -eq 'builtin') { return @{ State = 'builtin'; Lines = @("sign-in: Microsoft's built-in sign-in is on; nothing to change") } }
+        $fqdn = "$($app.properties.configuration.ingress.fqdn)".Trim().ToLowerInvariant()
+        $wi = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.WebIdentity)" -ApiVersion $script:EpsApi.mi -AllowNotFound
+        $reg = Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"
+        if (-not $reg -or -not $wi) { return @{ State = 'waiting'; Lines = @("sign-in: still the sign-in front - $(if (-not $reg) { 'the web app registration' } else { "the identity $($n.WebIdentity)" }) is not found; nothing changed") } }
+        $fics = @(Invoke-EpsGraph -Path "v1.0/applications/$($reg.id)/federatedIdentityCredentials" -All)
+        $contPath = "$rg/providers/Microsoft.Storage/storageAccounts/$($n.Storage)/blobServices/default/containers/$($script:EpsWeb.TokenContainer)"
+        $cont = Invoke-EpsArm -Path $contPath -ApiVersion $script:EpsApi.st -AllowNotFound
+        $ras = if ($cont) { @((Invoke-EpsArm -Path "$contPath/providers/Microsoft.Authorization/roleAssignments?`$filter=atScope()" -ApiVersion $script:EpsApi.rbac).value) } else { @() }
+        $pid0 = "$($wi.properties.principalId)"
+        $ready = Get-EpsBuiltInAuthReadiness -Registration $reg -Fqdn $fqdn -Fics $fics -FicSpec (Get-EpsFicSpec -TenantId $TenantId -PrincipalId $pid0) -ContainerExists ([bool]$cont) -RoleAssignments $ras -WebPrincipalId $pid0 -BlobRoleId $script:EpsWeb.BlobDataRole
+        if (-not $ready.Ready) { return @{ State = 'waiting'; Lines = @("sign-in: still the sign-in front - Microsoft's built-in sign-in waits for: $($ready.Missing -join '; '). One install run (or Invardia support) makes them; nothing changed") } }
+        $img = "$(@($app.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
+        if (-not $img) { return @{ State = 'error'; Lines = @('WARNING sign-in: the web app has no eps container - nothing changed') } }
+        $ctx = @{ Names = $n; SubscriptionId = $SubscriptionId; TenantId = $TenantId; Location = "$($app.location)"
+                  Identities = @{ WebIdentity = @{ Id = "$($wi.id)"; ClientId = "$($wi.properties.clientId)"; PrincipalId = $pid0 } } }
+        [void](Invoke-EpsArm -Method PUT -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -Body (New-EpsWebAuthConfigBody -TenantId $TenantId -ClientId "$($reg.appId)" -StorageAccount $n.Storage -WebIdentityId "$($wi.id)"))
+        $put = Invoke-EpsArm -Method PUT -Path $appPath -ApiVersion $script:EpsApi.aca -Body (New-EpsBuiltInWebAppBody -Ctx $ctx -Image $img -ClientId "$($reg.appId)")
+        for ($i = 0; "$($put.properties.provisioningState)" -in 'InProgress', 'Updating', '' -and $i -lt 40; $i++) { Start-Sleep -Seconds $PollSeconds; $put = Invoke-EpsArm -Path $appPath -ApiVersion $script:EpsApi.aca }
+        $back = Get-EpsWebSigninMode -App $put -AuthConfig (Invoke-EpsArm -Path "$appPath/authConfigs/current" -ApiVersion $script:EpsWeb.AuthApi -AllowNotFound)
+        if ($back -ne 'builtin' -or "$($put.properties.provisioningState)" -ne 'Succeeded') { return @{ State = 'error'; Lines = @("WARNING sign-in: the switch to Microsoft's built-in sign-in reads back '$back' (provisioning $($put.properties.provisioningState)) - the next update run tries again") } }
+        $proof = Test-EpsBuiltInSigninAnswers -Fqdn $fqdn -WaitSeconds $WaitSeconds -PollSeconds $PollSeconds
+        if (-not $proof.Ok) { return @{ State = 'error'; Lines = @("WARNING sign-in: switched to Microsoft's built-in sign-in, but $($proof.Reason)") } }
+        @{ State = 'switched'; Lines = @("sign-in: switched from the sign-in front to Microsoft's built-in sign-in (one container, $(("$img" -split '/')[-1])); read back; $($proof.Reason)") }
+    } catch { @{ State = 'error'; Lines = @("WARNING sign-in: $((("$($_.Exception.Message)") -split "`n")[0]) - the next update run tries again") } }
 }

@@ -2,6 +2,23 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.35 - Security update: Microsoft's built-in sign-in in front of the web app
+Builds on the owner's decision: "are we only exposing entra + azure auth now to internet and no custom auth code ? give me certaintity that we follow ms best practice so i dont get another hit by defender" (2026-11-14, relayed by Invardia)
+- Security update: Microsoft's own Container Apps sign-in now stands in front of the web app. A request without a
+  sign-in never reaches the app: a browser goes to the Microsoft sign-in page, anything else is refused. No secret is
+  used - the web app's own identity is the sign-in's credential - and the app still checks each person's sign-in itself.
+  The earlier sign-in front is no longer used.
+- Security update: the web app's identity holds no Key Vault right any more, and the update job can no longer change
+  the web app's sign-in registration.
+- Change you will see: the sign-in always lets you choose the account, so you can sign in with an admin account other
+  than the one your browser is signed in with. When your session has ended there is also "Sign in with another account".
+- Your update switches the web app by itself once the setup it needs is in place; until then it keeps the earlier
+  sign-in and says what is missing.
+## 2.1.34 - Security update: ready for Microsoft's built-in sign-in
+Builds on the owner's decision: "give me certaintity that we follow ms best practice so i dont get another hit by defender" (2026-11-14, relayed by Invardia)
+- Security update: the web app's sign-in registration now also holds the address that Microsoft's built-in Container Apps
+  sign-in uses. Your update adds it by itself. Nothing changes for you today; the coming move to Microsoft's sign-in then
+  needs no step from an admin.
 ## 2.1.33 - Security update: closing a tamper alarm needs the admin's own sign-in
 Builds on the owner's decision: "remember any security must go out without any dependency to my approval" (2026-11-14, relayed by Invardia)
 - Security update: when an admin accepts a change on the Tamper page, the engine now checks that admin's own sign-in

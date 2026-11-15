@@ -1,0 +1,17 @@
+{
+  "version": "2.1.35",
+  "date": "2026-11-14",
+  "type": "security",
+  "summary": "The web app now signs people in with Microsoft's built-in Container Apps sign-in.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Microsoft's sign-in now guards the web app",
+      "text": "Microsoft's own Container Apps sign-in now stands in front of the web app, so a request without a sign-in never reaches it. No secret is used, and the app still checks each sign-in itself."
+    },
+    {
+      "title": "Fewer rights for the web app",
+      "text": "The web app's identity holds no Key Vault right any more, and the update job can no longer change the web app's sign-in registration."
+    }
+  ]
+}

@@ -332,20 +332,20 @@
           "approval": "owner 2026-11-09 (direct): \"Web may send a wake-up (Recommended)\""
         },
         {
-          "kind": "keyVault",
-          "right": "Key Vault Crypto Service Encryption User",
-          "scope": "<kv>/keys/signin-front",
+          "kind": "azure",
+          "right": "Storage Blob Data Contributor",
+          "scope": "<st>/containers/eps-signin-sessions (that one container)",
           "when": "always",
-          "feature": "the sign-in front wraps its session keys",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "owner 2026-10-30: \"Yes, like PIM\" (REQUIREMENTS; DESIGN)"
+          "feature": "Microsoft's built-in Container Apps sign-in keeps each person's sign-in session in this one container, through the web identity (no shared access link, no account key)",
+          "approval": "owner 2026-11-14 (via Invardia): \"give me certaintity that we follow ms best practice so i dont get another hit by defender\" / \"if it works, then do it\"; Invardia approved the 2.1.35 plan 2026-11-14",
+          "recorded": "REQUIREMENTS §0 2026-11-14 (built-in sign-in)"
         },
         {
           "kind": "federatedCredential",
           "right": "federated credential on the 'Entra Policy Suite' app registration",
           "scope": "the registration",
           "when": "always",
-          "feature": "the sign-in front signs people in without a secret",
+          "feature": "Microsoft's built-in sign-in signs people in with the web identity as the registration's credential - no secret",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "NO RECORDED APPROVAL"
         },
@@ -366,6 +366,15 @@
           "feature": "the sign-in front's own session tables",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "framework 12.23 SQL-ACCESS (no owner words)"
+        }
+      ],
+      "removedRights": [
+        {
+          "kind": "keyVault",
+          "right": "Key Vault Crypto Service Encryption User",
+          "scope": "<kv>/keys/signin-front",
+          "removed": "2.1.35 - with the sign-in front (Microsoft's built-in sign-in); the install removes it and reads back; NEVER again on an internet-facing identity (Test-EpsRights SECURE-WEB-1)",
+          "approval": "Invardia 2026-11-14 (2.1.35 plan point 1): listed as REMOVED, the lint refuses any Key Vault right on the web identity"
         }
       ]
     },
@@ -479,14 +488,7 @@
           "approval": "owner 2026-11-09, Invardia rights review: approved",
           "recorded": "NO RECORDED APPROVAL"
         },
-        {
-          "kind": "graph",
-          "right": "Application.ReadWrite.OwnedBy",
-          "when": "always",
-          "feature": "keep the web app registration it owns current (SECAUDIT-1a)",
-          "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "Invardia ruling 2026-11-07 (SECAUDIT-1a); owner decisions 12f28394 / 13f28394 (no quoted words)"
-        },
+
         {
           "kind": "owner",
           "right": "owner of the 'Entra Policy Suite' app registration and its enterprise application",
@@ -494,7 +496,7 @@
           "when": "always",
           "feature": "SECAUDIT-1a: only the updater owns it",
           "approval": "owner 2026-11-09, Invardia rights review: approved",
-          "recorded": "as Application.ReadWrite.OwnedBy"
+          "recorded": "SECAUDIT-1a (Invardia 2026-11-07); since 2.1.35 an owner WITHOUT a write right (Application.ReadWrite.OwnedBy dropped, review G point 2) - it only reads the registration"
         }
       ]
     },

@@ -534,9 +534,18 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
         try { $wr = Sync-EpsWebRegistrationAsOwner -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved2 }
         foreach ($l in $wr.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
     }
+    # 2.1.35 (owner 2026-11-14, Microsoft's built-in sign-in): a CURRENT install still behind the sign-in front is switched -
+    # only when every precondition reads true (else it says what is missing and changes nothing); as the updater identity,
+    # never fails the cycle. The front converge below then finds no front and has nothing to do.
+    $bia = $null
+    if ($t.State -eq 'current' -and $updater -and -not $CheckOnly -and (Get-Command Invoke-EpsBuiltInAuthConverge -ErrorAction SilentlyContinue)) {
+        $saved6 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
+        try { $bia = Invoke-EpsBuiltInAuthConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -PollSeconds $PollSeconds } finally { $global:EPS_TokenProvider = $saved6 }
+        foreach ($l in $bia.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } elseif ($bia.State -eq 'switched') { 'Notice' } else { 'Info' }) $l }
+    }
     # IMAGE-PATCH-1 (2.0.120): a CURRENT install's sign-in front converges to the running release's pin (an older updater's
     # apply did not move the front) - as the updater identity, never fails the cycle
-    if ($t.State -eq 'current' -and $updater -and -not $CheckOnly -and (Get-Command Invoke-EpsFrontConverge -ErrorAction SilentlyContinue)) {
+    if ($t.State -eq 'current' -and $updater -and -not $CheckOnly -and "$($bia.State)" -notin 'builtin', 'switched' -and (Get-Command Invoke-EpsFrontConverge -ErrorAction SilentlyContinue)) {
         $saved3 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
         try { $fc = Invoke-EpsFrontConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -PollSeconds $PollSeconds } finally { $global:EPS_TokenProvider = $saved3 }
         foreach ($l in $fc.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }

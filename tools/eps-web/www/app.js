@@ -48,10 +48,22 @@
   function timeEl(iso) { return el('time', { datetime: iso || '', title: iso ? 'UTC ' + iso : null, text: fmtTime(iso) }); }
 
   // ---- API ---------------------------------------------------------------------------------------------------------
-  function api(method, path, body) {
+  // 2.1.35 Microsoft's built-in sign-in (owner 2026-11-14): the platform keeps the session (8 h) and the access token
+  // (about 1 h) - an expired token is renewed ONCE through the platform's /.auth/refresh, then the call is sent again;
+  // a refresh that fails shows "Sign in again". Behind the older sign-in front /.auth/refresh is not there (404): the
+  // page is reloaded as before.
+  var authMode = '';   // '' unknown, 'builtin' (/.auth/refresh answered), 'front' (it did not exist)
+  function refreshToken() {
+    return fetch('/.auth/refresh', { method: 'GET', credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { if (r.status === 404) { authMode = 'front'; return false; } authMode = 'builtin'; return r.ok; }, function () { return false; });
+  }
+  function api(method, path, body, retried) {
     var opt = { method: method, credentials: 'same-origin', headers: { 'Accept': 'application/json' } };
     if (method !== 'GET') { opt.headers['X-EPS-Request'] = '1'; opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body || {}); }
     return fetch(path, opt).then(function (r) {
+      if (r.status === 401 && !retried && authMode !== 'front') {
+        return refreshToken().then(function (ok) { if (ok) return api(method, path, body, true); document.getElementById('sessionBar').hidden = false; throw new Error('not signed in'); });
+      }
       if (r.status === 401) { document.getElementById('sessionBar').hidden = false; throw new Error('not signed in'); }
       var v = r.headers.get('X-EPS-Version'); if (v) checkVersion(v);
       return r.json().then(function (j) { if (!r.ok) { var e = new Error(j && j.error ? j.error : ('HTTP ' + r.status)); e.status = r.status; throw e; } return j; });
@@ -5189,7 +5201,17 @@ function schedPicker(current, job) {
     np.addEventListener('change', function () { store.set('eps.numbers', np.value); render(); });
     document.getElementById('versionReload').addEventListener('click', function () { location.reload(); });
     document.getElementById('versionLater').addEventListener('click', function () { dismissed = document.getElementById('versionBarText').textContent.match(/v([^;]+);/)[1]; document.getElementById('versionBar').hidden = true; });
-    document.getElementById('sessionReload').addEventListener('click', function () { location.reload(); });
+    // which sign-in serves this page: Microsoft's built-in sign-in answers /.auth/me; the older front does not (404)
+    fetch('/.auth/me', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (r) {
+      if (r.status === 404) { authMode = 'front'; return; }
+      authMode = 'builtin';
+      var so = document.getElementById('signout'); if (so) so.href = '/.auth/logout?post_logout_redirect_uri=' + encodeURIComponent('/');
+      var oa = document.getElementById('otherAccount'); if (oa) oa.hidden = false;   // owner 2026-11-14: an admin account, not the office user
+    }, function () { });
+    document.getElementById('sessionReload').addEventListener('click', function () {
+      if (authMode === 'builtin') { location.href = '/.auth/login/aad?post_login_redirect_uri=' + encodeURIComponent(location.pathname + location.search + location.hash); return; }
+      location.reload();
+    });
     // ADMIN-WALK: unstaged edits in the rules grid are not dropped by leaving the page without a question
     var gridDirty = function () { var G = GRID; return !!(G.ot && (Object.keys(G.edits).length || G.added.length || Object.keys(G.dels).some(function (k) { return G.dels[k]; }))); };
     var lastHash = location.hash, skipGuard = false;

@@ -29,7 +29,7 @@ function Get-EpsEnginePermissionRequest {
 
 function Get-EpsUpdaterPermissionRequest {
     # PURE (PRM-02, Invardia review 2026-11-07; 2.0.99): the UPDATER identity's Graph roles - exactly the declared ones
-    # ($script:EpsUpdaterGraphRoles, framework §4.5 G5, + Application.ReadWrite.OwnedBy, SECAUDIT-1a). Never
+    # ($script:EpsUpdaterGraphRoles, framework §4.5 G5; Application.ReadWrite.OwnedBy dropped in 2.1.35). Never
     # RoleManagement.ReadWrite.Directory (G5) or anything else. Same shape as Get-EpsEnginePermissionRequest.
     param([string[]]$GraphPermission = @(), [switch]$Remove)
     $declared = @($script:EpsUpdaterGraphRoles) + @($script:EpsUpdaterOwnerGraphRole)

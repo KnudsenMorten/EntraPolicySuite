@@ -91,58 +91,36 @@ function Get-EpsJobTimeoutPatch {
 
 function Sync-EpsWebRegistrationAsOwner {
     <#
-      SECAUDIT-1a (Invardia ruling 2026-11-07): as the UPDATER identity - the OWNER of the web app registration, with
-      Application.ReadWrite.OwnedBy - the registration's own settings converge on each update run: its address
-      api://<appId>, the Azure CLI pre-authorisation, the web app's sign-in addresses and the web identity's federated
-      credential. Never the consent and never who is assigned (neither is on the app object - an install run's). Not an
-      owner yet = reads only and says so. Every change is read back. Never throws: @{ State (ok | changed | not-owner |
-      none | error); Lines }.
+      2.1.35 (review G point 2, Invardia 2026-11-14): READ ONLY. The updater no longer writes the web app registration
+      (Application.ReadWrite.OwnedBy is dropped with Microsoft's built-in sign-in): each update run READS the registration
+      and says what differs from what the built-in sign-in needs - its address api://<appId>, the sign-in address
+      https://<fqdn>/.auth/login/aad/callback, ID-token issuance ON (Microsoft's sign-in starts with code + id_token -
+      never turned off again), access-token issuance OFF, the web identity's federated credential. The install run makes
+      them. Never throws: @{ State (ok | drift | none | error); Lines }.
     #>
     param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
     try {
         $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
-        $app = Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"
-        if (-not $app) { return @{ State = 'none'; Lines = @('web registration: none (this install has no web app registration)') } }
-        $upd = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.UpdaterIdentity)" -ApiVersion $script:EpsApi.mi
-        $uid = "$($upd.properties.principalId)".ToLowerInvariant()
-        $owners = @(Invoke-EpsGraph -Path "v1.0/applications/$($app.id)/owners?`$select=id" -All | ForEach-Object { "$($_.id)".ToLowerInvariant() })
-        if (-not $uid -or $owners -notcontains $uid) { return @{ State = 'not-owner'; Lines = @("web registration: $($n.UpdaterIdentity) is not its owner yet - one install run makes it the owner (SECAUDIT-1a); nothing changed") } }
+        $a = Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"
+        if (-not $a) { return @{ State = 'none'; Lines = @('web registration: none (this install has no web app registration)') } }
         $web = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca -AllowNotFound
         $fqdn = "$($web.properties.configuration.ingress.fqdn)".Trim().ToLowerInvariant()
         $wi = Invoke-EpsArm -Path "$rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$($n.WebIdentity)" -ApiVersion $script:EpsApi.mi -AllowNotFound
         $fic = if ($wi) { Get-EpsFicSpec -TenantId $TenantId -PrincipalId "$($wi.properties.principalId)" }
-        # what is not as it should be; -Apply changes it (as the owner)
-        $check = {
-            param($a, [switch]$Apply)
-            $todo = [System.Collections.Generic.List[string]]::new()
-            $uri = "api://$($a.appId)"
-            if (@($a.identifierUris) -notcontains $uri) { $todo.Add("address $uri"); if ($Apply) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($a.id)" -Body @{ identifierUris = @($uri) }) } }
-            $pre = Get-EpsWebPreAuthPatch -Api $a.api
-            if ($pre) { $todo.Add('the Azure CLI pre-authorisation'); if ($Apply) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($a.id)" -Body $pre) } }
-            if ($fqdn) {
-                $w = $a.web
-                if (@($w.redirectUris) -notcontains "https://$fqdn/signin-oidc" -or "$($w.logoutUrl)" -ne "https://$fqdn/signout-callback-oidc" -or $w.implicitGrantSettings.enableIdTokenIssuance -or $w.implicitGrantSettings.enableAccessTokenIssuance) {
-                    $todo.Add("sign-in address https://$fqdn/signin-oidc")
-                    $uris = @(@(@($w.redirectUris) + "https://$fqdn/signin-oidc") | Where-Object { $_ } | Select-Object -Unique)
-                    if ($Apply) { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($a.id)" -Body @{ web = @{ redirectUris = $uris; logoutUrl = "https://$fqdn/signout-callback-oidc"; implicitGrantSettings = @{ enableIdTokenIssuance = $false; enableAccessTokenIssuance = $false } } }) }
-                }
-            }
-            if ($fic) {
-                $fics = @(Invoke-EpsGraph -Path "v1.0/applications/$($a.id)/federatedIdentityCredentials" -All)
-                if (-not @($fics | Where-Object { $_.issuer -eq $fic.issuer -and $_.subject -eq $fic.subject }).Count) { $todo.Add("the web identity's federated credential"); if ($Apply) { [void](Invoke-EpsGraph -Method POST -Path "v1.0/applications/$($a.id)/federatedIdentityCredentials" -Body $fic) } }
-            }
-            @($todo)
+        $todo = [System.Collections.Generic.List[string]]::new()
+        if (@($a.identifierUris) -notcontains "api://$($a.appId)") { $todo.Add("address api://$($a.appId)") }
+        if ($fqdn) { $ru = Get-EpsWebRedirectUris -Fqdn $fqdn -Existing @($a.web.redirectUris); if ($ru.Missing.Count) { $todo.Add("sign-in address $($ru.Missing -join ' + ')") } }
+        if ($a.web.implicitGrantSettings.enableIdTokenIssuance -ne $true) { $todo.Add('ID-token issuance ON') }
+        if ($a.web.implicitGrantSettings.enableAccessTokenIssuance -eq $true) { $todo.Add('access-token issuance OFF') }
+        if ($fic) {
+            $fics = @(Invoke-EpsGraph -Path "v1.0/applications/$($a.id)/federatedIdentityCredentials" -All)
+            if (-not @($fics | Where-Object { $_.issuer -eq $fic.issuer -and $_.subject -eq $fic.subject }).Count) { $todo.Add("the web identity's federated credential") }
         }
-        $did = @(& $check $app -Apply)
-        if (-not $did.Count) { return @{ State = 'ok'; Lines = @("web registration: $($n.UpdaterIdentity) is its owner; nothing to change") } }
-        # Graph replicas: a change reads back after a short wait
-        Start-Sleep -Seconds $(if ($null -ne $script:EpsRetrySeconds) { $script:EpsRetrySeconds } else { 15 })
-        $left = @(& $check (Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"))
-        if ($left.Count) { return @{ State = 'error'; Lines = @("WARNING web registration: changed as its owner ($($did -join ', ')), but $($left -join ', ') did not read back - the next update run tries again") } }
-        @{ State = 'changed'; Lines = @("web registration: changed as its owner ($($n.UpdaterIdentity)): $($did -join ', ') - read back") }
+        if (-not $todo.Count) { return @{ State = 'ok'; Lines = @('web registration: read; as the built-in sign-in needs it - nothing to change (the updater no longer writes it)') } }
+        @{ State = 'drift'; Lines = @("WARNING web registration: read; not yet as the built-in sign-in needs it: $($todo -join ', ') - one install run sets it (the updater no longer writes the registration)") }
     } catch {
-        @{ State = 'error'; Lines = @("WARNING web registration: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing else in the update depends on it; the next run tries again") }
+        @{ State = 'error'; Lines = @("WARNING web registration: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing else in the update depends on it; the next run reads it again") }
     }
 }
 

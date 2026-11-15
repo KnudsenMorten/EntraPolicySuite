@@ -25,9 +25,13 @@ if (-not $ConnectionString) { Write-Host '[eps web] EPS_SQL_CONNECTION is not se
 $ctx = @{ ConnectionString = $ConnectionString; AuthConfig = $cfg; Version = $version; StaticRoot = (Join-Path $PSScriptRoot 'www') }
 
 $listener = [System.Net.HttpListener]::new()
-$listener.Prefixes.Add("http://127.0.0.1:$Port/")   # loopback ONLY: the sign-in front is the only way in
+# 2.1.35 (owner 2026-11-14, Microsoft's built-in Container Apps sign-in): EPS_WEB_LISTEN = 'all' when the app itself is
+# the ingress target - the platform's sign-in stands in front of it, and every request is still verified HERE (the
+# token check above, fail closed); otherwise loopback ONLY (the older sign-in front is the only way in)
+$bind = if ("$env:EPS_WEB_LISTEN" -eq 'all') { '+' } else { '127.0.0.1' }
+$listener.Prefixes.Add("http://$($bind):$Port/")
 $listener.Start()
-Write-Host "[eps web] $version listening on 127.0.0.1:$Port (tenant $($cfg.TenantId), audience $($cfg.Audiences[0]), scope $($cfg.Scope))"
+Write-Host "[eps web] $version listening on $(if ($bind -eq '+') { 'all addresses (behind Microsoft''s built-in sign-in)' } else { '127.0.0.1' }):$Port (tenant $($cfg.TenantId), audience $($cfg.Audiences[0]), scope $($cfg.Scope))"
 try {
     while ($listener.IsListening) {
         $hc = $listener.GetContext()

@@ -61,9 +61,11 @@ $script:EpsEngineGraphRoles = @('User.Read.All', 'Device.Read.All', 'GroupMember
 # GroupMember.Read.All (read only, G5 as changed 2026-11-05): reading the membership back is refused without it.
 # Not left out by -ExcludeGraphRole: G5 is binding for every product.
 $script:EpsUpdaterGraphRoles = @('PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup', 'PrivilegedAssignmentSchedule.Read.AzureADGroup', 'RoleManagementPolicy.Read.AzureADGroup', 'GroupMember.Read.All', 'Application.Read.All')
-# SECAUDIT-1a (Invardia ruling 2026-11-07): the updater OWNS the web app registration and changes only what it owns -
-# kept apart from the G5 list (the SQL admin group's check is not about it)
-$script:EpsUpdaterOwnerGraphRole = 'Application.ReadWrite.OwnedBy'
+# SECAUDIT-1a (Invardia ruling 2026-11-07) gave the updater Application.ReadWrite.OwnedBy to keep the registration it owns current.
+# 2.1.35 (review G point 2, Invardia 2026-11-14): DROPPED with Microsoft's built-in sign-in - the updater only READS the
+# registration now (Sync-EpsWebRegistrationAsOwner); the install run makes its settings. Not granted any more; an install
+# that still holds it reports it as held outside the list (removed at internal by Invardia support).
+$script:EpsUpdaterOwnerGraphRole = @()
 function Get-EpsEngineGraphRoles {
     # the engine's Graph roles minus any the approver left out (-ExcludeGraphRole): a role not approved is never granted;
     # the feature that needs it reports its data as unavailable (e.g. Teams_Room_Like without Organization.Read.All)
@@ -437,9 +439,9 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'jobstarter';    Title = 'The tick may NOT start jobs (an older install''s job-starter role removed)' }
         [pscustomobject]@{ Id = 'graph';         Title = "The engine's Graph permissions" }
         [pscustomobject]@{ Id = 'exchange';      Title = "The engine's Exchange permission + role" }
-        [pscustomobject]@{ Id = 'keyvault';      Title = "Key Vault for the sign-in front's wrap key" }
-        [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image (the pinned version), built in the registry' }
-        [pscustomobject]@{ Id = 'webapp';        Title = 'The web app: the sign-in front + the GUI in one revision' }
+        [pscustomobject]@{ Id = 'keyvault';      Title = "Key Vault (Invardia's uplink key; the web identity holds NO Key Vault right)" }
+        [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image - not used any more (Microsoft''s built-in sign-in, 2.1.35)' }
+        [pscustomobject]@{ Id = 'webapp';        Title = 'The web app behind Microsoft''s built-in sign-in (no secret; the sign-in sessions in one blob container)' }
         [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
         [pscustomobject]@{ Id = 'retiretick';    Title = "An older install's separate scheduler identity removed - the scheduler runs as the engine" }
         [pscustomobject]@{ Id = 'renamejobs';    Title = "An older install's scheduler and update jobs moved to the standard names (only with -RenameJobs)" }
@@ -479,7 +481,7 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'queues'           'The job queues (storage, no shared key, public access off)'
         & $mk 'queueendpoint'    'Private endpoint + DNS record: the job queues'
         & $mk 'webregistration'
-        & $mk 'keyvault'         "Key Vault for the sign-in front's wrap key (public access off)"
+        & $mk 'keyvault'         "Key Vault for Invardia's uplink key (public access off)"
         & $mk 'keyvaultendpoint' 'Private endpoint + DNS record: Key Vault'
         & $mk 'environment'      'Container Apps environment inside the network (internal: no public address)'
         & $mk 'environmentdns'   "The environment's own DNS zone (@, *, *.internal), linked to the spoke"
@@ -765,9 +767,9 @@ function Test-EpsInstallStep {
         'exchange'      { @{ Action = 'run'; Detail = "$($n.EngineIdentity): Exchange.ManageAsApp + Entra role Exchange Recipient Administrator - only while user tagging, the identity report or a mailbox condition is on (when off: kept if held, nothing removed)" } }
         'webregistration' { $a = try { Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)" } catch { $null }; if ($a) { @{ Action = 'update'; Detail = "$($a.displayName) ($($a.appId)): api://, scope $($script:EpsWeb.Scope), consents, federated credential for $($n.WebIdentity)" } } else { @{ Action = 'create'; Detail = "app registration '$($n.WebAppRegistration)' (single tenant, code flow, no secret, assignment required, you assigned)" } } }
         'keyvault'      { $up = "; $($n.EngineIdentity) Key Vault Secrets User on the secret $($script:EpsUplinkSecret) only if Invardia has put it there (the install never creates or reads it)"
-                          if (& $has "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)" $script:EpsWeb.KvApi) { @{ Action = 'exists'; Detail = "$($n.KeyVault) (key $($script:EpsWeb.KeyName) checked)$up" } } else { @{ Action = 'create'; Detail = "$($n.KeyVault) (Standard, RBAC, purge protection) + RSA key $($script:EpsWeb.KeyName); $($n.WebIdentity) Crypto Service Encryption User on that key$up" } } }
-        'frontimage'    { $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot; $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot; @{ Action = $(if ($s.Ok) { 'run' } else { 'blocked' }); Detail = "signin-front:$pin in $($n.Registry) - $($s.Reason)" } }
-        'webapp'        { if (& $has "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca) { @{ Action = 'update'; Detail = "$($n.WebApp) (the front + the GUI)" } } else { @{ Action = 'create'; Detail = "$($n.WebApp): signin-front on the ingress (8080), the GUI on 127.0.0.1:8081, as $($n.WebIdentity), scale 0-1" } } }
+                          if (& $has "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)" $script:EpsWeb.KvApi) { @{ Action = 'exists'; Detail = "$($n.KeyVault) ($($n.WebIdentity) holds no Key Vault right: an older install's Crypto Service Encryption User on the key $($script:EpsWeb.KeyName) is removed)$up" } } else { @{ Action = 'create'; Detail = "$($n.KeyVault) (Standard, RBAC, purge protection); $($n.WebIdentity) holds no Key Vault right$up" } } }
+        'frontimage'    { @{ Action = 'skip'; Detail = "not needed: the web app runs behind Microsoft's built-in sign-in (2.1.35) - no sign-in front image is built" } }
+        'webapp'        { if (& $has "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca) { @{ Action = 'update'; Detail = "$($n.WebApp) (behind Microsoft's built-in sign-in)" } } else { @{ Action = 'create'; Detail = "$($n.WebApp): the GUI on the ingress (8080) behind Microsoft's built-in sign-in, as $($n.WebIdentity) (its federated credential - no secret), the sign-in sessions in $($n.Storage)/$($script:EpsWeb.TokenContainer), scale 0-1" } } }
         'retiretick'    { if ($n.LegacyTickIdentity) { @{ Action = 'run'; Detail = "remove $($n.LegacyTickIdentity) after verify ran the tick as $($n.EngineIdentity): its role assignments, its database user, the identity - each read back" } } else { @{ Action = 'exists'; Detail = 'nothing to remove (the scheduler runs as the engine identity)' } } }
         'renamejobs'    { $rows = @(try { Get-EpsJobRenamePlan -Ctx $Ctx } catch { @() }); $todo = @($rows | Where-Object { $_.Action -in 'rename', 'finish' }); if (-not $todo.Count) { @{ Action = 'exists'; Detail = 'nothing to move (the jobs have the standard names)' } } else { @{ Action = $(if ($Ctx.RenameJobs) { 'run' } else { 'skip' }); Detail = "$(($todo | ForEach-Object { "$($_.Old) -> $($_.New) ($($_.Action), $($_.Trigger) trigger, runs as $($_.Identities -join '+')$(if (@($_.AlertRulesNamingOld).Count) { '; alert rules naming it: ' + ($_.AlertRulesNamingOld -join ', ') })$(if (@($_.JobScopedRoleAssignments).Count) { '; job-scoped roles copied: ' + @($_.JobScopedRoleAssignments).Count })$(if (@($_.RunningExecutions).Count) { '; waits for ' + ($_.RunningExecutions -join ', ') }))" }) -join '; ')$(if (-not $Ctx.RenameJobs) { ' - PLAN ONLY: run with -RenameJobs once Invardia approved this install''s plan' })" } } }
         'verify'        { @{ Action = 'run'; Detail = 'read back every resource and grant; start the tick once and wait for its run record; the web app answers and sends a page without a session to the Entra sign-in' } }
@@ -1133,14 +1135,7 @@ function Invoke-EpsInstallStep {
         }
         'webregistration' { & $loadMi; Invoke-EpsWebRegistrationStep -Ctx $Ctx }
         'keyvault' { & $loadMi; & $loadWeb; Invoke-EpsKeyVaultStep -Ctx $Ctx; $Ctx.UplinkKey = Grant-EpsUplinkKeyAccess -Ctx $Ctx }
-        'frontimage' {
-            $pin = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot
-            $s = Get-EpsSigninFrontSource -SolutionRoot $Ctx.SolutionRoot -Pin $pin -Root $Ctx.SigninFrontRoot
-            if (-not $s.Ok) { throw $s.Reason }
-            $ctxFile = New-EpsFrontBuildContext -Src $s.Src
-            try { [void](Invoke-EpsAcrBuild -RegistryId "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ContextPath $ctxFile -DockerFile 'Dockerfile' -ImageName "signin-front:$pin" -PollSeconds ($Ctx.PollSeconds ?? 10) -AgentPoolName $(if ($priv) { $n.AgentPool } else { '' })) }
-            finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
-        }
+        'frontimage' { }   # 2.1.35: Microsoft's built-in sign-in - no sign-in front image is built
         'webapp' {
             & $loadMi
             if ($priv) {
@@ -1186,7 +1181,7 @@ function Invoke-EpsInstallStep {
             # private: the web app has no public address - it is proven from INSIDE the network by the next step
             if ($priv) { return $r }
             & $loadWeb
-            $w = Test-EpsWebAppAnswers -Fqdn $Ctx.Web.Fqdn -PollSeconds ($Ctx.PollSeconds ?? 10)
+            $w = Test-EpsBuiltInSigninAnswers -Fqdn $Ctx.Web.Fqdn -PollSeconds ($Ctx.PollSeconds ?? 10)
             if (-not $w.Ok) { throw $w.Reason }
             $r.Web = $Ctx.Web.Url; $r
         }

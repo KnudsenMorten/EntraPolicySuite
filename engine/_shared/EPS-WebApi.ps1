@@ -76,6 +76,13 @@ function Get-EpsWebPaging {
     @{ Page = $page; Size = $size; Skip = ($page - 1) * $size }
 }
 
+$script:EpsWebSecurityHeaders = [ordered]@{
+    'Content-Security-Policy'   = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    'Strict-Transport-Security' = 'max-age=31536000'
+    'X-Frame-Options'           = 'DENY'
+    'X-Content-Type-Options'    = 'nosniff'
+    'Referrer-Policy'           = 'same-origin'
+}
 function New-EpsWebResponse { param([int]$Status = 200, $Body, [string]$ContentType = 'application/json; charset=utf-8', [hashtable]$Headers = @{}, $Audit) @{ Status = $Status; Body = $Body; ContentType = $ContentType; Headers = $Headers; Audit = $Audit } }
 function New-EpsWebError { param([int]$Status, [string]$Message) New-EpsWebResponse -Status $Status -Body @{ error = $Message } }
 
@@ -2159,6 +2166,9 @@ function Invoke-EpsWebRequest {
     $method = "$($Request.Method)".ToUpperInvariant(); $path = "$($Request.Path)"
     $h = $Request.Headers
     $base = @{ 'X-EPS-Version' = $Ctx.Version; 'Cache-Control' = 'no-store' }
+    # 2.1.35: the browser security headers the sign-in front used to add (vendor/signin-front SecurityHeaders) - with
+    # Microsoft's built-in sign-in nothing else adds them, so the app does, on every answer (the same values)
+    foreach ($kv in $script:EpsWebSecurityHeaders.GetEnumerator()) { $base[$kv.Key] = $kv.Value }
     $out = { param($r) foreach ($k in $base.Keys) { if (-not $r.Headers.ContainsKey($k)) { $r.Headers[$k] = $base[$k] } }; $r.Remove('Audit'); $r }
     if ($path -eq '/healthz' -and $method -in 'GET', 'HEAD') { return (& $out (New-EpsWebResponse -Body 'ok' -ContentType 'text/plain; charset=utf-8')) }
     # EPS PRO (2.0.90): the API for scripts (/mcp/api/...) and the MCP server (/mcp) - the sign-in front's bearer path, so a
@@ -2172,7 +2182,7 @@ function Invoke-EpsWebRequest {
     }
 
     # 2. the caller - on every path, pages and files too
-    $caller = Resolve-EpsWebCaller -Authorization "$($h['Authorization'])" -Config $Ctx.AuthConfig
+    $caller = Resolve-EpsWebCaller -Authorization "$($h['Authorization'])" -PlatformAccessToken "$($h['X-MS-TOKEN-AAD-ACCESS-TOKEN'])" -Config $Ctx.AuthConfig
     if (-not $caller.trusted) {
         if ($isMcp -and $proMcp) {
             # an MCP client without a (valid) token: 401 + where to learn how to sign in (MCP authorization, RFC 9728)

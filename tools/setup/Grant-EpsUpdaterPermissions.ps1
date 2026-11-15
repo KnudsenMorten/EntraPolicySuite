@@ -9,7 +9,7 @@
     one). Only the rights Entra Policy Suite declares for its updater can be granted - anything else is refused:
     PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup and .Read.AzureADGroup, RoleManagementPolicy.Read.AzureADGroup
     (it keeps the database setup identity in the SQL admin group), GroupMember.Read.All and Application.Read.All (it reads
-    them back) and Application.ReadWrite.OwnedBy (it keeps the web app's sign-in registration it owns as it should be).
+    them back). It holds no right to change the web app's sign-in registration.
     -GraphPermission: the permissions (none given: every one the updater needs).
     You sign in in a browser (no module). -WhatIf: the plan - what is there, what would be granted or removed - nothing
     changed. It prints per right: granted / already there / removed / not there / refused (with the reason), and exits 1
@@ -17,7 +17,7 @@
 .EXAMPLE
     ./Grant-EpsUpdaterPermissions.ps1 -TenantId <tenant> -SubscriptionId <sub> -WhatIf
 .EXAMPLE
-    ./Grant-EpsUpdaterPermissions.ps1 -TenantId <tenant> -SubscriptionId <sub> -GraphPermission Application.ReadWrite.OwnedBy
+    ./Grant-EpsUpdaterPermissions.ps1 -TenantId <tenant> -SubscriptionId <sub> -GraphPermission GroupMember.Read.All
 .LINK
     https://invardia.com/docs/eps/scripts/Grant-EpsUpdaterPermissions
 #>
