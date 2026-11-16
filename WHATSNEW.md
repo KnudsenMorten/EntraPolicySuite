@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.55 · 2026-11-16 · Security
+
+The API for scripts and the MCP server are switched off on every install until they are opened again on purpose.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Script API and MCP server switched off** - Both addresses and their sign-in information answer as if they did not exist, whatever the license. The API and MCP page says so. Sign-in to the web app and the connection to Invardia are unchanged.
+
 ## 2.1.53 · 2026-11-16 · Security
 
 The API for applications is switched off on every install until it is opened again on purpose.

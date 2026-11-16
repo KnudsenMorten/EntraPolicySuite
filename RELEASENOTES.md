@@ -2,6 +2,17 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.55 - Security: the API for scripts and the MCP server are switched off
+Builds on the owner's decision: "close it down so it is not enabled at any ring 0 1 2 3 env" (2026-11-16, relayed by Invardia, framework §12.35: internal's MCP closed now)
+- Fix (security): the MCP server (/mcp), the API for scripts (/mcp/api/*) and their sign-in information
+  (/.well-known/oauth-protected-resource) are switched off on every install and on new installs, whatever the license:
+  404 before any sign-in is read. Administration > API and MCP says they are off and shows no way in; the License page
+  says "comes in a later release". Opening them again is a later, deliberate decision, install by install.
+- Fix (security): when they are opened, a person may make at most 60 calls a minute on them (429 after that, recorded in
+  the audit trail once a minute).
+- The product pages say the API and MCP access come in a later release.
+- Not changed: sign-in to the web app and its pages, the connection to Invardia.
+
 ## 2.1.53 - Security: the API for applications is switched off
 Builds on the owner's decision: "close it down so it is not enabled at any ring 0 1 2 3 env" (2026-11-16, relayed by Invardia, framework §12.35)
 - Fix (security): the API for applications (/api/app/* - settings by code and Support fixes, new in 2.1.52) is switched

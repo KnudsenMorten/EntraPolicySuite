@@ -21,6 +21,18 @@ Set-StrictMode -Off
 $script:EpsWebAuditThrottle = @{}
 $script:EpsWebMarks = @{}
 
+$script:EpsMcpRate = @{}
+function Test-EpsMcpRate {
+    # §12.35 L7: a person's calls on /mcp* in a sliding minute (in memory: one web replica per install); $false = over it
+    param([Parameter(Mandatory)][string]$Identity, [datetime]$NowUtc = [datetime]::UtcNow)
+    $max = if ($script:EpsMcpPerMinute -gt 0) { [int]$script:EpsMcpPerMinute } else { 60 }
+    $k = $Identity.ToLowerInvariant(); $q = $script:EpsMcpRate[$k]
+    if (-not $q) { $q = [System.Collections.Generic.Queue[datetime]]::new(); $script:EpsMcpRate[$k] = $q }
+    while ($q.Count -and ($NowUtc - $q.Peek()).TotalSeconds -ge 60) { [void]$q.Dequeue() }
+    if ($q.Count -ge $max) { return $false }
+    $q.Enqueue($NowUtc); $true
+}
+
 function Write-EpsWebMark {
     <#
       AUD-01 (framework AUDIT-1, "read / change / sign-in marks"): a mark that is NOT one row per request.
@@ -2182,6 +2194,9 @@ function Invoke-EpsWebRequest {
     # person's own access token; the code is the Pro package's (pro/engine/EPS-ProMcp.ps1): without it, 404 as for any path
     $isMcp = $path -eq '/mcp' -or $path -like '/mcp/*'
     $proMcp = [bool](Get-Command Invoke-EpsProMcpRequest -ErrorAction SilentlyContinue)
+    # CLOSED (owner 2026-11-16, §12.35): while $script:EpsMcpOpen is not $true the MCP server, the API for scripts and their
+    # sign-in metadata do not exist - 404 as for any unknown path, before any token is read
+    if ($script:EpsMcpOpen -ne $true -and ($isMcp -or $path -like '/.well-known/oauth-protected-resource*')) { return (& $out (New-EpsWebError 404 'not found')) }
     if ($method -eq 'GET' -and $path -in '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp') {
         # where an MCP client learns which tenant and scope sign it in (no secret in it) - only while MCP is switched on
         if (-not $proMcp -or (Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature 'mcp')) { return (& $out (New-EpsWebError 404 'not found')) }
@@ -2226,6 +2241,14 @@ function Invoke-EpsWebRequest {
     $viaScript = ''
     if ($isMcp) {
         if (-not $proMcp) { return (& $out (New-EpsWebError 404 'not found')) }   # Community: no such path
+        # §12.35 L7: per person, a sliding minute; over it = 429, audited once a minute per person
+        # (a tool call's own in-process request - ViaMcp - is not counted again)
+        if ($Request.ViaMcp -ne $true -and -not (Test-EpsMcpRate -Identity "$($caller.identity)")) {
+            [void](Write-EpsWebMark -ConnectionString $Ctx.ConnectionString -Action 'mcp.refused' -Actor $caller.identity -Target 'Mcp' -Hours (1 / 60) -After @{ reason = "over $script:EpsMcpPerMinute calls a minute"; request = "$method $path" })
+            $r429 = New-EpsWebResponse -Status 429 -Body @{ error = "too many calls: at most $script:EpsMcpPerMinute a minute"; version = $Ctx.Version }
+            $r429.Headers['Retry-After'] = '60'
+            return (& $out $r429)
+        }
         if ($path -in '/mcp', '/mcp/') {
             if ($pd = Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature 'mcp') { return (& $out $pd) }
             return (& $out (Invoke-EpsProMcpRequest -Request $Request -Ctx $Ctx -Caller $caller -Role $role))

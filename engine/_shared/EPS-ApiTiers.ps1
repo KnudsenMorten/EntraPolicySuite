@@ -17,6 +17,12 @@
 # its Entra layer (app role, idtyp, v2 tokens), the update enrols no Support app, Set-EpsApiAuth refuses. The code behind
 # it stays (tested with this set to $true). Opening it again is a later, deliberate owner decision and a release.
 $script:EpsAppApiOpen = $false
+# The same for the MCP server and the API for scripts (/mcp, /mcp/api/*, /.well-known/oauth-protected-resource*), owner
+# 2026-11-16 via Invardia: "close it now" - 404 before any sign-in check, at every install, until the §12.35 design and the
+# owner's deliberate open of one install.
+$script:EpsMcpOpen = $false
+# §12.35 L7: a person's calls on /mcp* per sliding minute (in memory: one web replica per install)
+$script:EpsMcpPerMinute = 60
 
 $script:EpsApiTierRead = 'read'; $script:EpsApiTierSetting = 'setting'; $script:EpsApiTierGrant = 'grant'; $script:EpsApiTierPerson = 'person'
 

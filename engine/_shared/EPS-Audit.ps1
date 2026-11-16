@@ -71,6 +71,7 @@ $script:EpsAuditActions = @(
     # EPS PRO (2.0.90): the API for scripts - a USE mark (a person's script calls, one per person per hour; each change is
     # audited by its own route) - and every tool call of the MCP server
     'api.use', 'mcp.tool'
+    'mcp.refused'                   # §12.35 L7 (2026-11-16): a person's /mcp call over the rate limit (one row per person per minute)
     # SETTINGS-API-1 / SUPPORT-FIX-API-1 (framework §12.31 / §12.30, owner 2026-11-16): every call of the API for
     # APPLICATIONS (actor = app:<appId>, with tid + route + result) / one refused / a settings export / an import checked
     # (preview, nothing written) / a Support fix applied through its route

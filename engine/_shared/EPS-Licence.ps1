@@ -31,7 +31,8 @@ $script:EpsLicenceCacheSeconds = 60
 $script:EpsProFeatures = @('api', 'mcp', 'passkey-tracker', 'licence-optimisation', 'stale-identities', 'policy-as-code', 'msp')
 # what the License page calls them, and whether this release ships them (a licensed feature not shipped yet says so)
 $script:EpsProFeatureLabels = @{
-    'api' = @{ Label = 'API access (scripts)'; InRelease = $true }; 'mcp' = @{ Label = 'MCP server (AI assistants)'; InRelease = $true }
+    # closed in this release (owner 2026-11-16, §12.35: $script:EpsMcpOpen) - the License page says "comes in a later release"
+    'api' = @{ Label = 'API access (scripts)'; InRelease = $false }; 'mcp' = @{ Label = 'MCP server (AI assistants)'; InRelease = $false }
     'passkey-tracker' = @{ Label = 'Passkey rollout'; InRelease = $true }; 'licence-optimisation' = @{ Label = 'License optimization'; InRelease = $true }
     'stale-identities' = @{ Label = 'Stale identities'; InRelease = $true }; 'policy-as-code' = @{ Label = 'Policy as code'; InRelease = $true }
     'msp' = @{ Label = 'Several tenants (MSP)'; InRelease = $false } }
