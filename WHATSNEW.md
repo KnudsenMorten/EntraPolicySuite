@@ -1,5 +1,30 @@
 # What's new in Entra Policy Suite
 
+## 2.1.53 · 2026-11-16 · Security
+
+The API for applications is switched off on every install until it is opened again on purpose.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **The API for applications is off** - Settings by code and Support fixes are switched off: the address answers as if it did not exist and the setup script changes nothing. Sign-in to the web app, the API for scripts and the connection to Invardia are unchanged.
+
+## 2.1.52 · 2026-11-16 · Feature update
+
+Your own programs can read and change Entra Policy Suite settings by code, with security controls kept for people.
+
+### New features
+
+- **Manage settings by code** - An application you approve can export and import settings through the API. Grants and tenant changes wait in the commit queue for a person. Sign-in, approval, audit and other security settings stay person-only.
+- **Support fixes when you ask** - If you ask Invardia to fix a support ticket for you, your administrator can switch on Support fixes. Each fix is a listed, safe step on a ticket, recorded in the audit trail and mailed to you.
+
+### Fixes
+
+None in this version.
+
 ## 2.1.51 · 2026-11-15 · Fix-only
 
 The hybrid worker page counts only the AD changes it really wrote.

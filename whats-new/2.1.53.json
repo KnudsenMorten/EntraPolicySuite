@@ -1,0 +1,13 @@
+{
+  "version": "2.1.53",
+  "date": "2026-11-16",
+  "type": "security",
+  "summary": "The API for applications is switched off on every install until it is opened again on purpose.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "The API for applications is off",
+      "text": "Settings by code and Support fixes are switched off: the address answers as if it did not exist and the setup script changes nothing. Sign-in to the web app, the API for scripts and the connection to Invardia are unchanged."
+    }
+  ]
+}

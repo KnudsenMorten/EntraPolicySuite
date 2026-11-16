@@ -316,6 +316,12 @@ WHERE q.Job = 'Config' AND q.Status = 'Dispatched'
             } else { $txt = "REFUSED (a configuration change must carry a verified signature): $($gate.Text)" }
             if ($txt.Length -gt 1000) { $txt = $txt.Substring(0, 997) + '...' }
             Say "request $($q.RequestId) by $($q.RequestedBy): $st - $txt"
+            # §12.30 / §12.32: a change by the Invardia Support app is mailed to the install's admins (never fails the request)
+            if ("$($q.RequestedBy)" -like 'app:*') {
+                $sc0 = try { $q.Scope | ConvertFrom-Json } catch { $null }
+                $sm = Send-EpsSupportActionMail -ConnectionString $ConnectionString -RequestedBy "$($q.RequestedBy)" -What "$(if ($sc0) { "$($sc0.method) $($sc0.path)" })" -Reason "$(if ($sc0.body) { $sc0.body.reason })" -Result "$st - $txt" -Version $version
+                if ($sm.Reason -ne 'not the Support app') { Say "Support action mail: $(if ($sm.Sent) { 'sent' } else { 'NOT sent' }) ($($sm.Reason))" }
+            }
             switch ($st) { 'Done' { $cDone++ } 'Failed' { $cFailed++; $cLast = $txt } default { $cRefused++ } }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $st; t = $txt } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null
         }

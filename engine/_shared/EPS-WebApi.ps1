@@ -1825,6 +1825,13 @@ function Invoke-EpsWebReplay {
     $route = $null; $m = $null
     foreach ($r in Get-EpsWebRoutes) { if ($r.Method -eq $Row.Method -and $Row.Path -match $r.Pattern) { $route = $r; $m = $Matches; break } }
     if (-not $route) { return @{ Status = 500; Body = @{ error = "no route for $($Row.Method) $($Row.Path)" } } }
+    # §12.31: a change an APPLICATION staged is committed by a PERSON (never an application), with the route's own role; a
+    # setting it staged was HELD for a SuperAdmin (mass / weakening / a SuperAdmin setting)
+    if ("$($Row.StagedBy)" -like 'app:*') {
+        if ("$($Commit.Caller.identity)" -like 'app:*') { return @{ Status = 403; Body = @{ error = 'a change an application proposed is committed by a person' } } }
+        $needR = if ("$($Row.Entity)" -eq 'Setting') { 'SuperAdmin' } else { $route.Role }
+        if (-not (Test-EpsWebRole -Have $Commit.Role -Need $needR)) { return @{ Status = 403; Body = @{ error = "this change from an application needs a $needR to commit it" } } }
+    }
     $body = if ($Row.BodyJson) { $Row.BodyJson | ConvertFrom-Json } else { [pscustomobject]@{} }
     $why = "$($Row.StageReason) (committed from the queue, #$($Row.Id), staged by $($Row.StagedBy): $CommitReason)"
     $body | Add-Member -NotePropertyName reason -NotePropertyValue $why -Force
@@ -1910,7 +1917,7 @@ function Invoke-EpsCommitQueue {
         $err = if (-not $ok) { "$(if ($res.Body.error) { $res.Body.error } else { "HTTP $($res.Status)" })" }
         [void](Invoke-EpsSql -ConnectionString $cs -NonQuery -Parameters @{ id = [long]$r.Id; s = $(if ($ok) { 'Applied' } else { 'Failed' }); c = $commitId; by = $Commit.Caller.identity; e = $err } `
             -Query "UPDATE eps.PendingChange SET Status = @s, CommitId = @c, CommittedBy = @by, CommittedAtUtc = SYSUTCDATETIME(), Error = @e WHERE Id = @id AND Status = 'Pending'")
-        if ($ok) { $types[[string]$r.ObjectType] = $true }
+        if ($ok -and "$($r.ObjectType)" -in 'User', 'Device') { $types[[string]$r.ObjectType] = $true }   # a held setting (ObjectType Setting) starts no tagging run
         $done.Add([ordered]@{ id = [long]$r.Id; summary = [string]$r.Summary; applied = $ok; error = $err; text = "$($res.Body.text)" })
     }
     $runs = [System.Collections.Generic.List[object]]::new()
@@ -2179,6 +2186,15 @@ function Invoke-EpsWebRequest {
         # where an MCP client learns which tenant and scope sign it in (no secret in it) - only while MCP is switched on
         if (-not $proMcp -or (Test-EpsProGate -ConnectionString $Ctx.ConnectionString -Feature 'mcp')) { return (& $out (New-EpsWebError 404 'not found')) }
         return (& $out (New-EpsWebResponse -Body (Get-EpsProMcpResourceMetadata -AuthConfig $Ctx.AuthConfig -HostName (Get-EpsProMcpHost -Headers $h))))
+    }
+
+    # §12.30 / §12.31: the API for APPLICATIONS has its own door - an application's token, both enrolment layers, the
+    # fixed tiers (EPS-WebAppApi.ps1). Nothing below (the person path) ever takes an application's token.
+    # CLOSED (owner 2026-11-16, §12.35): while $script:EpsAppApiOpen is not $true the door does not exist - 404 as for any
+    # unknown path, before any token is read
+    if ($path -eq '/api/app' -or $path -like '/api/app/*') {
+        if ($script:EpsAppApiOpen -ne $true) { return (& $out (New-EpsWebError 404 'not found')) }
+        return (& $out (Invoke-EpsAppApiRequest -Request $Request -Ctx $Ctx))
     }
 
     # 2. the caller - on every path, pages and files too

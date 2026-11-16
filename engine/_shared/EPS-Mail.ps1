@@ -267,6 +267,27 @@ function Send-EpsTestMail {
     Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
 }
 
+function Send-EpsSupportActionMail {
+    <#
+      §12.30 / §12.32 (owner 2026-11-16): every change the Invardia Support app makes here (a catalogued fix, on a ticket) is
+      MAILED to the install's admins (Mail.Recipients): what, the ticket, the result. Sent by the engine when it takes the
+      Support app's request. Only for the ENROLLED Support app (Security.SupportApp); any other requester = nothing sent.
+      Never throws: @{ Sent; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$RequestedBy, [string]$What, [string]$Reason, [string]$Result, [string]$Version = '2.0.0')
+    try {
+        $sup = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Security.SupportApp'")".Trim().ToLowerInvariant()
+        if (-not $sup -or "$RequestedBy".ToLowerInvariant() -ne "app:$sup") { return @{ Sent = $false; Reason = 'not the Support app' } }
+        $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
+        $ticket = if ("$Reason" -match '\bSUP-\d{4}-\d{5}\b') { $Matches[0] } else { 'no ticket id' }
+        $html = New-EpsMailBody -Summary "Invardia Support applied a fix in Entra Policy Suite on ticket $ticket. It can only apply a fix Entra Policy Suite offers for a reported failure, through the same checks and audit trail as a person." `
+            -Rows @([pscustomobject]@{ Ticket = $ticket; Fix = "$What"; Result = "$Result"; When = [datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC' }) -Columns 'Ticket', 'Fix', 'Result', 'When' `
+            -WhatToDo 'Nothing, if you asked for it. If you did not, remove the Support app''s assignment (Set-EpsApiAuth.ps1 -SupportApp -Remove) and contact Invardia. The audit trail shows every call.' -ButtonText 'Open the audit trail' -ButtonPage 'audit' `
+            -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
+        Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What "Invardia Support applied a fix ($ticket)") -Html $html
+    } catch { @{ Sent = $false; Reason = "not mailed: $($_.Exception.Message)" } }
+}
+
 function Send-EpsTamperAlert {
     <#
     .SYNOPSIS

@@ -13,7 +13,7 @@
 param([string]$ConnectionString = $env:EPS_SQL_CONNECTION, [int]$Port = $(if ($env:EPS_WEB_PORT) { [int]$env:EPS_WEB_PORT } else { 8081 }))
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-SqlStore', 'EPS-Scheduler', 'EPS-Conditions', 'EPS-WebAuth', 'EPS-Audit', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-Mail', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-OnboardManage', 'EPS-IdentityReport', 'EPS-WorkerPage', 'EPS-WebApi', 'EPS-Licence') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-SqlStore', 'EPS-Scheduler', 'EPS-Conditions', 'EPS-WebAuth', 'EPS-Audit', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-Mail', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-OnboardManage', 'EPS-IdentityReport', 'EPS-WorkerPage', 'EPS-WebApi', 'EPS-WebAppApi', 'EPS-Licence') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 # EPS PRO: the Pro package's modules (pro/engine) - never a *Write.ps1 (a write the engine alone makes, e.g. an account
 # disabled); without the Pro package the folder is not there and nothing is loaded
 $proEngine = Join-Path $sol 'pro\engine'

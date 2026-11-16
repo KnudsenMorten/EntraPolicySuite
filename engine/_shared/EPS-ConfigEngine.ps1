@@ -31,13 +31,23 @@ function Invoke-EpsEngineConfigRequest {
     $method = "$($Scope.method)".ToUpperInvariant(); $path = "$($Scope.path)"
     $route = $null; $m = $null
     foreach ($r in Get-EpsWebRoutes) { if ($r.Method -eq $method -and $path -match $r.Pattern) { $route = $r; $m = $Matches; break } }
-    if (-not $route -or $route.Apply -ne 'Engine') { return @{ Status = 400; Text = "not a configuration change: $method $path" } }
+    # §12.30: a Support fix (the catalog's own route, e.g. Run now of a job that reads the tenant) comes here too, so the
+    # engine checks every fix again and mails the admins - only for an application, only a catalogued fix's route
+    $isFix = "$Identity" -like 'app:*' -and $route -and @($script:EpsSupportFixCatalog.Values | Where-Object { $_.Action -eq $route.Action -and $_.Method -eq $method }).Count
+    if (-not $route -or ($route.Apply -ne 'Engine' -and -not $isFix)) { return @{ Status = 400; Text = "not a configuration change: $method $path" } }
     $role = Get-EpsWebRole -ConnectionString $ConnectionString -Identity $Identity -ObjectId $ObjectId
     $body = if ($Scope.body) { $Scope.body } else { [pscustomobject]@{} }
     $cor = if ($CorrelationId) { [guid]"$CorrelationId" } else { [guid]::NewGuid() }
     $audit = { param($res, $outcome, $text) [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action $(if ($res.Audit.Guard) { 'guard.trip' } elseif ($res.Audit.Action) { $res.Audit.Action } else { $route.Action }) -Actor $Identity -ActorSource 'job' `
         -Target $(if ($res.Audit.Target) { $res.Audit.Target } else { "$method $path" }) -Reason "$($body.reason)" -Outcome $outcome -OutcomeText $text -Before $res.Audit.Before -After $res.Audit.After -CorrelationId $cor) }
     if (-not (Test-EpsWebRole -Have $role -Need $route.Role)) { & $audit @{} 'refused' "needs $($route.Role), is $role now"; return @{ Status = 403; Text = "refused: this needs the $($route.Role) role ($Identity is $role now)" } }
+    # §12.31, checked again here: an APPLICATION's request reaches the engine only for a tier 1 change (a setting that is
+    # not person-only; a Support fix's route) - a grant waits for a person in the commit queue, tier 3 never comes
+    if ("$Identity" -like 'app:*') {
+        $sk = if ($route.Action -eq 'setting.change' -and $m['key']) { "$($m['key'])" } else { '' }
+        $tier = Get-EpsApiTier -Action $route.Action -SettingKey $sk -Method $method
+        if ($tier -ne 'setting') { & $audit @{} 'refused' "an application may not do this ($tier)"; return @{ Status = 403; Text = "refused: an application may not do this (tier $tier)" } }
+    }
     # a reason is optional since 2.0.19 (owner 2026-11-02) - a request without one is applied
     $c = @{ Ctx = @{ ConnectionString = $ConnectionString; Engine = $true }; Caller = @{ identity = $Identity; objectId = $ObjectId; token = $Token; verifiedAtUtc = [datetime]::UtcNow }; Role = $role; Query = @{}; Body = $body; Correlation = $cor }
     $res = try { & $route.Handler $c $m } catch { $cid = [guid]::NewGuid(); Write-Host "  [config] ERROR $method $path ($cid): $($_.Exception.Message)"; @{ Status = 500; Body = @{ error = "internal error (reference $cid - see the engine log)" }; Audit = @{ Outcome = 'error'; OutcomeText = "$($_.Exception.Message) ($cid)" } } }

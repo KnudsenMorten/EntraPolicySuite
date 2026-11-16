@@ -1,0 +1,17 @@
+{
+  "version": "2.1.52",
+  "date": "2026-11-16",
+  "type": "feature",
+  "summary": "Your own programs can read and change Entra Policy Suite settings by code, with security controls kept for people.",
+  "new": [
+    {
+      "title": "Manage settings by code",
+      "text": "An application you approve can export and import settings through the API. Grants and tenant changes wait in the commit queue for a person. Sign-in, approval, audit and other security settings stay person-only."
+    },
+    {
+      "title": "Support fixes when you ask",
+      "text": "If you ask Invardia to fix a support ticket for you, your administrator can switch on Support fixes. Each fix is a listed, safe step on a ticket, recorded in the audit trail and mailed to you."
+    }
+  ],
+  "fixes": []
+}

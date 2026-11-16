@@ -2,6 +2,29 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.53 - Security: the API for applications is switched off
+Builds on the owner's decision: "close it down so it is not enabled at any ring 0 1 2 3 env" (2026-11-16, relayed by Invardia, framework §12.35)
+- Fix (security): the API for applications (/api/app/* - settings by code and Support fixes, new in 2.1.52) is switched
+  off on every install and on new installs. The address answers 404 before any sign-in is read. The install and the
+  update no longer add what that API needs to the app registration (its app role and sign-in settings), the update enrols no Support
+  application, and Set-EpsApiAuth.ps1 changes nothing. Opening it again is a later, deliberate decision and a release.
+- Not changed: sign-in to the web app, the API for scripts and the MCP server (a person's own sign-in), the connection
+  to Invardia.
+
+## 2.1.52 - The API for applications: settings by code, Support fixes on request
+Builds on the owner's decision: "it should be possible to manage settings using code, not only gui" (2026-11-16, relayed by Invardia)
+- New: an API for applications (/api/app/*). An application your administrator assigns the EPS.Api.Call role in Entra
+  (Set-EpsApiAuth.ps1) and a SuperAdmin lists under Settings > Security > API applications (Reader or Admin) can export
+  the settings, check an import (preview, nothing written) and import. The product's own settings are applied; a
+  SuperAdmin, weakening or mass change waits in the commit queue for a SuperAdmin. Grants and tenant changes are only
+  proposed - a person commits them. Security controls (sign-in, approvers, the audit trail, the API list itself and
+  more) are never open to an application. Sign-ins are checked strictly: only an application of your own tenant, for this app.
+- New: Support fixes, on request only. When you ask, your administrator runs Set-EpsApiAuth.ps1 -SupportApp; the update
+  enrols the support application found by its tag. It can only apply a fix Entra Policy Suite offers for a reported
+  failure (try a failed AD tag change again; re-run a report job), on a ticket, at most 25 an hour - each one audited and
+  mailed to your administrators. Not enabled by default.
+- New: the install run gives the registration the app role, the idtyp claim and v2 tokens; the update reports when they
+  are missing. An example program (certificate or managed identity, no module) is in tools/examples.
 ## 2.1.51 - Fix-only: the hybrid worker page counts only real AD writes
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "build pending so we close all today" (2026-11-15)

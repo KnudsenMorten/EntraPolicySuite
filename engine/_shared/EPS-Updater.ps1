@@ -532,7 +532,11 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
     # every run, never fails the cycle; the install run hands the ownership over
     if ($updater -and -not $CheckOnly -and (Get-Command Sync-EpsWebRegistrationAsOwner -ErrorAction SilentlyContinue)) {
         $saved2 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
-        try { $wr = Sync-EpsWebRegistrationAsOwner -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" } finally { $global:EPS_TokenProvider = $saved2 }
+        try {
+            $wr = Sync-EpsWebRegistrationAsOwner -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
+            # §12.30: the Invardia Support app found by its tag, enrolled in EPS's own list, its Entra assignment read back
+            if (Get-Command Sync-EpsSupportAppEnrolment -ErrorAction SilentlyContinue) { $wr.Lines = @($wr.Lines) + @((Sync-EpsSupportAppEnrolment -ConnectionString $ConnectionString -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP").Lines) }
+        } finally { $global:EPS_TokenProvider = $saved2 }
         foreach ($l in $wr.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
     }
     # 2.1.35 (owner 2026-11-14, Microsoft's built-in sign-in): a CURRENT install still behind the sign-in front is switched -

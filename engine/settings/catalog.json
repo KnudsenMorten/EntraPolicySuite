@@ -102,6 +102,35 @@
         "docUrl": "https://invardia.com/docs/eps/settings/Security.SignedRequests/"
       }
     },
+    {
+      "key": "Security.ApiApps", "group": "Security", "label": "API applications", "type": "list", "maxItems": 20, "itemMaxLength": 50,
+      "itemPattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:(Reader|Admin)$",
+      "itemHint": "an application (client) id and its role, e.g. 00000000-0000-0000-0000-000000000000:Reader",
+      "default": "[]", "role": "SuperAdmin",
+      "confirm": [ { "when": "widen", "title": "Let another application use the API?", "body": "This application can then sign in to Entra Policy Suite's API without a person. Reader reads; Admin changes settings and proposes changes that a person approves. It also needs the same role assigned to it in Entra (Enterprise applications)." } ],
+      "info": {
+        "what": "The applications of your own tenant that may call Entra Policy Suite's API without a person, each with one role: Reader (reads) or Admin (changes settings; proposes grants and tenant changes that a person approves). Only a person changes this list, never an application.",
+        "enabled": "From the next request, a listed application with the same role assigned in Entra may call the API for applications.",
+        "disabled": "Empty (the default): no application of yours may call the API. The Invardia Support application is not on this list; it is enrolled by the update (Support application, below).",
+        "risk": "Every entry is an application that acts without a person signing in. Security controls (sign-in, approvers, break-glass, licence, this list, the audit trail) are never open to an application. Reversible: remove the entry.",
+        "requires": "SuperAdmin, in a person's own session.",
+        "recommended": "Only automation you own, with a certificate or a managed identity (never a client secret), and Reader unless it must change settings.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Security.ApiApps/"
+      }
+    },
+    {
+      "key": "Security.SupportApp", "group": "Security", "label": "Support application", "type": "text", "maxLength": 36,
+      "default": "", "role": "SuperAdmin", "editable": false, "setBy": "the update (it finds the Invardia Support application of your tenant by its InvardiaSupport tag)",
+      "info": {
+        "what": "The application id of the Invardia Support application in your tenant, found by each update from its InvardiaSupport tag. It may apply only the fixes Entra Policy Suite offers for a failure on a support ticket, through the same checks and audit as a person.",
+        "enabled": "Set by the update when exactly one application carries the tag, and you have assigned it the Support role in Entra when you enabled support.",
+        "disabled": "Empty: no application carries the tag (support is not enabled), or more than one does (the update refuses and reports it).",
+        "risk": "It is not editable here: only the tag and the role you assign in Entra decide it. Remove the role assignment in Entra to stop it at once.",
+        "requires": "Support enabled by your administrator (New-InvardiaSupportApp.ps1).",
+        "recommended": "Leave it to the update.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Security.SupportApp/"
+      }
+    },
 
     {
       "key": "UserTagging.Enabled", "group": "UserTagging", "label": "User tagging", "type": "boolean", "default": "false", "role": "Admin",

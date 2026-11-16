@@ -166,6 +166,63 @@ function Test-EpsAccessToken {
        exp = $exp; iat = $(if ("$($p.iat)" -match '^\d+$') { [DateTimeOffset]::FromUnixTimeSeconds([long]$p.iat).UtcDateTime } else { $null }) }
 }
 
+# ---- an APPLICATION caller (framework §12.30 / §12.31, API security = Microsoft best practice, owner 2026-11-16) -------
+# Two layers, both must agree: (1) Entra - the app role below on EPS's own registration, assignment required on its
+# enterprise application, so only an ASSIGNED app gets a token at all; (2) EPS - the app's id in the allow-list
+# (Security.ApiApps, a person's list: Reader / Admin; Security.SupportApp, the update's enrolment of the tag-found Invardia
+# Support app). Only /api/app/* takes an application; the person pages keep refusing app-only tokens (Test-EpsAccessToken).
+$script:EpsApiAppRoleValue = 'EPS.Api.Call'
+# the fixed tiers (pure data) travel with the auth code, so every caller of the role check has them
+. (Join-Path $PSScriptRoot 'EPS-ApiTiers.ps1')
+
+function Test-EpsAppAccessToken {
+    <#
+      PURE given -Jwks: an APPLICATION's access token for THIS app, from THIS tenant, now (rules 1 + 2): Microsoft's library
+      (signature, issuer, audience), a v2 token only, tid = this tenant, exp / nbf, idtyp = app REQUIRED, NO scp (a person's
+      token is refused here), the Entra app role EPS.Api.Call, the calling app named (azp). @{ trusted; appId; objectId;
+      identity ('app:<appId>'); reason; exp; iat }.
+    #>
+    param([string]$Token, $Jwks, [Parameter(Mandatory)]$Config, [datetime]$NowUtc = [datetime]::UtcNow, [int]$SkewSeconds = 300)
+    $no = { param($why) @{ trusted = $false; appId = ''; identity = ''; objectId = ''; reason = $why } }
+    if (-not $Config.TenantId -or -not $Config.Audiences.Count) { return (& $no 'the web app is not configured (failing closed)') }
+    if (-not "$Token".Trim()) { return (& $no 'no token on the request') }
+    if (-not $Jwks) { return (& $no 'the tenant''s signing keys are not available (failing closed)') }
+    $ms = Test-EpsTokenWithMicrosoft -Token $Token -Jwks $Jwks -Config $Config
+    if (-not $ms.valid) { $x = & $no $ms.reason; $x.unknownKid = [bool]$ms.unknownKid; return $x }
+    $p = $ms.payload
+    if ("$($p.iss)" -ne "https://login.microsoftonline.com/$($Config.TenantId)/v2.0") { return (& $no 'not a v2 token of this tenant') }
+    if ("$($p.tid)" -ne $Config.TenantId) { return (& $no 'tid is not this tenant') }
+    if (-not @(@($p.aud) | Where-Object { $Config.Audiences -contains "$_" }).Count) { return (& $no 'audience is not this app') }
+    if ("$($p.exp)" -notmatch '^\d+$') { return (& $no 'no exp claim') }
+    $exp = [DateTimeOffset]::FromUnixTimeSeconds([long]$p.exp).UtcDateTime
+    if ($NowUtc -gt $exp.AddSeconds($SkewSeconds)) { return (& $no 'expired') }
+    if ("$($p.nbf)" -match '^\d+$' -and $NowUtc -lt [DateTimeOffset]::FromUnixTimeSeconds([long]$p.nbf).UtcDateTime.AddSeconds(-$SkewSeconds)) { return (& $no 'not valid yet (nbf)') }
+    if ("$($p.idtyp)" -ne 'app') { return (& $no 'not an application token (idtyp is not app)') }
+    if ("$($p.scp)".Trim()) { return (& $no 'a delegated (person''s) token is refused on the API for applications') }
+    if (@($p.roles) -notcontains $script:EpsApiAppRoleValue) { return (& $no "the application is not assigned the $script:EpsApiAppRoleValue role in Entra") }
+    $appId = "$($p.azp)".Trim().ToLowerInvariant()
+    if ($appId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { return (& $no 'the token names no calling application (azp)') }
+    @{ trusted = $true; appId = $appId; identity = "app:$appId"; objectId = "$($p.oid)".ToLowerInvariant(); reason = 'application token verified'; exp = $exp
+       iat = $(if ("$($p.iat)" -match '^\d+$') { [DateTimeOffset]::FromUnixTimeSeconds([long]$p.iat).UtcDateTime } else { $null }) }
+}
+
+function Get-EpsApiAppRole {
+    <# Layer 2: the role EPS gives this calling app - Security.SupportApp (the update's Support enrolment) = Support; an
+       entry '<appId>:Reader|Admin' of Security.ApiApps (a person's list). Nothing = $null. A store that cannot be read =
+       $null (fail closed). -Values: the two settings given (a test); otherwise read from the database. #>
+    param([string]$ConnectionString, [Parameter(Mandatory)][string]$AppId, [hashtable]$Values)
+    $a = "$AppId".Trim().ToLowerInvariant(); if (-not $a) { return $null }
+    try {
+        $sup = if ($Values) { "$($Values['Security.SupportApp'])" } else { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Security.SupportApp' -Default '')" }
+        $lst = if ($Values) { "$($Values['Security.ApiApps'])" } else { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Security.ApiApps' -Default '[]')" }
+        if ($sup.Trim().ToLowerInvariant() -eq $a) { return 'Support' }
+        $items = @(try { $lst | ConvertFrom-Json } catch { @() })
+        $hit = @($items | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ -match "^$([regex]::Escape($a)):(reader|admin)$" } | ForEach-Object { ($_ -split ':')[1] })
+        if ($hit -contains 'admin') { return 'Admin' }; if ($hit -contains 'reader') { return 'Reader' }
+        $null
+    } catch { Write-Warning "[auth] the API application list could not be read ($($_.Exception.Message)) - refused"; $null }
+}
+
 function Resolve-EpsWebCaller {
     # The request's caller; an unknown kid re-reads the keys once (Entra rolls them). The token is the Authorization
     # header's bearer (a script / MCP client, or the sign-in front), else - 2.1.35, Microsoft's built-in Container Apps
@@ -191,6 +248,12 @@ function Get-EpsWebRole {
     # Who may do what is a row in eps.WebAccess (by object id, else by UPN) - never a file, never an env value, never a
     # default that elevates: a verified user nobody named is a Reader. A store that cannot be read = Reader (fail closed).
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Identity, [string]$ObjectId)
+    # §12.31: an application ('app:<appId>', never a person's UPN) has the role its enrolment gives - Admin for Admin and
+    # Support (what each may do on top is EPS-ApiTiers' fixed tier), Reader for Reader, nothing enrolled = Reader. Never SuperAdmin.
+    if ("$Identity" -like 'app:*') {
+        $ar = Get-EpsApiAppRole -ConnectionString $ConnectionString -AppId ("$Identity".Substring(4))
+        return $(if ($ar -in 'Admin', 'Support') { 'Admin' } else { 'Reader' })
+    }
     try {
         $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ u = $Identity.ToLowerInvariant(); o = "$ObjectId".ToLowerInvariant() } `
             -Query "SELECT Role FROM eps.WebAccess WHERE (ObjectId IS NOT NULL AND LOWER(CONVERT(NVARCHAR(36), ObjectId)) = @o) OR (ObjectId IS NULL AND LOWER(Principal) = @u)")
@@ -211,6 +274,20 @@ function Test-EpsSignedRequest {
     if (-not "$Token") { return @{ valid = $false; reason = 'the request is not signed (no token)' } }
     if (-not $VerifiedAtUtc) { return @{ valid = $false; reason = 'the request has no verification time' } }
     $v = [datetime]$VerifiedAtUtc   # not .Value: PowerShell hands a [Nullable[datetime]] parameter over as a plain DateTime
+    if ("$RequestedBy" -like 'app:*') {
+        # §12.31: an APPLICATION's request (tier 1, or a Support fix) - its own token at the verification time, the same app,
+        # and BOTH layers now: still enrolled in EPS, with a role that covers Admin (an application never covers SuperAdmin)
+        $t = Test-EpsAppAccessToken -Token $Token -Jwks $Jwks -Config $Config -NowUtc $v -SkewSeconds 30
+        if (-not $t.trusted) { return @{ valid = $false; reason = "the application's token: $($t.reason)" } }
+        if ($t.iat -and $v -lt $t.iat.AddSeconds(-60)) { return @{ valid = $false; reason = 'verified before the token was issued' } }
+        if ($t.identity -ne "$RequestedBy".ToLowerInvariant()) { return @{ valid = $false; reason = "the token is $($t.identity)'s, the request names $RequestedBy" } }
+        if ($NeedRole -eq 'SuperAdmin') { return @{ valid = $false; reason = 'an application never acts as SuperAdmin' } }
+        if ($ConnectionString) {
+            $ar = Get-EpsApiAppRole -ConnectionString $ConnectionString -AppId $t.appId
+            if ($ar -notin 'Admin', 'Support' -and -not ($NeedRole -eq 'Reader' -and $ar -eq 'Reader')) { return @{ valid = $false; reason = "$($t.identity) is $(if ($ar) { $ar } else { 'not enrolled' }) now, the request needs $NeedRole" } }
+        }
+        return @{ valid = $true; reason = "signed by $($t.identity)"; identity = $t.identity; objectId = $t.objectId }
+    }
     # $v is the DATABASE's time the row was written (schema 11 trigger), so an old token in a new row is out of its life
     $t = Test-EpsAccessToken -Token $Token -Jwks $Jwks -Config $Config -NowUtc $v -SkewSeconds 30
     if (-not $t.trusted) { return @{ valid = $false; reason = "the requester's token: $($t.reason)" } }

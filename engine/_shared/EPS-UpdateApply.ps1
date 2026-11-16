@@ -113,6 +113,9 @@ function Sync-EpsWebRegistrationAsOwner {
         if ($fqdn) { $ru = Get-EpsWebRedirectUris -Fqdn $fqdn -Existing @($a.web.redirectUris); if ($ru.Missing.Count) { $todo.Add("sign-in address $($ru.Missing -join ' + ')") } }
         if ($a.web.implicitGrantSettings.enableIdTokenIssuance -ne $true) { $todo.Add('ID-token issuance ON') }
         if ($a.web.implicitGrantSettings.enableAccessTokenIssuance -eq $true) { $todo.Add('access-token issuance OFF') }
+        # §12.30 / §12.31 layer 1: the API for applications (the app role, the idtyp claim, v2 tokens)
+        # (CLOSED, §12.35: not a to-do while the API for applications is off)
+        if ($script:EpsAppApiOpen -eq $true) { foreach ($x in @((Get-EpsWebApiAuthPatch -App $a).Missing)) { $todo.Add($x) } }
         if ($fic) {
             $fics = @(Invoke-EpsGraph -Path "v1.0/applications/$($a.id)/federatedIdentityCredentials" -All)
             if (-not @($fics | Where-Object { $_.issuer -eq $fic.issuer -and $_.subject -eq $fic.subject }).Count) { $todo.Add("the web identity's federated credential") }
@@ -121,6 +124,69 @@ function Sync-EpsWebRegistrationAsOwner {
         @{ State = 'drift'; Lines = @("WARNING web registration: read; not yet as the built-in sign-in needs it: $($todo -join ', ') - one install run sets it (the updater no longer writes the registration)") }
     } catch {
         @{ State = 'error'; Lines = @("WARNING web registration: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing else in the update depends on it; the next run reads it again") }
+    }
+}
+
+# ---- §12.30 SUPPORT-FIX-API-1: the Support app's enrolment, every update -------------------------------------------------
+# Layer 2 only: the update FINDS the Invardia Support app of this tenant by its InvardiaSupport tag and writes its app id to
+# Security.SupportApp (the API for applications then gives it the Support role) - exactly one, else none (more than one is
+# refused and said). Layer 1, the Entra app role, is the customer admin's step, ON REQUEST ONLY (owner 2026-11-16):
+# Set-EpsApiAuth.ps1 -SupportApp. The update only READS it back (Application.Read.All, held already) and says it as
+# information - never a to-do, never self-granted (no product identity holds AppRoleAssignment.ReadWrite.All).
+
+function Get-EpsSupportEnrolPlan {
+    <# PURE. -Tagged: the service principals carrying the tag (@{ appId; id; displayName }); -Current: Security.SupportApp
+       now; -Assigned: is the tagged one assigned EPS.Api.Call ($null = not read). -> @{ Value; Changed; Level; Line } #>
+    param([object[]]$Tagged = @(), [string]$Current = '', $Assigned)
+    $cur = "$Current".Trim().ToLowerInvariant()
+    $t = @($Tagged | Where-Object { "$($_.appId)" -match '^[0-9a-fA-F-]{36}$' } | Sort-Object { "$($_.appId)".ToLowerInvariant() } -Unique)
+    if ($t.Count -gt 1) {
+        return @{ Value = ''; Changed = [bool]$cur; Level = 'Warning'; Line = "WARNING support fixes: $($t.Count) applications carry the InvardiaSupport tag ($(@($t | ForEach-Object { $_.appId }) -join ', ')) - none is enrolled until exactly one does (a support step: remove the tag from the one that is not Invardia's)" }
+    }
+    if (-not $t.Count) { return @{ Value = ''; Changed = [bool]$cur; Level = 'Info'; Line = 'support fixes: not enabled (on request) - no application of this tenant carries the InvardiaSupport tag' } }
+    $id = "$($t[0].appId)".ToLowerInvariant()
+    $line = if ($Assigned -eq $true) { "support fixes: enabled - the Invardia Support app $id is enrolled and assigned $script:EpsApiAppRoleValue" }
+            elseif ($Assigned -eq $false) { "support fixes: not enabled (on request) - the Invardia Support app $id is enrolled here; your administrator switches it on when you ask for it (Set-EpsApiAuth.ps1 -SupportApp)" }
+            else { "support fixes: the Invardia Support app $id is enrolled; its Entra assignment could not be read this run" }
+    @{ Value = $id; Changed = ($cur -ne $id); Level = 'Info'; Line = $line }
+}
+
+function Sync-EpsSupportAppEnrolment {
+    <# Every update run, as the updater identity (Graph READ) + the engine's database connection. Never throws: @{ State; Lines }. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup)
+    # CLOSED (owner 2026-11-16, §12.35): no enrolment while the API for applications is off - nothing read, nothing written
+    if ($script:EpsAppApiOpen -ne $true) { return @{ State = 'closed'; Lines = @('API for applications: closed in this release (support fixes and settings by code are off)') } }
+    try {
+        $sel = '$select=id,appId,displayName,tags'
+        $tagged = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=tags/any(t:t eq 'InvardiaSupport')&$sel" -All)
+        if (-not $tagged.Count) {
+            foreach ($a in @(Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:t eq 'InvardiaSupport')&`$select=appId" -All)) {
+                $tagged += @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($a.appId)'&$sel" -All)
+            }
+        }
+        $assigned = $null
+        if (@($tagged).Count -eq 1) {
+            $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
+            $web = Find-EpsWebAppRegistration -Tag "eps-install-$($n.Suffix)"
+            $roleId = "$(@(@($web.appRoles) | Where-Object { "$($_.value)" -eq $script:EpsApiAppRoleValue })[0].id)"
+            if ($web -and $roleId) {
+                $sp = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($web.appId)'&`$select=id" -All)[0]
+                $assigned = [bool]@(Invoke-EpsGraph -Path "v1.0/servicePrincipals/$($sp.id)/appRoleAssignedTo" -All | Where-Object { "$($_.principalId)" -eq "$($tagged[0].id)" -and "$($_.appRoleId)" -eq $roleId }).Count
+            } elseif ($web) { $assigned = $false }
+        }
+        $cur = "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Security.SupportApp' -Default '')"
+        $p = Get-EpsSupportEnrolPlan -Tagged $tagged -Current $cur -Assigned $assigned
+        $lines = [System.Collections.Generic.List[string]]::new(); $lines.Add($p.Line)
+        if ($p.Changed) {
+            [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = $p.Value } -Query "MERGE eps.Setting AS d USING (SELECT N'Security.SupportApp' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'update' WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (N'Security.SupportApp', N'Security', @v, N'update');")
+            $rb = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Security.SupportApp'")"
+            $ok = $rb -eq $p.Value
+            [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'support.enrol' -Actor 'update' -ActorSource 'job' -Target 'Setting|Security.SupportApp' -Outcome $(if ($ok) { 'ok' } else { 'error' }) -Before @{ value = $cur } -After @{ value = $p.Value; assigned = $assigned })
+            $lines.Add($(if ($ok) { "support enrolment: Security.SupportApp '$cur' -> '$($p.Value)', read back" } else { "WARNING support enrolment: written, but reads back '$rb'" }))
+        }
+        @{ State = $(if ($p.Level -eq 'Warning') { 'refused' } elseif ($p.Value) { 'enrolled' } else { 'none' }); Lines = @($lines) }
+    } catch {
+        @{ State = 'error'; Lines = @("WARNING support enrolment: $((("$($_.Exception.Message)") -split "`n")[0]) - the enrolment stays as it was; the next run reads it again") }
     }
 }
 

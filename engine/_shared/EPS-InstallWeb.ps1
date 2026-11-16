@@ -102,6 +102,43 @@ function Get-EpsWebPreAuthPatch {
     [ordered]@{ api = [ordered]@{ oauth2PermissionScopes = @($scopes); preAuthorizedApplications = @($pre) } }
 }
 
+# §12.30 / §12.31 layer 1 (API security = Microsoft's practice, rules 2-4): ONE app role on the registration - "may call
+# the API for applications at all" - for applications only; assignment required (already on its enterprise application);
+# the idtyp claim in access tokens (app-only PROVEN); v2 tokens. The role's id is fixed, so every install has the same.
+$script:EpsApiAppRoleId = '6b1f3c2e-8d4a-4f5e-9a7b-2c1d0e3f4a5b'
+if (-not $script:EpsApiAppRoleValue) { $script:EpsApiAppRoleValue = 'EPS.Api.Call' }   # the same value as EPS-WebAuth's (the token check)
+. (Join-Path $PSScriptRoot 'EPS-ApiTiers.ps1')   # $script:EpsAppApiOpen (closed: the install / update add no layer 1)
+
+function Get-EpsWebApiAuthPatch {
+    <#
+      PURE. What the registration needs for the API for applications, MERGED with what is there (every role, claim, scope
+      and pre-authorisation already on it is kept): the app role EPS.Api.Call (allowedMemberTypes Application only), the
+      access token's optional claim idtyp, api.requestedAccessTokenVersion = 2. -> @{ Patch (the PATCH body, or $null when
+      nothing is missing); Missing (what was missing, as text) }.
+    #>
+    param([Parameter(Mandatory)]$App)
+    $missing = [System.Collections.Generic.List[string]]::new(); $patch = [ordered]@{}
+    $roles = @(if ($App.appRoles) { @($App.appRoles) })
+    $mine = @($roles | Where-Object { "$($_.value)" -eq $script:EpsApiAppRoleValue })[0]
+    if (-not $mine -or $mine.isEnabled -ne $true -or (@($mine.allowedMemberTypes) -join ',') -ne 'Application') {
+        $missing.Add("the app role $script:EpsApiAppRoleValue")
+        $want = [ordered]@{ id = $(if ($mine) { "$($mine.id)" } else { $script:EpsApiAppRoleId }); value = $script:EpsApiAppRoleValue; allowedMemberTypes = @('Application'); isEnabled = $true
+            displayName = 'Call the Entra Policy Suite API'; description = 'An application assigned this role may call the Entra Policy Suite API for applications. What it may do there is the role Entra Policy Suite gives it (Administration > Settings > API applications, or the Support enrolment).' }
+        $patch.appRoles = @(@($roles | Where-Object { "$($_.value)" -ne $script:EpsApiAppRoleValue }) + $want)
+    }
+    $oc = $App.optionalClaims
+    if (-not @(@($oc.accessToken) | Where-Object { "$($_.name)" -eq 'idtyp' }).Count) {
+        $missing.Add('the access token claim idtyp')
+        $patch.optionalClaims = [ordered]@{ idToken = @(@($oc.idToken) | Where-Object { $_ }); saml2Token = @(@($oc.saml2Token) | Where-Object { $_ })
+            accessToken = @(@(@($oc.accessToken) | Where-Object { $_ }) + [ordered]@{ name = 'idtyp'; essential = $false; additionalProperties = @() }) }
+    }
+    if ("$($App.api.requestedAccessTokenVersion)" -ne '2') {
+        $missing.Add('v2 access tokens')
+        $patch.api = [ordered]@{ requestedAccessTokenVersion = 2; oauth2PermissionScopes = @(@($App.api.oauth2PermissionScopes) | Where-Object { $_ }); preAuthorizedApplications = @(@($App.api.preAuthorizedApplications) | Where-Object { $_ }) }
+    }
+    @{ Patch = $(if ($patch.Count) { $patch } else { $null }); Missing = @($missing) }
+}
+
 function Get-EpsWebRedirectUris {
     <#
       PURE. The sign-in addresses the web app registration must hold for this web app address: the sign-in front's
@@ -231,7 +268,7 @@ function New-EpsWebAppBody {
 function Find-EpsWebAppRegistration {
     # the install's registration, found by its tag (a re-run finds the one it made; a display name is not unique)
     param([Parameter(Mandatory)][string]$Tag)
-    @(Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:t eq '$Tag')&`$select=id,appId,displayName,identifierUris,api,web,requiredResourceAccess,passwordCredentials,keyCredentials" -All)[0]
+    @(Invoke-EpsGraph -Path "v1.0/applications?`$filter=tags/any(t:t eq '$Tag')&`$select=id,appId,displayName,identifierUris,api,web,requiredResourceAccess,passwordCredentials,keyCredentials,appRoles,optionalClaims" -All)[0]
 }
 
 function Wait-EpsGraphDisplayName {
@@ -315,6 +352,11 @@ function Invoke-EpsWebRegistrationStep {
             try { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body $preAuth); $preAuth = $null } catch { if ($wait -eq 40) { throw } }
         }
     } catch { Write-Warning "the Azure CLI could not be pre-authorised for $($script:EpsWeb.Scope) yet ($((("$($_.Exception.Message)") -split "`n")[0])) - the API / MCP token then asks for consent once; the next run of the install adds it" }
+    # §12.30 / §12.31 layer 1: the app role for applications, the idtyp claim, v2 tokens (merged - nothing there is lost);
+    # who is ASSIGNED the role is a person's step (Set-EpsApiAuth.ps1), never this run's
+    # CLOSED (§12.35): nothing is added while the API for applications is off
+    $apiAuth = if ($script:EpsAppApiOpen -eq $true) { Get-EpsWebApiAuthPatch -App (Invoke-EpsGraph -Path "v1.0/applications/$($app.id)?`$select=id,api,appRoles,optionalClaims") } else { @{ Patch = $null; Missing = @() } }
+    if ($apiAuth.Patch) { Invoke-EpsOwnedRegistrationWrite -What "the registration's API for applications ($($apiAuth.Missing -join ', '))" -Do { Invoke-EpsWithRetry { [void](Invoke-EpsGraph -Method PATCH -Path "v1.0/applications/$($app.id)" -Body $apiAuth.Patch) } } }
     # a service principal just made may not be readable yet, and an answer without its id is no service principal
     # (live, internal 2026-10-30: the consent query then went out with an empty id) - "not visible yet", retried
     $sp = Invoke-EpsWithRetry { $x = @(Invoke-EpsGraph -Path "v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,appRoleAssignmentRequired,displayName" -All)[0]; if (-not $x) { $x = Invoke-EpsGraph -Method POST -Path 'v1.0/servicePrincipals' -Body @{ appId = $app.appId; appRoleAssignmentRequired = $true; tags = @('WindowsAzureActiveDirectoryIntegratedApp') } }
