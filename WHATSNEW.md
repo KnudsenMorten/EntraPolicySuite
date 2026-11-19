@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.55.1 · 2026-11-19 · Fix-only
+
+A security update from Microsoft.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Security update from Microsoft** - Your installation runs on Microsoft's newest security update (.NET 10.0.15). Nothing else changes.
+
 ## 2.1.55 · 2026-11-16 · Security
 
 The API for scripts and the MCP server are switched off on every install until they are opened again on purpose.
