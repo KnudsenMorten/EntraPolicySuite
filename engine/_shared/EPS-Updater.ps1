@@ -558,19 +558,11 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
             # "who deletes what"); only while the check read the web app on Microsoft's built-in sign-in
             if ("$($bic.State)" -in 'ok', 'diff' -and (Get-Command Remove-EpsRetiredFrontImages -ErrorAction SilentlyContinue)) {
                 $nm = Resolve-EpsInstallNames -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP"
-                $pinNow = try { Get-EpsSigninFrontPin -SolutionRoot $script:EpsUpdateApplySolutionRoot } catch { '' }
-                $rf = Remove-EpsRetiredFrontImages -LoginServer "$($nm.Registry).azurecr.io" -TenantId "$env:EPS_TENANT_ID" -FrontRuns $false -Pin "$pinNow"
+                $rf = Remove-EpsRetiredFrontImages -LoginServer "$($nm.Registry).azurecr.io" -TenantId "$env:EPS_TENANT_ID" -FrontRuns $false
                 $bic.Lines = @($bic.Lines) + @($rf.Lines)
             }
         } finally { $global:EPS_TokenProvider = $saved7 }
         foreach ($l in $bic.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
-    }
-    # IMAGE-PATCH-1 (2.0.120): a CURRENT install's sign-in front converges to the running release's pin (an older updater's
-    # apply did not move the front) - as the updater identity, never fails the cycle
-    if ($t.State -eq 'current' -and $updater -and -not $CheckOnly -and "$($bia.State)" -notin 'builtin', 'switched' -and (Get-Command Invoke-EpsFrontConverge -ErrorAction SilentlyContinue)) {
-        $saved3 = $global:EPS_TokenProvider; if ($ApplyTokenProvider) { $global:EPS_TokenProvider = $ApplyTokenProvider } else { $global:EPS_TokenProvider = { param($r) Get-EpsManagedIdentityToken -Resource $r -ClientId $updater }.GetNewClosure() }
-        try { $fc = Invoke-EpsFrontConverge -TenantId "$env:EPS_TENANT_ID" -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -PollSeconds $PollSeconds } finally { $global:EPS_TokenProvider = $saved3 }
-        foreach ($l in $fc.Lines) { & $Log $(if ($l -like 'WARNING*') { 'Warning' } else { 'Info' }) $l }
     }
     # SEC-LANE-1: the previous images of an image-only swap go once a job SUCCEEDED on the new image (the tick starts this
     # job when that run is there) - here, as the updater, before anything else moves; the waiting mark is cleared after

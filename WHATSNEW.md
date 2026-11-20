@@ -1,5 +1,19 @@
 # What's new in Entra Policy Suite
 
+## 2.1.56 · 2026-11-20 · Security
+
+The earlier sign-in's unused code is removed, and every failed run carries a support code.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Unused sign-in code removed** - The code of the earlier sign-in, unused since Microsoft's built-in sign-in took over, is gone from the install and the update. Your installation is not changed.
+- **A support code on every failed run** - A job run that does not end OK now names a stable code, so Invardia support can tell you the cause and the next step without reading logs.
+- **Corrected help pages** - The install and security pages describe Microsoft's built-in sign-in, and the tamper monitor page says when an accepted change closes.
+
 ## 2.1.55.1 · 2026-11-19 · Fix-only
 
 A security update from Microsoft.

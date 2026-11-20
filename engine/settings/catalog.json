@@ -56,7 +56,7 @@
       "key": "Platform.TimeZone", "group": "Platform", "label": "Time zone for schedules", "type": "timezone", "maxLength": 64, "default": "UTC", "role": "Admin",
       "info": {
         "what": "The time zone the job schedules are read in: 'daily 01:00' means 01:00 in this time zone, summer time included. The pages always show times in your browser's local time, whatever this is set to.",
-        "enabled": "From the next scheduler tick (within 5 minutes) every daily job starts at its time in this zone. If the new zone puts today's start time after the job's last start, the job can run once more today.",
+        "enabled": "At the next scheduler check (within 5 minutes) every daily job starts at its time in this zone. If the new zone puts today's start time after the job's last start, the job can run once more today.",
         "disabled": "UTC (the default): schedules are read in UTC, with no summer time shift.",
         "risk": "Low. A job may run one extra time on the day of the change, or later than expected. The mass-change guard still applies to every run. Reversible.",
         "requires": "Admin. A time zone id the server knows, e.g. 'Europe/Copenhagen' or 'W. Europe Standard Time'.",
@@ -70,8 +70,8 @@
       "info": {
         "what": "The one switch that stops every job of Entra Policy Suite at once, for example during an incident or a migration. Each feature also has its own switch.",
         "enabled": "On (the default): each job starts at its schedule when its own feature switch is on.",
-        "disabled": "From the next scheduler tick (within 5 minutes) no job starts: no user or device tagging, no tamper monitoring and alerting, and every Run now / restore request is refused with 'all jobs are switched off'. A run that is already running finishes.",
-        "risk": "While it is off, nothing watches the tags: a foreign change is not found or alerted. The external Azure Monitor alarm (when deployed) still alerts on changes to break-glass accounts. Reversible: switch it on and the next tick starts what is due.",
+        "disabled": "At the next scheduler check (within 5 minutes) no job starts: no user or device tagging, no tamper monitoring and alerting, and every Run now / restore request is refused with 'all jobs are switched off'. A run that is already running finishes.",
+        "risk": "While it is off, nothing watches the tags: a foreign change is not found or alerted. The external Azure Monitor alarm (when deployed) still alerts on changes to break-glass accounts. Reversible: switch it on and the next scheduler check starts what is due.",
         "requires": "SuperAdmin.",
         "recommended": "On. Switch it off only for a planned stop, and switch it on again afterwards.",
         "docUrl": "https://invardia.com/docs/eps/settings/Platform.JobsEnabled/"
@@ -189,7 +189,7 @@
       "confirm": [ { "when": "on", "title": "Tag changed users within minutes?", "body": "Every 5 minutes the engine asks Entra which users changed in the properties the rules read, and tags only those, in the job's own mode. In a large or busy directory that is a run every few minutes." } ],
       "info": {
         "what": "Besides the schedule, tag a NEW or CHANGED user within about 5 minutes: only the users whose rule properties changed (a Graph delta of exactly those properties), not everyone.",
-        "enabled": "From the next tick, every 5 minutes: the changed users are tagged in the job's mode (Settings: User tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
+        "enabled": "From the next scheduler check, every 5 minutes: the changed users are tagged in the job's mode (Settings: User tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
         "disabled": "Off (the default - owner: directory changes must not trigger a run by default, there are millions): users are tagged by the schedule only; every scheduled run reads everyone, so new users are picked up there.",
         "risk": "In a directory with many changes this is a run every 5 minutes. Group membership changes are not seen here (the schedule catches them). Reversible: switch it off.",
         "requires": "Admin. 'User tagging' switched on.",
@@ -294,7 +294,7 @@
       "confirm": [ { "when": "on", "title": "Tag changed devices within minutes?", "body": "Every 5 minutes the engine asks Entra which devices changed in the properties the rules read, and tags only those, in the job's own mode." } ],
       "info": {
         "what": "Besides the schedule, tag a NEW or CHANGED device within about 5 minutes: only the devices whose rule properties changed (a Graph delta of exactly those properties), not every device.",
-        "enabled": "From the next tick, every 5 minutes: the changed devices are tagged in the job's mode (Settings: Device tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
+        "enabled": "From the next scheduler check, every 5 minutes: the changed devices are tagged in the job's mode (Settings: Device tagging mode); a check that finds no change records no run. The first check only notes where Entra is now.",
         "disabled": "Off (the default): devices are tagged by the schedule only; every scheduled run reads every device, so new ones are picked up there.",
         "risk": "In a directory with many device changes this is a run every 5 minutes. Reversible: switch it off.",
         "requires": "Admin. 'Device tagging' switched on.",
@@ -373,7 +373,7 @@
       "confirm": [ { "when": "off", "title": "Stop watching the tags?", "body": "Changes to the watched tags that the engine did not make are no longer found or alerted, and restore requests are refused." } ],
       "info": {
         "what": "Watches every tag attribute the engine manages. Every 15 minutes it reads what changed (and once a day it compares everything); a change the engine did not make becomes a tamper event on the Tamper page, and an alert mail goes out.",
-        "enabled": "From the next scheduler tick the monitor runs every 15 minutes. The first run records today's values as the baseline; later runs report every foreign change with who made it.",
+        "enabled": "From the next scheduler check the monitor runs every 15 minutes. The first run records today's values as the baseline; later runs report every foreign change with who made it.",
         "disabled": "Off (the default for a new install): nothing is watched, no event or alert is raised, and Restore requests from the Tamper page are refused.",
         "risk": "While it is off, someone can change a user's tag - and with it their Conditional Access policies - unnoticed. Reversible: switch it on; the next daily compare finds changes made while it was off.",
         "requires": "SuperAdmin. The engine identity's right to read the directory audit log (given by the install).",
@@ -633,7 +633,7 @@
       "key": "SignInMethods.Enabled", "group": "SignInMethods", "label": "Per-user sign-in methods", "type": "boolean", "default": "false", "role": "Admin",
       "info": {
         "what": "Reads each user's sign-in methods one by one (every method, and the device behind Windows Hello for Business and Microsoft Authenticator) in the background, every 15 minutes, and keeps them per user. A user is read again only when the MFA registration report shows a change, or after the maximum age - so a large tenant is read once and then only what changes.",
-        "enabled": "From the next scheduler tick the job runs every 15 minutes; admins are read first. The first full read of a large tenant takes several runs; until a user is read, the report says unknown, never 'no MFA'.",
+        "enabled": "From the next scheduler check the job runs every 15 minutes; admins are read first. The first full read of a large tenant takes several runs; until a user is read, the report says unknown, never 'no MFA'.",
         "disabled": "Off (the default): the identity report uses the tenant-wide MFA registration report only.",
         "risk": "Read only. The engine reads the users' authentication methods (UserAuthenticationMethod.Read.All). Microsoft throttles per-user reads; the job stops after its minutes and carries on next run. A phone number is kept masked. Reversible.",
         "requires": "Admin. The engine identity's right UserAuthenticationMethod.Read.All (given by the install).",

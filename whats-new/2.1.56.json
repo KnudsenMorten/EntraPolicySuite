@@ -1,0 +1,21 @@
+{
+  "version": "2.1.56",
+  "date": "2026-11-20",
+  "type": "security",
+  "summary": "The earlier sign-in's unused code is removed, and every failed run carries a support code.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Unused sign-in code removed",
+      "text": "The code of the earlier sign-in, unused since Microsoft's built-in sign-in took over, is gone from the install and the update. Your installation is not changed."
+    },
+    {
+      "title": "A support code on every failed run",
+      "text": "A job run that does not end OK now names a stable code, so Invardia support can tell you the cause and the next step without reading logs."
+    },
+    {
+      "title": "Corrected help pages",
+      "text": "The install and security pages describe Microsoft's built-in sign-in, and the tamper monitor page says when an accepted change closes."
+    }
+  ]
+}

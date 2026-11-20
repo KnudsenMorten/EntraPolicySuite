@@ -2,7 +2,7 @@
 # rights at an install", Invardia DESIGN ch 12; the same shape as PIM's ca-pim-dbinit). The job runs the engine image as
 # its OWN identity id-eps-dbinit, a member of the SQL server's Entra admin group grp-eps-sql-admins (Invardia decided (b)
 # 2026-11-03: group-as-admin, the job identity a member). It makes the schema, the component roles and grants, the
-# managed identities' database users, the sign-in front's state and - for ONE execution, when the installer asks - the
+# managed identities' database users and - for ONE execution, when the installer asks - the
 # first SuperAdmin; it removes a retired identity's user when asked. Every decision is made HERE, from the image's own
 # files (sql/eps-schema.sql, sql/eps-grants.json) and a few checked inputs; the job only connects, executes and reads
 # back. Exit 0 only when every principal is read back as asked.
@@ -15,7 +15,7 @@
 #   EPS_DBINIT_SUPERADMIN       per execution: "<upn>|<object id>" - the first SuperAdmin (only when there is none)
 #   EPS_DBINIT_DROP             per execution: database user names to remove (comma separated; never one in the list)
 # Dot-source EPS-SqlStore and EPS-Install (Get-EpsGrantList / Get-EpsGrantScript / Get-EpsSqlUserScript /
-# ConvertTo-EpsSqlSid) and EPS-InstallWeb (Get-EpsSigninStateSql / Get-EpsFirstSuperAdminSql) first.
+# ConvertTo-EpsSqlSid) and EPS-InstallWeb (Get-EpsSigninDropSql / Get-EpsFirstSuperAdminSql) first.
 
 Set-StrictMode -Off
 
@@ -28,9 +28,8 @@ function Read-EpsDbInitInput {
       role outside the patterns, a role the grant list does not have, a client id that is not a GUID, a web user that is
       not one of the principals, a drop that names a principal the list keeps, a SuperAdmin that is not "<upn>|<guid>".
     #>
-    # -FrontVersion: per execution, the sign-in front the web app RUNS (OPEN-15) - recorded for the heartbeat
     # -DropSignin (2.1.40): the web app runs NO sign-in front (Microsoft's built-in sign-in) - its old schema signin goes
-    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$FrontVersion, [string]$DropSignin,
+    param([string]$PrincipalsJson, [string]$WebUser, [string]$SuperAdmin, [string]$Drop, [Parameter(Mandatory)][string[]]$Roles, [string]$DropSignin,
           # a role renamed in the grant list (renamedFrom): a job set up before the rename still names the old one
           [hashtable]$RoleAliases = @{})
     $no = { param($r) @{ Ok = $false; Reason = $r } }
@@ -62,9 +61,7 @@ function Read-EpsDbInitInput {
         if ($x -notmatch $script:EpsDbInitNamePattern) { return (& $no "unsafe database user name to remove '$x'") }
         if (@($p | Where-Object Name -eq $x).Count) { return (& $no "$x is to be removed AND kept - refused") }
     }
-    $fv = "$FrontVersion".Trim()
-    if ($fv -and $fv -notmatch '^[0-9A-Za-z.+]{1,50}$') { return (& $no "EPS_DBINIT_FRONT '$fv' is not a version") }
-    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); FrontVersion = $fv; DropSignin = ("$DropSignin" -eq '1') }
+    @{ Ok = $true; Reason = ''; Principals = @($p); WebUser = $WebUser; SuperAdmin = $sa; Drop = @($d); DropSignin = ("$DropSignin" -eq '1') }
 }
 
 function Read-EpsDbInitSettings {
@@ -138,7 +135,6 @@ function Get-EpsDbInitPlan {
     if ($DbInput.DropSignin) { $b.Add(@{ Name = "the old sign-in front's schema signin dropped (+ the web user's CREATE TABLE)"; Sql = (Get-EpsSigninDropSql -WebUser $DbInput.WebUser) }) }
     if ($DbInput.SuperAdmin) { $b.Add(@{ Name = "the first SuperAdmin $($DbInput.SuperAdmin.Upn) (only when there is none)"; Sql = (Get-EpsFirstSuperAdminSql -Upn $DbInput.SuperAdmin.Upn -ObjectId $DbInput.SuperAdmin.ObjectId) }) }
     foreach ($x in $DbInput.Drop) { $b.Add(@{ Name = "remove the database user $x"; Sql = "IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$x') DROP USER [$x];" }) }
-    if ($DbInput.FrontVersion) { $b.Add(@{ Name = "the sign-in front the web app runs: $($DbInput.FrontVersion)"; Sql = (Get-EpsUplinkStateMergeSql -Name 'signin.front' -Value $DbInput.FrontVersion) }) }
     if ("$Version" -match '^[0-9A-Za-z.+]{1,50}$') { $b.Add(@{ Name = "the setup job's record (setup.dbjob = $Version)"; Sql = (Get-EpsUplinkStateMergeSql -Name 'setup.dbjob' -Value "$Version") }) }
     @($b)
 }
@@ -227,7 +223,7 @@ function Invoke-EpsDbInit {
     $e = { param($k) if ($Env.ContainsKey($k)) { "$($Env[$k])" } else { [Environment]::GetEnvironmentVariable($k) } }
     $gl = Get-EpsGrantList -SolutionRoot $SolutionRoot
     $ver = try { (Get-Content -LiteralPath (Join-Path $SolutionRoot 'VERSION') -Raw).Trim() } catch { '' }
-    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -RoleAliases $($al = @{}; foreach ($k in $gl.roles.Keys) { if ($gl.roles[$k].renamedFrom) { $al["$($gl.roles[$k].renamedFrom)"] = $k } }; $al) -FrontVersion (& $e 'EPS_DBINIT_FRONT') -DropSignin (& $e 'EPS_DBINIT_DROP_SIGNIN')
+    $in = Read-EpsDbInitInput -PrincipalsJson (& $e 'EPS_DBINIT_PRINCIPALS') -WebUser (& $e 'EPS_DBINIT_WEB_USER') -SuperAdmin (& $e 'EPS_DBINIT_SUPERADMIN') -Drop (& $e 'EPS_DBINIT_DROP') -Roles @($gl.roles.Keys) -RoleAliases $($al = @{}; foreach ($k in $gl.roles.Keys) { if ($gl.roles[$k].renamedFrom) { $al["$($gl.roles[$k].renamedFrom)"] = $k } }; $al) -DropSignin (& $e 'EPS_DBINIT_DROP_SIGNIN')
     if (-not $in.Ok) { & $Log "refused: $($in.Reason)"; return 2 }
     # SEC-08 row 7: per execution, the hybrid worker's identity as the database user eps-hybrid-worker in eps_worker
     # (EPS_DBINIT_WORKER = its client id), or 'remove' - the person who adds a worker needs no SQL right
@@ -273,8 +269,8 @@ function Invoke-EpsDbInit {
             $go = Test-EpsDbInitGrantsOnly -DbInput $in -DatabaseVersion $dbv -FileVersion $fv -Worker $wk -Seed $seed -SettingCount @($set.Settings.Keys).Count
             if (-not $go.Ok) { & $Log "refused: $($go.Reason)"; return 2 }
             & $Log $go.Reason
-            # only the roles and grants, the users and the sign-in front's schema (create-if-missing); no record rows
-            $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl | Where-Object { $_.Name -like 'roles and grants*' -or $_.Name -like 'database users*' -or $_.Name -like "the sign-in front's state*" })
+            # only the roles and grants and the users (create-if-missing); no record rows
+            $plan = @(Get-EpsDbInitPlan -DbInput $in -GrantList $gl | Where-Object { $_.Name -like 'roles and grants*' -or $_.Name -like 'database users*' })
         } else {
         $v = Install-EpsSchema -ConnectionString $ConnectionString -SchemaPath (Join-Path $SolutionRoot 'sql\eps-schema.sql')
         & $Log "schema: version $v"
@@ -811,7 +807,7 @@ function Invoke-EpsDbInitJob {
       remove), waited for; the verdict = the execution's own status (the entry exits 0 only when every principal was
       read back). A failure names the execution and where its lines are.
     #>
-    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [string]$FrontVersion, [switch]$DropSignin, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed,
+    param([Parameter(Mandatory)]$Ctx, $SuperAdmin, [string[]]$Drop = @(), [switch]$DropSignin, [switch]$UseExisting, [System.Collections.IDictionary]$Settings, [string]$By, [string]$Worker, $SupportSeed,
           # DBINIT-GRANTS-ONLY (framework §8.18): 'grants' = only roles, grants and users - may run beside a pipeline run
           [ValidateSet('', 'all', 'grants')][string]$Steps = '')
     $n = $Ctx.Names; $rg = "/subscriptions/$($Ctx.SubscriptionId)/resourceGroups/$($n.ResourceGroup)"
@@ -823,7 +819,6 @@ function Invoke-EpsDbInitJob {
     $env = @{}
     if ($SuperAdmin) { $env.EPS_DBINIT_SUPERADMIN = "$($SuperAdmin.Upn)|$($SuperAdmin.ObjectId)" }
     if (@($Drop).Count) { $env.EPS_DBINIT_DROP = (@($Drop) -join ',') }
-    if ($FrontVersion) { $env.EPS_DBINIT_FRONT = $FrontVersion }
     if ($DropSignin) { $env.EPS_DBINIT_DROP_SIGNIN = '1' }
     if ($Worker) { $env.EPS_DBINIT_WORKER = $Worker }
     if ($Steps) { $env.EPS_DBINIT_STEPS = $Steps }

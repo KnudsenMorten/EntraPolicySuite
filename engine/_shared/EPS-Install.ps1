@@ -435,18 +435,18 @@ function Get-EpsInstallSteps {
         [pscustomobject]@{ Id = 'environment';   Title = 'Container Apps environment' }
         # the job needs the image, the environment and SQL; it does what 'schema', 'sqlaccess' and 'webstate' did as the person
         [pscustomobject]@{ Id = 'database';      Title = 'The database, set up by the database setup job as its own identity: schema, one least-privilege role per identity, the sign-in front''s state, you as the first SuperAdmin' }
-        [pscustomobject]@{ Id = 'queues';        Title = 'The job queues (storage, no shared key): the tick may only send, the engine read' }
+        [pscustomobject]@{ Id = 'queues';        Title = 'The job queues (storage, no shared key): the scheduler job may only send, the engine read' }
         # the registration BEFORE the jobs (2.0.18): the engine checks a person's signed request against the web app's
         # client id, so the engine jobs carry it (without it every GUI change was refused, fail closed)
         [pscustomobject]@{ Id = 'webregistration'; Title = 'The web sign-in registration (no secret; assignment required; you assigned)' }
-        [pscustomobject]@{ Id = 'jobs';          Title = 'The tick + work jobs' }
-        [pscustomobject]@{ Id = 'jobstarter';    Title = 'The tick may NOT start jobs (an older install''s job-starter role removed)' }
+        [pscustomobject]@{ Id = 'jobs';          Title = 'The scheduler job + work jobs' }
+        [pscustomobject]@{ Id = 'jobstarter';    Title = 'The scheduler job may NOT start jobs (an older install''s job-starter role removed)' }
         [pscustomobject]@{ Id = 'graph';         Title = "The engine's Graph permissions" }
         [pscustomobject]@{ Id = 'exchange';      Title = "The engine's Exchange permission + role" }
         [pscustomobject]@{ Id = 'keyvault';      Title = "Key Vault (Invardia's uplink key; the web identity holds NO Key Vault right)" }
         [pscustomobject]@{ Id = 'frontimage';    Title = 'The sign-in front image - not used any more (Microsoft''s built-in sign-in, 2.1.35)' }
         [pscustomobject]@{ Id = 'webapp';        Title = 'The web app behind Microsoft''s built-in sign-in (no secret; the sign-in sessions in one blob container)' }
-        [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the tick once' }
+        [pscustomobject]@{ Id = 'verify';        Title = 'Verify: read everything back, run the scheduler job once' }
         [pscustomobject]@{ Id = 'retiretick';    Title = "An older install's separate scheduler identity removed - the scheduler runs as the engine" }
         [pscustomobject]@{ Id = 'renamejobs';    Title = "An older install's scheduler and update jobs moved to the standard names (only with -RenameJobs)" }
     )
@@ -501,7 +501,7 @@ function Get-EpsPrivateInstallSteps {
         & $mk 'exchange'
         & $mk 'frontimage'
         & $mk 'webapp'
-        & $mk 'verify'           'Verify: read everything back, run the tick once'
+        & $mk 'verify'           'Verify: read everything back, run the scheduler job once'
         & $mk 'insidecheck'      'Inside check: from inside the network - private DNS, the web app, every job queue'
         & $mk 'retireoldenv'     'Public -> private: the old public environment removed (after the inside check)'
         & $mk 'retiretick'
@@ -811,7 +811,6 @@ function Invoke-EpsInstallStep {
             $k0 = Invoke-EpsArm -Path "$rg/providers/Microsoft.KeyVault/vaults/$($n.KeyVault)/keys/$($script:EpsWeb.KeyName)" -ApiVersion $script:EpsWeb.KvApi -AllowNotFound
             if ($k0) { $Ctx.Web.KeyId = "$($k0.properties.keyUri)" }
         }
-        if (-not $Ctx.Web.FrontVersion) { $Ctx.Web.FrontVersion = Get-EpsSigninFrontPin -SolutionRoot $Ctx.SolutionRoot }
         if (-not $Ctx.Web.Fqdn) {
             $w0 = Invoke-EpsArm -Path "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" -ApiVersion $script:EpsApi.aca -AllowNotFound
             if ($w0) { $Ctx.Web.Fqdn = "$($w0.properties.configuration.ingress.fqdn)".ToLowerInvariant(); $Ctx.Web.Url = "https://$($Ctx.Web.Fqdn)/" }

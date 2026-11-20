@@ -1,3 +1,0 @@
-# build output of the vendored sign-in front (a local build or an editor creates it; never committed or published)
-vendor/signin-front/src/bin/
-vendor/signin-front/src/obj/

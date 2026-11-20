@@ -58,18 +58,17 @@ function Save-EpsReleaseArchive {
 
 function Set-EpsEpsContainerImage {
     <#
-      PURE. A copy of a job's / app's template with ONLY the container 'eps' on -Image (the web app's sign-in front and
-      everything else untouched). With -FrontImage also the container 'signin-front' (IMAGE-PATCH-1, 2.0.120: the front
-      moves with the release's pin - before, only an install run moved it). Returns @{ Template; From; Changed; FrontFrom }.
+      PURE. A copy of a job's / app's template with ONLY the container 'eps' on -Image (everything else untouched).
+      2.1.56 (FRONT-CODE-REMOVE, SECURE-WEB-1): no sign-in front is ever moved - the web app runs Microsoft's built-in
+      sign-in. Returns @{ Template; From; Changed }.
     #>
-    param([Parameter(Mandatory)]$Template, [Parameter(Mandatory)][string]$Image, [string]$FrontImage = '')
+    param([Parameter(Mandatory)]$Template, [Parameter(Mandatory)][string]$Image)
     $t = $Template | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30 -AsHashtable
-    $from = ''; $frontFrom = ''; $changed = $false
+    $from = ''; $changed = $false
     foreach ($c in @($t.containers)) {
         if ("$($c.name)" -eq 'eps') { $from = "$($c.image)"; if ($from -ne $Image) { $c.image = $Image; $changed = $true } }
-        elseif ($FrontImage -and "$($c.name)" -eq 'signin-front') { $frontFrom = "$($c.image)"; if ($frontFrom -ne $FrontImage) { $c.image = $FrontImage; $changed = $true } }
     }
-    @{ Template = $t; From = $from; Changed = $changed; FrontFrom = $frontFrom }
+    @{ Template = $t; From = $from; Changed = $changed }
 }
 
 function Get-EpsJobTimeoutPatch {
@@ -190,51 +189,6 @@ function Sync-EpsSupportAppEnrolment {
     }
 }
 
-# the solution root this file was loaded from - read when the file is dot-sourced ($PSScriptRoot is empty in a parameter
-# default; found live 2026-11-10 at internal: "Cannot bind argument to parameter 'Path' because it is an empty string")
-$script:EpsUpdateApplySolutionRoot = if ($PSScriptRoot) { Split-Path -Parent (Split-Path -Parent $PSScriptRoot) } else { '' }
-
-function Invoke-EpsFrontConverge {
-    <#
-      IMAGE-PATCH-1 (2.0.120): on an update run that finds the install CURRENT, the web app's sign-in front is brought to
-      the pin of the running release (its own vendor/signin-front) when it runs another version. An install updated by an
-      older updater (whose apply did not move the front) gets the front on its next update run, without another release.
-      Only the front container moves; the eps container stays. Read back. Never throws: @{ State (ok | changed | error |
-      none); Lines }.
-    #>
-    param([Parameter(Mandatory)][string]$TenantId, [Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup,
-          [string]$SolutionRoot = '', [int]$PollSeconds = 15)
-    try {
-        if (-not $SolutionRoot) { $SolutionRoot = $script:EpsUpdateApplySolutionRoot }
-        if (-not $SolutionRoot) { return @{ State = 'error'; Lines = @('WARNING sign-in front: the release folder is not known - the front is left as it is') } }
-        $pin = Get-EpsSigninFrontPin -SolutionRoot $SolutionRoot
-        if (-not $pin) { return @{ State = 'ok'; Lines = @('sign-in front: none in this release (Microsoft''s built-in sign-in)') } }
-        $n = Resolve-EpsInstallNames -TenantId $TenantId -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
-        $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
-        $webPath = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"
-        $web = Invoke-EpsArm -Path $webPath -ApiVersion $script:EpsApi.aca -AllowNotFound
-        if (-not $web) { return @{ State = 'none'; Lines = @('sign-in front: this install has no web app') } }
-        $want = "$($n.Registry).azurecr.io/signin-front:$pin"
-        $cur = "$(@($web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
-        $eps = "$(@($web.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
-        if (-not $cur -or $cur -eq $want) { return @{ State = 'ok'; Lines = @("sign-in front: signin-front:$pin, as this release pins") } }
-        $fs = Get-EpsSigninFrontSource -SolutionRoot $SolutionRoot -Pin $pin
-        if (-not $fs.Ok) { return @{ State = 'error'; Lines = @("WARNING sign-in front: $($fs.Reason) - left on $(("$cur" -split '/')[-1])") } }
-        $acr = Invoke-EpsArm -Path "$rg/providers/Microsoft.ContainerRegistry/registries/$($n.Registry)" -ApiVersion $script:EpsApi.acr
-        $priv = "$($acr.properties.publicNetworkAccess)" -eq 'Disabled'
-        $fctx = New-EpsFrontBuildContext -Src $fs.Src
-        try { [void](Invoke-EpsAcrBuild -RegistryId "$($acr.id)" -ContextPath $fctx -DockerFile 'Dockerfile' -ImageName "signin-front:$pin" -PollSeconds $PollSeconds -AgentPoolName $(if ($priv) { $n.AgentPool } else { '' })) }
-        finally { Remove-Item -LiteralPath $fctx -ErrorAction SilentlyContinue }
-        $s = Set-EpsEpsContainerImage -Template $web.properties.template -Image $eps -FrontImage $want
-        [void](Invoke-EpsArm -Method PATCH -Path $webPath -ApiVersion $script:EpsApi.aca -Body @{ properties = @{ template = $s.Template } } -PollSeconds $PollSeconds)
-        $back = Invoke-EpsArm -Path $webPath -ApiVersion $script:EpsApi.aca
-        $now = "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
-        if ($now -ne $want) { return @{ State = 'error'; Lines = @("WARNING sign-in front: built signin-front:$pin, but the web app reads back $(("$now" -split '/')[-1]) - the next update run tries again") } }
-        @{ State = 'changed'; Lines = @("sign-in front: $(("$cur" -split '/')[-1]) -> signin-front:$pin (built, rolled, read back)") }
-    } catch {
-        @{ State = 'error'; Lines = @("WARNING sign-in front: $((("$($_.Exception.Message)") -split "`n")[0]) - nothing else in the update depends on it; the next run tries again") }
-    }
-}
 
 function Get-EpsUpdateFacts {
     <#
@@ -372,14 +326,8 @@ function Invoke-EpsUpdateApply {
         # 2.1.18 (Invardia 2026-11-13 (1)): the RE-RUN of a stopped roll never builds or migrates again - the database setup
         # job already runs this version's image (so the image is in the registry) and its newest execution Succeeded (so the
         # migration of this version is applied). Only apply + health run. The signed release is still downloaded and
-        # verified: the front pin and what is rolled come from it, never from what the install happens to run.
+        # verified: what is rolled comes from it, never from what the install happens to run.
         $resume = Get-EpsMigratedImage -Jobs @($f.Jobs) -DbInitJob $n.DbInitJob -Image $image -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup
-        # review H: the sign-in front has to move too = build as before (only a build proves its image is in the registry)
-        if ($resume.Done -and $f.Web) {
-            $pinNow = try { Get-EpsSigninFrontPin -SolutionRoot $a.Root } catch { '' }
-            $curF = "$(@($f.Web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
-            if ($pinNow -and $curF -and $curF -ne "$($n.Registry).azurecr.io/signin-front:$pinNow") { $resume = @{ Done = $false; Execution = ''; Reason = 'the sign-in front has to move too' } }
-        }
         if ($resume.Done) {
             & $Log 'Info' "update: $($Target.Version) is already built and its database setup ran ($($resume.Execution)) - the roll is finished, nothing is built or migrated again"
             & $Emit 'build' 'ok' "already built ($($n.Image):$($Target.Version) runs in $($n.DbInitJob)) - the roll of a stopped update is finished"
@@ -390,27 +338,7 @@ function Invoke-EpsUpdateApply {
         finally { Remove-Item -LiteralPath $ctxFile -ErrorAction SilentlyContinue }
         & $Emit 'build' 'ok' "built ($($b.Digest))"
         }
-        # IMAGE-PATCH-1 (2.0.120): the sign-in front follows the release's pin. Found live 2026-11-10 at internal: 2.0.119
-        # pinned 1.4.6, the update left the web app on 1.4.5 - only an install run built the front. Built from the release's
-        # own vendor/signin-front (only the pinned version is ever built); a front that cannot be built stops the update
-        # BEFORE anything moves.
-        $frontImage = ''
-        $pin = try { Get-EpsSigninFrontPin -SolutionRoot $a.Root } catch { '' }
-        if ($f.Web -and $pin) {
-            $wantFront = "$($n.Registry).azurecr.io/signin-front:$pin"
-            $curFront = "$(@($f.Web.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)"
-            if ($curFront -and $curFront -ne $wantFront) {
-                $fs = Get-EpsSigninFrontSource -SolutionRoot $a.Root -Pin $pin
-                if (-not $fs.Ok) { return (& $fail 'build' "the sign-in front: $($fs.Reason) - nothing was moved") }
-                & $Emit 'build' 'running' "building signin-front:$pin in $($n.Registry) (the web app runs $(("$curFront" -split '/')[-1]))"
-                $fctx = New-EpsFrontBuildContext -Src $fs.Src
-                try { $fb = Invoke-EpsAcrBuild -RegistryId $f.RegistryId -ContextPath $fctx -DockerFile 'Dockerfile' -ImageName "signin-front:$pin" -PollSeconds $PollSeconds -AgentPoolName $(if ($f.PrivateRegistry) { $n.AgentPool } else { '' }) }
-                finally { Remove-Item -LiteralPath $fctx -ErrorAction SilentlyContinue }
-                & $Emit 'build' 'ok' "signin-front:$pin built ($($fb.Digest))"
-                & $Log 'Info' "sign-in front: $(("$curFront" -split '/')[-1]) -> signin-front:$pin (built)"
-                $frontImage = $wantFront
-            }
-        }
+        # 2.1.56 (FRONT-CODE-REMOVE, SECURE-WEB-1): no sign-in front is built or moved (IMAGE-PATCH-1 step 2 is retired)
         $step = 'migrate'
         if ($ImageOnly) { & $Emit 'migrate' 'ok' "image-only ($RunningVersion -> $($Target.Version), the same code): no database step" } elseif ($resume.Done) { & $Emit 'migrate' 'ok' "already applied ($($n.DbInitJob) $($resume.Execution) Succeeded on $($Target.Version))" } else {
         # framework §4.5 SQL-ADMIN-GROUP G2-G4 (the owner: "both setup and upd"): the database setup identity's membership of
@@ -431,16 +359,15 @@ function Invoke-EpsUpdateApply {
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
         $rolled = [System.Collections.Generic.List[string]]::new(); $left = [System.Collections.Generic.List[string]]::new()
         $roll = {
-            param($path, $api, $template, $label, $cfg, $front)
-            $s = Set-EpsEpsContainerImage -Template $template -Image $image -FrontImage "$front"
+            param($path, $api, $template, $label, $cfg)
+            $s = Set-EpsEpsContainerImage -Template $template -Image $image
             $props = @{}; if ($s.Changed) { $props.template = $s.Template }
             # a job's own timeout converges here too (the tamper job: 1 h, never 7 days) - in the same PATCH as its image
             if ($cfg) { $props.configuration = $cfg.Configuration; & $Log 'Info' "$label`: replicaTimeout $($cfg.From) -> $($cfg.To) s" }
             if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds -TimeoutRetry 1) }
             $back = Invoke-EpsArm -Path $path -ApiVersion $api -TimeoutRetry 1
             $now = "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
-            $nowFront = if ($front) { "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'signin-front' })[0].image)" } else { '' }
-            if ($now -eq $image -and (-not $front -or $nowFront -eq $front)) { $rolled.Add($label) } else { $left.Add("$label ($now$(if ($front) { ", front $nowFront" }))") }
+            if ($now -eq $image) { $rolled.Add($label) } else { $left.Add("$label ($now)") }
         }
         # 2.1.17: a component whose call fails is NAMED in the stop (found live 2026-11-13: "stopped at 'apply': The request
         # was canceled ..." named no job; only the activity log showed which)
@@ -451,7 +378,7 @@ function Invoke-EpsUpdateApply {
         if ($ImageOnly) { $others = @($others) + @($f.Jobs | Where-Object { "$($_.name)" -eq $n.DbInitJob }) }
         $allLabels = @(@($others | ForEach-Object { "$($_.name)" }) + @(if ($f.Web) { $n.WebApp }) + @($f.SelfName))
         foreach ($x in $others) { $rollAt = "$($x.name)"; & $roll "$rg/providers/Microsoft.App/jobs/$($x.name)" $script:EpsApi.acajob $x.properties.template $x.name (Get-EpsJobTimeoutPatch -Job $x -Key "$($x.name)") }
-        if ($f.Web) { $rollAt = "$($n.WebApp)"; & $roll "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca $f.Web.properties.template $n.WebApp $null $frontImage }
+        if ($f.Web) { $rollAt = "$($n.WebApp)"; & $roll "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)" $script:EpsApi.aca $f.Web.properties.template $n.WebApp $null }
         # the update job itself LAST: this execution goes on in the old image; the next run is the new one. 2.1.17
         # (ROLL-RETRY-1): only when EVERY other component read back on the new image - an updater on the new version with
         # others left behind would say "up to date" and never finish the roll

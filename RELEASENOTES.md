@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.56 - The earlier sign-in's code removed, a support code on every failed run, corrected docs
+Builds on the owner's decision: "some of the solutions are right now implementing the old design we dont use anymore" (2026-11-19, relayed by Invardia, framework SECURE-WEB-1)
+- Fix: the code of the earlier sign-in front, unused since 2.1.37 (Microsoft's built-in Container Apps sign-in), is removed from the install and the update. Nothing changes for a running installation: it already runs Microsoft's built-in sign-in.
+- Fix: every job run that does not end OK now carries a stable error code for Invardia support - an update that stopped (by the step where it stopped), a CA Policy Analyzer run that reached its sign-in cap, and any other run - so support can name the cause and the next step.
+- Fix: the install steps and the settings texts name the scheduler job by its role ("the scheduler job", "the next scheduler check").
+- Docs: the install and security pages describe Microsoft's built-in sign-in (no sign-in key in the Key Vault, no Key Vault right for the web app, the one sign-in session container), and the tamper monitor page says that an accepted change closes at the next monitor run, after the engine checks your own sign-in.
+- Not changed: features, permissions, settings and the database.
 ## 2.1.55.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "i want the scanning of any new images from ms to scan every 4 hr and then it must instruct all solutions to build new and deploy to ring 0-3 without my approval" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)

@@ -739,6 +739,30 @@ function Get-EpsUplinkErrorClass {
     @{ Outcome = 'failed'; ErrorClass = $c; FixKind = $(if ($c -eq 'permission' -or $own) { 'customer-config' } else { '' }) }
 }
 
+$script:EpsRunFallbackCodes = [ordered]@{ 'eps-upd-0101' = 'download / verify'; 'eps-upd-0102' = 'build'; 'eps-upd-0103' = 'migrate'; 'eps-upd-0104' = 'apply / health'; 'eps-rule-0104' = 'the analyzer cap'; 'eps-run-0102' = 'any other job' }
+function Get-EpsRunFallbackCode {
+    <# PURE. The catalogue code (internal/errors/errors.json) of a run that is not ok and carries no code of its own: an update
+       stop by its step, a CA Policy Analyzer run partial only from its sign-in cap, else the general run code. CauseClass
+       from the run's ErrorClass (framework §8.16 list); a cause not known = 'unclassified' (Invardia escalates it to a person). #>
+    param([string]$Job, [string]$Text, [string]$ErrorClass, [string]$PartialKind = '')
+    $cc = switch ($ErrorClass) {
+        'permission' { 'permission' } 'throttled' { 'throttled' } 'upstream-error' { 'upstream-error' } 'sql' { 'settings-unreachable' }
+        { $_ -in 'timeout', 'run-limit', 'queue-start-timeout' } { 'platform-timeout' } 'held-guard' { 'held-for-approval' }
+        default { 'unclassified' }
+    }
+    $act = if ($cc -eq 'permission') { 'customer' } elseif ($cc -eq 'held-for-approval') { 'none' } else { 'support' }
+    if ($Job -eq 'Update' -and "$Text" -match "stopped at '(download|verify|build|migrate|apply|health)'") {
+        $code = switch ($Matches[1]) { 'download' { 'eps-upd-0101' } 'verify' { 'eps-upd-0101' } 'build' { 'eps-upd-0102' } 'migrate' { 'eps-upd-0103' } default { 'eps-upd-0104' } }
+        # a stop the run text does not explain further: the update did not reach the release (not-converged), never a guess
+        if ($cc -eq 'unclassified') { $cc = 'not-converged' }
+        return @{ Code = $code; CauseClass = $cc; Action = $act }
+    }
+    if ($Job -eq 'CAPolicyAnalyzer' -and ($PartialKind -eq 'cap' -or (-not $PartialKind -and "$Text" -match 'sign-in cap was reached' -and "$Text" -notmatch 'could not be evaluated'))) {
+        return @{ Code = 'eps-rule-0104'; CauseClass = 'customer-config'; Action = 'customer' }
+    }
+    @{ Code = 'eps-run-0102'; CauseClass = $cc; Action = $act }
+}
+
 function New-EpsUplinkRunRecord {
     # PURE. One finished eps.Run as a run record (job id eps-<job>; the counts; the reason redacted, only when not ok)
     # -Streak (2.0.104): how many runs of this job in a row did not complete, this one included (Get-EpsJobRunStreak)
@@ -772,6 +796,13 @@ function New-EpsUplinkRunRecord {
             $ms = @($names["$cd"]); if (-not $ms.Count) { $ms = @('') }
             foreach ($mn in $ms) { $it = [ordered]@{ Report = $o.Job; Code = "$cd"; CauseClass = $script:EpsRunWarningCodes["$cd"]; Action = 'support' }; if ($mn) { $it.MissingName = "$mn" }; $it }
         }))
+    }
+    # framework §8.16 (owner 2026-10-15 "across all solutions"): EVERY run that is not ok carries at least Code + CauseClass -
+    # a run with no catalogue code of its own gets the fallback code of its kind (Invardia tasks 2026-11-15: "a run report
+    # with no stable error code - eps-update / eps-capolicyanalyzer")
+    if ($o.Outcome -ne 'ok' -and -not @($o.Reports | Where-Object { $_ }).Count) {
+        $fb = Get-EpsRunFallbackCode -Job "$($Run.Job)" -Text "$($Run.HeldReason)" -ErrorClass "$($cls.ErrorClass)" -PartialKind "$($Run.PartialKind)"
+        $o.Reports = @([ordered]@{ Report = $o.Job; Code = $fb.Code; CauseClass = $fb.CauseClass; Action = $fb.Action })
     }
     $o.FixKind = Select-EpsUplinkEnum $cls.FixKind 'FixKind'
     # framework lesson 2026-11-08: N runs in a row not complete = deterministic - a fix-request cause (product-defect),
