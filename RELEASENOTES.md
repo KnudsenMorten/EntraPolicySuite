@@ -2,6 +2,18 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.59 - The connection to Invardia reports every 4 hours, also after an update
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "make it every 4 hr" (2026-10-10, the heartbeat to Invardia)
+- Fix: after an update, the Invardia support link reports the new version at once, and that report no longer moves the 4-hour schedule. Before, the next regular report could be skipped and Invardia heard nothing from the installation for up to 8 hours.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.58 - The connection to Invardia reports every 4 hours, also after an update
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "make it every 4 hr" (2026-10-10, the heartbeat to Invardia)
+- Fix: after an update, the Invardia support link reports the new version at once, and that report no longer moves the 4-hour schedule. Before, the next regular report could be skipped and Invardia heard nothing from the installation for up to 8 hours.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.57 - The security pack names each part by its role, with one table of names
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "rip of the bandage and chg the job + MI so it aligns to framework" (2026-11-09, relayed by Invardia, framework DOC-NAMES-1)

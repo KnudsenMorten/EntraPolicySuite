@@ -1337,8 +1337,16 @@ function Invoke-EpsUplinkCycle {
         # 1. the heartbeat (every 4 h; an interval is sent only on a 2xx) - UPLINK-SLOT-1 (2.1.48): and at once when the
         # install runs a version the last heartbeat did not report (the ring proof and the fleet view wait on it)
         $lastHb = if ($st.heartbeat) { ConvertFrom-EpsUplinkTime $st.heartbeat }
+        # SUP-2026-00663 (2026-11-20, 2.1.58): the 4 h clock runs from the last REGULAR heartbeat ('heartbeat.slot'), never
+        # from the at-once heartbeat of a new version - that one (06:12Z after the 2.1.57 update) moved the clock, the
+        # 10:01Z cycle found it 1 minute short ("not due") and internal sent no heartbeat for ~8 h. No slot kept yet
+        # (before 2.1.58) = the last heartbeat, as before; a slot newer than the last heartbeat (the state set back by hand) =
+        # the last heartbeat (the older of the two).
+        $lastSlot = if ($st['heartbeat.slot']) { ConvertFrom-EpsUplinkTime $st['heartbeat.slot'] }
+        if (-not $lastSlot -or ($lastHb -and $lastHb -lt $lastSlot)) { $lastSlot = $lastHb }
         $newVer = Test-EpsUplinkVersionUnreported -State $st -Version $Version
-        if (-not $lastHb -or $newVer -or ($NowUtc - $lastHb).TotalMinutes -ge ($script:EpsUplinkHeartbeatHours * 60 - 10)) {
+        $hbDue = -not $lastSlot -or ($NowUtc - $lastSlot).TotalMinutes -ge ($script:EpsUplinkHeartbeatHours * 60 - 10)
+        if ($hbDue -or $newVer) {
             $facts = Get-EpsUplinkHeartbeatFacts -ConnectionString $ConnectionString -Version $Version
             if ($script:EpsUplinkSendBacklog) { $facts.UplinkBacklog = Get-EpsUplinkBacklog -ConnectionString $ConnectionString -State $st -NowUtc $NowUtc }
             $r = & $post (New-EpsUplinkHeartbeat -Facts $facts -Version $Version -TenantId $TenantId -NowUtc $NowUtc)
@@ -1358,6 +1366,12 @@ function Invoke-EpsUplinkCycle {
             } elseif ($r.Ok) { $res.Heartbeat = 'ok' }
             if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)
+            # 2.1.59: the at-once heartbeat runs OUTSIDE the 4 h schedule (the update starts the link), so it never sets the
+            # slot, due or not - 2.1.58 let a due one set it (internal 12:55Z), and the schedule's 14:00Z cycle was then
+            # 1 h 05 min after it: next heartbeat 18:00Z. With no slot kept yet, the regular clock stays where it was (the
+            # heartbeat before this one).
+            if ($hbDue -and -not $newVer) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat.slot' -Value (ConvertTo-EpsUplinkIso $NowUtc) }
+            elseif ($newVer -and -not $st['heartbeat.slot'] -and $lastHb) { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat.slot' -Value (ConvertTo-EpsUplinkIso $lastHb) }
             if ("$Version" -match '^\d+\.\d+\.\d+(\.\d+)?$') { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat.version' -Value "$Version" }
             & $say 'Info' "Invardia support link: heartbeat sent ($($res.Heartbeat))$(if ($newVer) { " - at once: the install runs $Version, the last heartbeat did not say it" })"
             # framework SUPPORT ACCESS point 2: the customer's consent level from THIS identified heartbeat's answer only
@@ -1380,7 +1394,7 @@ function Invoke-EpsUplinkCycle {
                 Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'environment' -Value ($v | ConvertTo-Json -Compress)
                 $res.Environment = $v.displayName; & $say 'Info' "Invardia support link: environment name from Invardia: $($v.displayName)"
             } else { & $say 'Info' "Invardia support link: environment name not read ($($envr.Reason)) - the last one kept" }
-        } else { $res.Heartbeat = 'not due'; & $say 'Info' "Invardia support link: heartbeat not due (last $(ConvertTo-EpsUplinkIso $lastHb))" }
+        } else { $res.Heartbeat = 'not due'; & $say 'Info' "Invardia support link: heartbeat not due (last regular $(ConvertTo-EpsUplinkIso $lastSlot))" }
 
         # 2. the alerts (§8.19) - OFF by default: Invardia does not take the kind yet
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'true')" -eq 'true') {

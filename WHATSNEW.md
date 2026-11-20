@@ -1,5 +1,29 @@
 # What's new in Entra Policy Suite
 
+## 2.1.59 · 2026-11-20 · Fix-only
+
+The connection to Invardia reports every 4 hours, also after an update.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Regular reports to Invardia after an update** - After an update your installation reports its new version to Invardia at once and then keeps its 4-hour schedule. Before, Invardia could hear nothing for up to 8 hours.
+
+## 2.1.58 · 2026-11-20 · Fix-only
+
+The connection to Invardia reports every 4 hours, also after an update.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Regular reports to Invardia after an update** - After an update your installation reports its new version to Invardia at once and then keeps its 4-hour schedule. Before, Invardia could hear nothing for up to 8 hours.
+
 ## 2.1.57 · 2026-11-20 · Fix-only
 
 The security pack names each part by its role.

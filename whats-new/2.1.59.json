@@ -1,0 +1,13 @@
+{
+  "version": "2.1.59",
+  "date": "2026-11-20",
+  "type": "fix-only",
+  "summary": "The connection to Invardia reports every 4 hours, also after an update.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Regular reports to Invardia after an update",
+      "text": "After an update your installation reports its new version to Invardia at once and then keeps its 4-hour schedule. Before, Invardia could hear nothing for up to 8 hours."
+    }
+  ]
+}
