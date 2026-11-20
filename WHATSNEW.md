@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.57 · 2026-11-20 · Fix-only
+
+The security pack names each part by its role.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **One table of names in the security pack** - The security pack lists the Azure names of your installation in one table, with the earlier names an older install may still use. The rest of the pack names each part by its role.
+
 ## 2.1.56 · 2026-11-20 · Security
 
 The earlier sign-in's unused code is removed, and every failed run carries a support code.

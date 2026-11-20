@@ -2,6 +2,11 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.57 - The security pack names each part by its role, with one table of names
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "rip of the bandage and chg the job + MI so it aligns to framework" (2026-11-09, relayed by Invardia, framework DOC-NAMES-1)
+- Docs: the security pack has one table of names (Role, Standard name, Earlier name, Identity) - the one place it names the Azure resources and identities; the rest of the pack names each part by its role.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
 ## 2.1.56 - The earlier sign-in's code removed, a support code on every failed run, corrected docs
 Builds on the owner's decision: "some of the solutions are right now implementing the old design we dont use anymore" (2026-11-19, relayed by Invardia, framework SECURE-WEB-1)
 - Fix: the code of the earlier sign-in front, unused since 2.1.37 (Microsoft's built-in Container Apps sign-in), is removed from the install and the update. Nothing changes for a running installation: it already runs Microsoft's built-in sign-in.

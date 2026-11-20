@@ -1,0 +1,13 @@
+{
+  "version": "2.1.57",
+  "date": "2026-11-20",
+  "type": "fix-only",
+  "summary": "The security pack names each part by its role.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "One table of names in the security pack",
+      "text": "The security pack lists the Azure names of your installation in one table, with the earlier names an older install may still use. The rest of the pack names each part by its role."
+    }
+  ]
+}
