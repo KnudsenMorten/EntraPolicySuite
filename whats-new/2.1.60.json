@@ -1,0 +1,13 @@
+{
+  "version": "2.1.60",
+  "date": "2026-11-21",
+  "type": "fix-only",
+  "summary": "A job run that stopped working no longer holds an update back.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Updates go on past a stopped job run",
+      "text": "When a job run is far past its usual length and has logged nothing since it started, the update stops that run, reports it to Invardia and goes on. A run that still logs is never stopped."
+    }
+  ]
+}

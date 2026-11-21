@@ -2,6 +2,13 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.60 - A job run that stopped working no longer holds an update back
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "dont kill the large 4 installs except if they died" (2026-11-08, long job runs)
+- Fix: an update waits for running jobs. When a job run has gone more than 10 times past its usual length, has run for at least 2 hours and has written nothing to its log since it started, the update now stops that one run, checks that it stopped, records it on the run (support code eps-run-0103, reported to Invardia) and goes on. Before, such a run held the update back until it timed out.
+- A run that writes to its log, or whose progress moved in the last hour, is never stopped, however long it takes.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.59 - The connection to Invardia reports every 4 hours, also after an update
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "make it every 4 hr" (2026-10-10, the heartbeat to Invardia)

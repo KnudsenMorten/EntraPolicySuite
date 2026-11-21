@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.60 · 2026-11-21 · Fix-only
+
+A job run that stopped working no longer holds an update back.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Updates go on past a stopped job run** - When a job run is far past its usual length and has logged nothing since it started, the update stops that run, reports it to Invardia and goes on. A run that still logs is never stopped.
+
 ## 2.1.59 · 2026-11-20 · Fix-only
 
 The connection to Invardia reports every 4 hours, also after an update.

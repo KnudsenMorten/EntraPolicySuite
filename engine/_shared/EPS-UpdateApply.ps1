@@ -30,6 +30,39 @@ function Stop-EpsStuckJobExecution {
     [void](Invoke-EpsArm -Method POST -Path "$JobsPath/$Job/executions/$Execution/stop" -ApiVersion $ApiVersion)
 }
 
+# ROLL-HUNG-1 (framework, Invardia 2026-11-20): the updater's stop of a HUNG execution (Get-EpsHungExecutionVerdict and the
+# bounds $script:EpsRollHung live in EPS-Updater.ps1)
+function Stop-EpsHungExecution {
+    <#
+      ROLL-HUNG-1: stops ONE hung execution as the updater identity, reads back Stopped, and records it. The record: the
+      execution's own run row (-RunId) ends Failed "stalled: hung (stopped by the update): <why>"; with no run row, one is
+      written for the job. Never throws: @{ Stopped; State; Reason }. -Arm { param($method, $path) } and -Sleep are seams.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$JobsPath, [Parameter(Mandatory)][ValidatePattern('^caj-eps-[a-z0-9-]{1,40}$')][string]$Job,
+          [Parameter(Mandatory)][ValidatePattern('^caj-eps-[a-z0-9-]{1,60}$')][string]$Execution, [Parameter(Mandatory)][string]$ApiVersion,
+          [string]$EpsJob, $RunId, [datetime]$StartedUtc, [string]$Why, [scriptblock]$Arm, [scriptblock]$Sleep = { param($s) Start-Sleep -Seconds $s })
+    if (-not $Arm) { $Arm = { param($m, $p) Invoke-EpsArm -Method $m -Path $p -ApiVersion $ApiVersion }.GetNewClosure() }
+    try { [void](& $Arm 'POST' "$JobsPath/$Job/executions/$Execution/stop") }
+    catch { return @{ Stopped = $false; State = ''; Reason = "stopping it failed: $((("$($_.Exception.Message)") -split "`n")[0]) - still waited for" } }
+    $state = ''
+    for ($i = 0; $i -lt $script:EpsRollHung.ReadBackTries; $i++) {
+        try { $state = "$(@(@((& $Arm 'GET' "$JobsPath/$Job/executions").value) | Where-Object { "$($_.name)" -eq $Execution })[0].properties.status)" } catch { $state = '' }
+        if ($state -and $state -ne 'Running') { break }
+        & $Sleep $script:EpsRollHung.ReadBackSeconds
+    }
+    if ($state -ne 'Stopped') { return @{ Stopped = $false; State = $state; Reason = "asked to stop, but it reads back '$(if ($state) { $state } else { 'unknown' })' - still waited for" } }
+    $text = "stalled: hung (stopped by the update): $Why. Execution $Execution read back Stopped; the update rolled on (framework ROLL-HUNG-1)."
+    if ($text.Length -gt 1000) { $text = $text.Substring(0, 997) + '...' }
+    try {
+        $n = 0
+        if ($RunId -and $RunId -isnot [DBNull]) { $n = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = [guid]"$RunId"; h = $text } -Query "UPDATE eps.Run SET Status = 'Failed', EndedAtUtc = SYSUTCDATETIME(), HeldReason = @h WHERE RunId = @r AND Status = 'Running'") }
+        if (-not $n -and $EpsJob) {
+            [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = [guid]::NewGuid(); j = $EpsJob; s = $StartedUtc.ToUniversalTime(); h = $text } -Query "INSERT INTO eps.Run (RunId, Job, Mode, StartedAtUtc, EndedAtUtc, Status, HeldReason) VALUES (@r, @j, 'Apply', @s, SYSUTCDATETIME(), 'Failed', @h)")
+        }
+    } catch { return @{ Stopped = $true; State = $state; Reason = "stopped (read back Stopped), but the run record could not be written: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+    @{ Stopped = $true; State = $state; Reason = $text }
+}
+
 function Save-EpsReleaseArchive {
     <#
       The release zip from the signed manifest's link: https only, the size and SHA-256 the signature names, then the zip's

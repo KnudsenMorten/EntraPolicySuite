@@ -317,6 +317,40 @@ function Set-EpsUpdateHold {
     } catch { return $false }
 }
 
+# ---- ROLL-HUNG-1 (framework/REQUIREMENTS.md, Invardia 2026-11-20, all products; PIM found a publish execution "Running"
+# 333 min with ZERO log lines that held the roll twice): an execution that blocks the roll is HUNG only when ALL hold - it
+# runs more than 10x its usual length (the median of the job's last finished runs, at least 3), at least 120 min, and its
+# run has written NO log line since it started (none in eps.RunLog; an execution with no run row at all wrote none). Then
+# the updater stops that one execution, reads back Stopped, records it (the run "stalled: hung ...", code eps-run-0103 -
+# the run report is Invardia's ONE fix request; the heartbeat's Pipeline says stuck) and rolls. A run that writes log
+# lines is NEVER stopped, however long it takes (the owner's long-run rule). EPS also keeps a run whose engine watchdog
+# moved its progress in the last 60 min (alive, only silent at log level Off).
+$script:EpsRollHung = @{ Factor = 10; MinMinutes = 120; MinRuns = 3; AliveProgressMinutes = 60; ReadBackTries = 12; ReadBackSeconds = 5 }
+
+function Get-EpsHungExecutionVerdict {
+    <# PURE. One Running execution that blocks the roll -> @{ Hung; Reason; AgeMin; UsualMin }. -Durations: the job's last
+       finished runs in minutes; -LogLines: its run's log lines since it started (0 when it has no run row); -ProgressAtUtc:
+       its run's last watchdog progress ($null = none). #>
+    param([Parameter(Mandatory)][datetime]$StartedUtc, [double[]]$Durations = @(), [int]$LogLines = 0, $ProgressAtUtc, [datetime]$NowUtc = [datetime]::UtcNow)
+    $now = [datetime]::SpecifyKind($NowUtc, 'Utc')
+    $age = [Math]::Round(($now - [datetime]::SpecifyKind($StartedUtc, 'Utc')).TotalMinutes, 1)
+    $d = @($Durations | Where-Object { $null -ne $_ } | Sort-Object)
+    $usual = if ($d.Count -ge $script:EpsRollHung.MinRuns) { [Math]::Max(1.0, [double]$d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { $null }
+    $v = @{ Hung = $false; Reason = ''; AgeMin = $age; UsualMin = $usual }
+    if ($LogLines -gt 0) { $v.Reason = "it has written $LogLines log line(s) - a run that logs is never stopped"; return $v }
+    if (-not $usual) { $v.Reason = "no usual length (fewer than $($script:EpsRollHung.MinRuns) finished runs) - not judged"; return $v }
+    if ($age -lt $script:EpsRollHung.MinMinutes -or $age -le $script:EpsRollHung.Factor * $usual) { $v.Reason = "running $([int]$age) min, usual $([Math]::Round($usual, 1)) min - inside the bound"; return $v }
+    if ($ProgressAtUtc -and $ProgressAtUtc -isnot [DBNull]) {
+        $quiet = ($now - [datetime]::SpecifyKind([datetime]$ProgressAtUtc, 'Utc')).TotalMinutes
+        if ($quiet -lt $script:EpsRollHung.AliveProgressMinutes) { $v.Reason = "its progress moved $([int]$quiet) min ago - alive, not hung"; return $v }
+    }
+    $v.Hung = $true
+    $v.Reason = "running $([int]$age) min, more than $($script:EpsRollHung.Factor)x its usual $([Math]::Round($usual, 1)) min, with no log line since it started"
+    $v
+}
+
+# Stop-EpsHungExecution (the stop, its read-back and the record) lives in EPS-UpdateApply.ps1 with the other ARM writes
+
 function Get-EpsUpdateRunningWork {
     <#
       Which work jobs run now? eps.Run (Running, not Tick / Update) AND - with -Arm - the Container Apps executions in state
@@ -328,10 +362,16 @@ function Get-EpsUpdateRunningWork {
           # 2.0.90 update; framework UPD-06): an execution Running longer than -StuckMinutes while NO run row is Running at
           # all is STUCK - handed to -OnStuck { param($job, $execution, $startUtc) } (the updater stops it) and not waited for.
           # A long but real run always has its Running row, so it is still waited for.
-          [int]$StuckMinutes = $script:EpsUpdateHold.StuckMinutes, [scriptblock]$OnStuck, [datetime]$NowUtc = [datetime]::UtcNow)
+          [int]$StuckMinutes = $script:EpsUpdateHold.StuckMinutes, [scriptblock]$OnStuck, [datetime]$NowUtc = [datetime]::UtcNow,
+          # ROLL-HUNG-1: -OnHung { param($job, $execution, $startUtc, $verdict, $epsJob, $runId) -> $true when it was stopped
+          # and read back Stopped } - a HUNG execution (Get-EpsHungExecutionVerdict) is then not waited for, nor its run row
+          [scriptblock]$OnHung)
     $out = [System.Collections.Generic.List[string]]::new()
-    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT Job, StartedAtUtc FROM eps.Run WHERE Status = 'Running' AND Job NOT IN ('Tick', 'Update')")
-    foreach ($r in $rows) { if ("$($r.Job)" -and -not $out.Contains("$($r.Job)")) { $out.Add("$($r.Job)") } }
+    $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT RunId, Job, StartedAtUtc FROM eps.Run WHERE Status = 'Running' AND Job NOT IN ('Tick', 'Update')")
+    $resolved = [System.Collections.Generic.HashSet[string]]::new()
+    # ROLL-HUNG-1: the eps.Run job name of each Container Apps job (the schedule's AcaJobName)
+    $epsJobOf = @{}
+    if ($OnHung -and (Get-Command Get-EpsDefaultJobSchedule -ErrorAction SilentlyContinue)) { foreach ($s in @(Get-EpsDefaultJobSchedule)) { if ($s.AcaJobName) { $epsJobOf["$($s.AcaJobName)"] = "$($s.Job)" } } }
     if ($Arm) {
         foreach ($j in @($Jobs | Where-Object { $_ -and $_ -notin $script:EpsUpdateHold.NotWaitedFor })) {
             try {
@@ -345,12 +385,29 @@ function Get-EpsUpdateRunningWork {
                         if ($OnStuck) { try { & $OnStuck $j "$($e.name)" $st } catch { } }
                         continue
                     }
+                    # ROLL-HUNG-1: judged only past the 120-min floor (no SQL read for a young run); any doubt = waited for
+                    if ($OnHung -and $hasStart -and $epsJobOf.Contains($j) -and ($NowUtc - $st).TotalMinutes -ge $script:EpsRollHung.MinMinutes) {
+                        try {
+                            $ej = $epsJobOf[$j]
+                            # its run row = the job's run that started with it (the watchdog's own match: from 2 min before)
+                            $rr = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $ej; s = $st.AddMinutes(-2) } -Query "SELECT TOP (1) RunId, ProgressAtUtc FROM eps.Run WHERE Job = @j AND StartedAtUtc >= @s ORDER BY StartedAtUtc")[0]
+                            $lines = if ($rr) { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ r = $rr.RunId } -Query 'SELECT COUNT(*) FROM eps.RunLog WHERE RunId = @r') } else { 0 }
+                            $dur = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = $ej } -Query "SELECT TOP 10 DATEDIFF(second, StartedAtUtc, EndedAtUtc) / 60.0 AS M FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC" | ForEach-Object { [double]$_.M })
+                            $hv = Get-EpsHungExecutionVerdict -StartedUtc $st -Durations $dur -LogLines $lines -ProgressAtUtc $(if ($rr) { $rr.ProgressAtUtc }) -NowUtc $NowUtc
+                            if ($hv.Hung -and (& $OnHung $j "$($e.name)" $st $hv $ej $(if ($rr) { $rr.RunId }))) {
+                                if ($rr) { [void]$resolved.Add("$($rr.RunId)") }
+                                continue
+                            }
+                        } catch { }
+                    }
                     $live++
                 }
                 if ($live) { $out.Add($j) }
             } catch { $out.Add("$j (its executions could not be read: $((("$($_.Exception.Message)") -split "`n")[0].Substring(0, [Math]::Min(120, (("$($_.Exception.Message)") -split "`n")[0].Length))))") }
         }
     }
+    # the running run rows - but not one whose hung execution was just stopped and recorded (ROLL-HUNG-1)
+    foreach ($r in $rows) { if ("$($r.Job)" -and -not $resolved.Contains("$($r.RunId)") -and -not $out.Contains("$($r.Job)")) { $out.Add("$($r.Job)") } }
     return @($out | Select-Object -Unique)
 }
 
@@ -623,8 +680,17 @@ WHEN NOT MATCHED THEN INSERT (Name, Feature, Value, UpdatedBy) VALUES (@n, 'Upda
                             if ($told.ContainsKey("$j/$en")) { return }; $told["$j/$en"] = $true
                             try { Stop-EpsStuckJobExecution -JobsPath $p0 -Job $j -Execution $en -ApiVersion $v0; & $lg 'Warning' "update hold: $j execution $en has run since $($st.ToString('yyyy-MM-dd HH:mm'))Z with no run row - STUCK: stopped, not waited for (framework UPD-06)" }
                             catch { & $lg 'Warning' "update hold: $j execution $en has run since $($st.ToString('yyyy-MM-dd HH:mm'))Z with no run row - STUCK, not waited for; stopping it failed: $((("$($_.Exception.Message)") -split "`n")[0])" } }.GetNewClosure()
+                        # ROLL-HUNG-1: a hung execution (10x its usual, >= 120 min, no log line since it started) is stopped,
+                        # read back Stopped and recorded (its run "stalled: hung", the run report Invardia's one fix request);
+                        # the roll goes on. Tried once per execution; a failed stop or read-back is still waited for.
+                        $c1 = "$cs"
+                        $hung = { param($j, $en, $st, $hv, $ej, $rid)
+                            if ($told.ContainsKey("hung/$j/$en")) { return $false }; $told["hung/$j/$en"] = $true
+                            $r = Stop-EpsHungExecution -ConnectionString $c1 -JobsPath $p0 -Job $j -Execution $en -ApiVersion $v0 -EpsJob $ej -RunId $rid -StartedUtc $st -Why $hv.Reason
+                            & $lg 'Warning' "update hold: $j execution $en (since $($st.ToString('yyyy-MM-dd HH:mm'))Z) is HUNG - $($hv.Reason). $(if ($r.Stopped) { 'Stopped, read back Stopped, recorded; not waited for (framework ROLL-HUNG-1)' } else { $r.Reason })"
+                            [bool]$r.Stopped }.GetNewClosure()
                     }
-                    Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names -OnStuck $stuck
+                    Get-EpsUpdateRunningWork -ConnectionString $cs -Arm $arm -Jobs $names -OnStuck $stuck -OnHung $hung
                 }.GetNewClosure()
             }
             # SEC-LANE-1 (owner 2026-11-14: "no wait for ms approved security patches or updates. just do it"): the signed

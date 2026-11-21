@@ -43,6 +43,7 @@ $script:EpsUplinkAlertRepeatHours = 24
 $script:EpsUplinkWorkerSilentMinutes = 60
 $script:EpsUplinkFirstRunsHours = 24      # a job without a watermark: its runs of the last 24 h (no history dump)
 $script:EpsRunWarningCodes = [ordered]@{ 'eps-src-0101' = 'no-data-source'; 'eps-rule-0101' = 'query-defect'; 'eps-rule-0102' = 'no-data-source'; 'eps-src-0102' = 'no-data-source'; 'eps-src-0103' = 'permission'; 'eps-rule-0103' = 'query-defect' }   # TRUST-1 point 3: code -> CauseClass (framework closed list); the catalogue is internal/errors/errors.json
+$script:EpsHungErrorCode = 'eps-run-0103'    # ROLL-HUNG-1 (2.1.60): a hung execution the update stopped (internal/errors/errors.json)
 $script:EpsStallErrorCode = 'eps-run-0101'   # STALL-1: the run-stalled code in internal/errors/errors.json (handed over, never shipped) (Invardia 2026-11-10, prefix eps-)
 $script:EpsUplinkSleep ={ param([int]$Ms) if ($Ms -gt 0) { Start-Sleep -Milliseconds $Ms } }   # a test counts the pauses
 
@@ -554,7 +555,8 @@ function Get-EpsUplinkLongRun {
             $su = [datetime]::SpecifyKind([datetime]$s.StartedAtUtc, 'Utc'); $age = [Math]::Round(([datetime]::SpecifyKind([datetime]$s.EndedAtUtc, 'Utc') - $su).TotalMinutes, 1)
             $d = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ j = [string]$s.Job } -Query "SELECT TOP 10 DATEDIFF(second, StartedAtUtc, EndedAtUtc) / 60.0 AS M FROM eps.Run WHERE Job = @j AND EndedAtUtc IS NOT NULL AND Status IN ('Succeeded', 'PartlyFailed') ORDER BY StartedAtUtc DESC" | ForEach-Object { [double]$_.M } | Sort-Object)
             $usual = if ($d.Count) { [Math]::Max(1.0, $d[[int][Math]::Floor(($d.Count - 1) / 2)]) } else { 1.0 }
-            return @{ job = [string]$s.Job; startedUtc = $su; usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $age / $usual; state = 'stalled'; newerWaiting = $false
+            # ROLL-HUNG-1: a run the update stopped as hung = the pipeline is STUCK (Invardia's word for it)
+            return @{ job = [string]$s.Job; startedUtc = $su; usualMin = [Math]::Round($usual, 1); ageMin = $age; ratio = $age / $usual; state = $(if ("$($s.HeldReason)" -match '^stalled: hung') { 'stuck' } else { 'stalled' }); newerWaiting = $false
                       action = $(if ("$($s.HeldReason)" -match 'started once more') { 'cancel-restart' } else { 'none' }); at = $NowUtc }
         }
         $best
@@ -779,7 +781,8 @@ function New-EpsUplinkRunRecord {
     if ($cls.ErrorClass -eq 'run-stalled') {
         $o.FailedStep = $o.Job   # the step that stalled = the job (EPS's jobs are one step each)
         # framework §8.16: the item carries the catalogue code (internal/errors/errors.json, eps-run-0101, opensTicket true)
-        $o.Reports = @([ordered]@{ Report = $o.Job; Code = $script:EpsStallErrorCode; CauseClass = 'run-stalled'; Action = 'support' })
+        # ROLL-HUNG-1 (2.1.60): a run the UPDATE stopped as hung (no log line, 10x its usual) has its own code
+        $o.Reports = @([ordered]@{ Report = $o.Job; Code = $(if ("$($Run.HeldReason)" -match '^stalled: hung') { $script:EpsHungErrorCode } else { $script:EpsStallErrorCode }); CauseClass = 'run-stalled'; Action = 'support' })
     }
     # TRUST-1 point 3: a whole run that left something UNKNOWN (a source not read, a condition that failed) is a warning
     # with its catalogue code(s) - never 'unknown' on Invardia's run monitor; the run's other data stays trusted
