@@ -2,6 +2,12 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.60.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "i want the scanning of any new images from ms to scan every 4 hr and then it must instruct all solutions to build new and deploy to ring 0-3 without my approval" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
+- Security update: the engine's container image moves to Microsoft's newest base image (.NET 10.0.15), with the security fixes Microsoft published. The same code as 2.1.60.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.60 - A job run that stopped working no longer holds an update back
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "dont kill the large 4 installs except if they died" (2026-11-08, long job runs)

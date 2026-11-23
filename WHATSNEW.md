@@ -1,5 +1,17 @@
 # What's new in Entra Policy Suite
 
+## 2.1.60.1 · 2026-11-23 · Fix-only
+
+A security update from Microsoft.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Security update from Microsoft** - Your installation runs on Microsoft's newest security update (.NET 10.0.15). Nothing else changes.
+
 ## 2.1.60 · 2026-11-21 · Fix-only
 
 A job run that stopped working no longer holds an update back.
