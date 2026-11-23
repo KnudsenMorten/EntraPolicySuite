@@ -1,6 +1,6 @@
 # What's new in Entra Policy Suite
 
-## 2.1.60.1 · 2026-11-23 · Fix-only
+## 2.1.62.1 · 2026-11-23 · Fix-only
 
 A security update from Microsoft.
 
@@ -11,6 +11,30 @@ None in this version.
 ### Fixes
 
 - **Security update from Microsoft** - Your installation runs on Microsoft's newest security update (.NET 10.0.15). Nothing else changes.
+
+## 2.1.62 · 2026-11-23 · Fix-only
+
+The security pack lists only the product's own identities.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Security pack lists only its own identities** - The identities table in the security pack lists only the identities Entra Policy Suite creates and uses. The person who runs the install is named as a requirement of the install, not as an identity.
+
+## 2.1.61 · 2026-11-23 · Fix-only
+
+The Jobs docs say when an update stops a job run.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Jobs docs explain stopped job runs** - The Update job's description says that a job run which has stopped working is stopped so the update can go on, and that a run which still writes to its log is never stopped.
 
 ## 2.1.60 · 2026-11-21 · Fix-only
 

@@ -1,7 +1,7 @@
 {
   "imageOnly": true,
-  "version": "2.1.60.1",
-  "fromVersion": "2.1.60",
+  "version": "2.1.62.1",
+  "fromVersion": "2.1.62",
   "imageDiff": [
     "SOLUTIONS/EntraPolicySuite/tools/eps-engine/Dockerfile"
   ]

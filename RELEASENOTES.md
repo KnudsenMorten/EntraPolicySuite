@@ -2,10 +2,22 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
-## 2.1.60.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
+## 2.1.62.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "i want the scanning of any new images from ms to scan every 4 hr and then it must instruct all solutions to build new and deploy to ring 0-3 without my approval" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
-- Security update: the engine's container image moves to Microsoft's newest base image (.NET 10.0.15), with the security fixes Microsoft published. The same code as 2.1.60.
+- Security update: the engine's container image moves to Microsoft's newest base image (.NET 10.0.15), with the security fixes Microsoft published. The same code as 2.1.62.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.62 - The security pack lists only the product's own identities
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it should not mention an account that is NOT part of the solution" (2026-11-23, the documentation of identities and rights)
+- Docs: the security pack's identities table lists only the identities Entra Policy Suite creates and uses - its managed identities, the web sign-in registration and the hybrid worker's gMSA. The person who runs the install is now described as a requirement of the install (Owner on the subscription and Global Administrator or Privileged Role Administrator), not as an identity.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.61 - The Jobs docs say when an update stops a job run
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "dont kill the large 4 installs except if they died" (2026-11-08, long job runs)
+- Docs: the Jobs and runs page's Update row now says what 2.1.60 does - a job run that has stopped working is stopped so the update can go on; a run that still writes to its log is never stopped.
 - Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
 
 ## 2.1.60 - A job run that stopped working no longer holds an update back

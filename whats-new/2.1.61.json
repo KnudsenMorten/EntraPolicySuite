@@ -1,0 +1,13 @@
+{
+  "version": "2.1.61",
+  "date": "2026-11-23",
+  "type": "fix-only",
+  "summary": "The Jobs docs say when an update stops a job run.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Jobs docs explain stopped job runs",
+      "text": "The Update job's description says that a job run which has stopped working is stopped so the update can go on, and that a run which still writes to its log is never stopped."
+    }
+  ]
+}

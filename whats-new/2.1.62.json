@@ -1,0 +1,13 @@
+{
+  "version": "2.1.62",
+  "date": "2026-11-23",
+  "type": "fix-only",
+  "summary": "The security pack lists only the product's own identities.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Security pack lists only its own identities",
+      "text": "The identities table in the security pack lists only the identities Entra Policy Suite creates and uses. The person who runs the install is named as a requirement of the install, not as an identity."
+    }
+  ]
+}
