@@ -1,0 +1,13 @@
+{
+  "version": "2.1.62.2",
+  "date": "2026-11-23",
+  "type": "fix-only",
+  "summary": "A security update from Microsoft.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Security update from Microsoft",
+      "text": "Your installation runs on Microsoft's newest security update (.NET 10.0.15). Nothing else changes."
+    }
+  ]
+}
