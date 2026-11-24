@@ -1,5 +1,29 @@
 # What's new in Entra Policy Suite
 
+## 2.1.64 · 2026-11-24 · Fix-only
+
+Security updates install within 15 minutes, not at night.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Security updates install at once** - When a security update (a new base image on the version your installation runs) is released to its ring, the engine finds it within 15 minutes and starts the update at once, not at the nightly update at 03:00.
+
+## 2.1.63 · 2026-11-23 · Fix-only
+
+The install guide shows each part's standard and earlier name.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Names table shows earlier names** - The install guide's table of names now shows the standard name, the earlier name an install made before 2.0.55 may still use, and the identity of each part. The 2.1.59 notes now say what that version fixed.
+
 ## 2.1.62.2 · 2026-11-23 · Fix-only
 
 A security update from Microsoft.
@@ -48,6 +72,18 @@ None in this version.
 
 - **Jobs docs explain stopped job runs** - The Update job's description says that a job run which has stopped working is stopped so the update can go on, and that a run which still writes to its log is never stopped.
 
+## 2.1.60.1 · 2026-11-23 · Fix-only
+
+A security update from Microsoft.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Security update from Microsoft** - Your installation runs on Microsoft's newest security update (.NET 10.0.15). Nothing else changes.
+
 ## 2.1.60 · 2026-11-21 · Fix-only
 
 A job run that stopped working no longer holds an update back.
@@ -62,7 +98,7 @@ None in this version.
 
 ## 2.1.59 · 2026-11-20 · Fix-only
 
-The connection to Invardia reports every 4 hours, also after an update.
+Completes the 2.1.58 fix for the 4-hour reports to Invardia.
 
 ### New features
 
@@ -70,7 +106,7 @@ None in this version.
 
 ### Fixes
 
-- **Regular reports to Invardia after an update** - After an update your installation reports its new version to Invardia at once and then keeps its 4-hour schedule. Before, Invardia could hear nothing for up to 8 hours.
+- **4-hour reports stay on schedule** - Completes the 2.1.58 fix: when the report right after an update came while a regular report was also due, the 4-hour schedule still moved. Now only a regular report sets it.
 
 ## 2.1.58 · 2026-11-20 · Fix-only
 

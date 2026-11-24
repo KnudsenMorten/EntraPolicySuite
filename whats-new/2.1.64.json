@@ -1,0 +1,13 @@
+{
+  "version": "2.1.64",
+  "date": "2026-11-24",
+  "type": "fix-only",
+  "summary": "Security updates install within 15 minutes, not at night.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Security updates install at once",
+      "text": "When a security update (a new base image on the version your installation runs) is released to its ring, the engine finds it within 15 minutes and starts the update at once, not at the nightly update at 03:00."
+    }
+  ]
+}

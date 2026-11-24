@@ -213,17 +213,28 @@ function Get-EpsUpdateExpediteDecision {
       PURE (UPD-03, 2.0.97; PIM's 15-minute expedite check). Invardia's head answer (Get-EpsUpdateHead) -> @{ Start;
       Version; Reason }. Start only when: HTTP 200, expedite.apply = 'now', the head's version is NEWER than the installed
       one, 'until' has not passed, and no "update now" start was made for that version before (-AlreadyStarted).
-      'window' = the nightly run takes it.
+      'window' = the nightly run takes it. IMAGE-30MIN-1: an image-only head (a 4-part version on the installed code) starts
+      without a mark, once per version.
     #>
     param([AllowNull()][object]$Head, [string]$InstalledVersion = '', [bool]$AlreadyStarted = $false, [datetime]$NowUtc = [datetime]::UtcNow)
     $no = { param($why, $v) @{ Start = $false; Version = "$v"; Reason = "$why" } }
     if (-not $Head -or [int]$Head.Status -ne 200) { return (& $no "no answer to read$(if ($Head -and $Head.Reason) { ": $($Head.Reason)" })" '') }
     $v = "$($Head.Version)".Trim()
+    # IMAGE-30MIN-1 (owner 2026-11-24, via Invardia: "goal is to get img upd faster when security cve detected in img"): an
+    # IMAGE-ONLY release on this install's ring starts at once, with or without an "update now" mark. Image-only by its
+    # name (as PIM's Get-PimImageOnlyUpdateDecision): a 4-part version on the SAME code (first three parts) as the one this
+    # install runs, newer than it. The update run then proves the package's image-only marker (SEC-LANE-1) before it swaps.
+    $a = $null; $b = $null
+    $readable = [version]::TryParse($v, [ref]$a) -and [version]::TryParse("$InstalledVersion".Trim(), [ref]$b)
+    $imageOnly = $readable -and $a.Revision -ge 1 -and $a.Major -eq $b.Major -and $a.Minor -eq $b.Minor -and $a.Build -eq $b.Build -and $a -gt $b
+    if ($imageOnly) {
+        if ($AlreadyStarted) { return (& $no "an update was already started for $v by update now" $v) }
+        return @{ Start = $true; Version = $v; Reason = "image-only security update on this ring (IMAGE-30MIN-1): $InstalledVersion -> $v" }
+    }
     if (-not $Head.Expedite) { return (& $no 'no "update now" for this install' $v) }
     if ("$($Head.Expedite.Apply)" -eq 'window') { return (& $no '"update now" within the agreed hours: the nightly run takes it' $v) }
     if ("$($Head.Expedite.Apply)" -ne 'now') { return (& $no 'an "update now" mark that cannot be read' $v) }
-    $a = $null; $b = $null
-    if (-not [version]::TryParse($v, [ref]$a) -or -not [version]::TryParse("$InstalledVersion".Trim(), [ref]$b)) { return (& $no 'a version that cannot be read' $v) }
+    if (-not $readable) { return (& $no 'a version that cannot be read' $v) }
     if ($a -le $b) { return (& $no "this install runs $InstalledVersion (the head is $v)" $v) }
     $u = "$($Head.Expedite.Until)".Trim()
     if ($u) {

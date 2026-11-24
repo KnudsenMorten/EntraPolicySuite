@@ -2,6 +2,20 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.64 - Security updates install within 15 minutes, not at night
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "goal is to get img upd faster when security cve detected in img" (2026-11-24, relayed by Invardia, framework IMAGE-30MIN-1)
+- Fix: a security update released to your installation's ring (a new base image on the version it runs) is found within 15 minutes and installed at once. Before, it waited for the nightly update at 03:00 unless Invardia asked for an update now.
+- Docs: Jobs and runs says when a security update installs.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.63 - The install guide shows each part's standard and earlier name
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "but documentation will be a mesh" (2026-11-09, existing installs keep their names - framework DOC-NAMES-1)
+- Docs: the install guide's table of names has the columns Role, Standard name, Earlier name and Identity. The earlier names of the engine job and the update job (installs made before 2.0.55) are in the table, not only in the text below it.
+- Docs: the 2.1.59 release notes and What's new now say what 2.1.59 fixed: it completed the 2.1.58 fix for the 4-hour reports to Invardia.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.62.2 - Security update: Microsoft's newest base image (IMAGE-PATCH)
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "i want the scanning of any new images from ms to scan every 4 hr and then it must instruct all solutions to build new and deploy to ring 0-3 without my approval" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
@@ -26,6 +40,12 @@ Builds on the owner's decision: "dont kill the large 4 installs except if they d
 - Docs: the Jobs and runs page's Update row now says what 2.1.60 does - a job run that has stopped working is stopped so the update can go on; a run that still writes to its log is never stopped.
 - Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
 
+## 2.1.60.1 - Security update: Microsoft's newest base image (IMAGE-PATCH)
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "i want the scanning of any new images from ms to scan every 4 hr and then it must instruct all solutions to build new and deploy to ring 0-3 without my approval" (2026-11-11, relayed by Invardia, framework IMAGE-PATCH-1)
+- Security update: the engine's container image moves to Microsoft's newest base image (.NET 10.0.15), with the security fixes Microsoft published. The same code as 2.1.60.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.60 - A job run that stopped working no longer holds an update back
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "dont kill the large 4 installs except if they died" (2026-11-08, long job runs)
@@ -33,10 +53,10 @@ Builds on the owner's decision: "dont kill the large 4 installs except if they d
 - A run that writes to its log, or whose progress moved in the last hour, is never stopped, however long it takes.
 - Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
 
-## 2.1.59 - The connection to Invardia reports every 4 hours, also after an update
+## 2.1.59 - The 4-hour reports to Invardia stay on schedule in every case
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "make it every 4 hr" (2026-10-10, the heartbeat to Invardia)
-- Fix: after an update, the Invardia support link reports the new version at once, and that report no longer moves the 4-hour schedule. Before, the next regular report could be skipped and Invardia heard nothing from the installation for up to 8 hours.
+- Fix: completes the fix of 2.1.58. When the report right after an update came at a time a regular report was also due, it still moved the 4-hour schedule, so the next regular report came about an hour early and the one after it late. Now only a regular report sets the schedule.
 - Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
 
 ## 2.1.58 - The connection to Invardia reports every 4 hours, also after an update

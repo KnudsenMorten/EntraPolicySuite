@@ -1,0 +1,13 @@
+{
+  "version": "2.1.63",
+  "date": "2026-11-23",
+  "type": "fix-only",
+  "summary": "The install guide shows each part's standard and earlier name.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Names table shows earlier names",
+      "text": "The install guide's table of names now shows the standard name, the earlier name an install made before 2.0.55 may still use, and the identity of each part. The 2.1.59 notes now say what that version fixed."
+    }
+  ]
+}
