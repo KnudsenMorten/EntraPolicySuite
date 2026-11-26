@@ -846,6 +846,12 @@ function Invoke-EpsIdentityReportJob {
             -ButtonText 'Open the identity report' -ButtonPage 'identity' -Footer @{ Environment = $mc.Environment; TenantName = $mc.TenantName; TenantId = $mc.TenantId; Version = $Version }
         $mail = Send-EpsMail -Config $mc -Subject (New-EpsMailSubject -Environment $mc.Environment -What 'Identity report') -Html $html -Attachments @(@{ Name = "Users-$($NowUtc.ToString('yyyyMMdd')).xlsx"; Bytes = $bytes; ContentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
         & $Log $(if ($mail.Sent) { 'Info' } else { 'Warn' }) "workbook mail: $($mail.Reason)"
+        # MAIL-RETRY (2.1.74, Invardia 2026-11-26): the report mail is NOT sent again (the next report is the next mail) - a
+        # failed send while mail IS set up is kept as its time for the heartbeat (Mail.identityReportFailedUtc); a sent one clears it
+        if (Get-Command Set-EpsUplinkState -ErrorAction SilentlyContinue) {
+            try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'mail.identityReport.failedUtc' -Value $(if (-not $mail.Sent -and "$($mc.Mode)" -ne 'none') { [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }) }
+            catch { & $Log 'Warn' "the workbook mail's result could not be recorded: $($_.Exception.Message)" }
+        }
     }
     # TRUST-1 point 3 (2.1.15): an enrichment that could not be read (a role group not expanded) = its value UNKNOWN, named
     # in the notes, the run whole - with its catalogue code for the run record (eps-src-0102, MissingName role-group-members)

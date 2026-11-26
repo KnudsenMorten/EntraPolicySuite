@@ -171,13 +171,49 @@ function Get-EpsLogLevel {
 function Remove-EpsExpiredRunLogs {
     # run log lines older than Log.KeepDays (default 90, at least 7) - at most 20,000 lines per call (a bounded batch: the
     # next hour takes the rest). The run records (eps.Run) stay. Returns the number of lines removed; never throws (-1 =
-    # it could not).
+    # it could not). The analyzer's analyses are Remove-EpsExpiredCaAnalyses (2.1.75 review L4: its own call and log line).
     param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow)
     try {
-        $d = 90; $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = 'Log.KeepDays'"
-        if ("$v" -match '^\d{1,4}$') { $d = [math]::Max(7, [int]"$v") }
+        $d = Get-EpsLogKeepDays -ConnectionString $ConnectionString
         [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ c = $NowUtc.AddDays(-$d) } -Query 'DELETE TOP (20000) FROM eps.RunLog WHERE AtUtc < @c')
     } catch { -1 }
+}
+
+function Get-EpsLogKeepDays {
+    # Log.KeepDays (default 90, at least 7)
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $d = 90; $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = 'Log.KeepDays'"
+    if ("$v" -match '^\d{1,4}$') { $d = [math]::Max(7, [int]"$v") }
+    $d
+}
+
+function Remove-EpsExpiredCaAnalyses {
+    <#
+      2.1.74 (EPS full review sql-flow-1 #1): the Conditional Access analyzer's analyses older than Log.KeepDays go, with
+      their per-user rows (eps.CaAnalysisResult: names, sign-in times, IP addresses, places = personal data).
+      2.1.75 review L4: in SMALL statements, so the first run after an upgrade (a large backlog) never times out every hour
+      without progress - up to 20 analyses at a time: their per-user rows first, 5,000 rows per DELETE,
+      then the analyses themselves (nothing left to cascade); repeated until none is left or -MaxSeconds (60) is used up.
+      The next hour goes on where this one stopped. Returns the analyses removed; never throws (-1 = it could not).
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [datetime]$NowUtc = [datetime]::UtcNow, [int]$MaxSeconds = 60)
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $gone = 0
+    try {
+        $cut = $NowUtc.AddDays(-(Get-EpsLogKeepDays -ConnectionString $ConnectionString))
+        while ($sw.Elapsed.TotalSeconds -lt $MaxSeconds) {
+            $ids = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ c = $cut } -Query 'SELECT TOP (20) AnalysisId FROM eps.CaAnalysis WHERE CreatedAtUtc < @c ORDER BY CreatedAtUtc' | ForEach-Object { [guid]$_.AnalysisId })
+            if (-not $ids.Count) { break }
+            $in = (@($ids | ForEach-Object { "'$($_.ToString())'" }) -join ', ')   # [guid] values from the database: no text from outside
+            $left = $true
+            while ($sw.Elapsed.TotalSeconds -lt $MaxSeconds) {
+                $k = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Timeout ([int][math]::Max(15, $MaxSeconds)) -Query "DELETE TOP (5000) FROM eps.CaAnalysisResult WHERE AnalysisId IN ($in)")
+                if ($k -lt 5000) { $left = $false; break }
+            }
+            if ($left) { break }   # the time ran out between the per-user rows: the analyses stay for the next hour
+            $gone += [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query "DELETE FROM eps.CaAnalysis WHERE AnalysisId IN ($in)")
+        }
+        $gone
+    } catch { if ($gone) { $gone } else { -1 } }
 }
 
 function Invoke-EpsStatsRefresh {

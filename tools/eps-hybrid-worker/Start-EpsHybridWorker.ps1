@@ -15,11 +15,18 @@
 [CmdletBinding()] param([string]$Root = 'C:\EntraPolicySuite', [switch]$Once)
 $ErrorActionPreference = 'Stop'
 $app = Join-Path $Root 'app'
-foreach ($f in 'EPS-SqlStore', 'EPS-AdDirectory', 'EPS-AdDelegation', 'EPS-HybridWorker') { . (Join-Path $app "engine\_shared\$f.ps1") }
 $logDir = Join-Path $Root 'logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir "worker-$([datetime]::UtcNow.ToString('yyyyMMdd')).log"
 function Say($m) { $l = "[$([datetime]::UtcNow.ToString('u'))] $m"; Add-Content -LiteralPath $log -Value $l; Write-Host $l }
 Get-ChildItem -LiteralPath $logDir -Filter 'worker-*.log' | Where-Object LastWriteTimeUtc -lt ([datetime]::UtcNow.AddDays(-30)) | Remove-Item -ErrorAction SilentlyContinue
+# WORKER-ACL-1 (2.1.74): the worker runs only from a folder that only SYSTEM and Administrators can write - checked before
+# any other library is loaded; refused with the reason. WORKER-ACL-2: the update locks the folder in the new version's
+# SYSTEM self-test right after its switch - a start in that moment waits (up to 2 minutes) for it, never refuses for it
+. (Join-Path $app 'engine\_shared\EPS-WorkerUpdate.ps1')
+$lock = Wait-EpsWorkerFolderLocked -Root $Root -Seconds 120
+if ($lock.Ok -and $lock.Waited) { Say "permissions: locked after $($lock.Waited) s (the update set them)" }
+if (-not $lock.Ok) { Say "REFUSED to run: the worker's folder can be written by others than SYSTEM and Administrators - $($lock.Reason). Run Install-EpsHybridWorker.ps1 again (or wait for the update task, which sets the permissions again)."; exit 2 }
+foreach ($f in 'EPS-SqlStore', 'EPS-AdDirectory', 'EPS-AdDelegation', 'EPS-HybridWorker') { . (Join-Path $app "engine\_shared\$f.ps1") }
 
 $cfgFile = Join-Path $Root 'worker.json'
 if (-not (Test-Path -LiteralPath $cfgFile)) { Say "no $cfgFile - run Install-EpsHybridWorker.ps1"; exit 2 }

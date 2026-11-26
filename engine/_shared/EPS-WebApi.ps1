@@ -144,6 +144,59 @@ function Invoke-EpsCaVersionRoute {
         -Audit @{ Target = "$t ($($s.After.on.displayName))"; Before = $s.Before; After = $s.After }
 }
 
+# SECIMG-1: the Security image release overview's answer (PURE). The plain words of a read that did not give a list - the
+# page shows them WITH the last good list and its "as of" time; the install key is never in them.
+$script:EpsSecImgStatusText = [ordered]@{ key = "This install's key was not accepted by Invardia"; unreachable = 'Invardia could not be reached' }
+function Get-EpsSecImgDays {
+    # PURE. The days picker: 7, 30, 90 or 365 - anything else (nothing, text, another number) is 90
+    param([AllowEmptyString()][AllowNull()][string]$Value)
+    $n = 0
+    if ([int]::TryParse("$Value".Trim(), [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$n) -and $n -in 7, 30, 90, 365) { return $n }
+    90
+}
+function Get-EpsSecImgStatusText {
+    # PURE. key -> "This install's key was not accepted by Invardia"; unreachable -> "Invardia could not be reached"; else ''
+    param([AllowEmptyString()][AllowNull()][string]$Status)
+    $s = "$Status".Trim().ToLowerInvariant()
+    if ($script:EpsSecImgStatusText.Contains($s)) { return $script:EpsSecImgStatusText[$s] }
+    ''
+}
+function ConvertTo-EpsSecImgIso {
+    # PURE. A stored or JSON time -> ISO UTC 'yyyy-MM-ddTHH:mm:ssZ', or $null (not recorded) - never a guess
+    param($Value)
+    if ($null -eq $Value -or $Value -is [bool]) { return $null }
+    $d = if ($Value -is [datetime]) { $Value } elseif ("$Value".Trim()) { try { [datetime]::Parse("$Value".Trim(), [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } catch { $null } } else { $null }
+    if ($null -eq $d) { return $null }
+    if ($d.Kind -eq 'Local') { $d = $d.ToUniversalTime() }
+    [datetime]::SpecifyKind($d, 'Utc').ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+}
+function ConvertTo-EpsSecImgAnswer {
+    <# PURE. The stored rows (eps.SecurityImageRelease) + the stored status (eps.UplinkState 'secimg.status', JSON) -> the
+       route's answer { status (ok | key | unreachable | none = never read); message (the plain words, '' for ok / none);
+       days; asOf (the last good read, $null = never); checkedAt; generatedAt; rows: [ { product, version, detectedAt,
+       startedAt, rings: [{ ring, at }], hoursToNewestRing, newestRing, inProgress, replaced, what } ] } - each row as
+       stored (TELEMETRY-SAME-1: nothing computed), every time ISO UTC or $null. #>
+    param($Rows, [AllowEmptyString()][AllowNull()][string]$StatusJson, [int]$Days = 90)
+    $st = try { if ("$StatusJson".Trim()) { "$StatusJson" | ConvertFrom-Json } } catch { $null }
+    $status = if ($st -and "$($st.status)" -in 'ok', 'key', 'unreachable') { "$($st.status)" } else { 'none' }
+    $num = { param($v) if ($null -eq $v -or $v -is [bool]) { $null } else { [double]$v } }
+    $int = { param($v) if ($null -eq $v -or $v -is [bool]) { $null } else { [int]$v } }
+    $flag = { param($v) if ($v -is [bool]) { $v } else { $null } }
+    $out = @(foreach ($r in @($Rows)) {
+        if ($null -eq $r) { continue }
+        $rings = try { @("$($r.RingsJson)" | ConvertFrom-Json) } catch { @() }
+        [ordered]@{
+            product = "$($r.Product)"; version = $(if ("$($r.Version)".Trim()) { "$($r.Version)" } else { $null })
+            detectedAt = (ConvertTo-EpsSecImgIso $r.DetectedAtUtc); startedAt = (ConvertTo-EpsSecImgIso $r.StartedAtUtc)
+            rings = @(foreach ($g in $rings) { if ($null -ne $g -and $null -ne $g.ring) { [ordered]@{ ring = [int]$g.ring; at = (ConvertTo-EpsSecImgIso $g.at) } } })
+            hoursToNewestRing = (& $num $r.HoursToNewestRing); newestRing = (& $int $r.NewestRing)
+            inProgress = (& $flag $r.InProgress); replaced = (& $flag $r.Replaced); what = $(if ("$($r.What)".Trim()) { "$($r.What)" } else { $null }) }
+    })
+    [ordered]@{ status = $status; message = (Get-EpsSecImgStatusText $status); days = $Days
+        asOf = $(if ($st) { ConvertTo-EpsSecImgIso $st.fetchedAt }); checkedAt = $(if ($st) { ConvertTo-EpsSecImgIso $st.checkedAt }); generatedAt = $(if ($st) { ConvertTo-EpsSecImgIso $st.generatedAt })
+        rows = $out }
+}
+
 function Get-EpsWebRoutes {
     # Method, Pattern (anchored; named groups become $m), Role, Action (audited when set), Handler { param($c, $m) }
     # $c = @{ Ctx; Caller; Role; Query; Body (parsed JSON); Correlation }. A handler returns New-EpsWebResponse.
@@ -173,7 +226,19 @@ function Get-EpsWebRoutes {
             $q = { param($sql) Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Query $sql }
             # UPLINK-1: the support state Invardia answered to the heartbeat (SECAUDIT-1a) - shown, nothing is granted from it
             $sup = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT TOP (1) State, AccessLevel, Reason, TicketNumber, OpenedBy, MaxUntilUtc, ReceivedAtUtc, LastSeenUtc, CAST(CASE WHEN State = ''open'' AND MaxUntilUtc > SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT) AS Active FROM eps.SupportEvent ORDER BY SupportEventId DESC'))[0]
-            $ul = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT Name, Value FROM eps.UplinkState WHERE Name IN ('last', 'heartbeat')")) { $ul["$($r.Name)"] = $(if ($r.Value -is [DBNull]) { $null } else { "$($r.Value)" }) }
+            $ul = @{}; foreach ($r in @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query "SELECT Name, Value FROM eps.UplinkState WHERE Name IN ('last', 'heartbeat', 'health.sqladmin-persons')")) { $ul["$($r.Name)"] = $(if ($r.Value -is [DBNull]) { $null } else { "$($r.Value)" }) }
+            # SQLADMIN-PERSON-1: the backup job's daily count of persons with standing SQL admin group membership (never a name)
+            $sap = $null; if ($ul['health.sqladmin-persons']) { try { $x = $ul['health.sqladmin-persons'] | ConvertFrom-Json; $sap = [ordered]@{ checked = [bool]$x.checked; count = [int]$x.count; checkedUtc = "$($x.checkedUtc)"; reason = "$($x.reason)" } } catch { $sap = $null } }
+            # MAIL-RETRY (2.1.74, Invardia 2026-11-26): the Support app's fix notices not mailed yet (sent again for 7 days) and
+            # the ones given up after that - the admins see a fix they were never told about
+            $sn = try { @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query @'
+SELECT SUM(CASE WHEN q.UpdatedAtUtc > DATEADD(DAY, -7, SYSUTCDATETIME()) THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN q.UpdatedAtUtc <= DATEADD(DAY, -7, SYSUTCDATETIME()) THEN 1 ELSE 0 END) AS givenUp,
+       MIN(CASE WHEN q.UpdatedAtUtc <= DATEADD(DAY, -7, SYSUTCDATETIME()) THEN q.UpdatedAtUtc END) AS givenUpOldestUtc
+FROM eps.JobRequest q
+WHERE q.Job = N'Config' AND q.NoticeSentAtUtc IS NULL AND q.Status IN (N'Done', N'Failed', N'Refused')
+  AND q.RequestedBy = N'app:' + (SELECT TOP (1) LOWER(LTRIM(RTRIM(CONVERT(NVARCHAR(400), s.Value)))) FROM eps.Setting s WHERE s.Name = N'Security.SupportApp')
+'@))[0] } catch { $null }
             New-EpsWebResponse -Body ([ordered]@{
                 userRules = & $q 'SELECT COUNT(*) FROM eps.UserTagRule WHERE Enabled = 1'; deviceRules = & $q 'SELECT COUNT(*) FROM eps.DeviceTagRule WHERE Enabled = 1'
                 tamperOpen = & $q "SELECT COUNT(*) FROM eps.TamperEvent WHERE Status = 'Open'"; tamperOpenHigh = & $q "SELECT COUNT(*) FROM eps.TamperEvent WHERE Status = 'Open' AND Severity = 'High'"
@@ -186,6 +251,8 @@ function Get-EpsWebRoutes {
                 workPackagesFailed = & $q "SELECT COUNT(*) FROM eps.WorkPackage WHERE Kind = 'AdSetAttribute' AND Status = 'Failed' AND DoneAtUtc >= DATEADD(DAY, -7, SYSUTCDATETIME())"
                 uplink = @{ last = $ul.last; heartbeatUtc = $ul.heartbeat }
                 support = $sup
+                supportNotices = $(if ($sn) { [ordered]@{ pending = [int]"0$($sn.pending)"; givenUp = [int]"0$($sn.givenUp)"; givenUpOldestUtc = $(if ($sn.givenUpOldestUtc) { $sn.givenUpOldestUtc }) } })
+                sqlAdminPersons = $sap
             }) } }
         # framework §12.5 PENDING-1 (owner 2026-10-08, extended 2026-11-09: "where is the red marker when things are in the
         # queue o not completed"): what waits for a person or did not complete - a red count on the menu item and its group,
@@ -276,6 +343,16 @@ function Get-EpsWebRoutes {
             }
             New-EpsWebResponse -Body @{ rows = $rows; timeZone = $tzn
                 requests = @(ConvertTo-EpsWebValue (Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Query 'SELECT TOP (200) RequestId, Job, Mode, RequestedBy, RequestedAtUtc, Status, StatusText, RunId, Reason FROM eps.JobRequest ORDER BY RequestedAtUtc DESC')) } } }
+        # SECIMG-1 (2.1.74, owner 2026-11-25: "Baseline Image Security Update release log menu item"; the read path agreed
+        # with Invardia 2026-11-26): the Security image release overview - this install's own security image releases as
+        # the ENGINE last read them from Invardia. The web app never calls Invardia and holds no install key: it reads the
+        # stored rows (as stored, nothing computed - TELEMETRY-SAME-1), the read's status and its time ("as of").
+        @{ Method = 'GET'; Pattern = '^/api/security-image-releases$'; Summary = 'This install''s security image releases as last read from Invardia, with the status and time of that read.'; Body = 'days: 7, 30, 90 or 365 (anything else is 90)'; Public = $false
+           Role = 'Reader'; Handler = { param($c, $m)
+            $days = Get-EpsSecImgDays -Value "$($c.Query.days)"
+            $st = "$(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Scalar -Query "SELECT Value FROM eps.UplinkState WHERE Name = N'secimg.status'")"
+            $rows = @(Invoke-EpsSql -ConnectionString $c.Ctx.ConnectionString -Parameters @{ c = [datetime]::UtcNow.AddDays(-$days) } -Query 'SELECT TOP (1000) Product, Version, DetectedAtUtc, StartedAtUtc, RingsJson, HoursToNewestRing, NewestRing, InProgress, Replaced, What, FetchedAtUtc FROM eps.SecurityImageRelease WHERE DetectedAtUtc >= @c OR StartedAtUtc >= @c ORDER BY COALESCE(StartedAtUtc, DetectedAtUtc) DESC, SecurityImageReleaseId')
+            New-EpsWebResponse -Body (ConvertTo-EpsSecImgAnswer -Rows $rows -StatusJson $st -Days $days) } }
         @{ Method = 'POST'; Pattern = '^/api/jobs/(?<job>[A-Za-z]{2,40})/run$'; Summary = 'Request a job run now: Preview (plan only, nothing written) or Apply. A tagging job takes an optional test scope.'; Body = 'mode: Preview or Apply; scopeName: a saved scope, or scope: a scope given now (tagging jobs only)'; Public = $true
            Role = 'Admin'; Action = 'job.run.request'; NeedsReason = $true; Handler = { param($c, $m)
             $def = @(Get-EpsDefaultJobSchedule | Where-Object { $_.Job -eq $m.job })[0]
@@ -1725,7 +1802,7 @@ function Get-EpsApiReference {
     #>
     param([ValidateSet('Full', 'Public')][string]$Audience = 'Full', [string]$Role, [string]$Version)
     $areas = [ordered]@{ overview = 'Overview'; attention = 'Overview'; rules = 'Rules'; tagging = 'Test runs'; identity = 'Identity report'; queue = 'Commit queue'; tagtypes = 'Tag types and conditions'; conditions = 'Tag types and conditions'
-        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
+        jobs = 'Jobs'; requests = 'Jobs'; scopes = 'Jobs'; mail = 'Jobs'; 'security-image-releases' = 'Jobs'; runs = 'Runs and changes'; changes = 'Runs and changes'; ca = 'CA Policy Analyzer'; capolicies = 'Conditional Access'; catemplates = 'Conditional Access'; groups = 'Conditional Access'; directory = 'Conditional Access'; tamper = 'Tamper'
         worker = 'Hybrid worker'; 'optional-components' = 'Optional components'; settings = 'Settings'; onboarding = 'Get started'; breakglass = 'Get started'; v1import = 'Get started'; access = 'Access'; audit = 'Audit'; backups = 'Backups and undo'; commits = 'Backups and undo'; config = 'Settings'; license = 'License'; me = 'App'; version = 'App'; whatsnew = 'App'; reference = 'App'; pro = 'Pro features' }
     $errorText = [ordered]@{ '400' = 'the input is refused (the answer says why)'; '401' = 'not signed in'; '403' = 'not allowed'; '404' = 'not found'
         '409' = 'a conflict: it changed meanwhile, or it is not in a state that allows this - reload'; '413' = 'too large - narrow the filter or the file'; '500' = 'internal error (the answer carries a correlation id)' }

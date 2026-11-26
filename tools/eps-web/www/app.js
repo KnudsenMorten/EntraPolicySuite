@@ -4732,6 +4732,21 @@ function schedPicker(current, job) {
       document.head.appendChild(s);
     });
   }
+  // SECIMG-1 pure begin
+  // SECIMG-1 (2.1.74, owner 2026-11-25: "it must also go into each solutions, so we have a Baseline Image Security Update
+  // release log menu item"; his name for it "Security image release overview"): the words of the page for the values of the route.
+  // PURE, and framework SAME-1 (the values as Invardia gives them): nothing is computed here - a value the route does not give is "not recorded", never a guess.
+  var SECIMG_DAYS = [7, 30, 90, 365];
+  var SECIMG_NONE = 'not recorded';
+  function secImgDays(v) { var n = parseInt(v, 10); return SECIMG_DAYS.indexOf(n) >= 0 ? n : 90; }
+  function secImgVersion(v) { return v === null || v === undefined || v === '' ? 'detected - no release yet' : String(v); }
+  function secImgRingAt(r, n) { var g = ((r && r.rings) || []).filter(function (x) { return x && x.ring === n; })[0]; return g && g.at ? g.at : null; }
+  function secImgTimeText(iso, fmt) { return iso ? fmt(iso) : SECIMG_NONE; }
+  function secImgHours(v, fmt) { return v === null || v === undefined || v === '' || isNaN(Number(v)) ? SECIMG_NONE : fmt(v); }
+  function secImgRing(v) { return v === null || v === undefined || v === '' ? SECIMG_NONE : 'Ring ' + v; }
+  function secImgYesNo(v) { return v === true ? 'Yes' : v === false ? 'No' : SECIMG_NONE; }
+  function secImgEmpty(d) { return 'No security image releases in the last ' + d + ' days'; }
+  // SECIMG-1 pure end
   var PAGES = [
     { id: 'overview', label: 'Overview', role: 'Reader', draw: function (p) {
       // ADMIN-WALK: an install that is not set up yet says so first, with the way there (Get started)
@@ -4770,6 +4785,12 @@ function schedPicker(current, job) {
           !ws.length ? 'No hybrid worker has reported - AD-synced users wait for one. ' : fmtNum(ws.length) + ' worker(s), ' + (late.length ? fmtNum(late.length) + ' LATE (' + late.map(function (w) { return w.WorkerName; }).join(', ') + ')' : 'all reporting') + '; ',
           ws.length ? fmtNum(o.workPackagesQueued) + ' AD change(s) waiting, ' + fmtNum(o.workPackagesFailed) + ' failed in 7 days. ' : null,
           el('a', { href: '#worker', text: 'Hybrid worker page' })));
+        // SQLADMIN-PERSON-1 (framework, 2026-11-24): persons with STANDING membership in the SQL server's admin group - a count only, never a name
+        var sap = o.sqlAdminPersons;
+        if (sap && sap.checked && sap.count > 0) {
+          p.appendChild(el('h3', { text: 'Database admin group' }));
+          p.appendChild(el('p', { class: 'c-warning', text: fmtNum(sap.count) + ' person account(s) are permanent members of the database admin group, with full database rights. Entra Policy Suite needs none. Give people database access just in time with Privileged Identity Management for Groups instead.' }));
+        }
         // UPLINK-1 / SUPPORT-LINK-1 (owner 2026-11-10): the Invardia support link and the support state Invardia reported (shown only - no access is granted from it)
         p.appendChild(el('h3', { text: 'Invardia support link' }));
         p.appendChild(el('p', { class: 'muted', text: 'Sends Entra Policy Suite\'s health and run results to Invardia support, so support can see problems and updates can roll out.' }));
@@ -4779,6 +4800,12 @@ function schedPicker(current, job) {
           (su.Active ? 'OPEN until ' + fmtTime(su.MaxUntilUtc) + (su.TicketNumber ? ', ticket ' + su.TicketNumber : '') + (su.AccessLevel ? ', level ' + su.AccessLevel : '') + (su.OpenedBy ? ', opened by ' + su.OpenedBy : '') + (su.Reason ? ' (' + su.Reason + ')' : '')
             : (su.State === 'open' ? 'ended ' + fmtTime(su.MaxUntilUtc) : 'closed') + ' - as reported ' + fmtTime(su.LastSeenUtc)) +
           '. Recorded only: Entra Policy Suite grants no access from it.') }));
+        // MAIL-RETRY (2.1.74, Invardia 2026-11-26): a fix by Invardia Support whose mail to you did not go out - sent again for 7 days, then given up
+        var sn = o.supportNotices;
+        if (sn && (sn.pending > 0 || sn.givenUp > 0)) {
+          p.appendChild(el('p', { class: sn.givenUp > 0 ? 'c-warning' : null, text: (sn.pending > 0 ? fmtNum(sn.pending) + ' mail(s) about a fix by Invardia Support could not be sent yet - sent again every hour. ' : '') +
+            (sn.givenUp > 0 ? fmtNum(sn.givenUp) + ' mail(s) about a fix by Invardia Support were never sent (given up after 7 days; the oldest fix ' + fmtTime(sn.givenUpOldestUtc) + '). ' : '') }, el('a', { href: '#audit', text: 'See the audit trail' })));
+        }
         document.getElementById('statusCounts').textContent = '';
         var sc = document.getElementById('statusCounts');
         if (o.tamperOpen) sc.appendChild(el('span', { class: 'c-danger', text: fmtNum(o.tamperOpen) + ' open tamper event(s)' }));
@@ -4865,6 +4892,33 @@ function schedPicker(current, job) {
       if (arg) { p.removeChild(p.lastChild); return drawCaPolicy(p, arg); }
       return drawCaPolicies(p); } },
     { id: 'ca', label: 'CA Policy Analyzer', role: 'Reader', draw: function (p, arg) { if (arg && /^policy:/.test(arg)) return drawCa(p, arg.substring(7)); if (arg) { p.removeChild(p.lastChild); return drawCaAnalysis(p, arg); } return drawCa(p); } },
+    // SECIMG-1: the Security image release overview - this install's own security image releases as the engine last read
+    // them from Invardia. The page calls ONLY this app's own API (GET /api/security-image-releases): never Invardia, never a
+    // key (the engine holds it). A read that did not give a list shows its plain words WITH the last good list and its time.
+    { id: 'secimg', label: 'Security image release overview', role: 'Reader', draw: function (p, arg) {
+      var days = secImgDays(arg);
+      p.appendChild(el('div', { class: 'guide', text: 'Each security image release of Entra Policy Suite for this install: when the new base image was detected, when the work started, and when each update ring got it. The engine reads this list from Invardia with every heartbeat (every 4 hours) and once after a security image update.' }));
+      var pick = el('select', { 'aria-label': 'Show the releases of the last' }, SECIMG_DAYS.map(function (d) { return el('option', { value: String(d), text: d + ' days' }); }));
+      pick.value = String(days);
+      pick.addEventListener('change', function () { location.hash = '#secimg/' + pick.value; });
+      p.appendChild(el('div', { class: 'toolbar' }, el('label', null, 'Show the last ', pick)));
+      return api('GET', '/api/security-image-releases?' + qs({ days: days })).then(function (j) {
+        if (j.message) p.appendChild(el('div', { class: 'bar bar-warn', role: 'status', text: j.message }));
+        p.appendChild(el('p', { class: 'smeta' }, 'As of ', j.asOf ? timeEl(j.asOf) : SECIMG_NONE));
+        var rows = j.rows || [];
+        if (!rows.length) { p.appendChild(el('div', { class: 'empty', text: secImgEmpty(j.days || days) })); return; }
+        var at = function (iso) { return iso ? timeEl(iso) : SECIMG_NONE; };
+        var cols = [{ key: 'version', label: 'Version', render: function (r) { return secImgVersion(r.version); } },
+          { key: 'detectedAt', label: 'Detected', render: function (r) { return at(r.detectedAt); } },
+          { key: 'startedAt', label: 'Work started', render: function (r) { return at(r.startedAt); } }];
+        [0, 1, 2, 3].forEach(function (n) { cols.push({ key: '_ring' + n, label: 'Ring ' + n, render: function (r) { return at(secImgRingAt(r, n)); } }); });
+        cols.push({ key: 'hoursToNewestRing', label: 'Hours to the newest ring', render: function (r) { return secImgHours(r.hoursToNewestRing, fmtNum); } },
+          { key: 'newestRing', label: 'Newest ring', render: function (r) { return secImgRing(r.newestRing); } },
+          { key: 'inProgress', label: 'In progress', render: function (r) { return secImgYesNo(r.inProgress); } },
+          { key: 'replaced', label: 'Replaced', render: function (r) { return secImgYesNo(r.replaced); } });
+        p.appendChild(table(rows, cols));
+      });
+    } },
     { id: 'jobs', label: 'Jobs', role: 'Reader', draw: function (p) {
       p.appendChild(el('div', { class: 'guide', text: 'When each job runs, in the install\'s time zone, and Run now. Run now writes a request; the engine starts the job within 5 minutes. For tagging, Preview shows what would change and writes nothing; Apply writes tags (recorded with your name; the engine checks your role first). To try new rules on a few people first, use Tagging > Test runs.' }));
       return Promise.all([api('GET', '/api/jobs'), api('GET', '/api/scopes')]).then(function (both) {
@@ -5095,7 +5149,7 @@ function schedPicker(current, job) {
     } }
   ];
   // the tab order (owner 2026-10-31: "rules is core so it must be left in view. tamper is less importantant")
-  var NAV_ORDER = ['overview', 'rules', 'tagtest', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'changes', 'capolicies', 'ca', 'backups', 'settings', 'worker', 'access', 'audit', 'tamper', 'apiref'];
+  var NAV_ORDER = ['overview', 'rules', 'tagtest', 'identity', 'queue', 'tagtypes', 'jobs', 'runs', 'secimg', 'changes', 'capolicies', 'ca', 'backups', 'settings', 'worker', 'access', 'audit', 'tamper', 'apiref'];
   PAGES.sort(function (a, b) { var x = NAV_ORDER.indexOf(a.id), y = NAV_ORDER.indexOf(b.id); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
 
   // ---- navigation ------------------------------------------------------------------------------------------------
@@ -5126,7 +5180,8 @@ function schedPicker(current, job) {
       { hash: 'identity', label: 'Identity report', desc: 'Users and devices, the gaps by severity, follow-up actions.' }] },
     { label: 'Jobs & runs', items: [
       { hash: 'jobs', label: 'Jobs & schedule', desc: 'Each job, its schedule, its last run; run one now.' },
-      { hash: 'runs', label: 'Runs', desc: 'Every run with its log.' }] },
+      { hash: 'runs', label: 'Runs', desc: 'Every run with its log.' },
+      { hash: 'secimg', label: 'Security image release overview', desc: 'Each security image release for this install: detected, work started, and when each update ring got it.' }] },
     { label: 'Administration', items: [
       { hash: 'settings', label: 'Settings', desc: 'Every setting with what it does.' },
       { hash: 'worker', label: 'Hybrid worker', desc: 'The AD worker: its scheduled task, AD domain, queue, connection test, how to add one.' },

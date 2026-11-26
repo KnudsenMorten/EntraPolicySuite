@@ -2,6 +2,20 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.75 - Security image updates install faster and on their own, a new overview of them, and failed alert mails are sent again
+Builds on the owner's decision: "all installs upd separately to normal updater" (2026-11-26)
+- New: Security image release overview - a page that lists each security image release for this install: when the new base image was detected, when work started, and when each update ring got it. A time Invardia holds no record of is shown as such, never estimated.
+- Security: a security update of the base image now installs on its own short path within 15 minutes - images only, no database or settings step, and never waiting for a running update. A running job keeps its image until it ends. The update job may now run two at a time: one normal update and one image update.
+- Security: Invardia support's read access no longer includes sign-in tokens, and its settings view shows addresses, names and lists only as set or empty.
+- Security: the hybrid worker's folder can be changed only by SYSTEM and administrators. An update sets this before the new worker starts, so a worker is never left stopped; if it cannot, the worker stays on its version and the reason is shown.
+- Security: once a day Entra Policy Suite checks the database admin group and shows on the Overview page how many people are permanent members (never who).
+- A Conditional Access analyzer alert or a support notice that could not be sent is sent again on the next cycle, so none is lost.
+- Conditional Access analyzer results older than the log keep time (90 days by default) are now removed every hour. Run records and the audit trail are kept.
+- The passkey summary is now sent only to owners whose address is in one of your tenant's verified domains.
+- A break-glass policy that is off or report-only is shown as such, not as missing.
+- Every page, the security pack and the settings now state the same rights.
+- One database change (two columns and one table are added; nothing is removed) and one permission change (the engine may remove its own old analyzer results). Your installation updates by itself.
+
 ## 2.1.74 - Mail through an SMTP relay keeps the From address the relay accepts
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "Fix all 3, next release" (2026-11-25)

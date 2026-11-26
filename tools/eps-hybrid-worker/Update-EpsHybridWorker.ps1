@@ -23,7 +23,11 @@ $ErrorActionPreference = 'Stop'
 $tree = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 foreach ($f in 'EPS-SqlStore', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-WorkerUpdate') { . (Join-Path $tree "engine\_shared\$f.ps1") }
 if ($SelfTest) {
-    $r = Test-EpsWorkerSelfTest -AppPath $tree -Version $Version
+    # WORKER-ACL-2 (2.1.74): FIRST lock this version's folder (as SYSTEM - the updater that switched to it, old or new,
+    # runs this self-test as its own task identity) so the worker's next start finds it locked; not locked = the test fails
+    # and the updater switches back to the version that ran
+    $lockR = Invoke-EpsWorkerSelfTestLock -Tree $tree
+    $r = if (-not $lockR.Ok) { @{ Ok = $false; Reason = $lockR.Reason } } else { Test-EpsWorkerSelfTest -AppPath $tree -Version $Version }
     Write-Output "EPS-WORKER-SELFTEST $(@{ ok = [bool]$r.Ok; reason = "$($r.Reason)" } | ConvertTo-Json -Compress)"
     exit $(if ($r.Ok) { 0 } else { 1 })
 }
@@ -38,12 +42,21 @@ if ($cfg.ManagedIdentityClientId) { $env:EPS_ManagedIdentityClientId = $cfg.Mana
 # the gMSA the worker task runs as: worker.json (2.0.102+), else the task's own principal (an older install)
 $gmsa = "$($cfg.Gmsa)".Trim()
 if (-not $gmsa) { $t = @(Get-ScheduledTask -TaskName 'EntraPolicySuite Hybrid Worker' -ErrorAction SilentlyContinue)[0]; if ($t) { $gmsa = "$($t.Principal.UserId)".Trim() } }
+# WORKER-ACL-1 (2.1.74): Set-EpsWorkerFolderAcl - icacls by well-known SIDs, inheritance off, every exit code checked, read
+# back; a failure THROWS (Invoke-EpsWorkerUpdate then switches back)
 $acl = {
     param($r)
-    if (-not $gmsa) { Say 'permissions: the gMSA is not known - the folder keeps the permissions it inherits'; return }
-    & icacls $r /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "${gmsa}:(OI)(CI)RX" | Out-Null
-    & icacls (Join-Path $r 'logs') /grant "${gmsa}:(OI)(CI)M" | Out-Null
+    if (-not $gmsa) { throw 'permissions: the gMSA is not known (worker.json has no Gmsa and the worker task has no principal) - run Install-EpsHybridWorker.ps1 again' }
+    $sid = ([Security.Principal.NTAccount]$gmsa).Translate([Security.Principal.SecurityIdentifier]).Value
+    $a = Set-EpsWorkerFolderAcl -Root $r -WorkerSid $sid
+    if (-not $a.Ok) { throw "permissions: $($a.Reason)" }
 }
+# every run: the folder's permissions are read back; anything but SYSTEM + Administrators able to write is set right again
+# (an install from before 2.1.74, or a change by hand) - the worker refuses to run until it is
+try {
+    $lk = Test-EpsWorkerFolderLocked -Root $Root
+    if (-not $lk.Ok) { Say "permissions: not locked down ($($lk.Reason)) - set again"; & $acl $Root; Say 'permissions: locked down (read back)' }
+} catch { Say "permissions: could not be set ($($_.Exception.Message)) - the worker refuses to run until they are" }
 $runSelfTest = {
     param($a, $v)
     # the NEW version's own self-test, in its own process (nothing of it loads here)

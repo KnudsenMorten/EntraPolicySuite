@@ -891,7 +891,7 @@
         "enabled": "On (the default): with the key in the Key Vault, the next Invardia support link run sends the heartbeat and the runs since the last one. Without the key it sends nothing and the job says so.",
         "disabled": "Off: the Invardia support link sends nothing. Invardia marks the install silent after about 5 hours.",
         "risk": "Nothing changes in the directory. Off, Invardia cannot see failures or roll out updates from it. A report that cannot be delivered is retried next cycle; you are never mailed about it. Reversible: switch it on again.",
-        "requires": "SuperAdmin. The per-install key from Invardia as the secret 'uplink-key' in the install's Key Vault, readable by the engine identity only (the install grants that when the secret exists).",
+        "requires": "SuperAdmin. The per-install key from Invardia as the secret 'uplink-key' in the install's Key Vault, readable by the engine identity and the database setup job only (the install grants that when the secret exists). The update job writes it with its own identity and reads it with the engine identity, which it also carries.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Uplink.Enabled/"
       }
@@ -914,7 +914,7 @@
         "what": "Every 15 minutes the engine asks invardia.com whether a security update (a new base image on the version you run) is approved for your ring and installs it at once; other approved releases are installed at the nightly run. The answer is checked to be genuine and complete first. To install a release it waits until no job is working: it downloads the release and checks it against the signed size and SHA-256, builds the new image in your own container registry, updates the database with the database setup job, and moves the jobs and the web app to the new image. A job run that has stopped working is stopped so the update can go on; a run that still writes to its log is never stopped. With the per-install key it also reports each stage to Invardia.",
         "enabled": "On (the default): the update job runs every night at 03:00 (Platform.TimeZone).",
         "disabled": "Off: the update job does not run, so no new version is installed. Nothing else changes.",
-        "risk": "An update changes the images and the database of this install, never the directory. A stage that fails stops the update before the jobs move; the next night tries again. Reversible.",
+        "risk": "An update changes the images and the database of this install, never the directory. A stage that fails stops the update before the jobs move; the next update run tries again. Reversible.",
         "requires": "SuperAdmin. Outbound HTTPS to invardia.com from the jobs.",
         "recommended": "On.",
         "docUrl": "https://invardia.com/docs/eps/settings/Update.Enabled/"
@@ -1154,8 +1154,8 @@
     {
       "key": "Log.KeepDays", "group": "Log", "label": "Keep run logs (days)", "type": "int", "min": 7, "max": 3650, "default": "90", "role": "Admin",
       "info": {
-        "what": "How long the lines of every run log are kept. The run records (what ran, when, its counts) and the audit trail are not removed.",
-        "enabled": "Older lines are removed by the engine once an hour.",
+        "what": "How long the lines of every run log and the Conditional Access analyzer's results (the per-user sign-in details) are kept. The run records (what ran, when, its counts) and the audit trail are not removed.",
+        "enabled": "Older lines and analyzer results are removed by the engine once an hour.",
         "disabled": "90 days (the default).",
         "risk": "A removed log line cannot be brought back. Reversible for the lines still there.",
         "requires": "Admin.",

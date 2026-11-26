@@ -1,5 +1,23 @@
 # What's new in Entra Policy Suite
 
+## 2.1.75 · 2026-11-26 · Feature update
+
+Security image updates install faster and on their own, a new overview of them, and failed alert mails are sent again.
+
+### New features
+
+- **Security image release overview** - A new page lists each security image release for this install: when the new base image was detected, when work started, and when each update ring got it.
+- **Security image updates arrive faster** - A security update of the base image now installs within 15 minutes on its own short path, without waiting for a running update and without touching the database or settings.
+- **Failed alert mails are sent again** - A Conditional Access analyzer alert or a support notice that could not be sent is sent again on the next cycle, so none is lost.
+
+### Fixes
+
+- **Analyzer results kept for the log time** - Conditional Access analyzer results older than the log keep time (90 days by default) are now removed every hour. Run records and the audit trail are kept.
+- **Passkey summary inside your tenant** - The passkey summary is now sent only to owners whose address is in one of your tenant's verified domains.
+- **Hybrid worker folder locked down** - The hybrid worker's folder can now be changed only by SYSTEM and administrators; an update sets this before the new worker starts.
+- **Support access reads less** - Invardia support's read access no longer includes sign-in tokens, and its settings view shows addresses and names only as set or empty.
+- **Smaller fixes** - Once a day the Overview page shows how many people are permanent members of the database admin group (never who). A break-glass policy that is off or report-only is shown as such, not as missing.
+
 ## 2.1.74 · 2026-11-26 · Fix-only
 
 Mail through an SMTP relay keeps the From address the relay accepts.

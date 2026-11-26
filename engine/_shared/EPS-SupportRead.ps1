@@ -20,7 +20,7 @@ $script:EpsSupportReads = [ordered]@{
                             Query = "SELECT TOP (200) Job, Mode, Status, StartedAtUtc, EndedAtUtc, LEFT(ISNULL(HeldReason, ''), 300) AS HeldReason FROM eps.Run WHERE StartedAtUtc > DATEADD(DAY, -7, SYSUTCDATETIME()) ORDER BY StartedAtUtc DESC" }
     'jobs-schedule'    = @{ What = 'Each job''s schedule, on / off and its last start'
                             Query = 'SELECT Job, Schedule, AcaJobName, Enabled, LastStartedUtc, LastStartResult FROM eps.JobSchedule ORDER BY Job' }
-    'config-summary'   = @{ What = 'The stored settings (name and value - at most 200 characters each - when, by whom)'
+    'config-summary'   = @{ What = 'The stored settings: name, when, by whom; the value only for an on/off, a choice or a number (text and lists - addresses, names, ids - say only that they are set and how long; 2.1.74)'
                             Query = 'SELECT Name, Feature, LEFT(ISNULL(Value, N''''), 200) AS Value, UpdatedAtUtc, UpdatedBy FROM eps.Setting ORDER BY Name' }
     'licence-state'    = @{ What = 'The licence claim and request state (never the licence text)'
                             Query = 'SELECT ClaimAction, ClaimMessage, ClaimAtUtc, RequestStatus, RequestAtUtc, NextPollUtc, SupersededBy, UsersInScope, UsageState FROM eps.License WHERE Id = 1' }
@@ -51,6 +51,22 @@ function Test-EpsSupportReadRequest {
     $who = & $cut (& $g 'requestedBy') 120; $why = & $cut (& $g 'reason') 300
     if (-not $who -or -not $why) { return (& $no 'a support read needs who asked (requestedBy) and why (reason)') }
     @{ Ok = $true; Read = $name; Reason = ''; Who = $who; Why = $why }
+}
+
+function Hide-EpsSupportSettingValues {
+    <# PURE. 2.1.74 (EPS full review sql-flow-1 #10): the 'config-summary' rows with the VALUE kept only for a setting whose
+       catalog type is an on/off, a choice, a number or the time zone. A text or a list (mail addresses, names, object ids,
+       server names) - and a setting the catalog does not know - shows only "set (<n> characters)" / "(empty)". -Types:
+       setting name (lower case) -> catalog type. #>
+    param([AllowNull()][object[]]$Rows, [hashtable]$Types = @{})
+    $plain = @('boolean', 'enum', 'int', 'number', 'timezone')
+    foreach ($r in @($Rows | Where-Object { $_ })) {
+        $t = $Types["$($r.Name)".ToLowerInvariant()]
+        $v = if ($null -eq $r.Value -or $r.Value -is [DBNull]) { '' } else { "$($r.Value)" }
+        [pscustomobject][ordered]@{ Name = "$($r.Name)"; Feature = $r.Feature
+            Value = $(if ($plain -contains "$t") { $v } elseif ($v.Length) { "set ($($v.Length) characters)" } else { '(empty)' })
+            UpdatedAtUtc = $r.UpdatedAtUtc; UpdatedBy = $r.UpdatedBy }
+    }
 }
 
 function Format-EpsSupportReadResult {
@@ -101,6 +117,11 @@ function Invoke-EpsSupportReadJob {
     else {
         try {
             $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsSupportReads[$chk.Read].Query)
+            if ($chk.Read -eq 'config-summary') {
+                $types = @{}
+                try { foreach ($x in @((Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'settings\catalog.json') -Raw | ConvertFrom-Json).settings)) { $types["$($x.key)".ToLowerInvariant()] = "$($x.type)" } } catch { }
+                $rows = @(Hide-EpsSupportSettingValues -Rows $rows -Types $types)
+            }
             $out = Format-EpsSupportReadResult -Rows $rows -Read $chk.Read
             & $Say "for $($chk.Who) ($($chk.Why)): $($script:EpsSupportReads[$chk.Read].What)"
             & $Say $out

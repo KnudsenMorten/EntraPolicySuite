@@ -79,7 +79,7 @@ $script:EpsUplinkLists = @{
 # the fields each kind may carry - anything else is dropped before the send (Invardia refuses a whole record on one)
 $script:EpsUplinkEnvelope = @('Schema', 'Kind', 'Product', 'Version', 'Edition', 'Hosting', 'RuntimeIdentity', 'ClaimedTenantId', 'LastSeenUtc')
 $script:EpsUplinkFields = @{
-    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion')
+    heartbeat = $script:EpsUplinkEnvelope + @('Ring', 'Outcome', 'Counts', 'EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion', 'Worker')
     # TRANSIENT-RETRY-1 (2.1.46): 'Retry' - Invardia's contract accepts it since 2026-11-15 (2d6b8a8c, invardia.com
     # 1.0.1093; server-first: an unknown key would refuse the whole record)
     # RUN-MONITOR-STALE-1 (2.1.47): 'EndedUtc' - accepted since 2026-11-15 (07a001b4, invardia.com 1.0.1094)
@@ -89,7 +89,7 @@ $script:EpsUplinkFields = @{
     alert     = @($script:EpsUplinkEnvelope | Where-Object { $_ -notin 'Hosting', 'RuntimeIdentity' }) + @('AlertId', 'Severity', 'Measured', 'FirstSeenUtc', 'Count', 'Area', 'Job', 'ActionText', 'Link')
 }
 # the heartbeat fields newer than the liveness record (§8.17): left out on the one resend after a 4xx refusal
-$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion')
+$script:EpsUplinkNewHeartbeatFields = @('EnvironmentName', 'Jobs', 'Update', 'Mail', 'SignIn', 'Database', 'SetupSteps', 'Endpoints', 'Pipeline', 'SupportAccess', 'BuildPool', 'UplinkBacklog', 'LicenceState', 'LicenceId', 'docsVersion', 'Worker')
 # DOCS-FRESH (framework ALIGN-AUTO-ALL item 3, Invardia 2026-11-15): the version the shipped docs/REQUIREMENTS.md §0 names
 # live, on its "Live version:" line. The packages leave docs/ out, so engine/docs-version.txt carries it; the release
 # refuses to tag unless that file, the §0 line and VERSION are the same version. No file / not a version = left out.
@@ -278,6 +278,30 @@ function ConvertFrom-EpsUplinkBuildPool {
     } catch { return $null }
 }
 
+function ConvertFrom-EpsUplinkRevisions {
+    <#
+      PURE. SEC-PATCH-PIPELINE-1 point 6: the stored revision read-back (eps.UplinkState 'update.revisions', JSON written by
+      the update job) -> Invardia's soft Update.revisions EXACTLY: { single: bool; activeRevisions: int (the highest on any
+      one app); apps: int; readUtc: ISO UTC } - nothing else, no names. Any part missing or not in its type = $null (the
+      field is left out, never a guess). Read with System.Text.Json.
+    #>
+    param([AllowEmptyString()][string]$Text)
+    if (-not "$Text".Trim()) { return $null }
+    try {
+        $doc = [System.Text.Json.JsonDocument]::Parse("$Text")
+        try {
+            $r = $doc.RootElement
+            if ($r.ValueKind -ne 'Object') { return $null }
+            $v = [System.Text.Json.JsonElement]::new()
+            if (-not $r.TryGetProperty('single', [ref]$v) -or $v.ValueKind -notin 'True', 'False') { return $null }; $single = $v.GetBoolean()
+            $ar = 0; if (-not $r.TryGetProperty('activeRevisions', [ref]$v) -or $v.ValueKind -ne 'Number' -or -not $v.TryGetInt32([ref]$ar) -or $ar -lt 0 -or $ar -gt 1000) { return $null }
+            $ap = 0; if (-not $r.TryGetProperty('apps', [ref]$v) -or $v.ValueKind -ne 'Number' -or -not $v.TryGetInt32([ref]$ap) -or $ap -lt 0 -or $ap -gt 1000) { return $null }
+            if (-not $r.TryGetProperty('readUtc', [ref]$v) -or $v.ValueKind -ne 'String' -or $v.GetString() -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { return $null }
+            return [ordered]@{ single = $single; activeRevisions = $ar; apps = $ap; readUtc = $v.GetString() }
+        } finally { $doc.Dispose() }
+    } catch { return $null }
+}
+
 function ConvertFrom-EpsUplinkRunningImages {
     <#
       PURE. SEC-LANE-1 point 9: the stored running images (eps.UplinkState 'update.runningImages', JSON written by the update
@@ -330,6 +354,68 @@ function ConvertTo-EpsUplinkUpdateWaited {
     [ordered]@{ version = $m.Groups[1].Value; atUtc = $at.ToString('yyyy-MM-ddTHH:mm:ssZ'); minutes = [int]$m.Groups[2].Value; job = $slug }
 }
 
+function ConvertTo-EpsUplinkWorkerUpdateCode {
+    <#
+      PURE. WORKER-ACL-4 (Invardia's closed list): a worker's stored update result (eps.WorkerHeartbeat.UpdateResult, the
+      text every updater since 2.0.102 writes) -> lock-failed | selftest-failed | download-failed | verify-failed | other.
+        lock-failed      the new self-test could not lock its folder (Invoke-EpsWorkerSelfTestLock: "... the folder could not
+                         be locked"), or the 2.1.74+ updater's own lock after the switch failed ("the switch to <v> failed:
+                         permissions: ...")
+        selftest-failed  any other "<v> failed its self-test (...)"
+        download-failed  the archive did not arrive (InvardiaUpdate.verify.ps1: "download failed:", "the download produced
+                         no file", "the downloaded file is not a zip"; EPS-WorkerUpdate.ps1: "could not be unpacked")
+        verify-failed    the signed manifest or the archive did not check out ("the signed release did not verify", the
+                         archive's size / SHA-256 against the signed manifest, "no signed archive size", "the release holds
+                         version '<x>', the signed manifest says ...")
+        other            anything else
+      The full text stays on the customer's own Hybrid worker page; only the code leaves the install.
+    #>
+    param([AllowEmptyString()][string]$Text)
+    $t = "$Text"
+    if ($t -match 'the folder could not be locked|the switch to \S+ failed: permissions:') { return 'lock-failed' }
+    if ($t -match 'failed its self-test') { return 'selftest-failed' }
+    if ($t -match 'download failed:|the download produced no file|the downloaded file is not a zip|could not be unpacked') { return 'download-failed' }
+    if ($t -match 'the signed release did not verify|SHA-256 \(.*\) is not the one the signed manifest names|bytes, the signed manifest says|no signed archive size|the release holds version') { return 'verify-failed' }
+    'other'
+}
+
+function ConvertTo-EpsUplinkWorkerRollback {
+    <#
+      PURE. WORKER-ACL-3/4 (2.1.74, Invardia: a switch-back must be VISIBLE, not a version-lag row nobody can explain; the
+      EXACT shape Invardia fixed - any other key or value drops Worker alone): the workers' heartbeat rows
+      (eps.WorkerHeartbeat WorkerName, Version, UpdateResult, UpdateAtUtc) -> [ordered]@{ updateRolledBack = <workers whose
+      LAST update did not land: switched back, failed or refused> (at most 1000); rolledBack = at most 10 x [ordered]@{
+      index 1..n; version (what it runs); triedVersion; atUtc; reason (ConvertTo-EpsUplinkWorkerUpdateCode) } }, in the
+      order of WorkerName - the NAME is never sent. A later good update writes a new UpdateResult, so it clears by itself
+      (0, no list). No worker rows = $null (left out).
+    #>
+    param([object[]]$Rows = @())
+    $rows = @($Rows | Where-Object { $_ } | Sort-Object { "$($_.WorkerName)" })
+    if (-not $rows.Count) { return $null }
+    $list = [System.Collections.Generic.List[object]]::new(); $n = 0
+    # WORKER-ACL-5 (Invardia): version / triedVersion numeric dotted only - ^\d+(\.\d+){1,3}$, ASCII digits (-cmatch with
+    # [0-9]: .NET's \d also takes other scripts' digits); anything else = the key is left out
+    $ver = '^[0-9]+(\.[0-9]+){1,3}$'
+    foreach ($w in $rows) {
+        $ur = if ($w.UpdateResult -is [DBNull]) { '' } else { "$($w.UpdateResult)".Trim() }
+        if ($ur -notmatch '^(switched back|failed|refused):\s*(.*)$') { continue }
+        $n++
+        if ($list.Count -ge 10) { continue }
+        $why = $Matches[2]
+        $it = [ordered]@{ index = $list.Count + 1 }
+        $wv = "$($w.Version)".Trim(); if ($wv -cmatch $ver) { $it.version = $wv }
+        $tv = [regex]::Match($why, '^(\S+) failed its self-test|^the switch to (\S+) failed')
+        $tvv = if ($tv.Success) { if ($tv.Groups[1].Success) { $tv.Groups[1].Value } else { $tv.Groups[2].Value } } else { '' }
+        if ($tvv -cmatch $ver) { $it.triedVersion = $tvv }
+        $at = ConvertTo-EpsUplinkIso $(if ($w.UpdateAtUtc -is [DBNull]) { $null } else { $w.UpdateAtUtc }); if ($at) { $it.atUtc = $at }
+        $it.reason = ConvertTo-EpsUplinkWorkerUpdateCode -Text $why
+        $list.Add($it)
+    }
+    $o = [ordered]@{ updateRolledBack = [Math]::Min(1000, $n) }
+    if ($list.Count) { $o.rolledBack = @($list) }
+    $o
+}
+
 function Get-EpsUplinkUpdaterRun {
     # PURE. UPD-07: the last finished eps.Run of the update job -> @{ At (ISO, Z); Result succeeded | nothing-to-do | failed } or $null
     param($Run)
@@ -344,7 +430,7 @@ function New-EpsUplinkHeartbeat {
       PURE. The heartbeat from the facts Get-EpsUplinkHeartbeatFacts read. -WithoutNewFields: the liveness record only
       (envelope, Outcome, Counts) - the one resend after a 4xx refusal (§8.17).
       Facts: @{ Counts; EnvironmentName; Jobs = @(@{ Job; LastStart; LastEnd; Status; DurationMin; PrevDurationMin; TimeoutHours });
-               Update = @{ Installed }; Mail = @{ Mode; LastSentUtc }; SignIn = @{ Layer; Version }; Database = @{ Tier; Stats = @{ StatsTotal; StatsStale; AsyncOn }; StatsRefreshedUtc } }
+               Update = @{ Installed }; Mail = @{ Mode; LastSentUtc; Sender; Check; Notices = @{ GivenUp; OldestUtc }; AlertsGivenUp = @{ GivenUp; OldestUtc }; IdentityReportFailedUtc }; SignIn = @{ Layer; Version }; Database = @{ Tier; Stats = @{ StatsTotal; StatsStale; AsyncOn }; StatsRefreshedUtc } }
     #>
     param([Parameter(Mandatory)]$Facts, [string]$Version, [string]$TenantId, [datetime]$NowUtc = [datetime]::UtcNow, [switch]$WithoutNewFields, [string[]]$Drop = @())
     $o = New-EpsUplinkEnvelope -Kind 'heartbeat' -Version $Version -TenantId $TenantId -NowUtc $NowUtc
@@ -381,6 +467,10 @@ function New-EpsUplinkHeartbeat {
             # SEC-LANE-1 point 9: the images each job and the web app RUN, as the update job last read them (left out when never read)
             $rix = ConvertFrom-EpsUplinkRunningImages -Text "$($Facts.Update.RunningImages)"
             if ($rix) { $o.Update.runningImages = @($rix) }
+            # SEC-PATCH-PIPELINE-1 point 6 (owner: "will an attacker see the new or old image"): the revision read-back of
+            # the last swap - Invardia's soft shape { single; activeRevisions; apps; readUtc }; never read = left out
+            $rvx = ConvertFrom-EpsUplinkRevisions -Text "$($Facts.Update.Revisions)"
+            if ($rvx) { $o.Update.revisions = $rvx }
         }
         if ($Facts.Mail) {
             # mailJob + restriction are required by the contract. ONE-SENDER-1 D (2.1.72): restriction = the engine's own
@@ -398,6 +488,22 @@ function New-EpsUplinkHeartbeat {
             # relay's proven From differs from the sender key (the proven From stays the From). The same bool in both modes.
             if ("$($Facts.Mail.Mode)" -in 'sharedMailbox', 'smtp') { $m.drift = [bool]$dr.Drift }
             $ms = ConvertTo-EpsUplinkIso $Facts.Mail.LastSentUtc; if ($ms) { $m.lastSentUtc = $ms }
+            # MAIL-RETRY (2.1.74, Invardia 2026-11-26) - soft fields, each left out when there is nothing to say or its value
+            # does not fit: the Support fix notices given up after 7 days unsent (count + the oldest one's time), and the last
+            # failed identity report mail (cleared by the next sent one)
+            $ng = $Facts.Mail.Notices
+            if ($ng -and $null -ne $ng.GivenUp -and "$($ng.GivenUp)" -match '^\d{1,9}$' -and [int]$ng.GivenUp -gt 0) {
+                $m.noticesGivenUp = [int]$ng.GivenUp
+                $no = ConvertTo-EpsUplinkIso $ng.OldestUtc; if ($no) { $m.noticesGivenUpOldestUtc = $no }
+            }
+            # 2.1.75 review L2: the CA analyzer impact alerts given up in the last 7 days (unsent for 7 days; an ad-hoc run 24 h) -
+            # the same family as the notices: count + the oldest give-up's time, left out when none
+            $ag = $Facts.Mail.AlertsGivenUp
+            if ($ag -and $null -ne $ag.GivenUp -and "$($ag.GivenUp)" -match '^\d{1,9}$' -and [int]$ag.GivenUp -gt 0) {
+                $m.alertsGivenUp = [int]$ag.GivenUp
+                $ao = ConvertTo-EpsUplinkIso $ag.OldestUtc; if ($ao) { $m.alertsGivenUpOldestUtc = $ao }
+            }
+            $irf = ConvertTo-EpsUplinkIso $Facts.Mail.IdentityReportFailedUtc; if ($irf) { $m.identityReportFailedUtc = $irf }
             # 2.1.74 (Invardia 2026-11-26, soft fields): the mode, and the last FAILED send with its closed code
             $mm = Select-EpsUplinkEnum $(switch ("$($Facts.Mail.Mode)") { 'sharedMailbox' { 'graph' } 'smtp' { 'smtp' } default { '' } }) 'MailMode'; if ($mm) { $m.mode = $mm }
             $mf = ConvertTo-EpsUplinkIso $Facts.Mail.LastFailedUtc; if ($mf) { $m.lastFailedUtc = $mf; $mc = Select-EpsUplinkEnum "$($Facts.Mail.LastErrorCode)" 'MailErrorCode'; if ($mc) { $m.lastErrorCode = $mc } }
@@ -478,6 +584,10 @@ function New-EpsUplinkHeartbeat {
         }
         # DOCS-FRESH: docsVersion = what the shipped §0 names live (Get-EpsDocsVersion); left out when not a version
         if ("$($Facts.DocsVersion)" -match '^\d+\.\d+\.\d+(\.\d+)?$') { $o.docsVersion = "$($Facts.DocsVersion)" }
+        # WORKER-ACL-3/4: Worker { updateRolledBack, rolledBack[] { index, version, triedVersion, atUtc, reason code } } - a soft field: one of the newer fields, so a 422 naming it
+        # leaves out only it; no worker = left out
+        $wk = ConvertTo-EpsUplinkWorkerRollback -Rows @($Facts.Workers)
+        if ($wk) { $o.Worker = $wk }
     }
     # a field Invardia named in its refusal (422 { fields }) is left out of the one resend - the rest still goes
     foreach ($d in @($Drop)) { if ("$d" -and $o.Contains("$d")) { $o.Remove("$d") } }
@@ -660,7 +770,7 @@ function Get-EpsUplinkHeartbeatFacts {
         # UPD-HOLD: the last update run's give-up line ("... waited 45 min for running jobs ..., retries next night"), only
         # while it is the LATEST update run and under 26 h old - so it shows in Invardia's fleet view, never fails silently
         # UPD-07 (2.1.2): the updater's LAST run (time + outcome) - the alignment check "the updater reaches every install"
-        Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }); RunningImages = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'update.runningImages'")" } catch { '' }) }
+        Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }); RunningImages = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'update.runningImages'")" } catch { '' }); Revisions = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'update.revisions'")" } catch { '' }) }
         # ONE-SENDER-1 D: the engine's last check of its send right (eps.UplinkState 'mail.restriction', the Backup job and
         # the first send of a process) and the one key it must match
         Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail })
@@ -668,6 +778,10 @@ function Get-EpsUplinkHeartbeatFacts {
                     # ONE-SENDER-1 A1: the relay's proven From (smtp mode) - while it differs from Mail.Sender it stays the From (drift)
                     ProvenFrom = $(try { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Mail.SmtpFrom' -Default '')" } catch { '' })
                     Check = $(try { $j = "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'mail.restriction'")"; if ($j) { $j | ConvertFrom-Json } } catch { $null })
+                    # MAIL-RETRY (2.1.74): the given-up Support fix notices and the last failed identity report mail
+                    Notices = $(if (Get-Command Get-EpsSupportNoticeState -ErrorAction SilentlyContinue) { Get-EpsSupportNoticeState -ConnectionString $ConnectionString })
+                    AlertsGivenUp = $(if (Get-Command Get-EpsCaAlertGivenUp -ErrorAction SilentlyContinue) { Get-EpsCaAlertGivenUp -ConnectionString $ConnectionString })
+                    IdentityReportFailedUtc = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'mail.identityReport.failedUtc'")" } catch { '' })
                     LastFailedUtc = $(if ($lastFail) { "$($lastFail.at)" }); LastErrorCode = $(if ($lastFail) { "$($lastFail.code)" }) } })
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
@@ -679,6 +793,8 @@ function Get-EpsUplinkHeartbeatFacts {
         Database = @{ Tier = "$(& $q "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS NVARCHAR(40))")"
                       Stats = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'EXEC eps.RefreshChangedStats @ReportOnly = 1')[0] } catch { $null })
                       StatsRefreshedUtc = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'stats.refreshed'")" } catch { '' }) }
+        # WORKER-ACL-3: each worker's last update result (the update task writes it), for Worker.updateRolledBack
+        Workers = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT TOP (1001) WorkerName, Version, LEFT(ISNULL(UpdateResult, N''''), 1000) AS UpdateResult, UpdateAtUtc FROM eps.WorkerHeartbeat ORDER BY WorkerName') } catch { @() })
         Endpoints = $(if ("$env:EPS_WEB_URL" -match '^https://') { $u = "$env:EPS_WEB_URL".TrimEnd('/'); @(@{ kind = 'webapp'; url = $u }, @{ kind = 'api'; url = "$u/api" }) })
         LongRun = (Get-EpsUplinkLongRun -ConnectionString $ConnectionString)
         # FLEET-STEPS: the engine's rights read back now (its own app role assignments), never a remembered value
@@ -1159,6 +1275,132 @@ function Get-EpsInvardiaEnvironment {
         handle = (ConvertTo-EpsUplinkRedacted -Text "$($b.handle)" -Key $Key -Max 80); kind = (ConvertTo-EpsUplinkRedacted -Text "$($b.kind)" -Key $Key -Max 40) } }
 }
 
+# ---------------------------------------------------------------------------------------------------- SECIMG-1
+# The Security image release overview (owner 2026-11-25: "it must also go into each solutions, so we have a Baseline Image
+# Security Update release log menu item" / "both shown in invardia + solutions"; the read path agreed with Invardia
+# 2026-11-26). GET /api/updates/entrapolicysuite/security-image-releases needs the install key, and only the engine may
+# read it (the web identity holds no Key Vault right): the ENGINE reads the list right after each heartbeat (every 4 h)
+# and once after an image-only update (the update job's mark eps.Setting 'update.secimg-refresh' - that job never reads
+# the key), and keeps it in eps.SecurityImageRelease; the web app only reads that table. A good answer replaces the rows in
+# one transaction; a refused (401) or failed read keeps the last good rows and sets only the status (eps.UplinkState
+# 'secimg.status': ok | key | unreachable, checkedAt, fetchedAt + generatedAt of the last good read). TELEMETRY-SAME-1:
+# the rows are Invardia's values as given - nothing is computed here.
+$script:EpsSecImgStatusName = 'secimg.status'
+$script:EpsSecImgRefreshName = 'update.secimg-refresh'
+$script:EpsSecImgMaxRows = 1000
+
+function ConvertTo-EpsSecImgRows {
+    <# PURE. Invardia's answer { generatedAt, days, rows: [ { product, version, detectedAt, startedAt, rings: [{ ring, at }],
+       hoursToNewestRing, newestRing, inProgress, replaced, what } ] } -> @{ Ok; Rows; GeneratedAt; Reason }. Every value
+       checked, none invented: a time ISO UTC or $null, version $null = detected (no release yet), a ring 0..3 (one entry per
+       ring), a number or $null, true / false or $null; another product's row is left out; at most 1000 rows. -Key: the
+       install key - a text that carries it is never kept. #>
+    param([AllowNull()]$Body, [AllowEmptyString()][string]$Key = '')
+    $no = { param($r) @{ Ok = $false; Rows = @(); GeneratedAt = $null; Reason = $r } }
+    $b = $Body
+    if ($b -is [string]) { if (-not $b.Trim().StartsWith('{')) { return (& $no 'the answer is not JSON') }; $b = try { $b | ConvertFrom-Json -Depth 10 } catch { $null } }
+    if ($null -eq $b -or -not $b.PSObject.Properties['rows']) { return (& $no 'the answer carries no rows') }
+    $k = "$Key".Trim()
+    $txt = { param($v, [int]$max) if ($null -eq $v -or $v -is [bool] -or "$v".Trim() -eq '') { return $null }; $s = "$v".Trim(); if ($k -and $s.Contains($k)) { $s = $s.Replace($k, '***') }; if ($s.Length -gt $max) { $s = $s.Substring(0, $max) }; $s }
+    $num = { param($v) if ($null -eq $v -or $v -is [bool]) { return $null }; $d = 0.0; if ([double]::TryParse("$v", [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d) -and -not [double]::IsNaN($d) -and -not [double]::IsInfinity($d)) { $d } else { $null } }
+    $ring = { param($v) if ($null -eq $v -or $v -is [bool]) { return $null }; $n = 0; if ([int]::TryParse("$v", [ref]$n) -and $n -ge 0 -and $n -le 3) { $n } else { $null } }
+    $flag = { param($v) if ($v -is [bool]) { $v } else { $null } }
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($r in @($b.rows)) {
+        if ($null -eq $r -or $r -is [string] -or $r -is [ValueType]) { continue }
+        if ($rows.Count -ge $script:EpsSecImgMaxRows) { break }
+        $prod = "$($r.product)".Trim().ToLowerInvariant()
+        if ($prod -and $prod -ne $script:EpsUplinkProduct) { continue }
+        $seen = @{}
+        $rings = @(foreach ($g in @($r.rings)) {
+            if ($null -eq $g -or $g -is [string] -or $g -is [ValueType]) { continue }
+            $n = & $ring $g.ring
+            if ($null -eq $n -or $seen.ContainsKey($n)) { continue }
+            $seen[$n] = $true
+            [ordered]@{ ring = $n; at = (ConvertTo-EpsUplinkIso $g.at) }
+        })
+        $rows.Add([ordered]@{
+            product = $script:EpsUplinkProduct; version = (& $txt $r.version 50)
+            detectedAt = (ConvertTo-EpsUplinkIso $r.detectedAt); startedAt = (ConvertTo-EpsUplinkIso $r.startedAt)
+            rings = @($rings | Sort-Object { $_.ring })
+            hoursToNewestRing = (& $num $r.hoursToNewestRing); newestRing = (& $ring $r.newestRing)
+            inProgress = (& $flag $r.inProgress); replaced = (& $flag $r.replaced); what = (& $txt $r.what 400) })
+    }
+    @{ Ok = $true; Rows = @($rows); GeneratedAt = (ConvertTo-EpsUplinkIso $b.generatedAt); Reason = "$($rows.Count) row(s)" }
+}
+
+function Get-EpsSecImgReleasesFromInvardia {
+    <# GET https://<uplink host>/api/updates/entrapolicysuite/security-image-releases?days=365 with the install key in
+       X-Invardia-Install-Key (as Get-EpsInvardiaEnvironment). -> @{ Status (ok | key | unreachable); Rows; GeneratedAt;
+       Reason }: 401 = key (the key was not accepted), any other answer or no answer = unreachable. Never throws; the key
+       is never in Reason or a row. #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Key, [string]$Endpoint = $script:EpsUplinkEndpoint, [int]$Days = 365)
+    $no = { param($s, $r) @{ Status = $s; Rows = @(); GeneratedAt = $null; Reason = $r } }
+    if (-not "$Key".Trim()) { return (& $no 'key' 'no install key') }
+    if ("$Endpoint" -notmatch '^https://') { return (& $no 'unreachable' 'refused: the uplink endpoint must be https') }
+    $d = if ($Days -in 7, 30, 90, 365) { $Days } else { 365 }
+    $url = "https://$(([uri]$Endpoint).Authority)/api/updates/$($script:EpsUplinkProduct)/security-image-releases?days=$d"
+    try { $r = & $script:EpsHttp 'GET' $url @{ 'X-Invardia-Install-Key' = "$Key".Trim(); Accept = 'application/json' } $null }
+    catch { return (& $no 'unreachable' "not reachable: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $Key -Max 200)") }
+    $status = [int]$r.Status
+    if ($status -eq 401) { return (& $no 'key' 'HTTP 401: the install key was not accepted') }
+    if ($status -ne 200) { return (& $no 'unreachable' "HTTP $status") }
+    $c = ConvertTo-EpsSecImgRows -Body $r.Body -Key $Key
+    if (-not $c.Ok) { return (& $no 'unreachable' "HTTP 200 but $($c.Reason)") }
+    @{ Status = 'ok'; Rows = @($c.Rows); GeneratedAt = $c.GeneratedAt; Reason = "HTTP 200: $(@($c.Rows).Count) release(s)" }
+}
+
+function Save-EpsSecImgReleases {
+    <# A good read -> eps.SecurityImageRelease replaced and the status 'ok' written, in ONE transaction (all or nothing). #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)]$Result, [datetime]$NowUtc = [datetime]::UtcNow)
+    $sqlTime = { param($iso) if ($iso) { "$iso".TrimEnd('Z') } else { $null } }   # 'yyyy-MM-ddTHH:mm:ss' (UTC) for DATETIME2
+    $items = @(foreach ($r in @($Result.Rows)) {
+        [ordered]@{ p = "$($r.product)"; v = $r.version; d = (& $sqlTime $r.detectedAt); s = (& $sqlTime $r.startedAt)
+            g = (ConvertTo-Json -InputObject @($r.rings) -Depth 3 -Compress); h = $r.hoursToNewestRing; n = $r.newestRing; i = $r.inProgress; x = $r.replaced; w = $r.what } })
+    $j = ConvertTo-Json -InputObject $items -Depth 4 -Compress
+    $at = ConvertTo-EpsUplinkIso $NowUtc
+    $st = ConvertTo-Json -Compress -InputObject ([ordered]@{ status = 'ok'; checkedAt = $at; fetchedAt = $at; generatedAt = $Result.GeneratedAt })
+    Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $j; f = $NowUtc; st = $st; n = $script:EpsSecImgStatusName } -Query @'
+SET XACT_ABORT ON; SET NOCOUNT ON; BEGIN TRAN;
+DELETE FROM eps.SecurityImageRelease;
+INSERT INTO eps.SecurityImageRelease (Product, Version, DetectedAtUtc, StartedAtUtc, RingsJson, HoursToNewestRing, NewestRing, InProgress, Replaced, What, FetchedAtUtc)
+SELECT x.p, x.v, x.d, x.s, x.g, x.h, x.n, x.i, x.x, x.w, @f FROM OPENJSON(@j) WITH (p NVARCHAR(60) '$.p', v NVARCHAR(50) '$.v', d DATETIME2 '$.d', s DATETIME2 '$.s', g NVARCHAR(1000) '$.g', h DECIMAL(12, 2) '$.h', n INT '$.n', i BIT '$.i', x BIT '$.x', w NVARCHAR(400) '$.w') AS x;
+MERGE eps.UplinkState AS d USING (SELECT @n AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @st, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (@n, @st);
+COMMIT;
+'@ | Out-Null
+}
+
+function Set-EpsSecImgStatus {
+    <# A read that did not give a list: ONLY the status (key | unreachable) and the time of the try - the last good rows,
+       their fetchedAt and generatedAt stay as they were. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][ValidateSet('key', 'unreachable')][string]$Status, [datetime]$NowUtc = [datetime]::UtcNow)
+    $old = try { $t = "$((Get-EpsUplinkState -ConnectionString $ConnectionString)[$script:EpsSecImgStatusName])"; if ($t.Trim()) { $t | ConvertFrom-Json } } catch { $null }
+    $keep = { param($v) if ($v -is [datetime]) { ConvertTo-EpsUplinkIso $v } elseif ("$v".Trim()) { ConvertTo-EpsUplinkIso "$v" } else { $null } }
+    Set-EpsUplinkState -ConnectionString $ConnectionString -Name $script:EpsSecImgStatusName -Value (ConvertTo-Json -Compress -InputObject ([ordered]@{
+        status = $Status; checkedAt = (ConvertTo-EpsUplinkIso $NowUtc); fetchedAt = $(if ($old) { & $keep $old.fetchedAt }); generatedAt = $(if ($old) { & $keep $old.generatedAt }) }))
+}
+
+function Invoke-EpsSecImgRefresh {
+    <# One read of this install's security image releases, kept for the page. -> @{ Status (ok | key | unreachable |
+       error); Rows (the count kept); Reason }. Never throws; the key is never in Reason. #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][AllowEmptyString()][string]$Key, [string]$Endpoint = $script:EpsUplinkEndpoint, [datetime]$NowUtc = [datetime]::UtcNow)
+    $f = Get-EpsSecImgReleasesFromInvardia -Key $Key -Endpoint $Endpoint
+    try {
+        if ($f.Status -eq 'ok') { Save-EpsSecImgReleases -ConnectionString $ConnectionString -Result $f -NowUtc $NowUtc; return @{ Status = 'ok'; Rows = @($f.Rows).Count; Reason = $f.Reason } }
+        Set-EpsSecImgStatus -ConnectionString $ConnectionString -Status $f.Status -NowUtc $NowUtc
+        @{ Status = $f.Status; Rows = 0; Reason = "$($f.Reason) - the last good list is kept" }
+    } catch { @{ Status = 'error'; Rows = 0; Reason = "not stored: $(ConvertTo-EpsUplinkRedacted -Text "$($_.Exception.Message)" -Key $Key -Max 200)" } }
+}
+
+function Read-EpsSecImgRefreshMark {
+    <# The update job's mark after an image-only update (eps.Setting 'update.secimg-refresh'), taken: read and cleared at
+       once, so ONE support link run reads the list for it (a run that cannot read it does not make the mark loop). '' = none. #>
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    $m = try { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $script:EpsSecImgRefreshName } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n')".Trim() } catch { '' }
+    if ($m) { try { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $script:EpsSecImgRefreshName } -Query "UPDATE eps.Setting SET Value = N'', UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = N'engine (support link)' WHERE Name = @n AND Value <> N''" | Out-Null } catch { } }
+    $m
+}
+
 # ---------------------------------------------------------------------------------------------------- the support state
 function ConvertFrom-EpsUplinkSupportAnswer {
     <#
@@ -1338,14 +1580,25 @@ function Invoke-EpsUplinkCycle {
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version, [string]$TenantId = $env:EPS_TENANT_ID, [datetime]$NowUtc = [datetime]::UtcNow,
           [int]$PauseMs = $script:EpsUplinkPauseMs, [int]$RoundWaitMs = $script:EpsUplinkRoundWaitMs, [string]$WebUrl = $env:EPS_WEB_URL, [string]$Endpoint = $script:EpsUplinkEndpoint, [scriptblock]$Log = { param($l, $m) })
-    $res = @{ Mode = 'disabled'; Posts = 0; Rounds = 1; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Skipped = 0; Refused = 0; Support = ''; Stopped = ''; Lines = [System.Collections.Generic.List[string]]::new() }
+    $res = @{ Mode = 'disabled'; Posts = 0; Rounds = 1; Heartbeat = ''; Environment = ''; Runs = 0; Alerts = 0; Skipped = 0; Refused = 0; Support = ''; Stopped = ''; SecImg = ''; Lines = [System.Collections.Generic.List[string]]::new() }
     $say = { param($l, $m) $res.Lines.Add($m); & $Log $l $m }
     $finish = { param($line) try { Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'last' -Value "$(ConvertTo-EpsUplinkIso $NowUtc) $line" } catch { }; $res }
     try {
+        # SECIMG-1: an image-only update asked for ONE read of the security image releases - taken (cleared) first, so a
+        # run that stops early (switched off, no key) never leaves it for the next start
+        $secMark = Read-EpsSecImgRefreshMark -ConnectionString $ConnectionString
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Enabled' -Default 'true')" -ne 'true') { & $say 'Info' 'uplink: switched off (Uplink.Enabled) - nothing sent'; return (& $finish 'disabled: switched off (Uplink.Enabled)') }
         $k = Get-EpsUplinkKey
         if (-not $k.Key) { & $say 'Info' "Invardia support link: disabled - $($k.Reason); nothing sent (identified only, never anonymous)"; return (& $finish "disabled: $($k.Reason)") }
         $key = $k.Key; $res.Mode = 'identified'
+        # SECIMG-1: the read itself (after the heartbeat, or once for the update's mark) - never more than once per cycle
+        $secRead = {
+            param($why)
+            if ($res.SecImg) { return }
+            $si = Invoke-EpsSecImgRefresh -ConnectionString $ConnectionString -Key $key -Endpoint $Endpoint -NowUtc $NowUtc
+            $res.SecImg = "$($si.Status)"
+            & $say $(if ($si.Status -eq 'ok') { 'Info' } else { 'Warning' }) "Invardia support link: security image releases ($why): $($si.Status) - $($si.Reason)"
+        }
         # INSTALL-PRO: the licence fields once per cycle (a read failure = community, never a stop)
         $script:EpsUplinkLicenceFields = $null
         if (Get-Command Get-EpsLicence -ErrorAction SilentlyContinue) { try { $lv = Get-EpsLicence -ConnectionString $ConnectionString -TenantId "$TenantId".ToLowerInvariant() -Refresh; $script:EpsUplinkLicenceFields = Get-EpsLicenceUplinkFields -License $lv.License -TenantId "$TenantId".ToLowerInvariant() } catch { $script:EpsUplinkLicenceFields = $null } }
@@ -1392,7 +1645,7 @@ function Invoke-EpsUplinkCycle {
                     if ($r.Ok) { $res.Heartbeat = 'ok (without the newer fields)' }
                 }
             } elseif ($r.Ok) { $res.Heartbeat = 'ok' }
-            if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
+            if (-not $r.Ok) { $res.Heartbeat = 'failed'; & $fail 'heartbeat' $r; if ($secMark) { & $secRead 'after the image-only update' }; return (& $finish "identified: heartbeat FAILED ($($r.Reason))") }
             Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'heartbeat' -Value (ConvertTo-EpsUplinkIso $NowUtc)
             # 2.1.59: the at-once heartbeat runs OUTSIDE the 4 h schedule (the update starts the link), so it never sets the
             # slot, due or not - 2.1.58 let a due one set it (internal 12:55Z), and the schedule's 14:00Z cycle was then
@@ -1422,7 +1675,11 @@ function Invoke-EpsUplinkCycle {
                 Set-EpsUplinkState -ConnectionString $ConnectionString -Name 'environment' -Value ($v | ConvertTo-Json -Compress)
                 $res.Environment = $v.displayName; & $say 'Info' "Invardia support link: environment name from Invardia: $($v.displayName)"
             } else { & $say 'Info' "Invardia support link: environment name not read ($($envr.Reason)) - the last one kept" }
+            # SECIMG-1: this install's security image releases, read with each heartbeat (not a POST: outside the POST budget)
+            & $secRead 'with the heartbeat'
         } else { $res.Heartbeat = 'not due'; & $say 'Info' "Invardia support link: heartbeat not due (last regular $(ConvertTo-EpsUplinkIso $lastSlot))" }
+        # SECIMG-1: an image-only update's mark and no heartbeat in this cycle - the one read for it
+        if ($secMark) { & $secRead 'after the image-only update' }
 
         # 2. the alerts (§8.19) - OFF by default: Invardia does not take the kind yet
         if ("$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Uplink.Alerts.Enabled' -Default 'true')" -eq 'true') {

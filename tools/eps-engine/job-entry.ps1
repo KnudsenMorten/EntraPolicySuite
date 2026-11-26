@@ -19,7 +19,7 @@
 [CmdletBinding()] param([string]$Job = $env:EPS_JOB, [string]$ConnectionString = $env:EPS_SQL_CONNECTION)
 $ErrorActionPreference = 'Stop'
 $sol = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-SignInMethods', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead', 'EPS-Watchdog') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+foreach ($f in 'EPS-Conditions', 'EPS-TagEngine', 'EPS-Guard', 'EPS-SqlStore', 'EPS-Graph', 'EPS-Exchange', 'EPS-TagJob', 'EPS-Scheduler', 'EPS-TamperMonitor', 'EPS-HybridWorker', 'EPS-WorkerPage', 'EPS-Mail', 'EPS-WebAuth', 'EPS-Audit', 'EPS-CaAnalyzer', 'EPS-CaManage', 'EPS-CaWrite', 'EPS-CaOptions', 'EPS-Backup', 'EPS-Onboarding', 'EPS-GroupManage', 'EPS-GroupWrite', 'EPS-OnboardManage', 'EPS-OnboardWrite', 'EPS-IdentityReport', 'EPS-SignInMethods', 'EPS-LogAnalytics', 'EPS-Settings', 'EPS-Rules', 'EPS-V1Import', 'EPS-WebApi', 'EPS-ConfigEngine', 'EPS-Uplink', 'InvardiaUpdate.verify', 'EPS-Updater', 'EPS-Licence', 'EPS-SupportRead', 'EPS-Watchdog', 'EPS-SqlAdminPersons') { . (Join-Path $sol "engine\_shared\$f.ps1") }
 # EPS PRO: the Pro package's modules (pro/engine/*.ps1, their engine-only writes included); absent without the Pro package
 $proEngine = Join-Path $sol 'pro\engine'
 if (Test-Path -LiteralPath $proEngine) { foreach ($pf in @(Get-ChildItem -LiteralPath $proEngine -Filter '*.ps1' -File | Sort-Object Name)) { . $pf.FullName } }
@@ -80,6 +80,15 @@ try {
         Say "tick $($t.RunId): $($t.Status)"
         # V1-PARITY P16: run log lines older than Log.KeepDays go - the first tick of each hour, a bounded batch
         if ([datetime]::UtcNow.Minute -lt 5) { $gone = Remove-EpsExpiredRunLogs -ConnectionString $ConnectionString; if ($gone) { Say "run log retention: $gone old line(s) removed$(if ($gone -lt 0) { ' - FAILED' })" } }
+        # 2.1.75 review L4: the analyzer's expired analyses in small batches for at most ~60 s, logged on their own (a failure here
+        # never hides the run log prune, and the next hour goes on where this one stopped)
+        if ([datetime]::UtcNow.Minute -lt 5) { $ga = Remove-EpsExpiredCaAnalyses -ConnectionString $ConnectionString; if ($ga) { Say "analysis retention: $(if ($ga -lt 0) { 'FAILED - the expired analyses could not be removed (tried again next hour)' } else { "$ga expired analysis(es) removed with their per-user rows" })" } }
+        # MAIL-RETRY (2.1.74, Invardia 2026-11-26): the first tick of each hour sends again what was not mailed - the newest
+        # un-mailed analyzer impact alert per monitor (older ones superseded) and the Support app's unsent fix notices (< 7 days)
+        if ([datetime]::UtcNow.Minute -lt 5) {
+            try { $ar = Invoke-EpsCaAlertResend -ConnectionString $ConnectionString -Version $version; foreach ($l in $ar.Lines) { Say $l } } catch { Say "analyzer alert resend: $($_.Exception.Message)" }
+            try { $nr = Invoke-EpsSupportNoticeResend -ConnectionString $ConnectionString -Version $version; foreach ($l in $nr.Lines) { Say $l } } catch { Say "support notice resend: $($_.Exception.Message)" }
+        }
         exit $(if ($t.Status -eq 'Failed') { 1 } else { 0 })
     }
     if ($Job -eq 'DbInit') {
@@ -119,6 +128,8 @@ try {
         # through ARM. Take ONE message (deleted at once); its per-run parameters are checked in Read-EpsJobMessage and
         # are the only way in - anything set in the environment for them before is dropped.
         foreach ($k in 'EPS_REQUEST_ID', 'EPS_CA_MONITOR', 'EPS_TAG_TRIGGER') { Remove-Item "env:$k" -ErrorAction SilentlyContinue }
+        Remove-Item 'env:EPS_UPDATE_MODE' -ErrorAction SilentlyContinue   # SEC-PATCH-PIPELINE-1: the update job's mode, only from its checked message
+        $script:__noMsg = $false
         # WEB-NO-JOB-RIGHTS (2.1.32): the wake queue's sender is the internet-facing web identity - its messages older than
         # 15 min are refused by the reader, whatever TTL the sender set
         $msg = Read-EpsJobMessage -StorageAccount $env:EPS_STORAGE_ACCOUNT -AcaJobName $env:EPS_ACA_JOB -MaxAgeMinutes $(if ($Job -eq 'Wake') { 15 } else { 0 })
@@ -126,6 +137,7 @@ try {
             # the uplink job is also started directly (framework SECAUDIT-1a: the Support session starts the heartbeat once
             # so support begins without waiting an interval) - it takes no parameters, so it runs its normal cycle
             if ($Job -notin 'Uplink', 'Update') { Say 'no message on the queue (another execution took it) - nothing to do'; exit 0 }
+            $script:__noMsg = $true
             Say "no message on the queue (a direct start) - the normal $($Job.ToLowerInvariant()) cycle"
         }
         elseif ($msg.Refused) { Say $msg.Refused; exit 0 }
@@ -167,18 +179,24 @@ WHERE q.Job = 'Uplink' AND q.Status = 'Dispatched'
         # own identity id-eps-updater (EPS-UpdateApply.ps1: no SQL; the run record below stays the engine identity's). A
         # "Run now" request is taken and closed like the uplink's.
         foreach ($f in 'EPS-Arm', 'EPS-Install', 'EPS-UpdateApply') { . (Join-Path $sol "engine\_shared\$f.ps1") }
+        # SEC-PATCH-PIPELINE-1 G3/G5: EPS_UPDATE_MODE=ImageOnly (only from the tick's checked message) = the SHORT image-only
+        # path (Invoke-EpsImageOnlyUpdate); anything else = the normal update cycle, as before
+        $imgMode = "$env:EPS_UPDATE_MODE" -eq 'ImageOnly'
         $runId = [guid]::NewGuid()
-        $req = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
+        # the run row only when this execution may run (the update job runs up to 2 executions at once, 2.1.74): a normal run
+        # never next to another normal one, a start without a message never next to any update run (Get-EpsUpdateRunInsertSql)
+        $mine = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; img = [int]$imgMode; direct = [int][bool]$script:__noMsg } -Query (Get-EpsUpdateRunInsertSql))
+        if ($mine -ne 1) { Say 'another update run is running - this execution ends here (nothing to do)'; exit 0 }
+        $req = if (-not $imgMode) { @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $runId } -Query @'
 UPDATE TOP (1) q SET Status = 'Running', RunId = @r, UpdatedAtUtc = SYSUTCDATETIME(), SignedToken = NULL
 OUTPUT INSERTED.RequestId, INSERTED.RequestedBy
 FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
 WHERE q.Job = 'Update' AND q.Status = 'Dispatched'
-'@)[0]
-        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId } -Query "INSERT INTO eps.Run (RunId, Job, Mode, Scope) VALUES (@id, 'Update', 'Preview', NULL)" | Out-Null
+'@)[0] }
         $script:__seq = 0
         $log = { param($level, $msg) if (-not (Test-EpsLogLine -Level $script:__logLevel -Line $level)) { return }; $script:__seq++; Say "$level $msg"; Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $runId; s = $script:__seq; l = $level; m = $msg } -Query 'INSERT INTO eps.RunLog (RunId, Seq, Level, Message) VALUES (@r, @s, @l, @m)' | Out-Null }
         $u = $null; $ok = $false
-        try { $u = Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log -RunId $runId; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
+        try { $u = if ($imgMode) { Invoke-EpsImageOnlyUpdate -ConnectionString $ConnectionString -Version $version -Log $log -RunId $runId } else { Invoke-EpsUpdateCheck -ConnectionString $ConnectionString -Version $version -Log $log -RunId $runId }; $ok = $u.State -notin 'refused', 'unreachable' -and -not ($u.Applied -and -not $u.Applied.Ok) }
         catch { & $log 'Error' "$($_.Exception.Message)" }
         $sum = if ($u) { "$($u.Summary)" } else { 'the check failed - see its log' }
         # 2.1.17: a mixed roll names every component - never longer than the columns (NVARCHAR(1000)), or the run stays Running
@@ -225,8 +243,11 @@ WHERE q.RequestId = @id AND q.Job = 'CAPolicyAnalyzer' AND q.Status = 'Dispatche
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
             $objects = if ($res) { ($res.Analyses | ForEach-Object { $_.Summary.InScope } | Measure-Object -Sum).Sum } else { 0 }
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if (-not $ok) { 'Failed' } elseif ($res.Partial) { 'PartlyFailed' } else { 'Succeeded' }); o = [int]$objects; p = [int]$(if ($res) { $res.Impacted } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } elseif ($res -and $res.Partial) { "partial: $($res.PartialWhy)" } else { [DBNull]::Value }); js = $(if ($res -and (@($res.Codes).Count -or $res.PartialKind)) { ([ordered]@{ Codes = @($res.Codes); PartialKind = "$($res.PartialKind)" } | ConvertTo-Json -Compress) } else { [DBNull]::Value }) } `
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if (-not $ok) { 'Failed' } elseif ($res.Partial) { 'PartlyFailed' } else { 'Succeeded' }); o = [int]$objects; p = [int]$(if ($res) { $res.Impacted } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } elseif ($res -and $res.Partial) { "partial: $($res.PartialWhy)" } else { [DBNull]::Value }); js = $(if ($res -and (@($res.Codes).Count -or $res.PartialKind)) { $sj = [ordered]@{ Codes = @($res.Codes); PartialKind = "$($res.PartialKind)" }; if ("$($res.AlertNote)") { $sj.AlertNote = "$($res.AlertNote)" }; ($sj | ConvertTo-Json -Compress) } else { [DBNull]::Value }) } `
                 -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = @p, Applied = 0, SummaryJson = COALESCE(@js, SummaryJson), HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
+            # MAIL-RETRY (2.1.74; 2.1.75 review L2): the next cycle of this monitor - this finished run supersedes every older
+            # un-mailed impact alert of the monitor (impacted or not); this run's own failed send waits for the tick
+            if ($monitor) { try { $ar = Invoke-EpsCaAlertResend -ConnectionString $ConnectionString -Monitor $monitor -SkipRunId $runId -Version $version; foreach ($l in $ar.Lines) { & $log 'Info' $l } } catch { & $log 'Warning' "the alert resend failed: $($_.Exception.Message)" } }
             if ($reqId) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]$reqId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "$(@($res.Analyses).Count) policy(ies), $(if ($res.Partial) { 'at least ' })$($res.Impacted) impacted$(if ($res.Partial) { " - partial: $($res.PartialWhy)" })" } else { 'the analysis failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
         }
         exit $(if ($ok) { 0 } else { 1 })
@@ -319,7 +340,7 @@ OUTPUT INSERTED.RequestId, INSERTED.Mode, INSERTED.Scope, INSERTED.RequestedBy, 
 FROM eps.JobRequest q WITH (READPAST, UPDLOCK, ROWLOCK)
 WHERE q.Job = 'Config' AND q.Status = 'Dispatched'
 '@)[0]) {
-            $n++
+            $n++; $sm = $null; $claimed = $false
             $gate = Confirm-EpsJobRequest -Request $q -ConnectionString $ConnectionString -ChangesOutside
             $st = 'Refused'; $txt = $gate.Text
             if ($gate.Verified) {
@@ -333,11 +354,17 @@ WHERE q.Job = 'Config' AND q.Status = 'Dispatched'
             # §12.30 / §12.32: a change by the Invardia Support app is mailed to the install's admins (never fails the request)
             if ("$($q.RequestedBy)" -like 'app:*') {
                 $sc0 = try { $q.Scope | ConvertFrom-Json } catch { $null }
+                # 2.1.75 review L3: claim, send, then mark - the claim holds the row against a resend until the status and the mark
+                # are written TOGETHER below (one UPDATE: never a final status without its mark)
+                $claimed = try { Request-EpsSupportNoticeClaim -ConnectionString $ConnectionString -RequestId $q.RequestId } catch { $false }
                 $sm = Send-EpsSupportActionMail -ConnectionString $ConnectionString -RequestedBy "$($q.RequestedBy)" -What "$(if ($sc0) { "$($sc0.method) $($sc0.path)" })" -Reason "$(if ($sc0.body) { $sc0.body.reason })" -Result "$st - $txt" -Version $version
                 if ($sm.Reason -ne 'not the Support app') { Say "Support action mail: $(if ($sm.Sent) { 'sent' } else { 'NOT sent' }) ($($sm.Reason))" }
             }
             switch ($st) { 'Done' { $cDone++ } 'Failed' { $cFailed++; $cLast = $txt } default { $cRefused++ } }
-            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $st; t = $txt } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null
+            # MAIL-RETRY (2.1.74; 2.1.75 review L3): the status and the notice's sent-mark in ONE statement - an unsent notice is
+            # left unmarked with its claim cleared, so the tick sends it again (hourly, and at once after a passed mail probe)
+            # for 7 days, then it is reported as given up (heartbeat Mail, Overview)
+            Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $q.RequestId; s = $st; t = $txt; ns = [int][bool]($sm -and $sm.Sent) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME(), NoticeSentAtUtc = CASE WHEN @ns = 1 THEN SYSUTCDATETIME() ELSE NoticeSentAtUtc END, NoticeClaimAtUtc = NULL WHERE RequestId = @id' | Out-Null
         }
         if ($n) { [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) Say $m }) }   # framework §12.27 SQL-STATS (an import, many rules), warn-only
         Say "configuration: $n request(s)"
@@ -375,6 +402,9 @@ WHERE q.Job = 'Backup' AND q.Status = 'Dispatched'
             # nothing is delivered) and recorded for the heartbeat - it reads only, and never fails the backup
             # ONE-SENDER-1 A1: an SMTP relay whose two From keys differ (drift) is named here, and in the stored check record
             try { $mr = Invoke-EpsMailRestrictionCheck -ConnectionString $ConnectionString; if ($mr.State -ne 'not-applicable') { & $log $(if ($mr.State -eq 'verified') { 'Info' } else { 'Warning' }) "mail send right: $($mr.State) - $($mr.Detail)" } elseif ($mr.Drift) { & $log 'Warning' "mail From drift: $($mr.Detail)" } } catch { & $log 'Warning' "the mail send right could not be checked: $($_.Exception.Message)" }
+            # SQLADMIN-PERSON-1 (framework, Invardia 2026-11-24): once a day, a COUNT of the persons with standing membership in the
+            # SQL server's admin group, for the Overview page - never a name, report only; never fails the backup
+            if (-not $req) { try { $sap = Get-EpsSqlAdminPersonCount -SubscriptionId "$env:EPS_SUBSCRIPTION_ID" -ResourceGroup "$env:EPS_RESOURCE_GROUP" -DbInitName $(if ("$env:EPS_DBINIT_IDENTITY") { "$env:EPS_DBINIT_IDENTITY" } else { 'id-eps-dbinit' }); Save-EpsSqlAdminPersonCount -ConnectionString $ConnectionString -Result $sap; & $log $(if ($sap.Checked -and $sap.Count) { 'Warning' } else { 'Info' }) "SQL admin group: $($sap.Reason)" } catch { & $log 'Warning' "SQL admin group check: $($_.Exception.Message)" } }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Policies + $res.ConfigItems } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } else { [DBNull]::Value }) } `
                 -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = 0, Applied = 0, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "CA backup $($res.CaBackupId) ($($res.Policies) policies), configuration backup $($res.ConfigBackupId)" } else { 'the backup failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }

@@ -995,8 +995,17 @@ function Invoke-EpsCaPolicyAnalyzer {
     # FIRST line says it is partial - a capped count is never presented as the total
     $partialNote = if ($shared -and $shared.Capped) { "partial run: the sign-in limit was reached - $([int]$shared.Scanned) sign-ins read; more may be impacted" }
                    elseif ($partialWhy.Count) { "partial run: $($partialWhy -join '; ') - more may be impacted" } else { '' }
-    if ($impactedTotal -gt 0) { $mail = Send-EpsCaAnalyzerAlert -ConnectionString $ConnectionString -Analyses @($analyses | Where-Object { $_.Summary.Impacted -gt 0 }) -Version $Version -Recipients @($Request.AlertTo) -Monitor ([string]$Request.Monitor) -PartialNote $partialNote; & $Log 'Info' "alert: $(if ($mail.Sent) { 'mailed' } else { 'NOT mailed - ' + $mail.Reason })" }
-    @{ Analyses = @($analyses); Impacted = $impactedTotal; Mail = $mail; Partial = [bool]$partialWhy.Count; PartialWhy = ($partialWhy -join '; '); PartialKind = $(if (-not $partialWhy.Count) { '' } elseif ($shared -and $shared.Capped -and $partialWhy.Count -eq 1) { 'cap' } elseif ($shared -and $shared.Capped) { 'cap+errors' } else { 'errors' }); Codes = @(@(if ($inv -and $inv.Monitor) { @($inv.Monitor.Codes) } elseif (-not $inv) { 'eps-rule-0102' }) + @(if (@($analyses | Where-Object { [int]$_.Summary.Errors -gt 0 }).Count) { 'eps-rule-0103' })) }   # TRUST-1: the run's catalogue warning codes; eps-rule-0103 = users not evaluated (Invardia (a): ONE item per signature, never one per run)
+    if ($impactedTotal -gt 0) {
+        $mail = Send-EpsCaAnalyzerAlert -ConnectionString $ConnectionString -Analyses @($analyses | Where-Object { $_.Summary.Impacted -gt 0 }) -Version $Version -Recipients @($Request.AlertTo) -Monitor ([string]$Request.Monitor) -PartialNote $partialNote
+        # MAIL-RETRY (2.1.74, Invardia 2026-11-26): the run is marked ONLY when the mail went out; an unmarked run is sent
+        # again by the next cycle (Invoke-EpsCaAlertResend) - unless a newer run of the same monitor superseded it
+        if ($mail.Sent) { try { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $RunId } -Query 'UPDATE eps.Run SET AlertedAtUtc = SYSUTCDATETIME() WHERE RunId = @r') } catch { & $Log 'Warning' "the alert was mailed but could not be marked (it may be sent once more): $($_.Exception.Message)" } }
+        # review B: mail is OFF (Mail.Mode none) = the alert is never queued - the run is marked handled at once (a log line says so)
+        $off = (-not $mail.Sent) -and $(try { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Mail.Mode'")" -in '', 'none' } catch { $false })
+        if ($off) { try { [void](Set-EpsCaAlertHandled -ConnectionString $ConnectionString -RunId $RunId -Message 'alert handled: mail is off (Mail.Mode none) - this run''s mail is not sent') } catch { } }
+        & $Log 'Info' "alert: $(if ($mail.Sent) { 'mailed' } elseif ($off) { 'NOT mailed - mail is off; not queued' } else { 'NOT mailed - ' + $mail.Reason + '; tried again next cycle' })"
+    }
+    @{ Analyses = @($analyses); Impacted = $impactedTotal; Mail = $mail; AlertNote = $partialNote; Partial = [bool]$partialWhy.Count; PartialWhy = ($partialWhy -join '; '); PartialKind = $(if (-not $partialWhy.Count) { '' } elseif ($shared -and $shared.Capped -and $partialWhy.Count -eq 1) { 'cap' } elseif ($shared -and $shared.Capped) { 'cap+errors' } else { 'errors' }); Codes = @(@(if ($inv -and $inv.Monitor) { @($inv.Monitor.Codes) } elseif (-not $inv) { 'eps-rule-0102' }) + @(if (@($analyses | Where-Object { [int]$_.Summary.Errors -gt 0 }).Count) { 'eps-rule-0103' })) }   # TRUST-1: the run's catalogue warning codes; eps-rule-0103 = users not evaluated (Invardia (a): ONE item per signature, never one per run)
 }
 
 function Send-EpsCaAnalyzerAlert {
@@ -1013,6 +1022,135 @@ function Send-EpsCaAnalyzerAlert {
     $html = New-EpsMailBody -Summary "$(if ($PartialNote) { "$PartialNote. " })The CA Policy Analyzer found $(if ($PartialNote) { 'at least ' })$n user(s) a Conditional Access policy would block or challenge. Nothing was changed - the analyzer only reads." -Rows $rows -Columns @('Policy', 'State', 'Method', 'In scope', 'Impacted', 'Errors') `
         -WhatToDo 'Open the CA Policy Analyzer page for the users and the reason per user before changing the policy.' -ButtonText 'Open the CA Policy Analyzer' -ButtonPage 'ca' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
     Send-EpsMail -Config $cfg -Subject $subject -Html $html
+}
+
+# ---- MAIL-RETRY (2.1.74, Invardia 2026-11-26): a failed impact mail is sent again --------------------------------------
+# The run's own row (eps.Run, Job CAPolicyAnalyzer) carries AlertedAtUtc - set only on a successful send, or when the run is
+# HANDLED without a mail (a run log line says why). The next cycle (the end of the next analyzer run, and the tick once an
+# hour) sends an un-mailed run that impacted users again, unless (2.1.75 review L2):
+#   superseded  a NEWER finished run of the same monitor exists - impacted or not, it is the current picture
+#   given up    it ended more than 7 days ago (an ad-hoc run: 24 h) - counted for the heartbeat (Mail.alertsGivenUp)
+#   handled     mail is off (Mail.Mode none: never queued - the run itself is marked at once), or its analyses are gone
+#               (retention) - nothing left to send
+# At most 200 un-mailed runs are read and 20 mails sent per cycle (review B).
+# (review L3) a resend first CLAIMS the row (AlertClaimAtUtc, a claim older than 10 min is taken over), so two senders at
+# the same time send one mail; a failed send clears the claim. The mail is rebuilt from the stored analyses, so it is the
+# same mail; nothing of the mail is stored.
+$script:EpsCaAlertGiveUpDays = 7
+$script:EpsCaAlertAdHocGiveUpHours = 24
+$script:EpsCaAlertGivenUpPrefix = 'alert given up:'
+
+function Split-EpsCaAlertBacklog {
+    # PURE. Un-mailed impacted runs (RunId, Monitor, EndedAtUtc, Newer = 1 when a newer finished run of the same monitor
+    # exists) -> @{ Resend; Superseded; GivenUp } (in that order of precedence: superseded, then given up, then resend)
+    param([object[]]$Rows = @(), [datetime]$NowUtc = [datetime]::UtcNow, [int]$Days = $script:EpsCaAlertGiveUpDays, [int]$AdHocHours = $script:EpsCaAlertAdHocGiveUpHours)
+    $out = @{ Resend = [System.Collections.Generic.List[object]]::new(); Superseded = [System.Collections.Generic.List[object]]::new(); GivenUp = [System.Collections.Generic.List[object]]::new() }
+    foreach ($r in @($Rows | Where-Object { $_ })) {
+        $adhoc = $r.Monitor -is [DBNull] -or -not "$($r.Monitor)"
+        $ended = if ($r.EndedAtUtc -and $r.EndedAtUtc -isnot [DBNull]) { [datetime]$r.EndedAtUtc } else { $NowUtc }
+        if (-not $adhoc -and [int]"0$($r.Newer)" -gt 0) { $out.Superseded.Add($r) }
+        elseif ($ended -le $NowUtc.AddDays(-$Days) -or ($adhoc -and $ended -le $NowUtc.AddHours(-$AdHocHours))) { $out.GivenUp.Add($r) }
+        else { $out.Resend.Add($r) }
+    }
+    @{ Resend = @($out.Resend); Superseded = @($out.Superseded); GivenUp = @($out.GivenUp) }
+}
+
+function Get-EpsCaAlertRequest {
+    # the recipients of a stored run, as the run had them: a monitor's own (its current definition), an ad-hoc request's own
+    # (the request that started the run); none = the install's Mail.Recipients (as Send-EpsCaAnalyzerAlert does)
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Monitor, [guid]$RunId)
+    $def = if ($Monitor) { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $Monitor } -Query 'SELECT Definition FROM eps.CaMonitor WHERE Name = @n' }
+           else { Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ r = $RunId } -Query "SELECT TOP (1) Scope FROM eps.JobRequest WHERE RunId = @r AND Job = N'CAPolicyAnalyzer'" }
+    if ($null -eq $def -or $def -is [DBNull] -or -not "$def") { return @() }
+    $v = try { ConvertTo-EpsCaRequest -Body ("$def" | ConvertFrom-Json) } catch { $null }
+    if ($v -and $v.Ok) { @($v.Request.AlertTo) } else { @() }
+}
+
+function Set-EpsCaAlertHandled {
+    # marks an un-mailed run as handled WITHOUT a mail (superseded / given up / mail off / analyses gone) + one run log line
+    # saying so; the claim goes with it. Returns 1 when this call marked it, 0 when it was marked already.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RunId, [Parameter(Mandatory)][string]$Message)
+    $n = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $RunId } -Query 'UPDATE eps.Run SET AlertedAtUtc = SYSUTCDATETIME(), AlertClaimAtUtc = NULL WHERE RunId = @r AND AlertedAtUtc IS NULL')
+    if ($n) { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $RunId; m = $Message } -Query "INSERT INTO eps.RunLog (RunId, Seq, Level, Message) SELECT @r, ISNULL(MAX(Seq), 0) + 1, N'Warning', @m FROM eps.RunLog WHERE RunId = @r") }
+    $n
+}
+
+function Get-EpsCaAlertGivenUp {
+    # the analyzer alerts given up in the last 7 days (their run log line): @{ GivenUp; OldestUtc } for the heartbeat; $null
+    # when it cannot be read. Never throws.
+    param([Parameter(Mandatory)][string]$ConnectionString, [int]$Days = $script:EpsCaAlertGiveUpDays)
+    try {
+        $row = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ d = $Days; p = "$($script:EpsCaAlertGivenUpPrefix)%" } -Query "SELECT COUNT(DISTINCT l.RunId) AS GivenUp, MIN(l.AtUtc) AS OldestUtc FROM eps.RunLog l WHERE l.Level = N'Warning' AND l.Message LIKE @p AND l.AtUtc > DATEADD(DAY, -@d, SYSUTCDATETIME())")[0]
+        @{ GivenUp = [int]$row.GivenUp; OldestUtc = $(if ($row.OldestUtc -is [DBNull]) { $null } else { $row.OldestUtc }) }
+    } catch { $null }
+}
+
+function Invoke-EpsCaAlertResend {
+    <#
+      The next cycle's resend (see above). -Monitor: only that monitor's runs (the end of an analyzer run); none = every
+      monitor (the tick). -SkipRunId: a run whose send just failed is not tried again in the same breath (it stays unmarked).
+      Never throws. Returns @{ Resent; Failed; Superseded; GivenUp; Handled; Claimed; Lines } (Claimed = left to another sender).
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Monitor, [guid]$SkipRunId = [guid]::Empty, [string]$Version = '2.0.0', [datetime]$NowUtc = [datetime]::UtcNow)
+    $out = @{ Resent = 0; Failed = 0; Superseded = 0; GivenUp = 0; Handled = 0; Claimed = 0; Lines = [System.Collections.Generic.List[string]]::new() }
+    try {
+        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ m = $(if ($Monitor) { $Monitor } else { [DBNull]::Value }) } -Query @'
+SELECT TOP (200) r.RunId, r.StartedAtUtc, r.EndedAtUtc, r.SummaryJson, r.Monitor,
+       CASE WHEN r.Monitor IS NOT NULL AND EXISTS (
+           SELECT 1 FROM eps.Run n
+           WHERE n.Job = N'CAPolicyAnalyzer' AND n.EndedAtUtc IS NOT NULL AND n.Status IN (N'Succeeded', N'PartlyFailed')
+             AND n.StartedAtUtc > r.StartedAtUtc AND JSON_VALUE(n.Scope, '$.monitor') = r.Monitor) THEN 1 ELSE 0 END AS Newer
+FROM (SELECT RunId, StartedAtUtc, EndedAtUtc, SummaryJson, JSON_VALUE(Scope, '$.monitor') AS Monitor
+      FROM eps.Run
+      WHERE Job = N'CAPolicyAnalyzer' AND EndedAtUtc IS NOT NULL AND Status IN (N'Succeeded', N'PartlyFailed') AND Planned > 0 AND AlertedAtUtc IS NULL) r
+WHERE (@m IS NULL OR r.Monitor = @m)
+ORDER BY r.StartedAtUtc
+'@)
+    } catch { $out.Lines.Add("the un-mailed analyzer alerts could not be read: $($_.Exception.Message)"); return $out }
+    if (-not $rows.Count) { return $out }
+    $b = Split-EpsCaAlertBacklog -Rows $rows -NowUtc $NowUtc
+    $who = { param($r) if ($r.Monitor -is [DBNull] -or -not "$($r.Monitor)") { 'this request' } else { "monitor $($r.Monitor)" } }
+    $mark = { param($r, $msg, $key, $line)
+        try { if (Set-EpsCaAlertHandled -ConnectionString $ConnectionString -RunId ([guid]$r.RunId) -Message $msg) { $out[$key]++ }; $out.Lines.Add("analyzer alert of run $($r.RunId) ($(& $who $r)): $line") }
+        catch { $out.Lines.Add("analyzer alert of run $($r.RunId): could not be marked ($line): $($_.Exception.Message)") } }
+    foreach ($s in $b.Superseded) { & $mark $s "alert superseded: a newer finished run of $(& $who $s) is the current picture - this run's mail was not sent and is not sent again" 'Superseded' 'superseded by a newer finished run - not sent' }
+    foreach ($s in $b.GivenUp) { & $mark $s "$($script:EpsCaAlertGivenUpPrefix) this run's mail could not be sent within $(if ($s.Monitor -is [DBNull] -or -not "$($s.Monitor)") { "$($script:EpsCaAlertAdHocGiveUpHours) hours (an ad-hoc run)" } else { "$($script:EpsCaAlertGiveUpDays) days" }) - it is not sent again" 'GivenUp' 'given up - not sent' }
+    # review B: at most 20 mails per cycle (the oldest of the 200 rows read first; the next cycle takes the rest)
+    # 2.1.75 review B H1: the runs to send again - the backlog's Resend list, without the run whose send just failed, at most 20
+    $live = @($b.Resend | Where-Object { $_ -and [guid]"$($_.RunId)" -ne $SkipRunId } | Select-Object -First 20)
+    if (-not $live.Count) { return $out }
+    $mode = try { "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Mail.Mode'")" } catch { '?' }
+    if ($mode -in '', 'none') {   # not set = none (Get-EpsMailConfig's default); an unreadable setting is NOT taken as off
+        foreach ($x in $live) { & $mark $x 'alert handled: mail is off (Mail.Mode none) - this run''s mail is not sent' 'Handled' 'mail is off - handled, not sent' }
+        return $out
+    }
+    foreach ($x in $live) {
+        $mon = if ($x.Monitor -is [DBNull]) { '' } else { "$($x.Monitor)" }
+        $rid = [guid]$x.RunId
+        try {
+            # L3: claim first - another sender at the same time (the tick, the end of a monitor run) finds the row claimed
+            $got = [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $rid } -Query 'UPDATE eps.Run SET AlertClaimAtUtc = SYSUTCDATETIME() WHERE RunId = @r AND AlertedAtUtc IS NULL AND (AlertClaimAtUtc IS NULL OR AlertClaimAtUtc < DATEADD(MINUTE, -10, SYSUTCDATETIME()))')
+            if ($got -ne 1) { $out.Claimed++; $out.Lines.Add("analyzer alert of run $rid`: another sender has it - not sent here"); continue }
+            $an = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ r = $rid } -Query 'SELECT DisplayName, PolicyState, Mode, InScope, Impacted, Errors FROM eps.CaAnalysis WHERE RunId = @r AND Impacted > 0 ORDER BY CreatedAtUtc, AnalysisId' |
+                ForEach-Object { [pscustomobject]@{ DisplayName = "$($_.DisplayName)"; State = $(if ($_.PolicyState -is [DBNull]) { '' } else { "$($_.PolicyState)" }); Mode = "$($_.Mode)"; Summary = @{ InScope = [int]$_.InScope; Impacted = [int]$_.Impacted; Errors = [int]$_.Errors } } })
+            if (-not $an.Count) { & $mark $x 'alert handled: the analyses of this run are gone (retention) - nothing left to send' 'Handled' 'its analyses are gone - handled, not sent'; continue }
+            $note = ''; if ($x.SummaryJson -isnot [DBNull] -and "$($x.SummaryJson)") { try { $note = "$((("$($x.SummaryJson)") | ConvertFrom-Json).AlertNote)" } catch { $note = '' } }
+            $to = @(Get-EpsCaAlertRequest -ConnectionString $ConnectionString -Monitor $mon -RunId $rid)
+            $mail = Send-EpsCaAnalyzerAlert -ConnectionString $ConnectionString -Analyses $an -Version $Version -Recipients $to -Monitor $mon -PartialNote $note
+            if ($mail.Sent) {
+                [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $rid } -Query 'UPDATE eps.Run SET AlertedAtUtc = SYSUTCDATETIME(), AlertClaimAtUtc = NULL WHERE RunId = @r')
+                $out.Resent++
+            } else {
+                [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $rid } -Query 'UPDATE eps.Run SET AlertClaimAtUtc = NULL WHERE RunId = @r AND AlertedAtUtc IS NULL')
+                $out.Failed++
+            }
+            $out.Lines.Add("analyzer alert of run $rid$(if ($mon) { " (monitor $mon)" }) sent again: $(if ($mail.Sent) { 'mailed' } else { 'NOT mailed - ' + $mail.Reason })")
+        } catch {
+            $out.Failed++; $out.Lines.Add("analyzer alert of run $rid`: the resend failed: $($_.Exception.Message)")
+            try { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ r = $rid } -Query 'UPDATE eps.Run SET AlertClaimAtUtc = NULL WHERE RunId = @r AND AlertedAtUtc IS NULL') } catch { }
+        }
+    }
+    $out
 }
 
 # ---- SQL --------------------------------------------------------------------------------------------------------------

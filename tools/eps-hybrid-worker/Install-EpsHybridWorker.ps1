@@ -57,7 +57,17 @@ if ($AsGuestOf -and -not $PSBoundParameters.ContainsKey('Root')) { $Root = 'C:\E
 $arcGroup = 'Hybrid agent extension applications'
 $isArc = if ($HostType -eq 'Auto') { [bool](Get-Service -Name himds -ErrorAction SilentlyContinue) } else { $HostType -eq 'Arc' }
 $what = [bool]$WhatIfPreference; $WhatIfPreference = $false
-function Step($text, [scriptblock]$do) { if ($what) { Write-Host "  WhatIf: $text" } else { Write-Host "  $text"; & $do } }
+# WORKER-ACL-1 (2.1.74): a step that fails stops the install - 'Installed' is printed only when every step succeeded
+$script:stepFailed = $false
+function Step($text, [scriptblock]$do) {
+    if ($what) { Write-Host "  WhatIf: $text"; return }
+    Write-Host "  $text"
+    try { & $do } catch { $script:stepFailed = $true; Write-Host "  FAILED: $text - $($_.Exception.Message)" -ForegroundColor Red; throw }
+}
+function Get-EpsInstallAccountSid([string]$Account) {
+    try { ([Security.Principal.NTAccount]$Account).Translate([Security.Principal.SecurityIdentifier]).Value }
+    catch { throw "$Account could not be resolved to a SID - create it first (Initialize-EpsHybridWorkerAd.ps1) and check this server can read it" }
+}
 
 $updTask = 'EntraPolicySuite Hybrid Worker Update'   # WORKER-UPD (2.0.102): daily, as SYSTEM
 if ($Remove) {
@@ -93,32 +103,48 @@ Write-Host "Entra Policy Suite hybrid worker '$WorkerName' on $env:COMPUTERNAME 
 
 $appDir = Join-Path $Root 'app'
 $verDir = Join-Path $Root "versions\$srcVersion"
+# WORKER-ACL-1 (2.1.74): locked down BEFORE any code is copied in, by well-known SIDs (SYSTEM S-1-5-18, Administrators
+# S-1-5-32-544 - every Windows language), inheritance off, every icacls exit code checked, read back
+Step "lock $Root down: inheritance off; SYSTEM + Administrators full control; $GmsaName read + execute, modify only on logs; no write for anyone else (read back)" {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Root 'logs') | Out-Null
+    $acl = Set-EpsWorkerFolderAcl -Root $Root -WorkerSid (Get-EpsInstallAccountSid $GmsaName)
+    if (-not $acl.Ok) { throw "the folder permissions were not set: $($acl.Reason)" }
+}
 Step "copy the worker code $srcVersion to $verDir and point $appDir at it (a junction; an older install's $appDir folder is kept as the previous version)" {
-    New-Item -ItemType Directory -Force -Path $Root | Out-Null
     if ((Test-Path -LiteralPath $verDir) -and (Get-EpsWorkerAppTarget -Root $Root).Path.TrimEnd('\') -ne $verDir) { Remove-Item -LiteralPath $verDir -Recurse -Force }
     Copy-EpsWorkerParts -Tree $SourcePath -Destination $verDir
     if ((Get-EpsWorkerAppTarget -Root $Root).Path.TrimEnd('\') -ne $verDir) { [void](Set-EpsWorkerAppLink -Root $Root -Target $verDir) }
 }
-Step "lock $Root down: SYSTEM + Administrators full; $GmsaName read + execute, modify only on logs" {
-    New-Item -ItemType Directory -Force -Path (Join-Path $Root 'logs') | Out-Null
-    & icacls $Root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "${GmsaName}:(OI)(CI)RX" | Out-Null
-    & icacls (Join-Path $Root 'logs') /grant "${GmsaName}:(OI)(CI)M" | Out-Null
+Step "set and read back the permissions of $Root and the code now in it: only SYSTEM and Administrators can write" {
+    $acl = Set-EpsWorkerFolderAcl -Root $Root -WorkerSid (Get-EpsInstallAccountSid $GmsaName)
+    if (-not $acl.Ok) { throw "refused: others can write the worker's code - $($acl.Reason)" }
 }
 $cfg = [ordered]@{ WorkerName = $WorkerName; Gmsa = $GmsaName; AdServer = $AdServer; ManagedIdentityClientId = $ManagedIdentityClientId; Environment = $Environment; HostType = $(if ($isArc) { 'Arc' } else { 'AzureVm' })
                    ConnectionString = "Server=tcp:$SqlServer,1433;Database=$Database;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30" }
 Step "write $Root\worker.json (the database and the worker's name - no secret)" { $cfg | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'worker.json') -Encoding utf8 }
 if ($isArc) { Step "add $GmsaName to the local group '$arcGroup' (it reads the Arc agent's identity key)" { if (-not (Get-LocalGroupMember -Group $arcGroup -ErrorAction SilentlyContinue | Where-Object Name -eq $GmsaName)) { Add-LocalGroupMember -Group $arcGroup -Member $GmsaName } } }
 Step "grant $GmsaName 'Log on as a batch job' (the task runs as it)" {
-    $sid = ([Security.Principal.NTAccount]$GmsaName).Translate([Security.Principal.SecurityIdentifier]).Value
+    $sid = Get-EpsInstallAccountSid $GmsaName
     $tmp = Join-Path ([IO.Path]::GetTempPath()) "eps-secpol-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $tmp | Out-Null
+    # WORKER-ACL-1 (2.1.74): every secedit exit code checked; the right is read back after the change
+    $export = {
+        param($cfgFile)
+        $o = @(& secedit /export /cfg $cfgFile /areas USER_RIGHTS 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { throw "secedit /export failed (exit $LASTEXITCODE): $(@($o | Where-Object { $_.Trim() }) -join ' ')" }
+        (Get-Content -LiteralPath $cfgFile | Where-Object { $_ -match '^SeBatchLogonRight' }) -replace '^SeBatchLogonRight\s*=\s*', ''
+    }
     try {
-        & secedit /export /cfg "$tmp\cur.inf" /areas USER_RIGHTS | Out-Null
-        $line = (Get-Content "$tmp\cur.inf" | Where-Object { $_ -match '^SeBatchLogonRight' }) -replace '^SeBatchLogonRight\s*=\s*', ''
+        $line = & $export "$tmp\cur.inf"
         if ($line -notmatch [regex]::Escape("*$sid")) {
             $new = @($(if ($line) { $line }), "*$sid") -join ','
             Set-Content -LiteralPath "$tmp\new.inf" -Encoding Unicode -Value "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1`r`n[Privilege Rights]`r`nSeBatchLogonRight = $new"
-            & secedit /configure /db "$tmp\sec.sdb" /cfg "$tmp\new.inf" /areas USER_RIGHTS | Out-Null
+            $o = @(& secedit /configure /db "$tmp\sec.sdb" /cfg "$tmp\new.inf" /areas USER_RIGHTS 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+            $after = & $export "$tmp\after.inf"
+            if ($after -notmatch [regex]::Escape("*$sid")) { throw "secedit /configure did not grant 'Log on as a batch job' to $GmsaName (exit $code): $(@($o | Where-Object { $_.Trim() }) -join ' ')" }
+            # secedit can end with a warning code for an unrelated setting - the right itself is read back above
+            if ($code -ne 0) { Write-Warning "secedit /configure ended with exit $code, but the right is granted (read back)" }
         }
     } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
@@ -151,4 +177,6 @@ if ($AsGuestOf) {
                     version = (Get-Content -LiteralPath (Join-Path $SourcePath 'VERSION') -Raw).Trim(); installedUtc = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $guestFile -Encoding utf8
     }
 }
-Write-Host $(if ($what) { "`nWhatIf: nothing was changed." } else { "`nInstalled. The worker heartbeats every 5 minutes; Entra Policy Suite queues AD-synced tags for it." }) -ForegroundColor Green
+if ($what) { Write-Host "`nWhatIf: nothing was changed." -ForegroundColor Green }
+elseif ($script:stepFailed) { throw 'the install did not finish - a step failed (see FAILED above)' }
+else { Write-Host "`nInstalled. The worker heartbeats every 5 minutes; Entra Policy Suite queues AD-synced tags for it." -ForegroundColor Green }

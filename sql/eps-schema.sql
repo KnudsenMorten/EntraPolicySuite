@@ -1413,3 +1413,58 @@ BEGIN
     END
     INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (41, '2.1.72');
 END
+GO
+-- v42 (2.1.75, MAIL-RETRY - Invardia 2026-11-26: "a failed alert mail is sent again, so none is lost silently"): the
+-- tamper / CA monitor pattern (AlertedAtUtc set ONLY when the send succeeds; the next cycle sends what is not marked) for two
+-- more mails. Additive columns only; no mail text is stored - the mail is rebuilt from the rows at the resend.
+--   eps.Run.AlertedAtUtc            the CA Policy Analyzer's impact mail of THAT run (one row per run; the analyses of the
+--                                   run hang off it by RunId). NULL on every other job's run.
+--   eps.JobRequest.NoticeSentAtUtc  the "Invardia Support applied a fix" notice of THAT Support app request (the request row
+--                                   is the action's record; the audit trail is append-only and cannot be marked)
+IF COL_LENGTH('eps.Run', 'AlertedAtUtc') IS NULL
+ALTER TABLE eps.Run ADD AlertedAtUtc DATETIME2 NULL;
+IF COL_LENGTH('eps.JobRequest', 'NoticeSentAtUtc') IS NULL
+ALTER TABLE eps.JobRequest ADD NoticeSentAtUtc DATETIME2 NULL;
+-- (2.1.75 review L3) a CLAIM before each resend - the tick, the end of an analyzer run and a passed probe may resend at the
+-- same time: only the sender whose UPDATE claimed the row (unmarked, no claim or one older than 10 min) sends; cleared
+-- again on a failed send, so the next cycle tries
+IF COL_LENGTH('eps.Run', 'AlertClaimAtUtc') IS NULL
+ALTER TABLE eps.Run ADD AlertClaimAtUtc DATETIME2 NULL;
+IF COL_LENGTH('eps.JobRequest', 'NoticeClaimAtUtc') IS NULL
+ALTER TABLE eps.JobRequest ADD NoticeClaimAtUtc DATETIME2 NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 42)
+BEGIN
+    -- once, at the upgrade: what ran BEFORE this version is taken as handled (its send was never recorded), so the first
+    -- resend after the upgrade never mails an old run or an old notice a second time
+    UPDATE eps.Run SET AlertedAtUtc = COALESCE(EndedAtUtc, StartedAtUtc) WHERE Job = N'CAPolicyAnalyzer' AND AlertedAtUtc IS NULL;
+    UPDATE eps.JobRequest SET NoticeSentAtUtc = UpdatedAtUtc WHERE Job = N'Config' AND RequestedBy LIKE N'app:%' AND NoticeSentAtUtc IS NULL;
+    INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (42, '2.1.75');
+END
+GO
+-- v43 (2.1.75, SECIMG-1 - owner 2026-11-25: "it must also go into each solutions, so we have a Baseline Image Security
+-- Update release log menu item" / "both shown in invardia + solutions"; the read path agreed with Invardia 2026-11-26):
+-- this install's own security image releases, as Invardia's GET /api/updates/entrapolicysuite/security-image-releases
+-- answers them. The ENGINE fetches them with the install key (the web identity holds no Key Vault right) after each
+-- heartbeat and once after an image-only update, and replaces the rows in one transaction on a good answer only; a
+-- refused or failed fetch keeps the last good rows (the status is eps.UplinkState 'secimg.status'). The web app reads
+-- them (SELECT only). One row = one row of the route, nothing dropped: Version NULL = detected, no release yet; every time
+-- UTC or NULL (not recorded); the rings as the route gives them ([{ ring, at }], ring 0..3).
+IF OBJECT_ID('eps.SecurityImageRelease') IS NULL
+CREATE TABLE eps.SecurityImageRelease (
+    SecurityImageReleaseId INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    Product           NVARCHAR(60)   NOT NULL,
+    Version           NVARCHAR(50)   NULL,
+    DetectedAtUtc     DATETIME2      NULL,
+    StartedAtUtc      DATETIME2      NULL,
+    RingsJson         NVARCHAR(1000) NOT NULL CONSTRAINT DF_SecurityImageRelease_Rings DEFAULT N'[]',
+    HoursToNewestRing DECIMAL(12, 2) NULL,
+    NewestRing        INT            NULL,
+    InProgress        BIT            NULL,
+    Replaced          BIT            NULL,
+    What              NVARCHAR(400)  NULL,
+    FetchedAtUtc      DATETIME2      NOT NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 43)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (43, '2.1.75');

@@ -425,7 +425,7 @@ function Get-EpsInstallSteps {
     if ($Private) { return (Get-EpsPrivateInstallSteps) }
     @(
         [pscustomobject]@{ Id = 'resourcegroup'; Title = 'Resource group' }
-        [pscustomobject]@{ Id = 'identities';    Title = 'Managed identities (engine, web, the database setup job)' }
+        [pscustomobject]@{ Id = 'identities';    Title = 'Managed identities (engine, web app, database setup job, update job, support read job)' }
         [pscustomobject]@{ Id = 'logs';          Title = 'Log Analytics workspace' }
         [pscustomobject]@{ Id = 'registry';      Title = 'Container registry (Basic) + AcrPull for the identities' }
         [pscustomobject]@{ Id = 'image';         Title = 'The engine image, built in the registry' }
@@ -525,6 +525,7 @@ function Get-EpsImagePruneSwitch {
     $sw = @(@($Job.properties.template.containers | ForEach-Object { $_.env }) | Where-Object { $_ -and $_.name -eq 'EPS_Updater_ImagePrune' })[0]
     if ($sw -and "$($sw.value)" -and "$($sw.value)".Length -le 100) { "$($sw.value)" } else { $null }
 }
+$script:EpsUpdateJobMaxExecutions = 2   # 2.1.74 SEC-PATCH-PIPELINE-1: the update job's executions at once (a normal + an image-only)
 function Get-EpsJobBodies {
     # The Container Apps Jobs (DESIGN §2, §4): the tick on a 5-minute schedule, one MANUAL job per implemented work job
     # (the tick starts it). No secret anywhere: each job signs in to SQL, Graph and Exchange with its managed identity.
@@ -547,8 +548,10 @@ function Get-EpsJobBodies {
             # SEC-AUDIT-1 S4 (2.0.9): started by a message on the job's own queue (the tick may only send to it); KEDA
             # counts the queue as the ENGINE identity - no connection string, no key. A parallel job (the analyzer) may run
             # up to 10 executions side by side; any other one at a time (the tick's overlap guard decides too).
+            # 2.1.74 (SEC-PATCH-PIPELINE-1 G3/G5): the update job 2 - its short image-only mode never waits in the queue
+            # behind a normal update; who may run is decided by the job itself (Get-EpsUpdateRunInsertSql + the image-only claim)
             $config.eventTriggerConfig = @{ parallelism = 1; replicaCompletionCount = 1
-                scale = @{ minExecutions = 0; maxExecutions = $(if ($parallelJob) { 10 } else { 1 }); pollingInterval = 30
+                scale = @{ minExecutions = 0; maxExecutions = $(if ($parallelJob) { 10 } elseif ($job -eq 'Update') { [Math]::Max(2, [int]$script:EpsUpdateJobMaxExecutions) } else { 1 }); pollingInterval = 30
                     rules = @(@{ name = 'queue'; type = 'azure-queue'; identity = $miId
                         metadata = @{ accountName = $n.Storage; queueName = (Get-EpsJobQueueName $key); queueLength = '1' } }) } }
         }

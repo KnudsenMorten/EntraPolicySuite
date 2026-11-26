@@ -17,6 +17,9 @@ Set-StrictMode -Off
 $script:EpsSupportUser = 'invardia-support'
 $script:EpsSupportRole = 'eps_support_read'
 $script:EpsSupportMaxHours = 8
+$script:EpsSupportDenySql = @(
+    "IF OBJECT_ID(N'eps.LicensePull') IS NOT NULL DENY SELECT ON OBJECT::eps.LicensePull TO [eps_support_read];",
+    "IF COL_LENGTH(N'eps.JobRequest', N'SignedToken') IS NOT NULL DENY SELECT ON OBJECT::eps.JobRequest (SignedToken) TO [eps_support_read];")
 
 function Get-EpsSupportConsentFromInvardia {
     <#
@@ -74,6 +77,9 @@ function Get-EpsSupportAccessPlan {
     $sid = ConvertTo-EpsSqlSid $AppId
     $sql.Add("IF DATABASE_PRINCIPAL_ID(N'$role') IS NULL CREATE ROLE [$role];")
     $sql.Add("GRANT SELECT ON SCHEMA::eps TO [$role];")
+    # 2.1.74 (EPS full review sql-flow-2 #11): the read role never reads a bearer secret - the licence pull token and the
+    # signed request tokens. SQL's own DENY (it wins over the schema GRANT); a setup session's db_owner is Invardia's contract
+    foreach ($d in $script:EpsSupportDenySql) { $sql.Add($d) }
     if ($Current.Exists -and "$($Current.Sid)".ToUpperInvariant() -ne $sid.ToUpperInvariant()) { if ($Current.InOwner) { $sql.Add("ALTER ROLE [db_owner] DROP MEMBER [$u];") }; $sql.Add("DROP USER [$u];"); $lines.Add("$u belonged to another Support app: replaced"); $Current = @{ Exists = $false } }
     if (-not $Current.Exists) { $sql.Add("CREATE USER [$u] WITH SID = $sid, TYPE = E;"); $lines.Add("$u created for the Support app $AppId") }
     if (-not $Current.InRead) { $sql.Add("ALTER ROLE [$role] ADD MEMBER [$u];"); $lines.Add("$u can read (role $role)") }
@@ -83,7 +89,10 @@ function Get-EpsSupportAccessPlan {
 }
 
 $script:EpsSupportCurrentSql = @"
-SELECT CONVERT(VARCHAR(100), dp.sid, 1) AS Sid, IS_ROLEMEMBER(N'$script:EpsSupportRole', dp.name) AS InRead, IS_ROLEMEMBER(N'db_owner', dp.name) AS InOwner
+SELECT CONVERT(VARCHAR(100), dp.sid, 1) AS Sid, IS_ROLEMEMBER(N'$script:EpsSupportRole', dp.name) AS InRead, IS_ROLEMEMBER(N'db_owner', dp.name) AS InOwner,
+  (SELECT COUNT(*) FROM sys.database_permissions p WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID(N'$script:EpsSupportRole') AND p.state = 'D' AND p.permission_name = 'SELECT'
+     AND (p.major_id = OBJECT_ID(N'eps.LicensePull') AND p.minor_id = 0 OR p.major_id = OBJECT_ID(N'eps.JobRequest') AND p.minor_id = COLUMNPROPERTY(OBJECT_ID(N'eps.JobRequest'), N'SignedToken', 'ColumnId'))) AS Denied,
+  (CASE WHEN OBJECT_ID(N'eps.LicensePull') IS NULL THEN 0 ELSE 1 END + CASE WHEN COL_LENGTH(N'eps.JobRequest', N'SignedToken') IS NULL THEN 0 ELSE 1 END) AS DenyWanted
 FROM sys.database_principals dp WHERE dp.name = N'$script:EpsSupportUser'
 "@
 
@@ -92,7 +101,7 @@ function Invoke-EpsSupportAccess {
       The job's run. Returns the exit code (0 = applied and read back, 1 = failed). -Http / -Key: test seams.
     #>
     param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][scriptblock]$Log, [scriptblock]$Http, [AllowNull()][object]$Key = $null, [datetime]$NowUtc = [datetime]::UtcNow)
-    $readCur = { $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsSupportCurrentSql)[0]; if ($r) { @{ Exists = $true; Sid = "$($r.Sid)"; InRead = ([int]"0$($r.InRead)" -eq 1); InOwner = ([int]"0$($r.InOwner)" -eq 1) } } else { @{ Exists = $false; Sid = ''; InRead = $false; InOwner = $false } } }
+    $readCur = { $r = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query $script:EpsSupportCurrentSql)[0]; if ($r) { @{ Exists = $true; Sid = "$($r.Sid)"; InRead = ([int]"0$($r.InRead)" -eq 1); InOwner = ([int]"0$($r.InOwner)" -eq 1); SecretsDenied = ([int]"0$($r.Denied)" -ge [int]"0$($r.DenyWanted)") } } else { @{ Exists = $false; Sid = ''; InRead = $false; InOwner = $false } } }
     try {
         $stored = @(Invoke-EpsSql -ConnectionString $ConnectionString -Query 'SELECT Level, AppId, SessionUntil FROM eps.SupportAccess WHERE Id = 1')[0]
         if ($null -eq $Key) { $k = Get-EpsUplinkKey; $Key = "$($k.Key)" }
@@ -104,7 +113,7 @@ function Invoke-EpsSupportAccess {
         $p = Get-EpsSupportAccessPlan -Level $level -AppId $app -SessionUntil $until -Current $cur -NowUtc $NowUtc
         foreach ($s in $p.Sql) { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Query $s) }
         $after = & $readCur
-        $ok = switch ($p.Want) { 'none' { -not $after.Exists } 'read' { $after.Exists -and $after.InRead -and -not $after.InOwner } 'admin' { $after.Exists -and $after.InRead -and $after.InOwner } }
+        $ok = switch ($p.Want) { 'none' { -not $after.Exists } 'read' { $after.Exists -and $after.InRead -and -not $after.InOwner -and $after.SecretsDenied } 'admin' { $after.Exists -and $after.InRead -and $after.InOwner -and $after.SecretsDenied } }
         $applied = "$($p.Want)$(if ($p.AdminUntil) { " until $($p.AdminUntil.ToString('u'))" }): $(if ($p.Lines.Count) { $p.Lines -join '; ' } else { 'no change' })"
         if ($applied.Length -gt 400) { $applied = $applied.Substring(0, 400) }
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ l = $level; a = $(if ($app) { $app } else { $null }); u = $(if ($until -and $p.Want -eq 'admin') { $until } else { $null }); p = $applied; r = [bool]($after.Exists -and $after.InRead); o = [bool]($after.Exists -and $after.InOwner) } -Query @'
@@ -112,7 +121,7 @@ MERGE eps.SupportAccess AS t USING (SELECT 1 AS Id) AS s ON t.Id = s.Id
 WHEN MATCHED THEN UPDATE SET Level = @l, AppId = @a, SessionUntil = @u, Applied = @p, ReadUser = @r, AdminNow = @o, CheckedAtUtc = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT (Id, Level, AppId, SessionUntil, Applied, ReadUser, AdminNow) VALUES (1, @l, @a, @u, @p, @r, @o);
 '@ | Out-Null
-        if ($p.Sql.Count -and @($p.Sql | Where-Object { $_ -notlike 'IF DATABASE_PRINCIPAL_ID*' -and $_ -notlike 'GRANT SELECT ON SCHEMA*' }).Count) {
+        if ($p.Sql.Count -and @($p.Sql | Where-Object { $_ -notlike 'IF DATABASE_PRINCIPAL_ID*' -and $_ -notlike 'GRANT SELECT ON SCHEMA*' -and $script:EpsSupportDenySql -notcontains $_ }).Count) {
             [void](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'support.access.change' -Actor 'caj-eps-support (consent from Invardia)' -ActorSource 'job' -Target "DatabaseUser|$($script:EpsSupportUser)" `
                 -Reason "framework SUPPORT ACCESS: level $level$(if ($c.Ok) { '' } else { ' (the last stored level)' })" -Outcome $(if ($ok) { 'ok' } else { 'error' }) -Before @{ exists = $cur.Exists; read = $cur.InRead; owner = $cur.InOwner } -After @{ exists = $after.Exists; read = $after.InRead; owner = $after.InOwner })
         }

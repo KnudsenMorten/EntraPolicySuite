@@ -14,6 +14,9 @@
 # Dot-source EPS-SqlStore, EPS-Graph, EPS-Arm, EPS-Scheduler, EPS-Install (+ EPS-DbInit) first.
 
 Set-StrictMode -Off
+# 2.1.75 review M1: the roll guard's bounds and words (EPS-Updater.ps1 defines them; kept here when it is not loaded first)
+if (-not $script:EpsRollMarks) { $script:EpsRollMarks = @{ normal = 'update.rolling'; short = 'update.swapping'; StaleMinutes = @{ normal = 120; short = 10 }; WaitSeconds = 900; PollSeconds = 5 } }
+if (-not $script:EpsNormalRollingText) { $script:EpsNormalRollingText = 'a normal update is rolling' }
 $script:EpsUpdateApplySteps = [ordered]@{
     check = 'Check for an update'; download = 'Download the release'; verify = 'Verify the release'; build = 'Build the images'
     migrate = 'Update the database'; apply = 'Roll out the new version'; health = 'Check the new version'; done = 'Done'; failed = 'Failed'
@@ -119,6 +122,119 @@ function Get-EpsJobTimeoutPatch {
     $c = $Job.properties.configuration | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30 -AsHashtable
     $c.Remove('secrets'); $c.replicaTimeout = [int]$d.TimeoutSeconds
     @{ Configuration = $c; From = $from; To = [int]$d.TimeoutSeconds }
+}
+
+function Get-EpsUpdateJobScalePatch {
+    <#
+      PURE. 2.1.74 (SEC-PATCH-PIPELINE-1 G3/G5): the update job's configuration with its queue scale at
+      $script:EpsUpdateJobMaxExecutions (2) executions at once - the image-only mode then starts while a normal update runs
+      (the job side decides who may run: Get-EpsUpdateRunInsertSql + the image-only claim). $null when the job is not
+      queue-started or already has it. Without 'secrets' (an ARM read carries no values; PATCH keeps what is there).
+      @{ Configuration; From; To; Text } or $null. No new right: the updater already PATCHes its jobs.
+    #>
+    param($Job)
+    $to = if ($script:EpsUpdateJobMaxExecutions) { [int]$script:EpsUpdateJobMaxExecutions } else { 2 }
+    $c0 = $Job.properties.configuration
+    if (-not $c0 -or "$($c0.triggerType)" -ne 'Event' -or -not $c0.eventTriggerConfig -or -not $c0.eventTriggerConfig.scale) { return $null }
+    $from = [int]"0$($c0.eventTriggerConfig.scale.maxExecutions)"
+    if ($from -eq $to) { return $null }
+    $c = $c0 | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30 -AsHashtable
+    $c.Remove('secrets'); $c.eventTriggerConfig.scale.maxExecutions = $to
+    @{ Configuration = $c; From = $from; To = $to; Text = "executions at once $from -> $to (an image-only swap never waits behind a normal update)" }
+}
+
+function Test-EpsForeignCodeImage {
+    <# PURE. Is -Image (the 'eps' container's image now) on OTHER code than -RunningVersion (its first three parts)? Only a
+       readable version tag counts; a digest, no tag or an unreadable one = $false (as before: swapped). #>
+    param([AllowEmptyString()][string]$Image, [AllowEmptyString()][string]$RunningVersion)
+    if ("$Image" -match '@sha256:' -or "$Image" -notmatch ':([^:/]+)$') { return $false }
+    $iv = ConvertTo-EpsImageVersion -Tag $Matches[1]
+    $rv = $null
+    if (-not $iv -or -not [version]::TryParse("$RunningVersion".Trim(), [ref]$rv)) { return $false }
+    -not ($iv.Major -eq $rv.Major -and $iv.Minor -eq $rv.Minor -and $iv.Build -eq $rv.Build)
+}
+
+function Get-EpsRevisionVerdict {
+    <#
+      PURE. SEC-PATCH-PIPELINE-1 point 6 (owner: "will an attacker see the new or old image if they try to attack?"): one
+      container app as read (-App, its ARM body) and its revisions (-Revisions) -> @{ Ok; Mode; Active; LatestOnly; Latest;
+      FixConfig; Deactivate; Pending; ImageOk }. 2.1.75 re-review N1: Ok = activeRevisionsMode 'Single' AND the ingress
+      traffic is exactly ONE entry { latestRevision: true, weight: 100 } AND the LATEST revision (latestRevisionName) is the
+      latest READY one AND it runs -Image (its container 'eps') AND it is the ONLY active revision. Pending = the latest
+      revision is not ready yet (right after a swap Single mode keeps the old one active until then - the normal in-between
+      state: wait, never act). Deactivate = ONLY active revisions OLDER than the latest one (by createdTime), and only when
+      the latest one is ready - never the latest, never one not ready, never on a guess (a time that cannot be read = kept).
+    #>
+    param([Parameter(Mandatory)]$App, [object[]]$Revisions = @(), [string]$Image = '')
+    $c = $App.properties.configuration
+    $mode = "$($c.activeRevisionsMode)"
+    $tr = @($c.ingress.traffic | Where-Object { $_ })
+    $latestOnly = ($tr.Count -eq 1 -and $tr[0].latestRevision -eq $true -and [int]"0$($tr[0].weight)" -eq 100)
+    $act = @($Revisions | Where-Object { $_ -and $_.properties.active -eq $true })
+    $latest = "$($App.properties.latestRevisionName)"; $ready = "$($App.properties.latestReadyRevisionName)"
+    $pending = [bool]($latest -and $latest -ne $ready)
+    $lr = @($Revisions | Where-Object { $_ -and "$($_.name)" -eq $latest })[0]
+    $lrImage = if ($lr) { "$(@($lr.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)" } else { '' }
+    $imageOk = [bool]($lr -and (-not $Image -or $lrImage -eq $Image))
+    $at = { param($x) $d = [datetime]::MinValue; if ([datetime]::TryParse("$($x.properties.createdTime)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]'AdjustToUniversal,AssumeUniversal', [ref]$d)) { $d } else { $null } }
+    $lrAt = if ($lr) { & $at $lr } else { $null }
+    $deact = if ($latest -and -not $pending -and $lrAt) { @($act | Where-Object { "$($_.name)" -ne $latest -and ($t0 = & $at $_) -and $t0 -lt $lrAt } | ForEach-Object { "$($_.name)" }) } else { @() }
+    $onlyLatest = ($act.Count -eq 1 -and "$($act[0].name)" -eq $latest)
+    @{ Ok = ($mode -eq 'Single' -and $latestOnly -and $latest -and -not $pending -and $imageOk -and $onlyLatest); Mode = $mode; Active = $act.Count; LatestOnly = $latestOnly
+       Latest = $latest; Ready = $ready; Pending = $pending; ImageOk = $imageOk; LatestImage = $lrImage
+       FixConfig = ($mode -ne 'Single' -or -not $latestOnly); Deactivate = @($deact) }
+}
+
+function Invoke-EpsRevisionConverge {
+    <#
+      SEC-PATCH-PIPELINE-1 point 6: the LAST step after every swap (the normal update and the image-only path) - nothing old
+      may answer from the internet. For every container app of the product in the group (today ca-eps-web): read the mode,
+      the traffic and the revisions (Get-EpsRevisionVerdict); wrong = put right with the updater's existing right (PATCH
+      activeRevisionsMode Single + the traffic block - the configuration as read, without secrets; POST .../revisions/<name>/
+      deactivate for every other active revision) and read back again. Never throws: @{ Ok; Apps; Single; MaxActive;
+      Fact (Invardia's soft Update.revisions); Lines; Reason }. A read that fails = Ok $false and NO Fact (never a guess).
+    #>
+    param([Parameter(Mandatory)][string]$SubscriptionId, [Parameter(Mandatory)][string]$ResourceGroup, [scriptblock]$Log = { param($l, $m) }, [datetime]$NowUtc = [datetime]::UtcNow,
+          # 2.1.75 re-review N1: the image the swap put on the container 'eps' (the latest revision must run it); while the
+          # latest revision is not ready it is waited for (-PollSeconds, at most -WaitSeconds), never deactivated
+          [string]$Image = '', [int]$PollSeconds = 15, [int]$WaitSeconds = 600, [scriptblock]$Sleep = { param($s) Start-Sleep -Seconds $s })
+    $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+    $lines = [System.Collections.Generic.List[string]]::new()
+    try {
+        $apps = @(@(Get-EpsArmAll -Path "$rg/providers/Microsoft.App/containerApps" -ApiVersion $script:EpsApi.aca) | Where-Object { $_ -and "$($_.name)" -like 'ca-eps-*' })
+        $bad = [System.Collections.Generic.List[string]]::new(); $maxAct = 0; $allSingle = $true
+        foreach ($a in $apps) {
+            $ap = "$rg/providers/Microsoft.App/containerApps/$($a.name)"
+            $read = { param($p) $app = Invoke-EpsArm -Path $p -ApiVersion $script:EpsApi.aca -TimeoutRetry 1; @{ App = $app; V = (Get-EpsRevisionVerdict -App $app -Revisions @(Get-EpsArmAll -Path "$p/revisions" -ApiVersion $script:EpsApi.aca) -Image $Image) } }
+            $r = & $read $ap
+            # N1: the new revision is not ready yet - wait for it (the old one keeps answering meanwhile, as Single mode does)
+            $waited = 0
+            while ($r.V.Pending -and $waited -lt $WaitSeconds) { & $Sleep $PollSeconds; $waited += [Math]::Max(1, $PollSeconds); $r = & $read $ap }
+            if ($r.V.Pending) {
+                if ($r.V.Active -gt $maxAct) { $maxAct = $r.V.Active }
+                $allSingle = $false; $bad.Add("$($a.name) (its new revision $($r.V.Latest) is not ready after $([int]($waited / 60)) min - nothing deactivated)"); continue
+            }
+            if (-not $r.V.Ok) {
+                $lines.Add("$($a.name): mode $($r.V.Mode), $($r.V.Active) active revision(s), latest only $($r.V.LatestOnly) - put right")
+                if ($r.V.FixConfig) {
+                    $cfg = $r.App.properties.configuration | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30 -AsHashtable
+                    $cfg.Remove('secrets'); $cfg.activeRevisionsMode = 'Single'
+                    if ($cfg.ingress) { $cfg.ingress.traffic = @(@{ latestRevision = $true; weight = 100 }) }
+                    [void](Invoke-EpsArm -Method PATCH -Path $ap -ApiVersion $script:EpsApi.aca -Body @{ properties = @{ configuration = $cfg } } -TimeoutRetry 1)
+                }
+                foreach ($rv in @($r.V.Deactivate)) { [void](Invoke-EpsArm -Method POST -Path "$ap/revisions/$rv/deactivate" -ApiVersion $script:EpsApi.aca -Body @{} -TimeoutRetry 1); $lines.Add("$($a.name): revision $rv deactivated") }
+                $r = & $read $ap
+            }
+            if ($r.V.Active -gt $maxAct) { $maxAct = $r.V.Active }
+            if (-not $r.V.Ok) { $allSingle = $false; $bad.Add("$($a.name) (mode $($r.V.Mode), $($r.V.Active) active revision(s), latest only $($r.V.LatestOnly)$(if (-not $r.V.ImageOk) { ", its latest revision $($r.V.Latest) runs '$($r.V.LatestImage)', not $Image" }))") }
+        }
+        $fact = [ordered]@{ single = [bool]($allSingle); activeRevisions = [int]$maxAct; apps = [int]$apps.Count; readUtc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
+        foreach ($l in $lines) { & $Log 'Info' "revisions: $l" }
+        if ($bad.Count) { return @{ Ok = $false; Apps = $apps.Count; Single = $false; MaxActive = $maxAct; Fact = $fact; Lines = @($lines); Reason = "an old revision may still answer: $($bad -join '; ') - read back after the fix" } }
+        @{ Ok = $true; Apps = $apps.Count; Single = $true; MaxActive = $maxAct; Fact = $fact; Lines = @($lines); Reason = "$($apps.Count) app(s): Single, the latest revision at 100 %, one active revision" }
+    } catch {
+        @{ Ok = $false; Apps = 0; Single = $false; MaxActive = 0; Fact = $null; Lines = @($lines); Reason = "the revisions could not be read or put right: $((("$($_.Exception.Message)") -split "`n")[0])" }
+    }
 }
 
 function Sync-EpsWebRegistrationAsOwner {
@@ -329,10 +445,16 @@ function Invoke-EpsUpdateApply {
           # SEC-LANE-1 short path: the caller proved the release IMAGE-ONLY against what this install runs (Test-EpsImageOnlyMarker
           # on the signed package) - no database step; the setup job's image is swapped too (never started); the previous images
           # stay (the rollback point) until a job SUCCEEDED on the new image (the follow-up). The release is still downloaded, verified and built here.
-          [switch]$ImageOnly)
+          [switch]$ImageOnly,
+          # 2.1.75 review M1: @{ SetMine { param([bool]$on) }; OtherActive { } -> bool; Sleep { param($s) } (optional) } -
+          # New-EpsRollGuard (EPS-Updater.ps1). A normal update holds 'rolling' from before its database step to its last
+          # read-back and waits while a short swap holds 'swapping'; a short swap holds 'swapping' and stops before ANY PATCH
+          # while 'rolling' is set. $null = no guard (as before 2.1.75)
+          [hashtable]$RollGuard = $null)
     # -Prune (IMAGE-PRUNE CONTRACT, 2.1.12): @{ Switch = <EPS_Updater_ImagePrune>; SaveRecord = { param($record) } } - the
     # clean-up after 'health' and before 'done' (its totals go to Invardia with the run); $null = no clean-up
     $step = 'download'
+    $guardHeld = $false
     $startedUtc = [datetime]::UtcNow
     $fail = { param($s, $why) & $Emit $s 'failed' $why; & $Log 'Warning' "update to $($Target.Version) stopped at '$s': $why"; @{ Ok = $false; Step = $s; Reason = $why; Rolled = @(); Resent = @($resent) } }
     $work = $null
@@ -372,6 +494,23 @@ function Invoke-EpsUpdateApply {
         & $Emit 'build' 'ok' "built ($($b.Digest))"
         }
         # 2.1.56 (FRONT-CODE-REMOVE, SECURE-WEB-1): no sign-in front is built or moved (IMAGE-PATCH-1 step 2 is retired)
+        # 2.1.75 review M1 (normal side): OUR mark first, THEN theirs - from here (before the setup job is put on the new
+        # image) to the last read-back no short swap PATCHes: one that already holds its mark is waited for (minutes)
+        if ($RollGuard -and -not $ImageOnly) {
+            try { & $RollGuard.SetMine $true; $guardHeld = $true } catch { & $Log 'Warning' "roll guard: the rolling mark could not be set ($((("$($_.Exception.Message)") -split "`n")[0])) - the final read-back re-rolls anything not on $($Target.Version)" }
+            $gWait = 0; $gMax = [int]$(if ($RollGuard.WaitSeconds) { $RollGuard.WaitSeconds } else { $script:EpsRollMarks.WaitSeconds }); $gPoll = [int]$(if ($null -ne $RollGuard.PollSeconds) { $RollGuard.PollSeconds } else { $script:EpsRollMarks.PollSeconds })
+            $gSleep = if ($RollGuard.Sleep) { $RollGuard.Sleep } else { { param($s) Start-Sleep -Seconds $s } }
+            while ((& $RollGuard.OtherActive) -and $gWait -lt $gMax) {
+                if (-not $gWait) { & $Log 'Info' 'roll guard: an image-only swap is moving images now - waiting for it to end before anything of this update moves' }
+                & $gSleep $gPoll; $gWait += [Math]::Max(1, $gPoll)
+            }
+            # 2.1.75 re-review L-a: the swap still holds its mark after the wait = FAIL here (nothing of this update moved;
+            # the roll retry runs it again) - never go on next to a swap
+            if ($gWait -ge $gMax -and (& $RollGuard.OtherActive)) { return (& $fail 'wait' "an image-only swap still holds its mark after $([int]($gMax / 60)) min - nothing of this update moved; the roll retry runs it again") }
+        }
+        # 2.1.75 re-review L-b: the rolling mark's time is refreshed at every step (after the database step and before every
+        # PATCH), so a long migration never lets it read as a crashed run's (its bound is 120 min; the setup job's limit 30)
+        $refreshMark = { if ($guardHeld) { try { & $RollGuard.SetMine $true } catch { } } }
         $step = 'migrate'
         if ($ImageOnly) { & $Emit 'migrate' 'ok' "image-only ($RunningVersion -> $($Target.Version), the same code): no database step" } elseif ($resume.Done) { & $Emit 'migrate' 'ok' "already applied ($($n.DbInitJob) $($resume.Execution) Succeeded on $($Target.Version))" } else {
         # framework §4.5 SQL-ADMIN-GROUP G2-G4 (the owner: "both setup and upd"): the database setup identity's membership of
@@ -387,17 +526,48 @@ function Invoke-EpsUpdateApply {
         $j = Invoke-EpsDbInitJob -Ctx $ctx -DropSignin:([bool]$noFront)
         & $Emit 'migrate' 'ok' "$($n.DbInitJob) ($($j.Execution)) read every principal back"
         }
+        & $refreshMark
         $step = 'apply'
         & $Emit 'apply' 'running' "rolling the jobs and the web app to $($Target.Version)"
         $rg = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
         $rolled = [System.Collections.Generic.List[string]]::new(); $left = [System.Collections.Generic.List[string]]::new()
+        $patched = [System.Collections.Generic.List[string]]::new()   # 2.1.75 re-review N1: the components THIS run PATCHed
+        $foreign = [System.Collections.Generic.List[string]]::new()
+        $normalRolling = [System.Collections.Generic.List[string]]::new()
+        # 2.1.75 review M1 (short side): OUR swap mark first, THEN the normal update's - set and checked before the first
+        # PATCH; a normal update that starts after this waits for our mark to go (New-EpsRollGuard)
+        if ($ImageOnly -and $RollGuard) {
+            $gStop = $false
+            try { & $RollGuard.SetMine $true; $guardHeld = $true; $gStop = [bool](& $RollGuard.OtherActive) } catch { $gStop = $true }
+            if ($gStop) { return (& $fail 'wait' "$($script:EpsNormalRollingText) - nothing was swapped") }
+        }
         $roll = {
             param($path, $api, $template, $label, $cfg)
+            if ($ImageOnly -and $normalRolling.Count) { $left.Add("$label (not swapped: $($script:EpsNormalRollingText))"); return }
+            if ($ImageOnly) {
+                # SEC-PATCH-PIPELINE-1: the short path never waits for a normal update, so it never undoes one - each component
+                # is read FRESH just before its swap; one already on OTHER code (a normal update moving the install) stops the
+                # swap there: nothing more is swapped, the normal update finishes the install. No settings converge (no $cfg).
+                $cfg = $null
+                if ($foreign.Count) { $left.Add("$label (not swapped: another update moves the install to other code)"); return }
+                $cur = Invoke-EpsArm -Path $path -ApiVersion $api -TimeoutRetry 1
+                $curImg = "$(@($cur.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
+                if (Test-EpsForeignCodeImage -Image $curImg -RunningVersion $RunningVersion) { $foreign.Add($label); $left.Add("$label ($curImg - another update moved it to other code; not swapped)"); return }
+                if ($cur.properties.template) { $template = $cur.properties.template }
+                # 2.1.75 review M1: immediately before EVERY PATCH - our mark refreshed, the normal update's read again; set =
+                # stop here (nothing more is swapped; all of it is on the same code), the normal update installs it whole
+                if ($RollGuard) {
+                    $gStop = $false
+                    try { & $RollGuard.SetMine $true; $gStop = [bool](& $RollGuard.OtherActive) } catch { $gStop = $true }
+                    if ($gStop) { $normalRolling.Add($label); $left.Add("$label (not swapped: $($script:EpsNormalRollingText))"); return }
+                }
+            }
             $s = Set-EpsEpsContainerImage -Template $template -Image $image
             $props = @{}; if ($s.Changed) { $props.template = $s.Template }
             # a job's own timeout converges here too (the tamper job: 1 h, never 7 days) - in the same PATCH as its image
-            if ($cfg) { $props.configuration = $cfg.Configuration; & $Log 'Info' "$label`: replicaTimeout $($cfg.From) -> $($cfg.To) s" }
-            if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds -TimeoutRetry 1) }
+            if ($cfg) { $props.configuration = $cfg.Configuration; & $Log 'Info' "$label`: $(if ($cfg.Text) { $cfg.Text } else { "replicaTimeout $($cfg.From) -> $($cfg.To) s" })" }
+            if ($props.Count -and -not $ImageOnly) { & $refreshMark }
+            if ($props.Count) { [void](Invoke-EpsArm -Method PATCH -Path $path -ApiVersion $api -Body @{ properties = $props } -PollSeconds $PollSeconds -TimeoutRetry 1); $patched.Add($label) }
             $back = Invoke-EpsArm -Path $path -ApiVersion $api -TimeoutRetry 1
             $now = "$(@($back.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
             if ($now -eq $image) { $rolled.Add($label) } else { $left.Add("$label ($now)") }
@@ -415,12 +585,30 @@ function Invoke-EpsUpdateApply {
         # the update job itself LAST: this execution goes on in the old image; the next run is the new one. 2.1.17
         # (ROLL-RETRY-1): only when EVERY other component read back on the new image - an updater on the new version with
         # others left behind would say "up to date" and never finish the roll
-        if (-not $left.Count) { $rollAt = "$($f.SelfName)"; & $roll "$rg/providers/Microsoft.App/jobs/$($f.SelfName)" $script:EpsApi.acajob $f.Self.properties.template $f.SelfName }
+        # 2.1.74 (SEC-PATCH-PIPELINE-1): a NORMAL update also converges the update job's own executions to 2 at once (an
+        # image-only swap then never waits in the queue behind a normal update); the short path changes no setting
+        # 2.1.75 review M1 (b): a NORMAL update ends with ONE more read-back of every component it rolled, and rolls again any
+        # that is not on its version (whatever moved it) - so a normal update never ends "done" on a mixed install
+        if (-not $ImageOnly -and -not $left.Count) {
+            $sweep = @(@($others | ForEach-Object { @{ Path = "$rg/providers/Microsoft.App/jobs/$($_.name)"; Api = $script:EpsApi.acajob; Label = "$($_.name)" } }) + @(if ($f.Web) { @{ Path = "$rg/providers/Microsoft.App/containerApps/$($n.WebApp)"; Api = $script:EpsApi.aca; Label = "$($n.WebApp)" } }))
+            foreach ($c in $sweep) {
+                $rollAt = $c.Label
+                $cur = Invoke-EpsArm -Path $c.Path -ApiVersion $c.Api -TimeoutRetry 1
+                $curImg = "$(@($cur.properties.template.containers | Where-Object { "$($_.name)" -eq 'eps' })[0].image)"
+                if ($curImg -ne $image) { & $Log 'Warning' "final read-back: $($c.Label) runs $curImg, not $image - rolled again"; [void]$rolled.Remove($c.Label); & $roll $c.Path $c.Api $cur.properties.template $c.Label $null }
+            }
+        }
+        if (-not $left.Count) { $rollAt = "$($f.SelfName)"; & $roll "$rg/providers/Microsoft.App/jobs/$($f.SelfName)" $script:EpsApi.acajob $f.Self.properties.template $f.SelfName $(if (-not $ImageOnly) { Get-EpsUpdateJobScalePatch -Job $f.Self }) }
         $rollAt = ''
+        # 2.1.75 review M1: the short swap stopped because a normal update is rolling - no fault, the caller says it
+        if ($ImageOnly -and $normalRolling.Count) {
+            $r = & $fail 'wait' "$($script:EpsNormalRollingText) (stopped before $($normalRolling[0]); $($rolled.Count) swapped before on the same code)"
+            $r.Rolled = @($rolled); $r.Patched = @($patched); $r.Image = $image; return $r
+        }
         $step = 'health'
         if ($left.Count) {
             $r = & $fail 'health' "not on $($Target.Version): $($left -join ', ') - $(Get-EpsMixedRollText -Rolled @($rolled) -All $allLabels -Version $Target.Version -From $RunningVersion)"
-            $r.Rolled = @($rolled); $r.Mixed = $true; return $r
+            $r.Rolled = @($rolled); $r.Patched = @($patched); $r.Image = $image; $r.Mixed = $true; return $r
         }
         & $Emit 'apply' 'ok' "$($rolled.Count) rolled: $($rolled -join ', ')"
         & $Emit 'health' 'ok' "every job and the web app read back on $image"
@@ -444,16 +632,17 @@ function Invoke-EpsUpdateApply {
             try { [void](Invoke-EpsArm -Method POST -Path "$rg/providers/Microsoft.App/jobs/$ulName/start" -ApiVersion $script:EpsApi.acajob -Body @{} -WaitSeconds 60); & $Log 'Info' "support link: started now on $($Target.Version) - the new version goes to Invardia within minutes (UPLINK-SLOT-1)" }
             catch { & $Log 'Warning' "support link: not started now ($((("$($_.Exception.Message)") -split "`n")[0])) - its next run reports $($Target.Version)" }
         }
-        return @{ Ok = $true; Step = 'done'; Reason = "updated to $($Target.Version)"; Rolled = @($rolled); Prune = $pr; Resent = @($resent); Resumed = [bool]$resume.Done; ImageOnly = [bool]$ImageOnly }
+        return @{ Ok = $true; Step = 'done'; Reason = "updated to $($Target.Version)"; Rolled = @($rolled); Patched = @($patched); Image = $image; Prune = $pr; Resent = @($resent); Resumed = [bool]$resume.Done; ImageOnly = [bool]$ImageOnly }
     } catch {
         $msg = "$((("$($_.Exception.Message)") -split "`n")[0])"
         if ($step -eq 'apply' -and $rollAt) {
             # 2.1.17: which component, and which are on which version while the install is mixed (the run record says it)
             $r = & $fail 'apply' "$rollAt`: $msg$(if ($resent.Count) { " (after $($resent.Count) call(s) sent once more)" }) - $(Get-EpsMixedRollText -Rolled @($rolled) -All $allLabels -Version $Target.Version -From $RunningVersion -Unknown $rollAt)"
-            $r.Rolled = @($rolled); $r.Mixed = $true; return $r
+            $r.Rolled = @($rolled); $r.Patched = @($patched); $r.Image = $image; $r.Mixed = $true; return $r
         }
         return (& $fail $step $msg)
-    } finally { $script:EpsArmNotice = $savedNotice; if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
+    } finally { if ($guardHeld) { try { & $RollGuard.SetMine $false } catch { & $Log 'Warning' "roll guard: the mark could not be cleared ($((("$($_.Exception.Message)") -split "`n")[0])) - it runs out on its own" } }
+        $script:EpsArmNotice = $savedNotice; if ($work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
 # ---------------------------------------------------------------------------------------------------- IMAGE-PRUNE

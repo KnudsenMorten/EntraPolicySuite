@@ -286,3 +286,168 @@ function Invoke-EpsWorkerUpdate {
     Get-ChildItem -LiteralPath $vd -Directory -Force | Where-Object { $keep -notcontains $_.FullName.TrimEnd('\') -and $_.Name -notlike '.stage-*' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     & $done 'updated' "$running -> $($t.Version) ($($d.Reason)); self-test: $($testResult.Reason); $(if ($prev) { "kept $running to switch back to" } else { 'no previous version' })" $t.Version
 }
+
+# ---- WORKER-ACL-1 (2.1.74, review tools-pro-1 #4 / tools-pro-2 #4): the worker's folder holds code that runs as SYSTEM (the
+# update task) and as the gMSA (the worker task). Only SYSTEM and BUILTIN\Administrators may write it; the gMSA reads and
+# runs it and writes only <Root>\logs. NTFS ACLs set with icacls by WELL-KNOWN SIDs (works on every Windows language),
+# inheritance off on <Root>, read back with .NET; the worker refuses to run from a folder anyone else can write.
+$script:EpsWorkerAclSystemSid = 'S-1-5-18'       # NT AUTHORITY\SYSTEM
+$script:EpsWorkerAclAdminsSid = 'S-1-5-32-544'   # BUILTIN\Administrators
+$script:EpsWorkerAclWriters = @($script:EpsWorkerAclSystemSid, $script:EpsWorkerAclAdminsSid)
+# every right that changes a file / folder or its permissions: WriteData/CreateFiles 0x2, AppendData/CreateDirectories 0x4,
+# WriteExtendedAttributes 0x10, DeleteSubdirectoriesAndFiles 0x40, WriteAttributes 0x100, Delete 0x10000, ChangePermissions
+# 0x40000, TakeOwnership 0x80000, GENERIC_ALL 0x10000000, GENERIC_WRITE 0x40000000 (an inherit-only ACE keeps generic bits)
+$script:EpsWorkerAclWriteMask = [int64](0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000)
+
+function Get-EpsWorkerAclPlan {
+    <# PURE. The icacls calls that lock <Root> down, each one argument list (string[]): inheritance off + SYSTEM and
+       Administrators full control (+ the worker's account read and execute), Administrators the owner, the worker's account
+       modify on <Root>\logs only. -WorkerSid '' = no worker account (SYSTEM and Administrators only). #>
+    param([Parameter(Mandatory)][string]$Root, [AllowEmptyString()][string]$WorkerSid = '')
+    if ($WorkerSid -and $WorkerSid -notmatch '^S-1-5-[0-9-]+$') { throw "'$WorkerSid' is not a SID" }
+    $grant = @("*$($script:EpsWorkerAclSystemSid):(OI)(CI)F", "*$($script:EpsWorkerAclAdminsSid):(OI)(CI)F")
+    if ($WorkerSid) { $grant += "*${WorkerSid}:(OI)(CI)RX" }
+    $plan = [System.Collections.Generic.List[object]]::new()
+    $plan.Add([string[]](@($Root, '/inheritance:r', '/grant:r') + $grant))
+    $plan.Add([string[]]@($Root, '/setowner', "*$($script:EpsWorkerAclAdminsSid)"))
+    if ($WorkerSid) { $plan.Add([string[]]@(("$($Root.TrimEnd('\', '/'))\logs"), '/grant', "*${WorkerSid}:(OI)(CI)M")) }
+    $plan.ToArray()
+}
+
+function Test-EpsWorkerAclFacts {
+    <# PURE. -Items: @{ Path; IsRoot; Protected; Owner (SID); Rules = @(@{ Sid; Name; Rights (int64); Allow }) }. Ok only
+       when no ALLOW rule gives a write right to anyone but SYSTEM and Administrators, <Root> does not inherit its parent's
+       permissions and <Root>'s owner is SYSTEM or Administrators. @{ Ok; Reason; Writers = @(@{ Path; Sid; Name }) }. #>
+    param([object[]]$Items = @())
+    $why = [System.Collections.Generic.List[string]]::new()
+    $writers = [System.Collections.Generic.List[object]]::new()
+    foreach ($it in @($Items | Where-Object { $_ })) {
+        if ($it.IsRoot -and -not $it.Protected) { $why.Add("$($it.Path) inherits the permissions of its parent folder") }
+        if ($it.IsRoot -and $script:EpsWorkerAclWriters -notcontains "$($it.Owner)") { $why.Add("$($it.Path) is owned by $($it.Owner), not SYSTEM or Administrators") }
+        foreach ($r in @($it.Rules | Where-Object { $_ })) {
+            if (-not $r.Allow -or $script:EpsWorkerAclWriters -contains "$($r.Sid)") { continue }
+            if (([int64]$r.Rights -band $script:EpsWorkerAclWriteMask) -eq 0) { continue }
+            $writers.Add(@{ Path = "$($it.Path)"; Sid = "$($r.Sid)"; Name = "$($r.Name)"; Inherited = [bool]$r.Inherited })
+            $why.Add("$(if ($r.Name) { "$($r.Name) ($($r.Sid))" } else { "$($r.Sid)" }) can write $($it.Path)")
+        }
+    }
+    if (-not $why.Count) { return @{ Ok = $true; Reason = 'only SYSTEM and Administrators can write the worker''s folder'; Writers = @() } }
+    $more = if ($why.Count -gt 3) { " (and $($why.Count - 3) more)" } else { '' }
+    @{ Ok = $false; Reason = "$(@($why | Select-Object -First 3) -join '; ')$more"; Writers = $writers.ToArray() }
+}
+
+function Get-EpsWorkerAclFacts {
+    <# One file or folder's permissions as Test-EpsWorkerAclFacts reads them (.NET, Windows). #>
+    param([Parameter(Mandatory)][string]$Path, [switch]$IsRoot)
+    $i = Get-Item -LiteralPath $Path -Force
+    $sec = if ($i -is [IO.DirectoryInfo]) { [System.IO.FileSystemAclExtensions]::GetAccessControl([IO.DirectoryInfo]$i) } else { [System.IO.FileSystemAclExtensions]::GetAccessControl([IO.FileInfo]$i) }
+    $sidType = [System.Security.Principal.SecurityIdentifier]
+    $rules = foreach ($r in $sec.GetAccessRules($true, $true, $sidType)) {
+        $sid = $r.IdentityReference.Value; $rights = [int64][int]$r.FileSystemRights
+        # the name only for a rule the check will name (a writer that is not SYSTEM / Administrators)
+        $name = if ($script:EpsWorkerAclWriters -notcontains $sid -and ($rights -band $script:EpsWorkerAclWriteMask)) { try { ([System.Security.Principal.SecurityIdentifier]$sid).Translate([System.Security.Principal.NTAccount]).Value } catch { '' } } else { '' }
+        @{ Sid = $sid; Name = $name; Rights = $rights; Inherited = [bool]$r.IsInherited; Allow =($r.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) }
+    }
+    @{ Path = $i.FullName; IsRoot = [bool]$IsRoot; Protected = [bool]$sec.AreAccessRulesProtected; Owner = "$($sec.GetOwner($sidType).Value)"; Rules = @($rules) }
+}
+
+function Test-EpsWorkerFolderLocked {
+    <# Reads back the permissions of what the worker runs: <Root>, its files (worker.json, update-state.json), <Root>\versions,
+       <Root>\app and the folder it points at with everything in it. <Root>\logs is the worker's own (left out).
+       -Reader { param($Path, $IsRoot) } (tests) instead of the file system. @{ Ok; Reason; Writers }. #>
+    param([Parameter(Mandatory)][string]$Root, [scriptblock]$Reader = { param($p, $isRoot) Get-EpsWorkerAclFacts -Path $p -IsRoot:$isRoot })
+    try {
+        if (-not (Test-Path -LiteralPath $Root)) { return @{ Ok = $false; Reason = "$Root does not exist"; Writers = @() } }
+        $items = [System.Collections.Generic.List[object]]::new()
+        $items.Add((& $Reader $Root $true))
+        foreach ($c in @(Get-ChildItem -LiteralPath $Root -Force | Where-Object { $_.Name -ne 'logs' })) { $items.Add((& $Reader $c.FullName $false)) }
+        $t = Get-EpsWorkerAppTarget -Root $Root
+        if ($t.Path -and (Test-Path -LiteralPath $t.Path)) {
+            if ($t.Kind -eq 'junction') { $items.Add((& $Reader $t.Path $false)) }
+            foreach ($c in @(Get-ChildItem -LiteralPath $t.Path -Recurse -Force)) { $items.Add((& $Reader $c.FullName $false)) }
+        }
+        Test-EpsWorkerAclFacts -Items $items.ToArray()
+    } catch { @{ Ok = $false; Reason = "the permissions of $Root could not be read: $((("$($_.Exception.Message)") -split "`n")[0])"; Writers = @() } }
+}
+
+function Get-EpsWorkerRootOfTree {
+    <# PURE. The worker's <Root> of a code tree the update runs: <Root>\app (the junction, how every updater since 2.0.102
+       calls the self-test) or <Root>\versions\<v>; '' for any other tree (a release folder, a test tree - not an install). #>
+    param([Parameter(Mandatory)][string]$Tree)
+    # string work, not Split-Path: the same answer for a Windows path on any platform (the tests run on Linux too)
+    $cut = { param($p) $i = $p.LastIndexOfAny([char[]]@('\', '/')); if ($i -lt 1) { @('', $p) } else { @($p.Substring(0, $i), $p.Substring($i + 1)) } }
+    $t = $Tree.TrimEnd('\', '/')
+    $parent, $leaf = & $cut $t
+    if ($leaf -eq 'app' -and $parent) { return $parent }
+    if ($parent) { $gp, $pl = & $cut $parent; if ($pl -eq 'versions' -and $gp) { return $gp } }
+    ''
+}
+
+function Invoke-EpsWorkerSelfTestLock {
+    <# WORKER-ACL-2 (2.1.74, Invardia: "An update may never leave a running worker stopped"): the FIRST step of the NEW
+       version's self-test. Every updater since 2.0.102 (the old code already on the worker) switches <Root>\app to the new
+       version and then runs the new version's Update-EpsHybridWorker.ps1 -SelfTest in a child pwsh AS SYSTEM (the update
+       task's identity) - so the new version locks its own folder there, before the worker's next 5-minute start can check
+       it. Nothing locked = the self-test FAILS, and the old updater switches back to the version that ran (never stopped).
+       Not an installed worker's tree (no <Root>\worker.json) = skipped. Seams (tests): -ResolveSid, -SetAcl, -TaskPrincipal.
+       @{ Ok; Skipped; Reason }. #>
+    param([Parameter(Mandatory)][string]$Tree,
+          [scriptblock]$ResolveSid = { param($n) ([Security.Principal.NTAccount]$n).Translate([Security.Principal.SecurityIdentifier]).Value },
+          [scriptblock]$SetAcl = { param($r, $sid) Set-EpsWorkerFolderAcl -Root $r -WorkerSid $sid },
+          [scriptblock]$TaskPrincipal = { $t = @(Get-ScheduledTask -TaskName 'EntraPolicySuite Hybrid Worker' -ErrorAction SilentlyContinue)[0]; if ($t) { "$($t.Principal.UserId)".Trim() } })
+    $root = Get-EpsWorkerRootOfTree -Tree $Tree
+    $cfgFile = if ($root) { Join-Path $root 'worker.json' } else { '' }
+    if (-not $cfgFile -or -not (Test-Path -LiteralPath $cfgFile)) { return @{ Ok = $true; Skipped = $true; Reason = 'not an installed worker''s tree - nothing to lock' } }
+    try {
+        $gmsa = "$((Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json).Gmsa)".Trim()
+        if (-not $gmsa) { $gmsa = "$(& $TaskPrincipal)".Trim() }
+        if (-not $gmsa) { return @{ Ok = $false; Skipped = $false; Reason = "the gMSA is not known (no Gmsa in $cfgFile, no worker task) - the folder could not be locked" } }
+        $a = & $SetAcl $root (& $ResolveSid $gmsa)
+        if (-not $a.Ok) { return @{ Ok = $false; Skipped = $false; Reason = "the folder could not be locked: $($a.Reason)" } }
+        @{ Ok = $true; Skipped = $false; Reason = "$root locked: $($a.Reason)" }
+    } catch { @{ Ok = $false; Skipped = $false; Reason = "the folder could not be locked: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}
+
+function Wait-EpsWorkerFolderLocked {
+    <# WORKER-ACL-2: the worker's start check. Locked = run. Not locked = checked again every -IntervalSeconds for up to
+       -Seconds (the one moment an older updater has switched to this version and its SYSTEM self-test is locking the folder,
+       a few seconds), then refused with the reason. The worker (the gMSA, read + execute only) never changes permissions
+       itself. Seams (tests): -Check { } -> Test-EpsWorkerFolderLocked's answer, -Sleep { param($s) }.
+       @{ Ok; Reason; Waited (seconds) }. #>
+    param([Parameter(Mandatory)][string]$Root, [int]$Seconds = 120, [int]$IntervalSeconds = 10,
+          [scriptblock]$Check = { Test-EpsWorkerFolderLocked -Root $Root }, [scriptblock]$Sleep = { param($s) Start-Sleep -Seconds $s })
+    $waited = 0
+    $r = & $Check
+    while (-not $r.Ok -and $waited -lt $Seconds) {
+        & $Sleep $IntervalSeconds; $waited += $IntervalSeconds
+        $r = & $Check
+    }
+    @{ Ok = [bool]$r.Ok; Reason = "$($r.Reason)"; Waited = $waited }
+}
+
+function Set-EpsWorkerFolderAcl {
+    <# Locks <Root> down (Get-EpsWorkerAclPlan), every icacls exit code checked; reads it back and removes any other account's
+       own (explicit) write rule that was already there by its SID, then reads back once more. @{ Ok; Reason }: Ok only when
+       the read-back says only SYSTEM and Administrators can write. Seams (tests): -Icacls { param([string[]]$Arguments) } ->
+       @{ Exit; Output }, -ReadBack { param($Root) } -> Test-EpsWorkerFolderLocked's answer. #>
+    param([Parameter(Mandatory)][string]$Root, [AllowEmptyString()][string]$WorkerSid = '',
+          [scriptblock]$Icacls = { param([string[]]$a) $o = @(& icacls @a 2>&1 | ForEach-Object { "$_" }); @{ Exit = $LASTEXITCODE; Output = (@($o | Where-Object { $_.Trim() }) -join ' ') } },
+          [scriptblock]$ReadBack = { param($r) Test-EpsWorkerFolderLocked -Root $r })
+    $run = {
+        param([string[]]$a)
+        $x = & $Icacls $a
+        if ($null -eq $x -or $x.Exit -ne 0) { return "icacls $($a -join ' ') failed (exit $(if ($null -ne $x) { $x.Exit } else { 'none' })): $(if ($x) { $x.Output })" }
+        ''
+    }
+    try {
+        foreach ($step in @(Get-EpsWorkerAclPlan -Root $Root -WorkerSid $WorkerSid)) { $e = & $run $step; if ($e) { return @{ Ok = $false; Reason = $e } } }
+        $chk = & $ReadBack $Root
+        if (-not $chk.Ok -and @($chk.Writers).Count) {
+            # an inherited rule goes with its parent's: only an item's OWN rules are removed
+            foreach ($w in @($chk.Writers | Where-Object { -not $_.Inherited })) { $e =& $run ([string[]]@($w.Path, '/remove:g', "*$($w.Sid)")); if ($e) { return @{ Ok = $false; Reason = $e } } }
+            $chk = & $ReadBack $Root
+        }
+        if (-not $chk.Ok) { return @{ Ok = $false; Reason = "the permissions read back are not locked down: $($chk.Reason)" } }
+        @{ Ok = $true; Reason = $chk.Reason }
+    } catch { @{ Ok = $false; Reason = "the permissions could not be set: $((("$($_.Exception.Message)") -split "`n")[0])" } }
+}

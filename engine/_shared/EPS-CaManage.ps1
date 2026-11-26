@@ -434,7 +434,9 @@ function Get-EpsCaReview {
         nameStage = $nm.NameStage; versionCopy = $nm.VersionCopy; stage = $st.Stage; stageNote = $st.Note
         stageMismatch = [bool]($nm.NameStage -and $nm.NameStage -ne $st.Stage)
         matches = [bool]($t -and -not @($diff).Count); diffCount = @($diff).Count; diff = @($diff)
-        breakGlass = [ordered]@{ ok = $bg.Ok; exempt = [bool]$bg.Exempt; text = $bg.Text; missing = @($bg.Missing) }
+        # 2.1.74 (two-agent LOW A1): enforced = the policy can block a sign-in now (on, not report-only) - an off or
+        # report-only one is shown "off or report-only", never MISSING, and is no finding; the write that would turn it on is refused
+        breakGlass = [ordered]@{ ok = $bg.Ok; exempt = [bool]$bg.Exempt; text = $bg.Text; missing = @($bg.Missing); enforced = ("$(Get-EpsCaV $Policy 'state')" -notin $script:EpsCaNoBlockStates) }
         hash = (Get-EpsCaBodyHash $Policy); notes = @($notes)
     }
 }
@@ -1036,7 +1038,7 @@ function Get-EpsCaOverview {
             PolicyId = "$($r.PolicyId)"; DisplayName = [string]$r.DisplayName; State = [string]$r.State; ModifiedAtUtc = $r.ModifiedAtUtc; SeenAtUtc = $r.SeenAtUtc
             TemplateId = $rv.templateId; Persona = $(if ($inPer[$k]) { @($inPer[$k]) -join ', ' } else { 'no persona' }); TemplateVersion = $rv.templateVersion; InLibrary = [bool]$rv.inLibrary; NameStage = $rv.nameStage; Stage = $rv.stage; StageNote = $rv.stageNote
             StageMismatch = [bool]$rv.stageMismatch; Matches = $(if ($rv.inLibrary) { [bool]$rv.matches } else { $null }); DiffCount = [int]$rv.diffCount
-            BreakGlass = $(if ($null -eq $rv.breakGlass) { 'unknown' } elseif ($rv.breakGlass.exempt) { 'exempt' } elseif ($rv.breakGlass.ok -eq $true) { 'excluded' } elseif ($rv.breakGlass.ok -eq $false) { 'MISSING' } else { 'unknown' })
+            BreakGlass = $(if ($null -eq $rv.breakGlass) { 'unknown' } elseif ($rv.breakGlass.exempt) { 'exempt' } elseif ($rv.breakGlass.ok -eq $true) { 'excluded' } elseif ($rv.breakGlass.ok -eq $false -and $rv.breakGlass.enforced -eq $false) { 'off or report-only' } elseif ($rv.breakGlass.ok -eq $false) { 'MISSING' } else { 'unknown' })
             BreakGlassText = $(if ($rv.breakGlass) { $rv.breakGlass.text }); Hash = $rv.hash
             Adoption = $(if ($a) { [string]$a.Status } else { 'Not adopted' }); AdoptedBy = $(if ($a -and $a.Status -eq 'Adopted') { [string]$a.AdoptedBy }); AdoptedAtUtc = $(if ($a -and $a.Status -eq 'Adopted') { $a.AdoptedAtUtc })
             Findings = (@($open[$k]) | Where-Object { $_ }) -join ', '
@@ -1318,7 +1320,7 @@ function Invoke-EpsCaMonitorCheck {
         # (Ok $null) = UNCONFIRMED this run - an open BreakGlass finding is kept, never cleared as if it were fixed (eps-rule-0102)
         if (-not $rv) { $reviewFailed++ }
         if (-not $rv -or $null -eq $rv.breakGlass -or $null -eq $rv.breakGlass.ok) { $notChecked["$k|BreakGlass"] = $(if (-not $rv) { 'its review failed this run' } else { "$($rv.breakGlass.text)" }) }
-        if ($rv -and $rv.breakGlass.ok -eq $false) { $now["$k|BreakGlass"] = @{ Name = [string]$p.displayName; Detail = "$($rv.breakGlass.text)"; Json = (ConvertTo-Json -InputObject @($rv.breakGlass.missing) -Compress); Hash = "bg:$(@($rv.breakGlass.missing) -join ',')" } }
+        if ($rv -and $rv.breakGlass.ok -eq $false -and $rv.breakGlass.enforced -ne $false) { $now["$k|BreakGlass"] = @{ Name = [string]$p.displayName; Detail = "$($rv.breakGlass.text)"; Json = (ConvertTo-Json -InputObject @($rv.breakGlass.missing) -Compress); Hash = "bg:$(@($rv.breakGlass.missing) -join ',')" } }
     }
     $open = @{}; foreach ($f in @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT FindingId, PolicyId, Kind, Detail, DetailJson FROM eps.CaFinding WHERE Status = 'Open'")) { $open["$("$($f.PolicyId)".ToLowerInvariant())|$($f.Kind)"] = $f }
     $new = 0

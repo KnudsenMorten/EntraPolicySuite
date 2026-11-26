@@ -260,7 +260,7 @@ function Invoke-EpsOnboardingCheck {
     $bgNames = @(Get-EpsCaRoleGroupNames -Role $bgRole -Ctx @{ Method = 'Dynamic_Using_Tags'; TargetGroups = $ctx.TargetGroups } -Catalog $cat)
     & $lookupGroups $bgNames
     foreach ($n in $bgNames) { $gi = $groupInfo[$n]; & $add 'breakglass' "group:$n" "Break-glass group $n" $(if ($gi.Found) { if ($gi.Members -ge 1) { 'ok' } else { 'check' } } elseif ($null -eq $gi.Found) { 'unknown' } else { 'missing' }) $(if ($gi.Found) { "in the tenant, $($gi.Members) member(s); every template excludes it" } elseif ($gi.Error) { $gi.Error } else { 'not in the tenant - every template excludes it' }) }
-    $bad = @(& $sql "SELECT DisplayName FROM eps.CaPolicy WHERE JSON_VALUE(ReviewJson, '$.breakGlass.ok') = 'false'" | ForEach-Object { "$($_.DisplayName)" })
+    $bad = @(& $sql "SELECT DisplayName FROM eps.CaPolicy WHERE JSON_VALUE(ReviewJson, '$.breakGlass.ok') = 'false' AND ISNULL(JSON_VALUE(ReviewJson, '$.breakGlass.enforced'), 'true') <> 'false'" | ForEach-Object { "$($_.DisplayName)" })
     & $add 'breakglass' 'excluded' 'Excluded from every Conditional Access policy' $(if ($bad.Count) { 'missing' } else { 'ok' }) $(if ($bad.Count) { "$($bad.Count) policy(ies) do not exclude them: $(@($bad | Select-Object -First 5) -join ', ')$(if ($bad.Count -gt 5) { ', ...' })" } else { 'every policy read excludes the break-glass group or accounts (or is the break-glass policy)' })
     & $add 'breakglass' 'fido2' 'FIDO2 keys registered' 'unknown' 'read with the break-glass step (it needs UserAuthenticationMethod.Read.All, not granted yet)'
 

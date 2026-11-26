@@ -155,6 +155,31 @@ function Get-EpsMailTenantName {
     $script:EpsMailTenantName
 }
 
+$script:EpsTenantVerifiedDomains = $null
+function Get-EpsTenantVerifiedDomains {
+    # MAIL-TENANT-1 (2.1.74, review tools-pro-2 #12): the tenant's own verified domains, lower case - Graph GET /organization
+    # verifiedDomains (the same read and right as the tenant name above: Organization.Read.All, granted always). Read once
+    # per process (only a good answer is kept); @() when it cannot be read. Never throws.
+    if ($null -ne $script:EpsTenantVerifiedDomains) { return @($script:EpsTenantVerifiedDomains) }
+    try {
+        $o = Invoke-EpsGraph -Path 'v1.0/organization?$select=verifiedDomains'
+        $d = @(@(@($o.value)[0].verifiedDomains) | ForEach-Object { "$($_.name)".Trim().TrimEnd('.').ToLowerInvariant() } | Where-Object { $_ })
+        if ($d.Count) { $script:EpsTenantVerifiedDomains = $d }
+        return $d
+    } catch { return @() }
+}
+
+function Test-EpsMailAddressInDomains {
+    # PURE. MAIL-TENANT-1: $true when -Address is one mailbox address (local@domain) whose domain IS one of -Domains (case
+    # does not matter; exact - Entra lists each verified subdomain itself, so a look-alike or a subdomain of a verified
+    # domain outside the verified list is outside).
+    param([AllowEmptyString()][string]$Address, [string[]]$Domains = @())
+    $a = "$Address".Trim()
+    if ($a -notmatch '^[^@\s<>,;]+@([^@\s<>,;]+)$') { return $false }
+    $dom = $Matches[1].TrimEnd('.').ToLowerInvariant()
+    [bool](@($Domains | Where-Object { "$_".Trim().TrimEnd('.').ToLowerInvariant() -eq $dom }).Count)
+}
+
 function Resolve-EpsMailFrom {
     <#
       PURE. ONE-SENDER-1 A1 (framework, agreed 2026-11-26): an update never switches an install to an unproven From.
@@ -393,6 +418,12 @@ function Invoke-EpsMailRestrictionCheck {
     if (-not $NoStore) { try {
         Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = (ConvertTo-Json $out -Compress) } -Query "MERGE eps.UplinkState AS d USING (SELECT N'mail.restriction' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'mail.restriction', @v);" | Out-Null
     } catch { } }
+    # MAIL-RETRY (2.1.74): a passed probe of the CURRENT sender = mail works again - the unsent Support fix notices go at once
+    # (never for a candidate's -NoStore probe; never inside a resend that is already sending)
+    if (-not $NoStore -and $out.State -eq 'verified' -and -not $script:EpsNoticeResendActive) {
+        $nr = Invoke-EpsSupportNoticeResend -ConnectionString $ConnectionString
+        if ($nr.Lines.Count) { $out.NoticeResend = (@($nr.Lines) -join '; ') }
+    }
     [pscustomobject]$out
 }
 
@@ -487,18 +518,99 @@ function Send-EpsSupportActionMail {
       Support app's request. Only for the ENROLLED Support app (Security.SupportApp); any other requester = nothing sent.
       Never throws: @{ Sent; Reason }.
     #>
-    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$RequestedBy, [string]$What, [string]$Reason, [string]$Result, [string]$Version = '2.0.0')
+    # -At (MAIL-RETRY 2.1.74): when the fix was applied - a notice sent again names the time of the fix, not of the resend
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$RequestedBy, [string]$What, [string]$Reason, [string]$Result, [string]$Version = '2.0.0', [datetime]$At = [datetime]::UtcNow)
     try {
         $sup = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Security.SupportApp'")".Trim().ToLowerInvariant()
         if (-not $sup -or "$RequestedBy".ToLowerInvariant() -ne "app:$sup") { return @{ Sent = $false; Reason = 'not the Support app' } }
         $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
         $ticket = if ("$Reason" -match '\bSUP-\d{4}-\d{5}\b') { $Matches[0] } else { 'no ticket id' }
         $html = New-EpsMailBody -Summary "Invardia Support applied a fix in Entra Policy Suite on ticket $ticket. It can only apply a fix Entra Policy Suite offers for a reported failure, through the same checks and audit trail as a person." `
-            -Rows @([pscustomobject]@{ Ticket = $ticket; Fix = "$What"; Result = "$Result"; When = [datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC' }) -Columns 'Ticket', 'Fix', 'Result', 'When' `
+            -Rows @([pscustomobject]@{ Ticket = $ticket; Fix = "$What"; Result = "$Result"; When = $(if ($At.Kind -eq 'Local') { $At.ToUniversalTime() } else { $At }).ToString('yyyy-MM-dd HH:mm') + ' UTC' }) -Columns 'Ticket', 'Fix', 'Result', 'When' `
             -WhatToDo 'Nothing, if you asked for it. If you did not, remove the Support app''s assignment (Set-EpsApiAuth.ps1 -SupportApp -Remove) and contact Invardia. The audit trail shows every call.' -ButtonText 'Open the audit trail' -ButtonPage 'audit' `
             -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
         Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What "Invardia Support applied a fix ($ticket)") -Html $html
     } catch { @{ Sent = $false; Reason = "not mailed: $($_.Exception.Message)" } }
+}
+
+# ---- MAIL-RETRY (2.1.74, Invardia 2026-11-26): an unsent Support fix notice is sent again ------------------------------
+# The record of a Support app action is its eps.JobRequest row (Job Config, RequestedBy app:<the Support app>) - the audit
+# trail is append-only (DENY UPDATE) and cannot be marked. NoticeSentAtUtc is set only when the notice went out. The tick
+# sends an unsent one again once an hour, and at once after a passed mail probe (Invoke-EpsMailRestrictionCheck verified:
+# the Backup job's daily check, the check before a process's first send). After 7 days it is given up: counted in the
+# heartbeat (Mail.noticesGivenUp + Mail.noticesGivenUpOldestUtc) and shown on the Overview's Invardia support section.
+$script:EpsSupportNoticeDays = 7
+$script:EpsNoticeResendActive = $false
+
+function Split-EpsSupportNoticeBacklog {
+    # PURE. Unsent notices (rows with UpdatedAtUtc = when the fix was applied) -> @{ Due = under -Days old; GivenUp = older }
+    param([object[]]$Rows = @(), [datetime]$NowUtc = [datetime]::UtcNow, [int]$Days = $script:EpsSupportNoticeDays)
+    $r = @($Rows | Where-Object { $_ -and $_.UpdatedAtUtc -and $_.UpdatedAtUtc -isnot [DBNull] })
+    $cut = $NowUtc.AddDays(-$Days)
+    @{ Due = @($r | Where-Object { [datetime]$_.UpdatedAtUtc -gt $cut }); GivenUp = @($r | Where-Object { [datetime]$_.UpdatedAtUtc -le $cut }) }
+}
+
+function Set-EpsSupportNoticeSent {
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RequestId)
+    [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $RequestId } -Query 'UPDATE eps.JobRequest SET NoticeSentAtUtc = SYSUTCDATETIME(), NoticeClaimAtUtc = NULL WHERE RequestId = @id AND NoticeSentAtUtc IS NULL')
+}
+
+function Request-EpsSupportNoticeClaim {
+    # 2.1.75 review L3: $true when THIS caller claimed the unsent notice (no claim yet, or one older than 10 min); $false = another
+    # sender has it, or it was sent meanwhile. One UPDATE, so two senders can never both get it.
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][guid]$RequestId)
+    1 -eq [int](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $RequestId } -Query 'UPDATE eps.JobRequest SET NoticeClaimAtUtc = SYSUTCDATETIME() WHERE RequestId = @id AND NoticeSentAtUtc IS NULL AND (NoticeClaimAtUtc IS NULL OR NoticeClaimAtUtc < DATEADD(MINUTE, -10, SYSUTCDATETIME()))')
+}
+
+function Get-EpsSupportNoticeState {
+    # the given-up notices (unsent, older than 7 days) of the enrolled Support app: @{ GivenUp; OldestUtc } - for the
+    # heartbeat. Never throws ($null when it cannot be read).
+    param([Parameter(Mandatory)][string]$ConnectionString, [int]$Days = $script:EpsSupportNoticeDays)
+    try {
+        $row = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ d = $Days } -Query @'
+SELECT COUNT(*) AS GivenUp, MIN(q.UpdatedAtUtc) AS OldestUtc FROM eps.JobRequest q
+WHERE q.Job = N'Config' AND q.NoticeSentAtUtc IS NULL AND q.Status IN (N'Done', N'Failed', N'Refused') AND q.UpdatedAtUtc <= DATEADD(DAY, -@d, SYSUTCDATETIME())
+  AND q.RequestedBy = N'app:' + (SELECT TOP (1) LOWER(LTRIM(RTRIM(CONVERT(NVARCHAR(400), s.Value)))) FROM eps.Setting s WHERE s.Name = N'Security.SupportApp')
+'@)[0]
+        @{ GivenUp = [int]$row.GivenUp; OldestUtc = $(if ($row.OldestUtc -is [DBNull]) { $null } else { $row.OldestUtc }) }
+    } catch { $null }
+}
+
+function Invoke-EpsSupportNoticeResend {
+    <#
+      Sends again the Support app's fix notices that were not sent and are under 7 days old (the mail rebuilt from the
+      request row: the fix, the ticket in its reason, the result and when it was applied - the same mail). Never throws;
+      never runs inside itself (a send's own first-send check would start it again). @{ Resent; Failed; Lines }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [string]$Version = '', [datetime]$NowUtc = [datetime]::UtcNow)
+    # the footer's version: the caller's, else the VERSION file this code shipped with (the probe's call knows none)
+    if (-not $Version) { $Version = try { ([IO.File]::ReadAllText((Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'VERSION'))).Trim() } catch { '2.0.0' } }
+    $out = @{ Resent = 0; Failed = 0; Claimed = 0; Lines = [System.Collections.Generic.List[string]]::new() }
+    if ($script:EpsNoticeResendActive) { return $out }
+    $script:EpsNoticeResendActive = $true
+    try {
+        $sup = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'Security.SupportApp'")".Trim().ToLowerInvariant()
+        if (-not $sup) { return $out }
+        $rows = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ a = "app:$sup"; d = ($script:EpsSupportNoticeDays + 1) } -Query @'
+SELECT TOP (50) RequestId, RequestedBy, Scope, Status, StatusText, UpdatedAtUtc FROM eps.JobRequest
+WHERE Job = N'Config' AND RequestedBy = @a AND NoticeSentAtUtc IS NULL AND Status IN (N'Done', N'Failed', N'Refused') AND UpdatedAtUtc > DATEADD(DAY, -@d, SYSUTCDATETIME())
+ORDER BY UpdatedAtUtc
+'@)
+        $b = Split-EpsSupportNoticeBacklog -Rows $rows -NowUtc $NowUtc
+        foreach ($x in $b.Due) {
+            # 2.1.75 review L3: claim the row first - the tick and a passed probe (the Backup job) may resend at the same time;
+            # only the sender whose UPDATE took it sends (a claim older than 10 min is taken over: a sender that died)
+            if (-not (Request-EpsSupportNoticeClaim -ConnectionString $ConnectionString -RequestId ([guid]$x.RequestId))) { $out.Claimed++; $out.Lines.Add("Support action notice of request $($x.RequestId): another sender has it - not sent here"); continue }
+            $sc = try { "$($x.Scope)" | ConvertFrom-Json } catch { $null }
+            $txt = if ($x.StatusText -is [DBNull]) { '' } else { "$($x.StatusText)" }
+            $m = try { Send-EpsSupportActionMail -ConnectionString $ConnectionString -RequestedBy "$($x.RequestedBy)" -What "$(if ($sc) { "$($sc.method) $($sc.path)" })" -Reason "$(if ($sc.body) { $sc.body.reason })" -Result "$($x.Status) - $txt" -Version $Version -At ([datetime]$x.UpdatedAtUtc) } catch { @{ Sent = $false; Reason = "$($_.Exception.Message)" } }
+            if ($m.Sent) { Set-EpsSupportNoticeSent -ConnectionString $ConnectionString -RequestId ([guid]$x.RequestId); $out.Resent++ }
+            else { try { [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = [guid]$x.RequestId } -Query 'UPDATE eps.JobRequest SET NoticeClaimAtUtc = NULL WHERE RequestId = @id AND NoticeSentAtUtc IS NULL') } catch { }; $out.Failed++ }
+            $out.Lines.Add("Support action notice of request $($x.RequestId) sent again: $(if ($m.Sent) { 'sent' } else { "NOT sent ($($m.Reason))" })")
+        }
+    } catch { $out.Lines.Add("the unsent Support action notices could not be sent again: $($_.Exception.Message)") }
+    finally { $script:EpsNoticeResendActive = $false }
+    $out
 }
 
 function Send-EpsTamperAlert {

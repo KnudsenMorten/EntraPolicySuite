@@ -245,6 +245,9 @@ function Read-EpsJobMessage {
         EPS_CA_MONITOR  = '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$'
         EPS_TAG_TRIGGER = '^directory$'
     }
+    # SEC-PATCH-PIPELINE-1 G3/G5: the update job's short image-only mode - only on the update job's own queue, one value.
+    # Safe to ask for: the short mode still verifies the signed release, its image-only name and the package's marker.
+    if ($AcaJobName -eq 'caj-eps-update') { $allowed['EPS_UPDATE_MODE'] = '^ImageOnly$' }
     $out = @{}
     $m = try { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($txt)) | ConvertFrom-Json -AsHashtable } catch { $null }
     if (-not $m -or "$($m.job)" -ne $AcaJobName) { return @{ Refused = "message $id is not a message for $AcaJobName - ignored, a normal run" } }
@@ -255,6 +258,19 @@ function Read-EpsJobMessage {
     }
     $out.Note = "message $id accepted$ageText"
     $out
+}
+
+function Get-EpsSecImgRefreshDecision {
+    <# PURE. SECIMG-1: start the support link once for an image-only update's mark? -Mark: eps.Setting
+       'update.secimg-refresh' (the update's UTC time); -StartedSince: the support link runs started since the mark (in the
+       last 30 minutes) - one of them takes the mark. -> @{ Start; Reason }. A mark older than 24 h starts nothing (the next
+       heartbeat reads the list anyway); an unreadable mark is started for once (the link clears it). #>
+    param([AllowEmptyString()][string]$Mark, [int]$StartedSince = 0, [datetime]$NowUtc = [datetime]::UtcNow)
+    if (-not "$Mark".Trim()) { return @{ Start = $false; Reason = 'no security image read is waiting' } }
+    $at = try { [datetime]::Parse("$Mark".Trim(), [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } catch { $null }
+    if ($at -and ($NowUtc - $at).TotalHours -gt 24) { return @{ Start = $false; Reason = "the security image read marked at $("$Mark".Trim()) is older than 24 h - the next heartbeat reads the list" } }
+    if ($StartedSince -gt 0) { return @{ Start = $false; Reason = 'the support link already started after the image-only update - it reads the list' } }
+    @{ Start = $true; Reason = "security image releases: read once after the image-only update ($("$Mark".Trim()))" }
 }
 
 function Get-EpsSetting {
@@ -339,7 +355,8 @@ function Invoke-EpsTick {
             $won = Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $job; now = $NowUtc; old = $r.LastStartedUtc } `
                 -Query 'UPDATE eps.JobSchedule SET LastStartedUtc = @now WHERE Job = @j AND ((LastStartedUtc IS NULL AND @old IS NULL) OR LastStartedUtc = @old)'
             if ($won -ne 1) { return @{ Job = $job; Action = 'Skipped'; Reason = 'another engine check claimed it' } }
-            $res = & $Starter $r.AcaJobName
+            # (the per-run parameters ride on the message - e.g. the update job's EPS_UPDATE_MODE=ImageOnly, SEC-PATCH-PIPELINE-1)
+            $res = if ($envs) { & $Starter $r.AcaJobName $envs } else { & $Starter $r.AcaJobName }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ j = $job; s = "$(if ($res.Ok) { "started $($res.Execution)" } else { "start failed: $($res.Reason)" })"; old = $r.LastStartedUtc; ok = [bool]$res.Ok } `
                 -Query 'UPDATE eps.JobSchedule SET LastStartResult = @s, LastStartedUtc = CASE WHEN @ok = 1 THEN LastStartedUtc ELSE @old END WHERE Job = @j' | Out-Null
             @{ Job = $job; Action = $(if ($res.Ok) { 'Started' } else { 'StartFailed' }); Reason = $(if ($res.Ok) { $why } else { $res.Reason }); Execution = $res.Execution }
@@ -433,7 +450,14 @@ function Invoke-EpsTick {
                 param($v)
                 # only a STARTED update-now decision carries this text (a skipped one says "... (update now waits)")
                 $p = '%"Reason":"update now for ' + ($v -replace '[\[\]%_]', '') + ':%'
-                [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ p = $p } -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = 'Tick' AND SummaryJson LIKE @p") -gt 0
+                # 2.1.75 review L3 + M1: an IMAGE PATCH counts as started by its OUTCOME (Get-EpsUpdateNowAlreadyDecision): a
+                # failed, stopped ("a normal update is rolling") or refused / lost try is started again, at most 3 times
+                $sr = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ p = $p } -Query "SELECT COUNT(*) AS N, MAX(StartedAtUtc) AS LastAt FROM eps.Run WHERE Job = 'Tick' AND SummaryJson LIKE @p")[0]
+                $ns = if ($sr) { [int]$sr.N } else { 0 }
+                if (-not (Get-Command Get-EpsUpdateNowAlreadyDecision -ErrorAction SilentlyContinue) -or $ns -lt 1) { return ($ns -gt 0) }
+                $runsSince = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ t = $sr.LastAt } -Query "SELECT TOP (5) Status, HeldReason FROM eps.Run WHERE Job = 'Update' AND StartedAtUtc >= @t ORDER BY StartedAtUtc DESC")
+                $updRun = [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = 'Update' AND Status = 'Running' AND StartedAtUtc > DATEADD(HOUR, -6, SYSUTCDATETIME())") -gt 0
+                [bool](Get-EpsUpdateNowAlreadyDecision -Version $v -Starts $ns -LastStartUtc $sr.LastAt -Runs $runsSince -UpdateRunning $updRun -NowUtc $NowUtc).Already
             }
             $un = $null
             try {
@@ -450,10 +474,19 @@ function Invoke-EpsTick {
                 if (-not $un.Start) { $decisions.Add(@{ Job = 'UpdateNow'; Action = 'NotDue'; Reason = "$($un.Reason)" }) }
                 else {
                     $why = & $blocked 'Update'
+                    # SEC-PATCH-PIPELINE-1 G3/G5 (owner 2026-11-26: "all installs upd separately to normal updater"): an IMAGE-ONLY
+                    # head starts the update job's SHORT mode (EPS_UPDATE_MODE=ImageOnly) at once - a running NORMAL update
+                    # never holds it back (the overlap guard is for normal runs); a running image-only swap does
+                    $img = [bool]$un.ImageOnly
+                    if ($img -and "$why" -match 'overlap guard') {
+                        $busy = try { [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query (Get-EpsImageOnlyRunningSql)) } catch { 1 }
+                        $why = if ($busy -gt 0) { 'an image-only swap runs now' } else { $null }
+                    }
                     if ($why) { $decisions.Add(@{ Job = 'UpdateNow'; Action = 'Skipped'; Reason = "$why ($($un.Version): update now waits)" }) }
                     else {
-                        $d = & $start 'Update' "update now for $($un.Version): $($un.Reason)" $false
+                        $d = & $start 'Update' "update now for $($un.Version): $($un.Reason)" $false $(if ($img) { @{ EPS_UPDATE_MODE = 'ImageOnly' } })
                         $d.Job = 'UpdateNow'
+                        if ($img) { $d.Mode = 'ImageOnly' }
                         if ($d.Action -eq 'Started') { $d.Reason = "update now for $($un.Version): $($un.Reason)" }
                         $decisions.Add($d)
                     }
@@ -496,6 +529,26 @@ function Invoke-EpsTick {
                     }
                 }
             } catch { $decisions.Add(@{ Job = 'ImageCleanup'; Action = 'Skipped'; Reason = "the image clean-up check failed: $($_.Exception.Message)" }) }
+        }
+        # SECIMG-1 (2.1.74, agreed with Invardia 2026-11-26): an image-only update marks eps.Setting 'update.secimg-refresh';
+        # the support link then reads this install's security image releases from Invardia ONCE (it holds the install key -
+        # this check does not read it) and clears the mark. The update starts the link itself; this is the fallback when
+        # that run came before the mark: the link's own queue, WITHOUT moving its 4-hour schedule, never while it runs, at
+        # most once per 30 minutes (Get-EpsSecImgRefreshDecision). Never fails the check.
+        if ($byJob['Uplink'] -and -not $startedNow['Uplink'] -and -not (@($decisions | Where-Object { $_.Job -eq 'Uplink' -and $_.Action -eq 'Started' }).Count)) {
+            try {
+                $sim = "$(Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Query "SELECT Value FROM eps.Setting WHERE Name = N'update.secimg-refresh'")".Trim()
+                if ($sim) {
+                    $simAt = try { [datetime]::Parse($sim, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal) } catch { $null }
+                    $since = [int](Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ m = $(if ($simAt) { $simAt } else { $NowUtc.AddMinutes(-30) }) } -Query "SELECT COUNT(*) FROM eps.Run WHERE Job = N'Uplink' AND StartedAtUtc >= @m AND StartedAtUtc > DATEADD(MINUTE, -30, SYSUTCDATETIME())")
+                    $sd = Get-EpsSecImgRefreshDecision -Mark $sim -StartedSince $since -NowUtc $NowUtc
+                    if ($sd.Start) {
+                        $why = & $blocked 'Uplink'
+                        if ($why) { $decisions.Add(@{ Job = 'SecurityImages'; Action = 'Skipped'; Reason = "$why" }) }
+                        else { $res = & $Starter $byJob['Uplink'].AcaJobName; $decisions.Add(@{ Job = 'SecurityImages'; Action = $(if ($res.Ok) { 'Started' } else { 'StartFailed' }); Reason = $(if ($res.Ok) { $sd.Reason } else { $res.Reason }); Execution = $res.Execution }) }
+                    } else { $decisions.Add(@{ Job = 'SecurityImages'; Action = 'NotDue'; Reason = $sd.Reason }) }
+                }
+            } catch { $decisions.Add(@{ Job = 'SecurityImages'; Action = 'Skipped'; Reason = "the security image check failed: $($_.Exception.Message)" }) }
         }
         $failed = @($decisions | Where-Object { $_.Action -eq 'StartFailed' }).Count
         $status = if ($failed) { 'PartlyFailed' } else { 'Succeeded' }
