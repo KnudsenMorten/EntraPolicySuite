@@ -155,23 +155,85 @@ function Get-EpsMailTenantName {
     $script:EpsMailTenantName
 }
 
+function Resolve-EpsMailFrom {
+    <#
+      PURE. ONE-SENDER-1 A1 (framework, agreed 2026-11-26): an update never switches an install to an unproven From.
+      SMTP mode: Mail.SmtpFrom is the From the relay has already accepted (the proven From). While it holds a value that
+      differs from Mail.Sender, it STAYS the From and the two keys are DRIFT (@{ Sender; ProvenFrom }); Mail.Sender becomes
+      the From when its test mail passes (Send-EpsTestMail, which then clears Mail.SmtpFrom). Mail.SmtpFrom empty or equal
+      to Mail.Sender: From = Mail.Sender, no drift. Graph (sharedMailbox) mode: Mail.SmtpFrom is an SMTP-only key and has
+      no meaning there - From = Mail.Sender, no drift. Returns @{ From; Drift } (Drift $null = none).
+    #>
+    param([string]$Mode, [string]$Sender, [string]$SmtpFrom)
+    $s = "$Sender".Trim(); $p = "$SmtpFrom".Trim()
+    if ($Mode -eq 'smtp' -and $p -and $p -ne $s) { return [pscustomobject]@{ From = $p; Drift = [ordered]@{ Sender = $s; ProvenFrom = $p } } }
+    [pscustomobject]@{ From = $s; Drift = $null }
+}
+
 function Get-EpsMailConfig {
     param([Parameter(Mandatory)][string]$ConnectionString)
     $g = { param($n, $d) $v = Invoke-EpsSql -ConnectionString $ConnectionString -Scalar -Parameters @{ n = $n } -Query 'SELECT Value FROM eps.Setting WHERE Name = @n'; if ($null -eq $v -or "$v" -eq '') { $d } else { [string]$v } }
     $rcpt = & $g 'Mail.Recipients' '[]'
+    $mode = & $g 'Mail.Mode' 'none'; $snd = & $g 'Mail.Sender' ''
+    # ONE-SENDER-1 A1: the From an SMTP send uses - the relay's proven From (Mail.SmtpFrom) while it differs from Mail.Sender
+    $sel = Resolve-EpsMailFrom -Mode $mode -Sender $snd -SmtpFrom (& $g 'Mail.SmtpFrom' '')
     [pscustomobject]@{
-        Mode = & $g 'Mail.Mode' 'none'; Sender = & $g 'Mail.Sender' ''
+        # ONE-SENDER-1 A (framework, 2026-11-25): Mail.Sender is the one sender key in both modes; A1 (2026-11-26): through
+        # the SMTP relay the From is FromAddress (Resolve-EpsMailFrom) - Sender keeps its meaning for the Graph probe
+        Mode = $mode; Sender = $snd; ProbeMailbox = & $g 'Mail.ProbeMailbox' ''
+        FromAddress = $sel.From; Drift = $sel.Drift
         # V1-PARITY P12: v1's SMTP relay (its $global:SMTPserver / SMTPPort / SMTP_UseSSL / SMTPUser); the password, when
-        # the relay needs one, is a Key Vault secret the engine reads at send time - never a value in SQL
+        # the relay needs one, is a Key Vault secret the engine reads at send time - never a value in SQL. The relay's
+        # SIGN-IN user name (Mail.SmtpUser) is a credential, never a From (Invardia 2026-11-25)
         SmtpServer = & $g 'Mail.SmtpServer' ''; SmtpPort = [int](& $g 'Mail.SmtpPort' '25'); SmtpUseTls = ((& $g 'Mail.SmtpUseTls' 'true') -eq 'true')
-        SmtpFrom = & $g 'Mail.SmtpFrom' ''; SmtpCredentialSecret = & $g 'Mail.SmtpCredentialSecret' ''
+        SmtpUser = & $g 'Mail.SmtpUser' ''; SmtpCredentialSecret = & $g 'Mail.SmtpCredentialSecret' ''
         Recipients = @(try { $rcpt | ConvertFrom-Json } catch { @() }) | Where-Object { $_ }
         Environment = (Get-EpsMailEnvironmentLabel -ConnectionString $ConnectionString -Default $(if ($env:EPS_TENANT_ID) { "tenant $($env:EPS_TENANT_ID)" } else { 'Entra Policy Suite' }))
         TenantId = $env:EPS_TENANT_ID; TenantName = (Get-EpsMailTenantName -Setting (& $g 'Platform.TenantName' ''))
+        ConnectionString = $ConnectionString   # the send right's check before the first send records its result here
     }
 }
 
+function ConvertTo-EpsMailErrorCode {
+    # PURE. A failed send's reason -> ONE closed code for the heartbeat (never the text): denied | not-found | throttled |
+    # server | auth | network | other
+    param([string]$Reason)
+    $r = "$Reason"
+    if ($r -match '(?i)-> (401|403)\b|Access is denied|AccessDenied|Authorization_RequestDenied') { return 'denied' }
+    if ($r -match '(?i)-> 404\b|ResourceNotFound|MailboxNotEnabled|InvalidUser|not a mailbox') { return 'not-found' }
+    if ($r -match '(?i)-> 429\b|throttl|ApplicationThrottled') { return 'throttled' }
+    if ($r -match '(?i)-> 5\d\d\b') { return 'server' }
+    # a relay that refuses the From (5.7.1 / "send as") is a refusal of the address, not of the sign-in
+    if ($r -match '(?i)\b5\.7\.1\b|send as|SendAsDenied') { return 'denied' }
+    if ($r -match '(?i)\b5\.7\.\d+\b|authentication|Key Vault secret') { return 'auth' }
+    if ($r -match '(?i)timed? ?out|connection|resolve|unreachable|No such host') { return 'network' }
+    'other'
+}
+
+function Save-EpsMailOutcome {
+    # 2.1.74 (Invardia 2026-11-26: the heartbeat's Mail block must reflect EVERY send, not only the alert mails): the
+    # outcome of one send in eps.UplinkState - 'mail.lastSent' (the time) or 'mail.lastFailed' ({ at, code }). A send
+    # that was not attempted (mail off, no sender, no recipient) records nothing. Never throws.
+    param([string]$ConnectionString, [bool]$Sent, [string]$Reason)
+    if (-not $ConnectionString) { return }
+    try {
+        $now = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $name = if ($Sent) { 'mail.lastSent' } else { 'mail.lastFailed' }
+        $val = if ($Sent) { $now } else { ([ordered]@{ at = $now; code = (ConvertTo-EpsMailErrorCode $Reason) } | ConvertTo-Json -Compress) }
+        [void](Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ n = $name; v = $val } -Query 'MERGE eps.UplinkState WITH (HOLDLOCK) AS t USING (SELECT @n AS Name) AS s ON t.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (@n, @v);')
+    } catch { }
+}
+
 function Send-EpsMail {
+    # One mail, its outcome recorded (Save-EpsMailOutcome). NEVER throws; returns @{ Sent; Reason } as Send-EpsMailCore.
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Html, [string]$Importance = 'normal', [object[]]$Attachments = @(), [int]$MaxAttachmentBytes = 3000000)
+    $r = Send-EpsMailCore -Config $Config -Subject $Subject -Html $Html -Importance $Importance -Attachments $Attachments -MaxAttachmentBytes $MaxAttachmentBytes
+    $tried = $r.Sent -or ("$($r.Reason)" -notmatch '^(Mail\.Mode is |Mail\.Sender is not set|Mail\.Recipients is empty|Mail\.SmtpServer is not set)')
+    if ($tried) { Save-EpsMailOutcome -ConnectionString "$($Config.ConnectionString)" -Sent ([bool]$r.Sent) -Reason "$($r.Reason)" }
+    $r
+}
+
+function Send-EpsMailCore {
     # One mail. NEVER throws (an alert that cannot be mailed must not fail the job): returns @{ Sent; Reason }.
     # Mode none, no sender or no recipient = not sent, and said why.
     # -Attachments: @{ Name; Bytes; ContentType } - inline (Graph sendMail takes ~3 MB in all); a larger one is left out
@@ -181,6 +243,9 @@ function Send-EpsMail {
     if ($Config.Mode -ne 'sharedMailbox') { return @{ Sent = $false; Reason = "Mail.Mode is '$($Config.Mode)' - no mail is sent (set it up: Initialize-EpsMailSender.ps1)" } }
     if (-not $Config.Sender) { return @{ Sent = $false; Reason = 'Mail.Sender is not set' } }
     if (-not @($Config.Recipients).Count) { return @{ Sent = $false; Reason = 'Mail.Recipients is empty' } }
+    # ONE-SENDER-1 D: before this process's first send, the send right is checked once and recorded (it never stops a mail)
+    # (in an engine job only - EPS_JOB is set by the install on every job; a test or a script sends without it)
+    if ($env:EPS_JOB -and $Config.ConnectionString -and -not $script:EpsMailCheckedThisProcess) { $script:EpsMailCheckedThisProcess = $true; try { [void](Invoke-EpsMailRestrictionCheck -ConnectionString $Config.ConnectionString -Config $Config) } catch { } }
     $att = @(); $left = @()
     foreach ($a in $Attachments) {
         if (@($a.Bytes).Count -gt $MaxAttachmentBytes) { $left += $a.Name; continue }
@@ -232,20 +297,25 @@ $script:EpsSmtpSend = {
 }
 
 function Send-EpsSmtpMail {
-    # V1-PARITY P12 (v1's Send-MailMessage through its relay): Mail.Mode = smtp. Anonymous when no credential secret is
-    # set (v1's Mail_SendAnonymous), else Mail.SmtpFrom + the Key Vault secret's password. TLS (STARTTLS) by
-    # Mail.SmtpUseTls. NEVER throws; the password never appears in a reason. @{ Sent; Reason }.
+    # V1-PARITY P12 (v1's Send-MailMessage through its relay): Mail.Mode = smtp. From = the config's FromAddress
+    # (ONE-SENDER-1 A1, Resolve-EpsMailFrom: the relay's proven From while it differs from Mail.Sender, else Mail.Sender).
+    # Anonymous when no credential secret is set (v1's Mail_SendAnonymous), else Mail.SmtpUser + the Key Vault secret's
+    # password. TLS (STARTTLS) by Mail.SmtpUseTls. NEVER throws; the password never appears in a reason. @{ Sent; Reason }.
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Html, [string]$Importance = 'normal', [object[]]$Attachments = @(), [int]$MaxAttachmentBytes = 3000000)
     if (-not $Config.SmtpServer) { return @{ Sent = $false; Reason = 'Mail.SmtpServer is not set' } }
-    if (-not $Config.SmtpFrom) { return @{ Sent = $false; Reason = 'Mail.SmtpFrom is not set' } }
+    $from = if ("$($Config.FromAddress)".Trim()) { "$($Config.FromAddress)".Trim() } else { "$($Config.Sender)" }
+    if (-not $from) { return @{ Sent = $false; Reason = 'Mail.Sender is not set (Initialize-EpsMailSender.ps1 -SmtpRelay sets it)' } }
     if (-not @($Config.Recipients).Count) { return @{ Sent = $false; Reason = 'Mail.Recipients is empty' } }
     $pw = $null
-    if ($Config.SmtpCredentialSecret) { $s = Get-EpsSmtpSecret -SecretUri $Config.SmtpCredentialSecret; if (-not $s.Ok) { return @{ Sent = $false; Reason = $s.Reason } }; $pw = $s.Value }
+    if ($Config.SmtpCredentialSecret) {
+        if (-not $Config.SmtpUser) { return @{ Sent = $false; Reason = 'Mail.SmtpUser is not set - the relay credential needs its user name (Initialize-EpsMailSender.ps1 -SmtpRelay -SmtpUser)' } }
+        $s = Get-EpsSmtpSecret -SecretUri $Config.SmtpCredentialSecret; if (-not $s.Ok) { return @{ Sent = $false; Reason = $s.Reason } }; $pw = $s.Value
+    }
     $att = @(); $left = @()
     foreach ($a in $Attachments) { if (@($a.Bytes).Count -gt $MaxAttachmentBytes) { $left += $a.Name } else { $att += $a } }
     if ($left) { $Html += "<p><i>$([System.Net.WebUtility]::HtmlEncode(($left -join ', '))) is too large to attach - export it from the web app.</i></p>" }
     try {
-        & $script:EpsSmtpSend @{ Server = $Config.SmtpServer; Port = $(if ($Config.SmtpPort) { $Config.SmtpPort } else { 25 }); Tls = [bool]$Config.SmtpUseTls; From = $Config.SmtpFrom; User = $Config.SmtpFrom; Password = $pw
+        & $script:EpsSmtpSend @{ Server = $Config.SmtpServer; Port = $(if ($Config.SmtpPort) { $Config.SmtpPort } else { 25 }); Tls = [bool]$Config.SmtpUseTls; From = $from; User = $Config.SmtpUser; Password = $pw
                                  To = @($Config.Recipients); Subject = $Subject; Html = $Html; Importance = $Importance; Attachments = $att }
         @{ Sent = $true; Reason = "sent to $(@($Config.Recipients).Count) recipient(s) through $($Config.SmtpServer)" }
     } catch {
@@ -255,16 +325,159 @@ function Send-EpsSmtpMail {
     }
 }
 
+# ---- ONE-SENDER-1 D (framework, 2026-11-25 - SI's Graph probe, NO new right): is the engine's send right the scoped one
+# for exactly Mail.Sender? Two sendMail calls WITHOUT a recipient (nothing can be delivered): as the sender it must be
+# ALLOWED, as the probe mailbox DENIED, and the engine's token must not hold the tenant-wide Graph Mail.Send. Once a day
+# (the Backup job) and before a process's first send. The result: eps.UplinkState 'mail.restriction' (JSON) - the
+# heartbeat reads it. It only reads; it never stops a mail.
+function Get-EpsMailProbeVerdict {
+    # PURE (SI's Get-SIMailProbeVerdict). allowed = 202, or 400 on the missing recipient (past the authorization);
+    # denied = 401 / 403; not-found = 404 / no such mailbox; error = anything else
+    param([int]$StatusCode, [string]$Body)
+    $code = ''; $msg = "$Body"; try { $e = ($Body | ConvertFrom-Json).error; $code = "$($e.code)"; $msg = "$($e.message)" } catch { }
+    if ($StatusCode -eq 202) { return 'allowed' }
+    if ($StatusCode -eq 400 -and ($code -match '(?i)InvalidRecipients' -or $msg -match '(?i)recipient')) { return 'allowed' }
+    if ($StatusCode -in 401, 403 -or $code -match '(?i)AccessDenied|Authorization_RequestDenied') { return 'denied' }
+    if ($StatusCode -eq 404 -or $code -match '(?i)InvalidUser|ResourceNotFound|MailboxNotEnabled') { return 'not-found' }
+    'error'
+}
+
+function Get-EpsMailRestrictionVerdict {
+    <#
+      PURE. @{ State = verified | pending | failed; Detail }:
+        verified  may send as the sender; may NOT as the probe mailbox (or no probe given); no tenant-wide Mail.Send
+        pending   may not send as the sender YET - the scoped right is missing or not active yet (Exchange: up to 2 hours)
+        failed    the sender is no mailbox, the right is not restricted (the probe mailbox is allowed, or the token holds
+                  the tenant-wide Mail.Send), or the check said nothing
+    #>
+    param([bool]$TokenHasMailSend, [string]$Self, [string]$Other, [string]$Sender, [string]$ProbeMailbox)
+    $r = { param($s, $d) [pscustomobject]@{ State = $s; Detail = $d } }
+    if ($Self -eq 'not-found') { return (& $r 'failed' "the sender $Sender is not a mailbox") }
+    if ($Self -eq 'denied') { return (& $r 'pending' "the engine may not send as $Sender yet - its 'Application Mail.Send' right for it is missing or not active yet (Exchange takes up to 2 hours); run Initialize-EpsMailSender.ps1") }
+    if ($Self -ne 'allowed') { return (& $r 'failed' "the send right on $Sender could not be checked") }
+    if ($Other -eq 'allowed') { return (& $r 'failed' "NOT restricted: the engine could also send as $ProbeMailbox$(if ($TokenHasMailSend) { ' - it holds the tenant-wide Graph Mail.Send; run Initialize-EpsMailSender.ps1 (it removes it)' })") }
+    if ($TokenHasMailSend) { return (& $r 'failed' 'NOT restricted: the engine holds the tenant-wide Graph Mail.Send - run Initialize-EpsMailSender.ps1 (it removes it)') }
+    $d = "restricted to $Sender (Exchange RBAC for Applications; no tenant-wide Mail.Send)"
+    if ($Other -eq 'denied') { $d += "; sending as $ProbeMailbox is refused" } elseif ($ProbeMailbox -and $Other) { $d += "; the probe mailbox $ProbeMailbox could not be used ($Other)" }
+    & $r 'verified' $d
+}
+
+function Test-EpsTokenHasMailSend {
+    # PURE. Whether a Graph access token's roles claim holds the tenant-wide Mail.Send
+    param([string]$Token)
+    try { $p = "$Token".Split('.')[1].Replace('-', '+').Replace('_', '/'); while ($p.Length % 4) { $p += '=' }; return [bool](@(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json).roles) -contains 'Mail.Send') } catch { $false }
+}
+
+function Invoke-EpsMailRestrictionCheck {
+    # The probe as the engine (sharedMailbox mode), stored in eps.UplinkState 'mail.restriction'. Never throws; returns
+    # @{ State; Detail; Sender; ProbeMailbox; CheckedUtc } (State 'not-applicable' when mail is not sent through Graph).
+    # -NoStore: the MailProbe job's check of a CANDIDATE sender during a change (it must not overwrite the current one's)
+    param([Parameter(Mandatory)][string]$ConnectionString, $Config, [switch]$NoStore)
+    $now = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    if (-not $Config) { $Config = try { Get-EpsMailConfig -ConnectionString $ConnectionString } catch { $null } }
+    $out = [ordered]@{ State = 'not-applicable'; Detail = ''; Sender = "$($Config.Sender)"; ProbeMailbox = "$($Config.ProbeMailbox)"; Mode = "$($Config.Mode)"; CheckedUtc = $now
+                       # ONE-SENDER-1 A1: the From mail goes out with, and the drift of the two SMTP keys (@{ Sender; ProvenFrom } or null)
+                       From = $(if ("$($Config.FromAddress)".Trim()) { "$($Config.FromAddress)".Trim() } else { "$($Config.Sender)" }); Drift = $(if ($Config.Drift) { $Config.Drift } else { $null }) }
+    if ($out.Drift) { $out.Detail = "the relay's proven From $($out.Drift.ProvenFrom) stays the From; the saved sender $($out.Drift.Sender) becomes the From when its test mail passes (Settings > Alert mail > Send a test mail)" }
+    if ($Config -and $Config.Mode -eq 'sharedMailbox' -and $Config.Sender) {
+        try {
+            $tok = Get-EpsToken -Resource 'https://graph.microsoft.com'
+            $body = @{ message = @{ subject = 'Entra Policy Suite permission check (never delivered: no recipient)'; body = @{ contentType = 'Text'; content = '-' }; toRecipients = @() }; saveToSentItems = $false } | ConvertTo-Json -Depth 5 -Compress
+            $ask = { param($box) $x = & $script:EpsHttp 'POST' "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($box))/sendMail" @{ Authorization = "Bearer $tok"; 'Content-Type' = 'application/json' } $body; Get-EpsMailProbeVerdict -StatusCode ([int]$x.Status) -Body "$($x.Body)" }
+            $self = & $ask $Config.Sender
+            $other = if ($self -eq 'allowed' -and $Config.ProbeMailbox -and $Config.ProbeMailbox -ne $Config.Sender) { & $ask $Config.ProbeMailbox } else { '' }
+            $v = Get-EpsMailRestrictionVerdict -TokenHasMailSend (Test-EpsTokenHasMailSend $tok) -Self $self -Other $other -Sender $Config.Sender -ProbeMailbox $Config.ProbeMailbox
+            $out.State = $v.State; $out.Detail = $v.Detail
+        } catch { $out.State = 'failed'; $out.Detail = "the send right could not be checked: $($_.Exception.Message)" }
+    }
+    if (-not $NoStore) { try {
+        Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ v = (ConvertTo-Json $out -Compress) } -Query "MERGE eps.UplinkState AS d USING (SELECT N'mail.restriction' AS Name) AS s ON d.Name = s.Name WHEN MATCHED THEN UPDATE SET Value = @v, UpdatedAtUtc = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (Name, Value) VALUES (N'mail.restriction', @v);" | Out-Null
+    } catch { } }
+    [pscustomobject]$out
+}
+
+function Get-EpsMailDrift {
+    # PURE. ONE-SENDER-1 point 4: drift = the last check was not 'verified', or it checked another sender than the one key
+    # holds now (the setting changed since, or a component used its own copy). @{ Drift; Reason }
+    # ONE-SENDER-1 A1 (smtp mode): drift = the relay's proven From (-ProvenFrom, the Mail.SmtpFrom key) holds a value that
+    # differs from the sender key - that proven From stays the From until the sender's test mail passes
+    param($Check, [string]$Sender, [string]$Mode, [string]$ProvenFrom = '')
+    if ($Mode -eq 'smtp') {
+        $sel = Resolve-EpsMailFrom -Mode $Mode -Sender $Sender -SmtpFrom $ProvenFrom
+        if ($sel.Drift) { return @{ Drift = $true; Reason = "the relay's proven From $($sel.Drift.ProvenFrom) stays the From; the sender key is $($sel.Drift.Sender)" } }
+        return @{ Drift = $false; Reason = '' }
+    }
+    if ($Mode -ne 'sharedMailbox') { return @{ Drift = $false; Reason = '' } }
+    if (-not $Check) { return @{ Drift = $true; Reason = 'the send right was never checked' } }
+    if ("$($Check.Sender)" -ne $Sender) { return @{ Drift = $true; Reason = "the last check was for $($Check.Sender), the sender is $Sender" } }
+    if ("$($Check.State)" -ne 'verified') { return @{ Drift = $true; Reason = "$($Check.State): $($Check.Detail)" } }
+    @{ Drift = $false; Reason = '' }
+}
+
 function Send-EpsTestMail {
     # "Send a test mail" (Settings > Alert mail): proves the sender works AS THE ENGINE'S IDENTITY - the scoped
     # Application Mail.Send - not as the person who set it up. @{ Sent; Reason }; never throws.
+    # ONE-SENDER-1 A1 (smtp mode with drift): the test mail is sent FROM the saved Mail.Sender. It passes = the relay accepts
+    # it: Mail.Sender is then proven, Mail.SmtpFrom is cleared (journaled + audited) and Mail.Sender is the From of every
+    # mail. It fails = nothing changes; the proven From stays the From. @{ Sent; Reason; Promoted }
     param([Parameter(Mandatory)][string]$ConnectionString, [string]$RequestedBy, [string]$Version = '2.0.0')
     $cfg = Get-EpsMailConfig -ConnectionString $ConnectionString
+    $drift = if ($cfg.Mode -eq 'smtp' -and $cfg.Drift -and "$($cfg.Drift.Sender)".Trim()) { $cfg.Drift }
+    if ($drift) { $cfg.FromAddress = "$($drift.Sender)".Trim() }
     # MAIL-3 subject + the MAIL-2 body like every other mail (was a hand-made '[EntraPolicySuite] <env>: test mail')
-    $how = if ($cfg.Mode -eq 'smtp') { "through the SMTP relay $($cfg.SmtpServer) as $($cfg.SmtpFrom)" } else { "as $($cfg.Sender)" }
-    $html = New-EpsMailBody -Summary "This is a test mail from Entra Policy Suite $Version ($($cfg.Environment)), sent by the engine $how. Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way." `
+    $how = if ($cfg.Mode -eq 'smtp') { "through the SMTP relay $($cfg.SmtpServer) as $(if ("$($cfg.FromAddress)".Trim()) { $cfg.FromAddress } else { $cfg.Sender })" } else { "as $($cfg.Sender)" }
+    $dSay = if ($drift) { " It comes from the saved sender $($drift.Sender): when the relay accepts it, $($drift.Sender) is the From of every mail (until now $($drift.ProvenFrom))." } else { '' }
+    $html = New-EpsMailBody -Summary "This is a test mail from Entra Policy Suite $Version ($($cfg.Environment)), sent by the engine $how. Requested by $RequestedBy at $([datetime]::UtcNow.ToString('yyyy-MM-dd HH:mm')) UTC. Tamper alerts and every other mail come the same way.$dSay" `
         -ButtonText 'Open the mail settings' -ButtonPage 'settings' -Footer @{ Environment = $cfg.Environment; TenantName = $cfg.TenantName; TenantId = $cfg.TenantId; Version = $Version }
-    Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
+    $r = Send-EpsMail -Config $cfg -Subject (New-EpsMailSubject -Environment $cfg.Environment -What 'Test mail') -Html $html
+    $out = @{ Sent = [bool]$r.Sent; Reason = "$($r.Reason)"; Promoted = $false }
+    if (-not $drift) { return $out }
+    if (-not $r.Sent) { $out.Reason += "; the proven From $($drift.ProvenFrom) stays the From"; return $out }
+    # LOW A#3 (2.1.74 review): the test-mail request runs on its own path before the signed-request check. The promotion
+    # it can make is narrow on purpose - it only clears Mail.SmtpFrom after the relay accepted the Mail.Sender an Admin
+    # already saved, with the same mode and relay server, all held under one lock
+    $p = Complete-EpsMailFromPromotion -ConnectionString $ConnectionString -Sender "$($drift.Sender)" -ProvenFrom "$($drift.ProvenFrom)" -RequestedBy $RequestedBy -SmtpServer "$($cfg.SmtpServer)"
+    $out.Promoted = [bool]$p.Promoted; $out.Reason += "; $($p.Reason)"
+    $out
+}
+
+function Complete-EpsMailFromPromotion {
+    <#
+      ONE-SENDER-1 A1: the saved Mail.Sender passed its test mail through the relay - it is now the proven From. Clears
+      Mail.SmtpFrom in one transaction, only while BOTH keys still hold what the test used (a change in between = nothing
+      cleared; the next test mail proves the new value), with the setting journal row (eps.ConfigChange, Source 'test-mail')
+      and an audit event (setting.change). The engine's own rights (eps.Setting UPDATE, eps.ConfigChange INSERT, eps.AuditEvent
+      INSERT) - no new right. Never throws: @{ Promoted; Reason }.
+    #>
+    param([Parameter(Mandatory)][string]$ConnectionString, [Parameter(Mandatory)][string]$Sender, [Parameter(Mandatory)][string]$ProvenFrom, [string]$RequestedBy, [string]$SmtpServer = '')
+    $by = 'engine (test mail)'
+    try {
+        $row = @(Invoke-EpsSql -ConnectionString $ConnectionString -Parameters @{ s = $Sender; p = $ProvenFrom; a = $by; v = $SmtpServer } -Query @'
+SET NOCOUNT ON; SET XACT_ABORT ON;
+BEGIN TRAN;
+DECLARE @n INT = 0;
+IF EXISTS (SELECT 1 FROM eps.Setting WITH (UPDLOCK, HOLDLOCK) WHERE Name = N'Mail.Sender' AND LTRIM(RTRIM(CONVERT(NVARCHAR(400), Value))) = @s)
+   AND EXISTS (SELECT 1 FROM eps.Setting WITH (UPDLOCK, HOLDLOCK) WHERE Name = N'Mail.Mode' AND CONVERT(NVARCHAR(40), Value) = N'smtp')
+   AND (@v = N'' OR EXISTS (SELECT 1 FROM eps.Setting WITH (UPDLOCK, HOLDLOCK) WHERE Name = N'Mail.SmtpServer' AND LTRIM(RTRIM(CONVERT(NVARCHAR(400), Value))) = @v))
+BEGIN
+    UPDATE eps.Setting SET Value = N'', UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @a WHERE Name = N'Mail.SmtpFrom' AND LTRIM(RTRIM(CONVERT(NVARCHAR(400), Value))) = @p;
+    SET @n = @@ROWCOUNT;
+    IF @n > 0
+        INSERT INTO eps.ConfigChange (Actor, Entity, EntityKey, Action, BeforeJson, AfterJson, Source)
+        VALUES (@a, 'Setting', N'Mail.SmtpFrom', 'Update', (SELECT @p AS value FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), (SELECT N'' AS value FOR JSON PATH, WITHOUT_ARRAY_WRAPPER), N'test-mail');
+END
+COMMIT;
+SELECT @n AS Cleared;
+'@)[0]
+        if ([int]"$($row.Cleared)" -lt 1) { return @{ Promoted = $false; Reason = "the mail keys changed during the test - the From is as before; send the test mail again" } }
+        $aud = $false
+        if (Get-Command Write-EpsAuditEvent -ErrorAction SilentlyContinue) {
+            $aud = [bool](Write-EpsAuditEvent -ConnectionString $ConnectionString -Action 'setting.change' -Actor $by -ActorSource 'job' -Target 'Setting|Mail.SmtpFrom' `
+                -Reason "ONE-SENDER-1 A1: the test mail $(if ($RequestedBy) { "requested by $RequestedBy " })passed from the saved sender $Sender" -Before @{ value = $ProvenFrom } -After @{ value = ''; from = $Sender })
+        }
+        # review B LOW 4: the change is journaled in the same transaction; an audit row that could not be written is said
+        @{ Promoted = $true; Reason = "$Sender is now the From of every mail (it replaces $ProvenFrom)$(if (-not $aud) { ' - the audit trail entry could not be written; the configuration journal has it' })" }
+    } catch { @{ Promoted = $false; Reason = "the From is as before ($ProvenFrom): the switch to $Sender could not be saved ($($_.Exception.Message)) - send the test mail again" } }
 }
 
 function Send-EpsSupportActionMail {

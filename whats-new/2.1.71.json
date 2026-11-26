@@ -1,0 +1,17 @@
+{
+  "version": "2.1.71",
+  "date": "2026-11-25",
+  "type": "fix-only",
+  "summary": "A quieter change notice, and admins through PIM for Groups are counted again.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "A quieter change notice",
+      "text": "After a change the bar shows one plain line - \"Sent - the engine applies it within 5 minutes\". Once you close it, it stays closed until your next change; the result is shown in the status line."
+    },
+    {
+      "title": "Admins through PIM for Groups",
+      "text": "The Identity report reads Privileged Identity Management for Groups per role group, as Microsoft Graph requires, so people who reach an admin role only through PIM for Groups are counted as admins again."
+    }
+  ]
+}

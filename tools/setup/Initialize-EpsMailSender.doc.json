@@ -3,7 +3,7 @@
   "product": "eps",
   "version": "2.0.0",
   "title": "Set up Entra Policy Suite's mail: a shared mailbox, sent from by the engine only",
-  "purpose": "Creates (or uses) a shared mailbox and gives the engine's managed identity the right to send as that mailbox and no other (Exchange RBAC for applications), removes a tenant-wide Graph Mail.Send grant on the identity, and stores the mail settings in the Entra Policy Suite database.",
+  "purpose": "Creates (or uses) a shared mailbox and gives the engine's managed identity the right to send as that mailbox and no other (Exchange RBAC for applications), removes a tenant-wide Graph Mail.Send grant on the identity, checks with Exchange that the right works (waiting up to 2 hours), and only then stores the mail settings in the Entra Policy Suite database and removes the right for a previous sender. With -SmtpRelay it sets up mail through your SMTP relay instead (no Exchange step).",
   "whenToRun": "Once after the install, and again to change the sender or the recipients.",
   "runAs": [
     { "kind": "entraRole", "name": "Exchange Administrator (and Global Administrator for the Graph grant check)", "scope": "the tenant", "why": "creates the mailbox, the Exchange service principal, the scope and the role assignment" },
@@ -11,10 +11,11 @@
   ],
   "changes": [
     { "target": "Exchange Online", "action": "create", "object": "the shared mailbox (if it does not exist; no licence)", "scope": "the tenant", "why": "the alerts are sent from it", "undo": "Remove-Mailbox" },
-    { "target": "Exchange Online", "action": "create", "object": "service principal for the engine identity, management scope <sender>-SendScope", "scope": "the tenant", "why": "Exchange RBAC for applications needs both", "undo": "Remove-ManagementScope, Remove-ServicePrincipal" },
-    { "target": "Exchange Online", "action": "grant", "object": "the engine identity (id-eps-engine)", "permission": "Application Mail.Send", "scope": "the sender mailbox ONLY (the management scope)", "why": "it sends the alerts", "undo": "Remove-ManagementRoleAssignment EPS-MailSend-<app id>" },
+    { "target": "Exchange Online", "action": "create", "object": "service principal for the engine identity, management scope <mailbox name>-SendScope", "scope": "the tenant", "why": "Exchange RBAC for applications needs both", "undo": "Remove-ManagementScope, Remove-ServicePrincipal" },
+    { "target": "Exchange Online", "action": "grant", "object": "the engine identity (id-eps-engine)", "permission": "Application Mail.Send", "scope": "the sender mailbox ONLY (the management scope)", "why": "it sends the alerts", "undo": "Remove-ManagementRoleAssignment <mailbox name>-<identity id>-MailSend" },
+    { "target": "Exchange Online", "action": "remove", "object": "the previous sender's Application Mail.Send assignment for the engine identity, and its scope when nothing else is on it - only after the new right works", "scope": "the previous sender mailbox", "why": "the engine sends as one mailbox only", "undo": "run the script again with the previous mailbox" },
     { "target": "Entra", "action": "remove", "object": "a tenant-wide Graph Mail.Send app role on the engine identity, if present", "permission": "Mail.Send", "scope": "the tenant", "why": "it would let the engine send as any mailbox, beside the scope", "undo": "not wanted" },
-    { "target": "SQL", "action": "update", "object": "settings Mail.Mode, Mail.Sender, Mail.Recipients (Platform.EnvironmentName)", "scope": "the Entra Policy Suite database", "why": "the engine reads them", "undo": "set Mail.Mode to none" }
+    { "target": "SQL", "action": "update", "object": "settings Mail.Mode, Mail.Sender, Mail.Recipients, Mail.ProbeMailbox (with -SmtpRelay: Mail.SmtpServer, Mail.SmtpPort, Mail.SmtpUseTls, Mail.SmtpUser, Mail.SmtpCredentialSecret; Platform.EnvironmentName)", "scope": "the Entra Policy Suite database", "why": "the engine reads them", "undo": "set Mail.Mode to none" }
   ],
   "parameters": [
     { "name": "TenantId", "required": true, "default": null, "help": "your Entra tenant" },
@@ -22,7 +23,14 @@
     { "name": "Sender", "required": true, "default": null, "help": "the shared mailbox's address" },
     { "name": "Recipients", "required": true, "default": null, "help": "who gets the alerts" },
     { "name": "ResourceGroup", "required": false, "default": "rg-eps", "help": "the install's resource group (an install made before 2.0.55: rg-entrapolicysuite, found by itself when it is there)" },
-    { "name": "EnvironmentName", "required": false, "default": null, "help": "the environment's name in every mail (subject and footer)" }
+    { "name": "EnvironmentName", "required": false, "default": null, "help": "the environment's name in every mail (subject and footer)" },
+    { "name": "ProbeMailbox", "required": false, "default": "you", "help": "a mailbox the engine must NOT be able to send as - the check that the right is limited to the sender (nothing is ever sent to it)" },
+    { "name": "WaitMinutes", "required": false, "default": "120", "help": "how long to wait for Exchange to apply the send right (it can take up to 2 hours); if it does not work in time, the new right is removed again and the previous sender stays" },
+    { "name": "SmtpRelay", "required": false, "default": null, "help": "send through your SMTP relay (its host name) instead of a shared mailbox; no Exchange step" },
+    { "name": "SmtpPort", "required": false, "default": "25", "help": "the relay's port (with -SmtpRelay)" },
+    { "name": "SmtpUseTls", "required": false, "default": "true", "help": "encrypt the connection to the relay (with -SmtpRelay)" },
+    { "name": "SmtpUser", "required": false, "default": null, "help": "the user name the relay signs in with, when it needs one (with -SmtpRelay); a sign-in only, never the sender" },
+    { "name": "SmtpCredentialSecret", "required": false, "default": null, "help": "the Key Vault secret that holds the relay's password (with -SmtpRelay)" }
   ],
   "readsOnly": [ "Exchange: the mailbox, the organization config, the service principals, scopes and role assignments", "Graph: the engine identity's app roles" ],
   "network": [ "login.microsoftonline.com", "management.azure.com", "graph.microsoft.com", "outlook.office365.com", "<server>.database.windows.net" ],

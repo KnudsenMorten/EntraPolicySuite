@@ -1,5 +1,120 @@
 # What's new in Entra Policy Suite
 
+## 2.1.74 · 2026-11-26 · Fix-only
+
+Mail through an SMTP relay keeps the From address the relay accepts.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **SMTP mail keeps its accepted From** - With an SMTP relay, the From address the relay already accepts stays the From. A different saved sender becomes the From only when its test mail passes.
+
+## 2.1.73 · 2026-11-26 · Security
+
+Break-glass accounts can always sign in, and a mail sender change is proven before it switches.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Break-glass accounts can always sign in** - A Conditional Access change that would stop a break-glass account from signing in is refused. Only the break-glass templates may include them, with a control they can meet: MFA or the FIDO strength. CA095 is unchanged.
+- **Queued changes checked again** - Changes the web app hands to the engine are checked again by the engine - who may make them and what they change - before they run.
+- **A sender change proven first** - The mail setup switches the sender only after Entra Policy Suite itself may send as the new mailbox. If anything fails, the old rights are put back.
+
+## 2.1.72 · 2026-11-25 · Security
+
+Every mail comes from one sender, changing the sender works, and the send right is checked every day.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **One sender for every mail** - Every mail now comes from the one sender mailbox, also through an SMTP relay. The separate SMTP from address is gone; an existing one is moved into the sender once, so no mail stops.
+- **Changing the sender works** - The mail setup checks that the right for a new mailbox works before it switches (Exchange can take up to 2 hours), then removes the right for the old one. If it does not work, the old sender stays.
+- **The send right checked every day** - Once a day Entra Policy Suite checks that it may send as the sender mailbox and as no other one - without sending anything - and reports the result.
+
+## 2.1.71 · 2026-11-25 · Fix-only
+
+A quieter change notice, and admins through PIM for Groups are counted again.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **A quieter change notice** - After a change the bar shows one plain line - "Sent - the engine applies it within 5 minutes". Once you close it, it stays closed until your next change; the result is shown in the status line.
+- **Admins through PIM for Groups** - The Identity report reads Privileged Identity Management for Groups per role group, as Microsoft Graph requires, so people who reach an admin role only through PIM for Groups are counted as admins again.
+
+## 2.1.70 · 2026-11-25 · Fix-only
+
+Copying, deploying and removing a Conditional Access policy no longer reports a false error.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **No false error after a copy or deploy** - A new policy can take Microsoft a few seconds to show. Entra Policy Suite now waits for it (up to a minute) instead of reporting an error while the policy was in fact created.
+- **Remove checks again before it reports** - After removing a policy, Entra Policy Suite waits up to a minute for Microsoft to confirm it is gone, so a removed policy is no longer reported as still there.
+- **Edit and stage moves wait too** - Edit and moving a policy between stages also wait for Microsoft before they report.
+
+## 2.1.68 · 2026-11-24 · Security
+
+The support access check completes again.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Support access check completes** - Since 2.1.66 the support access check could not record the level Setup, so each check ended as failed, although the access was applied as you chose. It now completes.
+
+## 2.1.67 · 2026-11-24 · Security
+
+A first install is checked against Invardia's signature, and every page states the same security facts.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Signed first install, one set of facts** - The first install of the Community edition now takes only the release signed for your ring and checks it like every update. The security pages, the security pack and the product pages state the same rights and limits.
+
+## 2.1.66 · 2026-11-24 · Fix-only
+
+Invardia support uses the shared levels: Troubleshoot reads only, Setup adds a time-boxed admin session.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Support levels: Troubleshoot reads only** - Invardia support now uses the levels of the other Invardia products. Troubleshoot reads only. Setup also allows database admin, only during a support session you open, for at most 8 hours.
+
+## 2.1.65 · 2026-11-24 · Fix-only
+
+The architecture page lists the highly privileged rights and says where each claim stops.
+
+### New features
+
+None in this version.
+
+### Fixes
+
+- **Architecture page: privileged rights and limits** - The architecture page lists the rights that can change access in your tenant, what each could do and its limit, and how far the audit trail and the managed-identity sign-in reach.
+
 ## 2.1.64 · 2026-11-24 · Fix-only
 
 Security updates install within 15 minutes, not at night.

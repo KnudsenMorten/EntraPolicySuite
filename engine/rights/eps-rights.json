@@ -270,7 +270,7 @@
         },        {
           "kind": "exchange",
           "right": "Application Mail.Send",
-          "scope": "the sender mailbox only (management scope <sender>-SendScope)",
+          "scope": "the sender mailbox only (management scope <mailbox name>-SendScope)",
           "when": "feature",
           "condition": "Mail.Mode = sharedMailbox",
           "featureKey": "mailSender",

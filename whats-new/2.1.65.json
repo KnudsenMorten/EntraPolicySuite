@@ -1,0 +1,13 @@
+{
+  "version": "2.1.65",
+  "date": "2026-11-24",
+  "type": "fix-only",
+  "summary": "The architecture page lists the highly privileged rights and says where each claim stops.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Architecture page: privileged rights and limits",
+      "text": "The architecture page lists the rights that can change access in your tenant, what each could do and its limit, and how far the audit trail and the managed-identity sign-in reach."
+    }
+  ]
+}

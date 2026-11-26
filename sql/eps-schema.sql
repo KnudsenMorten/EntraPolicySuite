@@ -906,12 +906,12 @@ INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (19, '2.0.30');
 IF OBJECT_ID('eps.SupportAccess') IS NULL
 CREATE TABLE eps.SupportAccess (
     Id            INT            NOT NULL CONSTRAINT PK_SupportAccess PRIMARY KEY CONSTRAINT CK_SupportAccess_One CHECK (Id = 1),
-    Level         NVARCHAR(20)   NOT NULL,                -- none | read | troubleshoot
+    Level         NVARCHAR(20)   NOT NULL,                -- none | troubleshoot (read) | setup (read + admin in a session); 'read' = troubleshoot (before 2.1.66)
     AppId         NVARCHAR(36)   NULL,                    -- the Support app's client id (lower case)
     SessionUntil  DATETIME2      NULL,                    -- admin until (an open session from Invardia), else NULL
     Applied       NVARCHAR(400)  NULL,                    -- what the last run did, in plain words
     CheckedAtUtc  DATETIME2      NOT NULL CONSTRAINT DF_SupportAccess_At DEFAULT SYSUTCDATETIME(),
-    CONSTRAINT CK_SupportAccess_Level CHECK (Level IN ('none', 'read', 'troubleshoot'))
+    CONSTRAINT CK_SupportAccess_Level CHECK (Level IN ('none', 'read', 'troubleshoot', 'setup'))
 );
 
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 20)
@@ -1377,3 +1377,39 @@ GO
 -- the last refresh is eps.UplinkState stats.refreshed (written by the engine). No table change.
 IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 39)
 INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (39, '2.1.9');
+GO
+-- v40 (2.1.68, the shared support levels of 2.1.66 - Invardia decision 2026-11-24): the job stores 'setup' (read + admin only
+-- in a session); the level check of an existing table allowed only none / read / troubleshoot, so every run since 2.1.66
+-- failed at its state row (internal 2026-11-24, tickets SUP-2026-00688 / -00689). The old check is switched off and a second one allows 'setup'.
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_SupportAccess_Level' AND parent_object_id = OBJECT_ID('eps.SupportAccess') AND definition NOT LIKE '%setup%')
+BEGIN
+    -- additive only (nothing removed - Test-EpsSqlStore): the old check is switched off, a second check with 'setup' takes its place
+    ALTER TABLE eps.SupportAccess NOCHECK CONSTRAINT CK_SupportAccess_Level;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_SupportAccess_Level2')
+        ALTER TABLE eps.SupportAccess WITH CHECK ADD CONSTRAINT CK_SupportAccess_Level2 CHECK (Level IN ('none', 'read', 'troubleshoot', 'setup'));
+END
+GO
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 40)
+INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (40, '2.1.68');
+GO
+-- v41 (2.1.72, framework ONE-SENDER-1 A - owner 2026-11-25 "Fix all 3, next release"): Mail.Sender is the ONLY From, also
+-- through an SMTP relay. Once: the former Mail.SmtpFrom goes into an EMPTY Mail.Sender, and - when a relay credential is set -
+-- into an empty Mail.SmtpUser (the relay's sign-in user name, a credential, never a From), so no SMTP install stops signing
+-- in or sending. Mail.SmtpFrom is then never read again (data only; no table change; nothing removed).
+IF NOT EXISTS (SELECT 1 FROM eps.SchemaVersion WHERE Version = 41)
+BEGIN
+    DECLARE @epsSmtpFrom NVARCHAR(400) = (SELECT TOP (1) CONVERT(NVARCHAR(400), Value) FROM eps.Setting WHERE Name = N'Mail.SmtpFrom');
+    IF LEN(ISNULL(@epsSmtpFrom, N'')) > 0
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM eps.Setting WHERE Name = N'Mail.Sender' AND LEN(ISNULL(CONVERT(NVARCHAR(400), Value), N'')) > 0)
+            MERGE eps.Setting AS d USING (SELECT N'Mail.Sender' AS Name) AS s ON d.Name = s.Name
+            WHEN MATCHED THEN UPDATE SET Value = @epsSmtpFrom, UpdatedAtUtc = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT (Name, Feature, Value) VALUES (N'Mail.Sender', N'Mail', @epsSmtpFrom);
+        IF EXISTS (SELECT 1 FROM eps.Setting WHERE Name = N'Mail.SmtpCredentialSecret' AND LEN(ISNULL(CONVERT(NVARCHAR(400), Value), N'')) > 0)
+           AND NOT EXISTS (SELECT 1 FROM eps.Setting WHERE Name = N'Mail.SmtpUser' AND LEN(ISNULL(CONVERT(NVARCHAR(400), Value), N'')) > 0)
+            MERGE eps.Setting AS d USING (SELECT N'Mail.SmtpUser' AS Name) AS s ON d.Name = s.Name
+            WHEN MATCHED THEN UPDATE SET Value = @epsSmtpFrom, UpdatedAtUtc = SYSUTCDATETIME()
+            WHEN NOT MATCHED THEN INSERT (Name, Feature, Value) VALUES (N'Mail.SmtpUser', N'Mail', @epsSmtpFrom);
+    END
+    INSERT INTO eps.SchemaVersion (Version, ProductVersion) VALUES (41, '2.1.72');
+END

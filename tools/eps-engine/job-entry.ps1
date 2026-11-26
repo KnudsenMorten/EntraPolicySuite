@@ -46,7 +46,7 @@ if (-not $ConnectionString) { Say 'EPS_SQL_CONNECTION is not set'; exit 2 }
 Say "start$(if ($env:CONTAINER_APP_REPLICA_NAME) { " ($env:CONTAINER_APP_REPLICA_NAME)" })"
 # STALL-1 (framework 8.18): the work jobs report their progress, and end themselves when the engine marks the run stalled
 # (EPS-Watchdog.ps1); the jobs without a running run row (the checks, the setup, the GUI) have nothing to watch
-if ($Job -notin 'Tick', 'Wake', 'Web', 'DbInit', 'SupportAccess', 'SupportRead', 'Config') {
+if ($Job -notin 'Tick', 'Wake', 'Web', 'DbInit', 'SupportAccess', 'SupportRead', 'Config', 'MailProbe') {
     Say (Start-EpsRunWatchdog -ConnectionString $ConnectionString -Job $Job -StartedUtc $script:__started -MayStop:($Job -notin $script:EpsStallNeverStop))
 }
 # V1-PARITY P16: this job's log level (Log.Level.<Job>: Off / Normal / Verbose); warnings and errors are always kept
@@ -60,6 +60,20 @@ if ($Job -in 'UserTagging', 'DeviceTagging', 'IdentityReport', 'CAPolicyAnalyzer
 }
 
 try {
+    if ($Job -eq 'MailProbe') {
+        # ONE-SENDER-1 C (framework, 2026-11-26): during a sender change Initialize-EpsMailSender starts ONE execution of the
+        # engine's job with EPS_JOB = MailProbe: the engine's OWN probe of the CANDIDATE sender (sendMail with no recipient -
+        # nothing is delivered): allowed for it, denied for the probe mailbox, no tenant-wide Mail.Send. Reads only; stores
+        # nothing (the current sender's state stays). Exit 0 = verified (the switch may go on), 3 = not yet / not restricted.
+        $mailRx = '^[^@\s''"<>;,]{1,64}@[^@\s''"<>;,]{1,190}\.[A-Za-z]{2,24}$'
+        $cand = "$env:EPS_MAIL_PROBE_SENDER"; $pm = "$env:EPS_MAIL_PROBE_MAILBOX"
+        if ($cand -notmatch $mailRx -or ($pm -and $pm -notmatch $mailRx)) { Say 'MailProbe: EPS_MAIL_PROBE_SENDER / EPS_MAIL_PROBE_MAILBOX is not a mail address'; exit 2 }
+        $r = Invoke-EpsMailRestrictionCheck -ConnectionString $ConnectionString -Config ([pscustomobject]@{ Mode = 'sharedMailbox'; Sender = $cand; ProbeMailbox = $pm }) -NoStore
+        Say "MailProbe: $cand - $($r.State): $($r.Detail)"
+        # 0 = verified; 3 = pending (may not send yet: Exchange's lag); 4 = failed (not restricted / not a mailbox) - final
+        # (2.1.73 two-agent check A#4 / B#3: a definite failure no longer waits out the whole wait)
+        exit $(if ($r.State -eq 'verified') { 0 } elseif ($r.State -eq 'pending') { 3 } else { 4 })
+    }
     if ($Job -eq 'Tick') {
         $t = Invoke-EpsTick -ConnectionString $ConnectionString
         foreach ($d in $t.Decisions) { Say ("{0,-15} {1,-11} {2}" -f $d.Job, $d.Action, $d.Reason) }
@@ -357,6 +371,10 @@ WHERE q.Job = 'Backup' AND q.Status = 'Dispatched'
         } catch { $failText = "$($_.Exception.Message)"; & $log 'Error' $failText }
         finally {
             [void](Invoke-EpsStatsRefresh -ConnectionString $ConnectionString -Log { param($m) & $log 'Info' $m })   # framework §12.27 SQL-STATS, warn-only
+            # ONE-SENDER-1 D (2.1.72): once a day, the engine's send right is checked (two sendMail calls with no recipient:
+            # nothing is delivered) and recorded for the heartbeat - it reads only, and never fails the backup
+            # ONE-SENDER-1 A1: an SMTP relay whose two From keys differ (drift) is named here, and in the stored check record
+            try { $mr = Invoke-EpsMailRestrictionCheck -ConnectionString $ConnectionString; if ($mr.State -ne 'not-applicable') { & $log $(if ($mr.State -eq 'verified') { 'Info' } else { 'Warning' }) "mail send right: $($mr.State) - $($mr.Detail)" } elseif ($mr.Drift) { & $log 'Warning' "mail From drift: $($mr.Detail)" } } catch { & $log 'Warning' "the mail send right could not be checked: $($_.Exception.Message)" }
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $runId; s = $(if ($ok) { 'Succeeded' } else { 'Failed' }); o = [int]$(if ($res) { $res.Policies + $res.ConfigItems } else { 0 }); h = $(if (-not $ok) { Get-EpsFailedRunReason -Message $failText } else { [DBNull]::Value }) } `
                 -Query 'UPDATE eps.Run SET Status = @s, EndedAtUtc = SYSUTCDATETIME(), Objects = @o, Planned = 0, Applied = 0, HeldReason = CASE WHEN HeldReason LIKE ''stalled (stopping):%'' THEN HeldReason ELSE COALESCE(@h, HeldReason) END WHERE RunId = @id' | Out-Null
             if ($req) { Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; s = $(if ($ok) { 'Done' } else { 'Failed' }); t = $(if ($ok) { "CA backup $($res.CaBackupId) ($($res.Policies) policies), configuration backup $($res.ConfigBackupId)" } else { 'the backup failed - see its log' }) } -Query 'UPDATE eps.JobRequest SET Status = @s, StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id' | Out-Null }
@@ -495,7 +513,11 @@ WHERE q.Job = @j AND q.Status = 'Dispatched' AND q.RequestedAtUtc = (SELECT MIN(
             Invoke-EpsSql -ConnectionString $ConnectionString -NonQuery -Parameters @{ id = $req.RequestId; t = $gate.Text } -Query "UPDATE eps.JobRequest SET Status = 'Refused', StatusText = @t, UpdatedAtUtc = SYSUTCDATETIME() WHERE RequestId = @id" | Out-Null
             exit 0
         }
-        $mode = $req.Mode; $approved = $req.ApprovedBy
+        # EPS full review 2026-11-26 (sql-flow reviewer 2 #2, SEC-AUDIT-1 S1): the request row's ApprovedBy is NEVER taken -
+        # no product code writes it, so only a row the web identity forged could carry one, and it passed the mass-change
+        # guard. (A held tagging run is released by changing its rules or the guard limits; an Undo has its own signed
+        # Approve, checked in EPS-Backup with the verified actor.)
+        $mode = $req.Mode; $approved = $null
         $scope = if ($req.Scope) { $req.Scope | ConvertFrom-Json -AsHashtable }
         Say "request $($req.RequestId) by $($req.RequestedBy): $mode$(if ($scope) { ', scoped' })$(if ($approved) { ", approved by $approved" })"
     } else {

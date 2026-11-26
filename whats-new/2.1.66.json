@@ -1,0 +1,13 @@
+{
+  "version": "2.1.66",
+  "date": "2026-11-24",
+  "type": "fix-only",
+  "summary": "Invardia support uses the shared levels: Troubleshoot reads only, Setup adds a time-boxed admin session.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Support levels: Troubleshoot reads only",
+      "text": "Invardia support now uses the levels of the other Invardia products. Troubleshoot reads only. Setup also allows database admin, only during a support session you open, for at most 8 hours."
+    }
+  ]
+}

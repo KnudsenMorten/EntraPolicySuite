@@ -1,0 +1,21 @@
+{
+  "version": "2.1.72",
+  "date": "2026-11-25",
+  "type": "security",
+  "summary": "Every mail comes from one sender, changing the sender works, and the send right is checked every day.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "One sender for every mail",
+      "text": "Every mail now comes from the one sender mailbox, also through an SMTP relay. The separate SMTP from address is gone; an existing one is moved into the sender once, so no mail stops."
+    },
+    {
+      "title": "Changing the sender works",
+      "text": "The mail setup checks that the right for a new mailbox works before it switches (Exchange can take up to 2 hours), then removes the right for the old one. If it does not work, the old sender stays."
+    },
+    {
+      "title": "The send right checked every day",
+      "text": "Once a day Entra Policy Suite checks that it may send as the sender mailbox and as no other one - without sending anything - and reports the result."
+    }
+  ]
+}

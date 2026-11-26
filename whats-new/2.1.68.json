@@ -1,0 +1,13 @@
+{
+  "version": "2.1.68",
+  "date": "2026-11-24",
+  "type": "security",
+  "summary": "The support access check completes again.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Support access check completes",
+      "text": "Since 2.1.66 the support access check could not record the level Setup, so each check ended as failed, although the access was applied as you chose. It now completes."
+    }
+  ]
+}

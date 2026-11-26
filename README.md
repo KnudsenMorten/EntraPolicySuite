@@ -39,7 +39,7 @@ invardia.com. Everything in Community stays in Community.
 Community and Pro install, update and run the same way - the same installer, sign-in, jobs and settings, and every
 installation updates itself at its nightly run; only the licensed features differ.
 
-Line 2 downloads the latest 2.x release, checks it against the SHA-256 digest GitHub publishes for it, and installs.
+Line 2 downloads the release approved for your ring, checks that Invardia signed it, its size and its SHA-256, and installs.
 To see the plan first, add `-WhatIf` at the end of line 2: it shows every step the installer would take - nothing is
 created. A stopped install continues where it stopped when you run the same command again.
 
@@ -49,7 +49,7 @@ created. A stopped install continues where it stopped when you run the same comm
 | `-SubscriptionId` | (required) | The subscription to install in |
 | `-Location` | westeurope | The Azure region |
 | `-ResourceGroup` | rg-eps | The resource group to install into (an install made before 2.0.55 in rg-entrapolicysuite is found and kept) |
-| `-Version` | the latest 2.x release | A specific release, for example 2.0.20 |
+| `-Version` | the release of your ring | Only the release approved for your ring installs; another version is refused |
 | `-ConnectToInvardia` | asked once (no) | `yes` connects this installation to Invardia: health reports (numbers and states only) and updates on request. `no` keeps it anonymous: it then sends nothing but the nightly question which release is approved. |
 
 ### Private network

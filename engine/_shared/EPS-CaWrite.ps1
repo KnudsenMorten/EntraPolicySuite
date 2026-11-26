@@ -70,6 +70,9 @@ function Invoke-EpsCaStageMove {
     $rs = Resolve-EpsCaStageIds -Plan $plan -Ctx $ctx
     if (-not $rs.Ok) { return @{ Result = 'refused'; Reason = $rs.Reason; Plan = $plan } }
     foreach ($k in $rs.Names.Keys) { $names[$k] = $rs.Names[$k] }
+    # 2.1.73 two-agent check A #2: the break-glass pilot groups known by id must include the TARGET stage's group (Pilot1 ->
+    # Pilot2 switches to another pilot group) - recomputed from the merged names before the check on the result
+    $ctx.BreakGlass.PilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $names -Catalog $cat); $ctx.BreakGlass.BlockPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $names -Catalog $cat -ForBlock); $ctx.BreakGlass.StrengthPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $names -Catalog $cat -ForStrength)
     # the change: the name, the state, and the users block as read with the planned lists in it (Graph keeps the other
     # conditions as they are; the users block is sent whole, so nothing in it is left to a partial merge)
     $patch = [ordered]@{ state = $plan.stateAfter }
@@ -87,7 +90,7 @@ function Invoke-EpsCaStageMove {
     if ($patch.conditions) { $after.conditions.users = $patch.conditions.users }
     $t = $cat.ById["$($review.templateId)"]
     $bg = Test-EpsCaBreakGlassExclusion -Policy $after -BreakGlass $ctx.BreakGlass -IsBreakGlassPolicy ([bool]($t -and $t.breakGlassPolicy))
-    if ($To -ne 'Disabled' -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: $($bg.Text)"; Plan = $plan } }
+    if ("$($after.state)" -notin $script:EpsCaNoBlockStates -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: $($bg.Text)"; Plan = $plan } }
     # UNDO-BACKUP: the policy as it is, stored BEFORE anything is written - no backup, no change (EPS-Backup.ps1)
     $bk = Backup-EpsCaBeforeWrite -ConnectionString $ConnectionString -Policies @($live) -Cause "before the stage move of $($plan.displayNameBefore) to $To" -Actor $Actor
     if (-not $bk.Ok) { return @{ Result = 'refused'; Reason = $bk.Reason; Plan = $plan } }
@@ -101,8 +104,10 @@ function Invoke-EpsCaStageMove {
     # THE write (the only Conditional Access write in EntraPolicySuite)
     try { [void](Invoke-EpsGraph -Method 'PATCH' -Path "v1.0/identity/conditionalAccess/policies/$PolicyId" -Body $patch) }
     catch { return @{ Result = 'failed'; Reason = "the tenant refused the change: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; Plan = $plan } }
-    # read back and compare with the plan
-    $now = (Invoke-EpsGraph -Path "v1.0/identity/conditionalAccess/policies/$PolicyId") | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable -Depth 20
+    # read back and compare with the plan - 2.1.70: a lagging read still shows the policy as it was, so it is read again
+    # (up to a minute) until its state and name are the planned ones; what then still differs is recorded as before
+    $now = Wait-EpsCaLivePolicy -PolicyId $PolicyId -Want there -Until { param($p) "$($p.state)" -eq $plan.stateAfter -and "$($p.displayName)" -ceq $plan.displayNameAfter }
+    if (-not $now) { return @{ Result = 'failed'; Reason = 'the change was sent, but the policy could not be read back within a minute - read the policy list again'; Plan = $plan } }
     $off = [System.Collections.Generic.List[string]]::new()
     if ("$($now.state)" -ne $plan.stateAfter) { $off.Add("state is $($now.state)") }
     if ("$($now.displayName)" -cne $plan.displayNameAfter) { $off.Add("name is $($now.displayName)") }
@@ -219,6 +224,7 @@ function Invoke-EpsCaPolicyEdit {
     $rs = Resolve-EpsCaEditNames -Body $e.Body -Lookup (Get-EpsCaEditLookup) -Strict
     if (-not $rs.Ok) { return @{ Result = 'refused'; Reason = $rs.Reason } }
     foreach ($k in $rs.Names.Keys) { $x.Names[$k] = $rs.Names[$k] }
+    $x.Ctx.BreakGlass.PilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog); $x.Ctx.BreakGlass.BlockPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog -ForBlock); $x.Ctx.BreakGlass.StrengthPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog -ForStrength)   # 2.1.73 two-agent check: the edit's own groups too
     $plan = Get-EpsCaEditPlan -Live $live -Edit $rs.Body -Mode Edit -BreakGlass $x.Ctx.BreakGlass -IsBreakGlassPolicy $x.IsBreakGlassPolicy -Names $x.Names
     if (-not $plan.ok) { return @{ Result = 'refused'; Reason = $plan.reason; Plan = $plan } }
     $bk = Backup-EpsCaBeforeWrite -ConnectionString $ConnectionString -Policies @($live) -Cause "before the edit of $($plan.displayNameBefore)" -Actor $Actor
@@ -227,7 +233,9 @@ function Invoke-EpsCaPolicyEdit {
     # THE write: ONE PATCH of this policy with the parts that change
     try { [void](Invoke-EpsGraph -Method 'PATCH' -Path "v1.0/identity/conditionalAccess/policies/$PolicyId" -Body ($plan.patch | ConvertTo-Json -Depth 30 -Compress)) }
     catch { return @{ Result = 'failed'; Reason = "the tenant refused the change: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; Plan = $plan } }
-    $now = (Invoke-EpsGraph -Path "v1.0/identity/conditionalAccess/policies/$PolicyId") | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    # 2.1.70: a lagging read still shows the policy as it was - read again (up to a minute) until it reads as planned
+    $now = Wait-EpsCaLivePolicy -PolicyId $PolicyId -Want there -Until { param($p) -not @(Get-EpsCaEditReadBack -Now $p -Plan $plan -Parts @($plan.patch.Keys)).Count }
+    if (-not $now) { return @{ Result = 'failed'; Reason = 'the change was sent, but the policy could not be read back within a minute - read the policy list again'; Plan = $plan } }
     $off = @(Get-EpsCaEditReadBack -Now $now -Plan $plan -Parts @($plan.patch.Keys))
     $nowReview = Get-EpsCaReview -Policy $now -Names $x.Names -Ctx $x.Ctx -Catalog $x.Catalog
     $nowHash = Get-EpsCaBodyHash $now
@@ -281,6 +289,7 @@ function Invoke-EpsCaPolicyClone {
     $rs = Resolve-EpsCaEditNames -Body $e.Body -Lookup (Get-EpsCaEditLookup) -Strict
     if (-not $rs.Ok) { return @{ Result = 'refused'; Reason = $rs.Reason } }
     foreach ($k in $rs.Names.Keys) { $x.Names[$k] = $rs.Names[$k] }
+    $x.Ctx.BreakGlass.PilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog); $x.Ctx.BreakGlass.BlockPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog -ForBlock); $x.Ctx.BreakGlass.StrengthPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $x.Names -Catalog $x.Catalog -ForStrength)   # 2.1.73 two-agent check: the edit's own groups too
     $existing = @(Invoke-EpsGraph -Path 'v1.0/identity/conditionalAccess/policies?$select=id,displayName' -All | ForEach-Object { "$($_.displayName)" })
     $plan = Get-EpsCaEditPlan -Live $live -Edit $rs.Body -Mode Clone -BreakGlass $x.Ctx.BreakGlass -IsBreakGlassPolicy $x.IsBreakGlassPolicy -Names $x.Names -ExistingNames $existing
     if (-not $plan.ok) { return @{ Result = 'refused'; Reason = $plan.reason; Plan = $plan } }
@@ -293,7 +302,8 @@ function Invoke-EpsCaPolicyClone {
            catch { return @{ Result = 'failed'; Reason = "the tenant refused the copy: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; Plan = $plan } }
     $newId = "$($new.id)"
     if ($newId -notmatch $script:EpsCaGuidRx) { return @{ Result = 'failed'; Reason = 'the tenant created the copy but did not return its id - read the policy list again'; Plan = $plan } }
-    $now = (Invoke-EpsGraph -Path "v1.0/identity/conditionalAccess/policies/$newId") | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
+    $now = Wait-EpsCaLivePolicy -PolicyId $newId -Want there
+    if (-not $now) { return @{ Result = 'failed'; Reason = "the tenant created the copy ($newId, off) but it could not be read back within $($script:EpsCaReadBackWaitSeconds) s - read the policy list again; then adopt or remove it"; Plan = $plan; NewId = $newId } }
     $off = @(Get-EpsCaEditReadBack -Now $now -Plan $plan -Parts @($create.Keys))
     $nowReview = Get-EpsCaReview -Policy $now -Names $x.Names -Ctx $x.Ctx -Catalog $x.Catalog
     $nowHash = Get-EpsCaBodyHash $now
@@ -377,6 +387,26 @@ function Get-EpsCaLivePolicy {
     $raw | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable -Depth 30
 }
 
+# 2.1.70 (Invardia 2026-11-25 (a), found by the SEC-CHANGE-1 live flow on internal at 09:52Z): Graph can answer 404 for a
+# policy created a moment ago, and still return one deleted a moment ago (replication). The read-back after a Clone, a
+# Deploy and a Remove asks again every few seconds for up to a minute before it reports the policy missing or still there.
+# Before, a Clone showed an error while the copy WAS created (off, not recorded). Reads only; nothing is written again.
+$script:EpsCaReadBackWaitSeconds = 60
+$script:EpsCaReadBackStepSeconds = 5
+function Wait-EpsCaLivePolicy {
+    # the policy read LIVE until it is there (-Want there: the body) or gone (-Want gone: $null) - at most
+    # $script:EpsCaReadBackWaitSeconds; returns the last read (a body, or $null). -Until (with there): also until the
+    # body reads as the write left it (an Edit, a stage move: a lagging read still shows the policy as it was before)
+    param([Parameter(Mandatory)][string]$PolicyId, [Parameter(Mandatory)][ValidateSet('there', 'gone')][string]$Want, [scriptblock]$Until)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $p = Get-EpsCaLivePolicy -PolicyId $PolicyId
+        if (($Want -eq 'there') -eq ($null -ne $p) -and (-not $Until -or $Want -ne 'there' -or (& $Until $p))) { return $p }
+        if ($sw.Elapsed.TotalSeconds -ge $script:EpsCaReadBackWaitSeconds) { return $p }
+        Start-Sleep -Seconds $script:EpsCaReadBackStepSeconds
+    }
+}
+
 function Invoke-EpsCaTemplateDeploy {
     <#
       Creates ONE policy from a template (the operator's request, applied by the engine) - v1's CAnnn.ps1 -Mode
@@ -448,7 +478,7 @@ function Invoke-EpsCaTemplateDeploy {
     $names = @{}; foreach ($k in $rs.Names.Keys) { $names[$k] = $rs.Names[$k] }
     $ctx = Get-EpsCaContext -ConnectionString $ConnectionString -Names $names -Catalog $cat
     $bg = Test-EpsCaBreakGlassExclusion -Policy $body -BreakGlass $ctx.BreakGlass -IsBreakGlassPolicy ([bool]$t.breakGlassPolicy)
-    if ($bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: the new policy $($bg.Text)"; Plan = $plan; Groups = $created } }
+    if ("$($body.state)" -notin $script:EpsCaNoBlockStates -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: the new policy $($bg.Text)"; Plan = $plan; Groups = $created } }
     $create = [ordered]@{}; foreach ($k in $script:EpsCaEditTop) { if ($body.Contains($k) -and $null -ne $body[$k]) { $create[$k] = $body[$k] } }
     # UNDO-BACKUP: a deploy changes no policy that is there (its undo turns the new one off); a test next to a policy
     # stores that policy first
@@ -462,7 +492,8 @@ function Invoke-EpsCaTemplateDeploy {
            catch { return @{ Result = 'failed'; Reason = "the tenant refused the new policy: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; Plan = $plan; Groups = $created } }
     $newId = "$($new.id)"
     if ($newId -notmatch $script:EpsCaGuidRx) { return @{ Result = 'failed'; Reason = 'the tenant created the policy but did not return its id - read the policy list again'; Plan = $plan; Groups = $created } }
-    $now = Get-EpsCaLivePolicy -PolicyId $newId
+    $now = Wait-EpsCaLivePolicy -PolicyId $newId -Want there
+    if (-not $now) { return @{ Result = 'failed'; Reason = "the tenant created the policy ($newId, $Stage) but it could not be read back within $($script:EpsCaReadBackWaitSeconds) s - read the policy list again; then adopt or remove it"; Plan = $plan; NewId = $newId; Groups = $created } }
     $off = @(Get-EpsCaEditReadBack -Now $now -Plan @{ after = $create } -Parts @($create.Keys))
     foreach ($k in (Resolve-EpsCaDirectoryNames -Policies @($now)).GetEnumerator()) { $names[$k.Key] = $k.Value }
     $review = Get-EpsCaReview -Policy $now -Names $names -Ctx $ctx -Catalog $cat
@@ -544,7 +575,7 @@ function Invoke-EpsCaVersionPair {
     $onAfter = ConvertTo-Json -InputObject $onLive -Depth 30 -Compress | ConvertFrom-Json -AsHashtable -Depth 30
     foreach ($k in @($onPatch.Keys)) { if ($k -eq 'conditions') { $onAfter.conditions.users = $onPatch.conditions.users } else { $onAfter[$k] = $onPatch[$k] } }
     $bg = Test-EpsCaBreakGlassExclusion -Policy $onAfter -BreakGlass $onX.Ctx.BreakGlass -IsBreakGlassPolicy $onX.IsBreakGlassPolicy
-    if ("$($onAfter.state)" -ne 'disabled' -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: $($onAfter.displayName) $($bg.Text)"; Plan = $plan } }
+    if ("$($onAfter.state)" -notin $script:EpsCaNoBlockStates -and $bg.Ok -ne $true) { return @{ Result = 'refused'; Reason = "the break-glass check refuses it: $($onAfter.displayName) $($bg.Text)"; Plan = $plan } }
     $bk = Backup-EpsCaBeforeWrite -ConnectionString $ConnectionString -Policies @($old, $new) -Cause "before the $($Action.ToLower()) of $($pair.TemplateId) ($($pair.OldVersion) / $($pair.NewVersion))" -Actor $Actor
     if (-not $bk.Ok) { return @{ Result = 'refused'; Reason = "$($bk.Reason) - nothing was changed"; Plan = $plan } }
     # CA-TEMPLATES left-over (V1-PARITY, CAnnn.ps1 Dynamic_Using_Tags): both versions share the template's dynamic pilot
@@ -660,7 +691,7 @@ function Invoke-EpsCaRemovePolicies {
         $id = "$($g.Item.policyId)"; $live = $g.Live; $res = $g.Res
         & $Log 'Info' "CA remove: $($live.displayName) (off), requested by $Actor"
         try { Remove-EpsCaPolicyById -PolicyId $id } catch { $res.result = 'failed'; $res.text = "the tenant refused the delete: $($_.Exception.Message)$(if ("$_" -match '(?i)403|Authorization|privilege') { ' (the engine needs Policy.ReadWrite.ConditionalAccess - run the install again to grant it)' })"; continue }
-        $gone = $null -eq (Get-EpsCaLivePolicy -PolicyId $id)
+        $gone = $null -eq (Wait-EpsCaLivePolicy -PolicyId $id -Want gone)
         $p = @{ p = [guid]$id; n = "$($live.displayName)"; bj = ($live | ConvertTo-Json -Compress -Depth 30); res = $(if ($gone) { 'applied' } else { 'applied, differs' }); rt = $(if ($gone) { 'deleted (Remove policies)' } else { 'deleted, but it is still read in the tenant' }); by = $Actor; rs = $Reason
                 rr = "deleted from the tenant (Remove policies)$(if ($Reason) { " - $Reason" })" } +
              (New-EpsJournalParameters -Actor $Actor -Entity 'CaPolicy' -Key $id -Action 'Delete' -Before ([ordered]@{ policyId = $id; displayName = "$($live.displayName)"; state = "$($live.state)" } | ConvertTo-Json -Compress) -After ([ordered]@{ deleted = $gone; pattern = $plan.pattern } | ConvertTo-Json -Compress))

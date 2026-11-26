@@ -4,8 +4,9 @@
     Downloads Entra Policy Suite 2.1 from its GitHub release and starts the install (the launcher is an asset of every
     release: https://github.com/KnudsenMorten/EntraPolicySuite/releases/latest/download/Start-EpsInstall.ps1).
 .DESCRIPTION
-    Takes the latest v2 release of KnudsenMorten/EntraPolicySuite (or -Version), downloads its zip into a new temporary
-    folder, checks it against the SHA-256 digest GitHub publishes for the asset (a mismatch, or no digest, deletes it and stops), unpacks
+    Takes the release Invardia approved and signed for your ring (-Version must be that release, or is left out), downloads
+    its zip from KnudsenMorten/EntraPolicySuite into a new temporary folder, checks GitHub's SHA-256 and Invardia's signed
+    size and SHA-256 (any mismatch deletes it and stops), unpacks
     it and runs its tools/setup/Install-EntraPolicySuite.ps1 with your parameters. v1 (the scripts) is on the v1 branch
     and is never downloaded or changed by this.
     Run it in PowerShell 7 or Azure Cloud Shell:
@@ -56,9 +57,9 @@ param(
     [string]$WebAppAccess,
     [switch]$ConfirmedFromInside,
     [ValidateSet('', 'yes', 'no')][string]$ConnectToInvardia,
-    [ValidatePattern('^$|^2\.\d+\.\d+$')][string]$Version,
-    # test seams (as PIM's launcher): the release lookup, the download, the hand-over
-    [scriptblock]$GetRelease, [scriptblock]$Download, [scriptblock]$RunInstaller,
+    [ValidatePattern('^$|^2\.\d+\.\d+(\.\d{1,4})?$')][string]$Version,
+    # test seams (as PIM's launcher): the release lookup, the download, the hand-over; the signed Community answer + its keys
+    [scriptblock]$GetRelease, [scriptblock]$Download, [scriptblock]$RunInstaller, [scriptblock]$GetSigned, [object[]]$TrustedKeys,
     # the Pro copy's seams (INSTALL-PRO): Invardia's package answer, the sign-in, the package download
     [scriptblock]$ProHttp, [scriptblock]$ProToken, [scriptblock]$ProFetch
 )
@@ -352,10 +353,20 @@ if ($script:EpsInstallChannel -eq 'pro') {
     if (-not $installer) { Write-Host 'The Pro package has no tools/setup/Install-EntraPolicySuite.ps1.' -ForegroundColor Red; exit 3 }
     $env:EPS_INSTALL_CHANNEL = 'pro'   # read by the installer (this process): the update job then asks Invardia for the licence
 } else {
-$rel = & $GetRelease $Version
-# the latest v2 release (the repo's v1.0.x releases stay where they are and are never picked); a pre-release ONLY when it is the
-# ring build asked for (-ReleaseTag, PUB-9 / PUB-10)
-$rel = @($rel | Where-Object { $_.tag_name -match '^v2\.' -and -not $_.draft -and (-not $_.prerelease -or ($ReleaseTag -and $_.tag_name -eq "v$Version-$ReleaseTag")) } | Sort-Object { [version]($_.tag_name.TrimStart('v') -replace '[^0-9.].*$', '') } -Descending)[0]
+# The first install is checked like every update: the release Invardia SIGNED for the ring (the anonymous Community channel,
+# the verifier inlined below with Invardia's embedded keys), then the download's size + SHA-256 the signed ones. Only that
+# release installs (Invardia 2026-11-24): an older -Version is refused - install the current release, it updates by itself.
+$cr = if ($ReleaseTag -match '^ring([0-2])$') { [int]$Matches[1] } elseif ("$Ring" -match '^[0-3]$') { [int]$Ring } else { 3 }
+if (-not $GetSigned) { $GetSigned = { param($r) try { $w = Invoke-WebRequest -Uri "https://invardia.com/api/updates/entrapolicysuite/community/$r" -Headers @{ 'User-Agent' = 'EntraPolicySuite-install' } -UseBasicParsing -TimeoutSec 60 -SkipHttpErrorCheck; @{ status = [int]$w.StatusCode; body = $(try { "$($w.Content)" | ConvertFrom-Json } catch { $null }) } } catch { @{ status = 0; body = $null } } } }
+$sg = & $GetSigned $cr
+$sv = if ([int]$sg.status -eq 200 -and $sg.body) { Test-InvardiaManifest -Response $sg.body -TrustedKeys $(if ($TrustedKeys) { $TrustedKeys } else { $script:InvardiaUpdateTrustedKeys }) -Kind 'community' -Product 'entrapolicysuite' -Ring $cr } else { @{ ok = $false; reason = "the release Invardia signed for ring $cr could not be read (HTTP $([int]$sg.status))" } }
+if (-not $sv.ok) { Write-Host "Entra Policy Suite: $($sv.reason) - nothing run." -ForegroundColor Red; exit 3 }
+if ($Version -and $Version -ne $sv.version) { Write-Host "Version $Version is not the release Invardia signed for ring $cr ($($sv.version)). Install the current release (leave out -Version); it updates by itself from then on." -ForegroundColor Red; exit 3 }
+$want = $sv.version
+$rel = & $GetRelease $want
+# exactly the signed v2 release (the repo's v1.0.x releases are never picked); a pre-release ONLY when it is the ring build
+# asked for (-ReleaseTag, PUB-9 / PUB-10)
+$rel = @($rel | Where-Object { $_.tag_name -match '^v2\.' -and -not $_.draft -and ($_.tag_name -replace '-ring[0-2]$', '') -eq "v$want" -and (-not $_.prerelease -or ($ReleaseTag -and $_.tag_name -eq "v$want-$ReleaseTag")) } | Sort-Object { [version]($_.tag_name.TrimStart('v') -replace '[^0-9.].*$', '') } -Descending)[0]
 if (-not $rel) { Write-Host "No Entra Policy Suite v2 release found in $repo$(if ($Version) { " for $Version" })." -ForegroundColor Red; exit 3 }
 $asset = @($rel.assets | Where-Object { $_.name -match '^EntraPolicySuite-v2[0-9A-Za-z.+-]*\.zip$' })[0]
 if (-not $asset) { Write-Host "Release $($rel.tag_name) has no EntraPolicySuite-v2*.zip asset." -ForegroundColor Red; exit 3 }
@@ -371,7 +382,13 @@ if (-not $published -or $got -ne $published) {
     Write-Host "The download does not match the release's published SHA-256 ($(if ($published) { $published } else { 'none published' }) vs $got) - deleted, nothing run." -ForegroundColor Red
     exit 3
 }
-Write-Host "Release $($rel.tag_name): $($asset.name), SHA-256 $got (matches the release)"
+$ac = Test-InvardiaArchiveFile -Path $zip -ExpectedSha256 $sv.sha256 -ExpectedSize $sv.size
+if (-not $ac.ok) {
+    [IO.Directory]::Delete($dir, $true)
+    Write-Host "The download is not the release Invardia signed ($($ac.reason)) - deleted, nothing run." -ForegroundColor Red
+    exit 3
+}
+Write-Host "Release $($rel.tag_name): $($asset.name), SHA-256 $got (signed by Invardia for ring $cr, size and SHA-256 checked)"
 Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
 $installer = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'Install-EntraPolicySuite.ps1' -File | Select-Object -First 1
 if (-not $installer) { Write-Host 'The release has no tools/setup/Install-EntraPolicySuite.ps1.' -ForegroundColor Red; exit 3 }
@@ -379,6 +396,6 @@ if (-not $installer) { Write-Host 'The release has no tools/setup/Install-EntraP
 
 $pass = @{ TenantId = $TenantId; SubscriptionId = $SubscriptionId }
 # the installer's parameters as given (the launcher's own - the version and the test seams - stay here)
-foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'TenantId', 'SubscriptionId', 'Version', 'ReleaseTag', 'GetRelease', 'Download', 'RunInstaller', 'ProHttp', 'ProToken', 'ProFetch', 'WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable', 'ProgressAction') { $pass[$k] = $PSBoundParameters[$k] } }
+foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'TenantId', 'SubscriptionId', 'Version', 'ReleaseTag', 'GetRelease', 'Download', 'RunInstaller', 'GetSigned', 'TrustedKeys', 'ProHttp', 'ProToken', 'ProFetch', 'WhatIf', 'Confirm', 'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction', 'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable', 'ProgressAction') { $pass[$k] = $PSBoundParameters[$k] } }
 if ($what) { $pass.WhatIf = $true }
 exit (& $RunInstaller $installer.FullName $pass)

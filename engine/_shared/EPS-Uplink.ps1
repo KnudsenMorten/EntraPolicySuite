@@ -59,7 +59,9 @@ $script:EpsUplinkLists = @{
     JobResult       = @('succeeded', 'failed', 'stopped', 'running')
     UpdaterResult   = @('succeeded', 'failed', 'nothing-to-do')
     MailJob         = @('present', 'missing')
-    MailRestriction = @('verified', 'not-verified', 'failed')
+    MailMode = @('graph', 'smtp')   # 2.1.74 (Invardia 2026-11-26, soft): sharedMailbox goes as graph
+    MailErrorCode = @('denied', 'not-found', 'throttled', 'server', 'auth', 'network', 'other')   # 2.1.74, soft
+    MailRestriction = @('verified', 'pending', 'not-verified', 'failed')   # 'pending': ONE-SENDER-1 D on the wire (Invardia 4bf16e37, 2026-11-26)
     SignInLayer     = @('signin-front', 'easyauth', 'none')
     # gaps (a) / (b) of the deterministic-failure lesson (Invardia 2026-11-08): eps.job.repeat-failure, eps.uplink.refused -
     # the same words must be in Invardia's ALERT_CATALOG.entrapolicysuite (packages/core/src/uplinkalert.ts)
@@ -381,10 +383,24 @@ function New-EpsUplinkHeartbeat {
             if ($rix) { $o.Update.runningImages = @($rix) }
         }
         if ($Facts.Mail) {
-            # mailJob + restriction are required by the contract; the heartbeat reports only what the job itself has
-            # read at run time, so restriction is the contract's 'not-verified' value - never a guess of 'verified'
-            $m = [ordered]@{ mailJob = $(if ("$($Facts.Mail.Mode)" -and "$($Facts.Mail.Mode)" -ne 'none') { 'present' } else { 'missing' }); restriction = 'not-verified' }
+            # mailJob + restriction are required by the contract. ONE-SENDER-1 D (2.1.72): restriction = the engine's own
+            # last check of its send right - 'verified' only when that check said so FOR THE CURRENT SENDER (Get-EpsMailDrift),
+            # 'failed' when it failed, else 'not-verified' (never checked, pending - Exchange's lag - or an SMTP relay)
+            $chk = $Facts.Mail.Check
+            $dr = if (Get-Command Get-EpsMailDrift -ErrorAction SilentlyContinue) { Get-EpsMailDrift -Check $chk -Sender "$($Facts.Mail.Sender)" -Mode "$($Facts.Mail.Mode)" -ProvenFrom "$($Facts.Mail.ProvenFrom)" } else { @{ Drift = $true } }
+            # 2.1.73 (Invardia 4bf16e37): 'pending' goes as pending (Exchange's lag, up to 2 h), plus the one sender and the
+            # drift flag (soft fields: a bad value drops that field alone)
+            $same = $chk -and "$($chk.Sender)" -eq "$($Facts.Mail.Sender)"
+            $rs = if ($same -and "$($chk.State)" -eq 'verified' -and -not $dr.Drift) { 'verified' } elseif ($chk -and "$($chk.State)" -eq 'failed') { 'failed' } elseif ($same -and "$($chk.State)" -eq 'pending') { 'pending' } else { 'not-verified' }
+            $m = [ordered]@{ mailJob = $(if ("$($Facts.Mail.Mode)" -and "$($Facts.Mail.Mode)" -ne 'none') { 'present' } else { 'missing' }); restriction = (Select-EpsUplinkEnum $rs 'MailRestriction') }
+            if ("$($Facts.Mail.Sender)" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { $m.sender = "$($Facts.Mail.Sender)" }
+            # drift: sharedMailbox = the last check is for another sender, or it did not confirm the right; smtp (ONE-SENDER-1 A1) = the
+            # relay's proven From differs from the sender key (the proven From stays the From). The same bool in both modes.
+            if ("$($Facts.Mail.Mode)" -in 'sharedMailbox', 'smtp') { $m.drift = [bool]$dr.Drift }
             $ms = ConvertTo-EpsUplinkIso $Facts.Mail.LastSentUtc; if ($ms) { $m.lastSentUtc = $ms }
+            # 2.1.74 (Invardia 2026-11-26, soft fields): the mode, and the last FAILED send with its closed code
+            $mm = Select-EpsUplinkEnum $(switch ("$($Facts.Mail.Mode)") { 'sharedMailbox' { 'graph' } 'smtp' { 'smtp' } default { '' } }) 'MailMode'; if ($mm) { $m.mode = $mm }
+            $mf = ConvertTo-EpsUplinkIso $Facts.Mail.LastFailedUtc; if ($mf) { $m.lastFailedUtc = $mf; $mc = Select-EpsUplinkEnum "$($Facts.Mail.LastErrorCode)" 'MailErrorCode'; if ($mc) { $m.lastErrorCode = $mc } }
             $o.Mail = $m
         }
         $layer = if ($Facts.SignIn) { Select-EpsUplinkEnum $Facts.SignIn.Layer 'SignInLayer' }
@@ -403,11 +419,11 @@ function New-EpsUplinkHeartbeat {
         if ([datetime]::TryParse("$($Facts.Database.StatsRefreshedUtc)", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$sr)) { $db.statsRefreshedUtc = $sr.ToString('yyyy-MM-ddTHH:mm:ssZ') }
         if ($db.Count) { $o.Database = $db }
         # OPEN-01 auto-check #4 (Invardia 2026-11-05): what the support-access job APPLIED and read back - level none |
-        # read | troubleshoot; adminUntil = the end of the open session it gave admin for (null = no admin now; the job
+        # troubleshoot (read) | setup; adminUntil = the end of the open session it gave admin for (null = no admin now; the job
         # never gives more than 8 h); readUser = the read user exists (read back); checkedUtc = its last run. Left out when
         # the job never ran (no row) - never a guessed value.
         $sa = $Facts.SupportAccess
-        if ($sa -and "$($sa.Level)" -in 'none', 'read', 'troubleshoot') {
+        if ($sa -and "$($sa.Level)" -in 'none', 'read', 'troubleshoot', 'setup') {
             $au = if ($sa.AdminNow -eq $true) { ConvertTo-EpsUplinkIso $sa.SessionUntil } else { $null }
             $x = [ordered]@{ level = "$($sa.Level)"; adminUntil = $au; readUser = ($sa.ReadUser -eq $true) }
             $ck = ConvertTo-EpsUplinkIso $sa.CheckedAtUtc; if ($ck) { $x.checkedUtc = $ck }
@@ -633,7 +649,9 @@ function Get-EpsUplinkHeartbeatFacts {
         }
     } catch { }
     $mailMode = try { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Mail.Mode' -Default 'none')" } catch { $null }
-    $lastMail = & $q 'SELECT MAX(t) FROM (SELECT MAX(AlertedAtUtc) AS t FROM eps.TamperEvent UNION ALL SELECT MAX(AlertedAtUtc) FROM eps.CaFinding) x'
+    # 2.1.74: the last send of ANY mail (Save-EpsMailOutcome), else - an install before 2.1.74's first send - the last alert
+    $lastMail = & $q "SELECT MAX(t) FROM (SELECT MAX(AlertedAtUtc) AS t FROM eps.TamperEvent UNION ALL SELECT MAX(AlertedAtUtc) FROM eps.CaFinding UNION ALL SELECT TRY_CONVERT(DATETIME2, Value, 127) FROM eps.UplinkState WHERE Name = N'mail.lastSent') x"
+    $lastFail = try { $j = "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'mail.lastFailed'")"; if ($j) { $j | ConvertFrom-Json } } catch { $null }
     @{
         Counts = $counts
         DocsVersion = (Get-EpsDocsVersion)
@@ -643,7 +661,14 @@ function Get-EpsUplinkHeartbeatFacts {
         # while it is the LATEST update run and under 26 h old - so it shows in Invardia's fleet view, never fails silently
         # UPD-07 (2.1.2): the updater's LAST run (time + outcome) - the alignment check "the updater reaches every install"
         Update = @{ Installed = $Version; LastRun = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) Status, Applied, EndedAtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' AND EndedAtUtc IS NOT NULL ORDER BY StartedAtUtc DESC")[0] } catch { $null }); Waited = $(try { @(Invoke-EpsSql -ConnectionString $ConnectionString -Query "SELECT TOP (1) CASE WHEN HeldReason LIKE N'%waited % min for running jobs%' AND StartedAtUtc > DATEADD(HOUR, -26, SYSUTCDATETIME()) THEN HeldReason END AS Text, EndedAtUtc AS AtUtc FROM eps.Run WHERE Job = N'Update' AND Status <> N'Running' ORDER BY StartedAtUtc DESC")[0] } catch { $null }); RunningImages = $(try { "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'update.runningImages'")" } catch { '' }) }
-        Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail }) } })
+        # ONE-SENDER-1 D: the engine's last check of its send right (eps.UplinkState 'mail.restriction', the Backup job and
+        # the first send of a process) and the one key it must match
+        Mail = $(if ($null -ne $mailMode) { @{ Mode = $mailMode; LastSentUtc = $(if ($lastMail -isnot [DBNull]) { $lastMail })
+                    Sender = $(try { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Mail.Sender' -Default '')" } catch { '' })
+                    # ONE-SENDER-1 A1: the relay's proven From (smtp mode) - while it differs from Mail.Sender it stays the From (drift)
+                    ProvenFrom = $(try { "$(Get-EpsSetting -ConnectionString $ConnectionString -Name 'Mail.SmtpFrom' -Default '')" } catch { '' })
+                    Check = $(try { $j = "$(& $q "SELECT Value FROM eps.UplinkState WHERE Name = N'mail.restriction'")"; if ($j) { $j | ConvertFrom-Json } } catch { $null })
+                    LastFailedUtc = $(if ($lastFail) { "$($lastFail.at)" }); LastErrorCode = $(if ($lastFail) { "$($lastFail.code)" }) } })
         # OPEN-15: the running web app through ARM when the engine may read it; else what the install read back from the
         # running app at its last deploy (eps.UplinkState signin.front) - the engine holds no Azure right by default
         SignIn = (Get-EpsUplinkSignIn -Query $q)
@@ -1173,8 +1198,8 @@ function ConvertFrom-EpsUplinkSupportAnswer {
 function ConvertFrom-EpsUplinkConsent {
     <#
       PURE. framework SUPPORT ACCESS point 2 (owner 2026-11-04 "none, read, troubleshoot/setup"): `supportConsent: { level,
-      appId? }` in the heartbeat answer. level 'troubleshoot' | 'setup' -> 'troubleshoot' (one level: read + admin only
-      during an open session); 'read' -> 'read'; anything else (incl. 'none' and unknown values) -> 'none'. appId only as a
+      appId? }` in the heartbeat answer. level 'setup' -> 'setup' (read + admin only during an open
+      session); 'troubleshoot' | 'read' -> 'troubleshoot' (read only - the shared levels, Invardia 2026-11-24); anything else (incl. 'none' and unknown values) -> 'none'. appId only as a
       lower-case GUID. $null = the answer carries no consent (keep the last one).
     #>
     param($Body)
@@ -1183,7 +1208,7 @@ function ConvertFrom-EpsUplinkConsent {
     $c = $Body.supportConsent
     if ($null -eq $c) { return $null }
     $l = "$($c.level)".Trim().ToLowerInvariant()
-    $level = if ($l -in 'troubleshoot', 'setup') { 'troubleshoot' } elseif ($l -eq 'read') { 'read' } else { 'none' }
+    $level = if ($l -eq 'setup') { 'setup' } elseif ($l -in 'troubleshoot', 'read') { 'troubleshoot' } else { 'none' }
     $app = "$($c.appId)".Trim().ToLowerInvariant(); if ($app -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { $app = '' }
     @{ Level = $level; AppId = $app }
 }
@@ -1191,14 +1216,14 @@ function ConvertFrom-EpsUplinkConsent {
 function Test-EpsSupportWithinConsent {
     <#
       PURE. A session can never exceed the consent (SUPPORT ACCESS point 2): an OPEN session is kept only while the kept
-      consent ('<level>|<appId>') is troubleshoot; else it is recorded as a refused open (state 'refused', the reason said).
+      consent ('<level>|<appId>') is setup; else it is recorded as a refused open (state 'refused', the reason said).
     #>
     param([Parameter(Mandatory)]$State, [AllowEmptyString()][string]$Consent)
     if ($State.State -ne 'open') { return $State }
     $lvl = ("$Consent".Split('|'))[0]
-    if ($lvl -eq 'troubleshoot') { return $State }
+    if ($lvl -eq 'setup') { return $State }
     # treated as CLOSED (an earlier open one closes too), with the refusal audited by Save-EpsSupportState
-    $why = "the customer's support consent is '$(if ($lvl) { $lvl } else { 'not received yet' })', not troubleshoot/setup"
+    $why = "the customer's support consent is '$(if ($lvl) { $lvl } else { 'not received yet' })', not setup"
     @{ State = 'closed'; EnvironmentId = $State.EnvironmentId; Level = ''; Reason = ''; TicketNumber = ''; OpenedBy = ''; MaxUntilUtc = $null
        Refused = @{ Why = $why; TicketNumber = $State.TicketNumber; OpenedBy = $State.OpenedBy; Level = $State.Level } }
 }

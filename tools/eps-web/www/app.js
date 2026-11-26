@@ -78,27 +78,43 @@
   // a notice people SEE (owner 2026-11-02: "when i click adopt, nothing happens" - it was applied a minute later, and
   // the only sign was the status line at the bottom): what was sent, then what the engine did
   var pendingReqs = {};
+  // QUIET-BAR (owner 2026-11-25, his choice "Quiet bar": "the popup that comes up when i make a change in EPS is
+  // anonynoying and worthless. mesasge shows api cmdlets which makes do sense for user. and when i close it, it comes up
+  // again"): while a change waits for the engine the bar shows ONE plain line (QUIET_SENT), never an API method or path;
+  // once closed it stays closed until the next change; the result is shown only in the status line at the bottom
+  var noticeClosed = false;
+  var QUIET_SENT = 'Sent - the engine applies it within 5 minutes';
   function notice(t, kind) {
     var b = document.getElementById('noticeBar'); if (!b) { status(t); return; }
     document.getElementById('noticeText').textContent = t; b.className = 'bar ' + (kind === 'warn' ? 'bar-warn' : 'bar-info'); b.hidden = !t;
-    document.getElementById('noticeClose').onclick = function () { b.hidden = true; };
+    document.getElementById('noticeClose').onclick = function () { b.hidden = true; noticeClosed = true; };
+    status(t);
+  }
+  // the follow-up of a pending change: the bar only while it is open, the status line always
+  function followNotice(t) {
+    var b = document.getElementById('noticeBar');
+    if (b && !noticeClosed) { notice(t); return; }
+    status(t);
+  }
+  // the result: the status line only; the bar goes away
+  function resultNotice(t) {
+    var b = document.getElementById('noticeBar'); if (b) b.hidden = true;
     status(t);
   }
   // BULK-1 (owner 2026-11-02: "wording is wrong 'the engine applies them...'"): the engine takes changes at its next
   // check (every 5 minutes) - say so, show how many are applied, and follow them all with ONE call per round
   var pend = { total: 0, done: 0, failed: [], since: null, timer: null, rounds: 0, last: '' };
-  var ENGINE_WAIT = 'The engine picks changes up at its next check (every 5 minutes) and applies them; this bar follows them.';
   function pendingText() {
     var left = Object.keys(pendingReqs).length; if (!left) return '';
-    if (pend.total === 1) return 'Sent: ' + pendingReqs[Object.keys(pendingReqs)[0]] + '. ' + ENGINE_WAIT;
-    return 'Sent ' + fmtNum(pend.total) + ' changes: ' + fmtNum(pend.done) + ' applied, ' + fmtNum(left) + ' waiting' + (pend.failed.length ? ', ' + fmtNum(pend.failed.length) + ' not applied' : '') + '. ' + ENGINE_WAIT;
+    return QUIET_SENT;
   }
-  function watchRequest(id, label, at) {
+  // -Resumed: a change taken up again after a reload - followed in the status line, the bar stays as it is
+  function watchRequest(id, label, at, resumed) {
     if (!Object.keys(pendingReqs).length) { pend.total = 0; pend.done = 0; pend.failed = []; pend.rounds = 0; pend.since = new Date(Date.now() - 120000).toISOString(); }
     // a request taken up again after a reload is older: read from its own time
     if (at) { var t = new Date(new Date(at).getTime() - 60000); if (!isNaN(t) && t.toISOString() < pend.since) pend.since = t.toISOString(); }
     pendingReqs[String(id).toLowerCase()] = label || 'your change'; pend.total++;
-    notice(pendingText());
+    if (resumed) status(pendingText()); else { noticeClosed = false; notice(pendingText()); }
     if (!pend.timer) pend.timer = setTimeout(pollRequests, 4000);
   }
   function pollRequests() {
@@ -115,13 +131,13 @@
   function followUp() {
     var left = Object.keys(pendingReqs).length;
     if (!left) {
-      if (pend.failed.length) notice(fmtNum(pend.total - pend.failed.length) + ' of ' + fmtNum(pend.total) + ' applied; ' + fmtNum(pend.failed.length) + ' not: ' + pend.failed.slice(0, 3).join('; ') + (pend.failed.length > 3 ? ' ...' : ''), 'warn');
-      else notice(pend.total === 1 ? 'Done - the engine applied it' + (pend.last ? ': ' + pend.last : '.') : 'Done - the engine applied all ' + fmtNum(pend.total) + ' changes.');
+      if (pend.failed.length) resultNotice(fmtNum(pend.total - pend.failed.length) + ' of ' + fmtNum(pend.total) + ' applied; ' + fmtNum(pend.failed.length) + ' not: ' + pend.failed.slice(0, 3).join('; ') + (pend.failed.length > 3 ? ' ...' : ''));
+      else resultNotice(pend.total === 1 ? 'Done - the engine applied it' + (pend.last ? ': ' + pend.last : '.') : 'Done - the engine applied all ' + fmtNum(pend.total) + ' changes.');
       render(); return;
     }
-    notice(pendingText());
+    followNotice(pendingText());
     if (++pend.rounds < 120) pend.timer = setTimeout(pollRequests, 10000);   // followed for 20 minutes
-    else { notice(fmtNum(left) + ' change(s) still waiting for the engine - Jobs shows the requests.', 'warn'); pendingReqs = {}; }
+    else { resultNotice(fmtNum(left) + ' change(s) still waiting for the engine - Jobs shows the requests.'); pendingReqs = {}; }
   }
   function afterAction(r, label) {
     if (r && r.requestIds) {
@@ -140,7 +156,8 @@
       (d.rows || []).forEach(function (q) {
         if (q.Job !== 'Config' || ['Pending', 'Dispatched', 'Running'].indexOf(q.Status) < 0) return;
         var mm = /^\/api\/ca\/monitors\/(.+)$/.exec(q.Path || '');
-        watchRequest(q.RequestId, mm ? (q.Method === 'DELETE' ? 'Delete monitor ' : 'Save monitor ') + decodeURIComponent(mm[1]) : 'your change' + (q.Path ? ' (' + q.Method + ' ' + q.Path + ')' : ''), q.RequestedAtUtc);
+        // QUIET-BAR: never the API method or path in what a person reads
+        watchRequest(q.RequestId, mm ? (q.Method === 'DELETE' ? 'Delete monitor ' : 'Save monitor ') + decodeURIComponent(mm[1]) : 'your change', q.RequestedAtUtc, true);
       });
     }).catch(function () { /* the bar is a help, not a must */ });
   }

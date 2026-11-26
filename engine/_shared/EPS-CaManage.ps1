@@ -260,6 +260,9 @@ function Compare-EpsCaPolicyToTemplate {
 }
 
 # ---- the break-glass exclusion (DESIGN §5.1a "every CA policy excludes the break-glass group except the break-glass policy")
+# final round A #3: a policy that is off or report-only blocks no sign-in, so the break-glass check refuses a write only when
+# the result is enforced (any other state, or none, counts as enforced) - CA095 under Manual_Assignment_Simple deploys at Initial
+$script:EpsCaNoBlockStates = @('disabled', 'enabledForReportingButNotEnforced')
 function Test-EpsCaBreakGlassExclusion {
     <#
       -BreakGlass @{ GroupIds (the break-glass group(s)); RelatedGroupIds (every break-glass group, the break-glass
@@ -272,8 +275,49 @@ function Test-EpsCaBreakGlassExclusion {
     $gids = & $low $BreakGlass.GroupIds; $rel = & $low (@($BreakGlass.RelatedGroupIds) + @($BreakGlass.GroupIds)); $acc = @($BreakGlass.Accounts | Where-Object { $_.Id })
     $aids = & $low ($acc | ForEach-Object { $_.Id })
     $iu = & $low (Get-EpsCaList $Policy 'conditions.users.includeUsers'); $ig = & $low (Get-EpsCaList $Policy 'conditions.users.includeGroups')
-    if ($IsBreakGlassPolicy -or @($iu | Where-Object { $aids -contains $_ }).Count -or @($ig | Where-Object { $rel -contains $_ }).Count) {
-        return @{ Ok = $true; Exempt = $true; Text = 'the break-glass policy itself (it targets the break-glass accounts)'; Missing = @() }
+    # EPS full review 2026-11-26 (engine reviewer 1 #1, HIGH, lock-out): the exemption was given when the policy matched the
+    # break-glass template by NAME, or included ANY break-glass account or group - whatever else it targeted. A break-glass
+    # policy edited to All users + block, or any policy with one break-glass account + Global Administrator + block, then
+    # passed and could lock out the other break-glass accounts and every admin. Now it is judged on the RESULT: exempt only
+    # when it targets NOTHING BUT break-glass identities - no All users, no guests, no directory roles; every included user a
+    # break-glass account; every included group a break-glass group (a break-glass TEMPLATE may also target its own pilot
+    # group at the pilot stages). Anything broader gets the normal check: it must exclude the break-glass group or accounts.
+    $ir = & $low (Get-EpsCaList $Policy 'conditions.users.includeRoles')
+    $guests = $Policy.conditions.users.includeGuestsOrExternalUsers
+    # 2.1.73 two-agent check (reviewer B #1 HIGH, #2 MEDIUM): only a break-glass TEMPLATE can be exempt (a policy without one
+    # that targets only the break-glass accounts gets the normal check), its groups must be break-glass groups or the
+    # break-glass templates' own pilot groups BY ID (never any group because of a name), and a block must keep the
+    # template's exclusion of the trusted locations - so no policy can block every break-glass account everywhere
+    $pil = & $low $BreakGlass.PilotGroupIds
+    $broad = @($iu | Where-Object { $_ -in 'all', 'guestsorexternalusers' -or $aids -notcontains $_ }).Count -or $ir.Count -or $null -ne $guests -or
+             @($ig | Where-Object { $rel -notcontains $_ -and $pil -notcontains $_ }).Count
+    # OWNER 2026-11-26 (relayed by Invardia, on this fix): "break glass must access from any locations", then "sorry ca095
+    # blocks mfa auth from outside, that is by design. no chg". So an exempt break-glass template may only ask for what a
+    # break-glass account can meet - MFA or an authentication strength (the FIDO templates) - and the ONE block allowed is
+    # CA095's design: outside the trusted locations (excludeLocations AllTrusted), and only for the MFA-method break-glass
+    # accounts (a block that names a FIDO break-glass account, or blocks everywhere, is refused). Any other grant (compliant
+    # device, domain joined, an approved app, terms of use, custom controls) gets the normal check. (Two-agent check B #1.)
+    # (Get-EpsCaList returns its list wrapped - ", @(...)" - so it is assigned first: @(Get-EpsCaList ...) would be ONE item,
+    # the list itself, and "-contains 'block'" was never true that way)
+    $cl = Get-EpsCaList $Policy 'grantControls.builtInControls'
+    $controls = @($cl | ForEach-Object { "$_".ToLowerInvariant() })
+    $blocks = $controls -contains 'block'
+    $xl = Get-EpsCaList $Policy 'conditions.locations.excludeLocations'
+    $trustedOut = @($xl) -contains 'AllTrusted'
+    # 2.1.73 two-agent check B (final round): a block may name ONLY MFA-method accounts (an account without a method counts as
+    # not MFA) and only the MFA break-glass group(s) or a pilot group - never the main or the FIDO break-glass group (#1, #3);
+    # an authentication strength may not include an MFA-method account or the MFA group: they could not meet it (#2)
+    $mfaG = & $low $BreakGlass.MfaGroupIds; $bpil = & $low $BreakGlass.BlockPilotGroupIds
+    $incAcc = @($acc | Where-Object { $iu -contains "$($_.Id)".ToLowerInvariant() })
+    $fidoBlocked = $blocks -and (@($incAcc | Where-Object { "$($_.Method)" -ine 'MFA' }).Count -or @($ig | Where-Object { $mfaG -notcontains $_ -and $bpil -notcontains $_ }).Count)
+    $strength = Get-EpsCaV $Policy 'grantControls.authenticationStrength'
+    # final round B #1: a strength may name only FIDO-method accounts (no method = not FIDO) and only the FIDO break-glass
+    # group(s) or the strength templates' unshared pilot groups - never the main group or a pilot group the MFA templates share
+    $fidoG = & $low $BreakGlass.FidoGroupIds; $spil = & $low $BreakGlass.StrengthPilotGroupIds
+    $mfaStrength = $null -ne $strength -and (@($incAcc | Where-Object { "$($_.Method)" -ine 'FIDO' }).Count -or @($ig | Where-Object { $fidoG -notcontains $_ -and $spil -notcontains $_ }).Count)
+    $grantOk = -not @($controls | Where-Object { $_ -notin 'mfa', 'block' }).Count -and -not (Get-EpsCaV $Policy 'grantControls.termsOfUse') -and -not (Get-EpsCaV $Policy 'grantControls.customAuthenticationFactors')
+    if ($IsBreakGlassPolicy -and -not $broad -and ($iu.Count -or $ig.Count) -and $grantOk -and -not $mfaStrength -and (-not $blocks -or ($trustedOut -and -not $fidoBlocked))) {
+        return @{ Ok = $true; Exempt = $true; Text = 'a break-glass policy (it targets only the break-glass accounts)'; Missing = @() }
     }
     # TRUST-1 point 2 (Invardia 2026-11-12 Q1; review: never hide a DEFINITE lock-out): a configured account whose id could
     # not be resolved cannot be compared. A resolved account the policy does NOT exclude is a lock-out risk whatever the
@@ -619,7 +663,7 @@ function Get-EpsCaEditPlan {
     }
     $bg = Test-EpsCaBreakGlassExclusion -Policy $after -BreakGlass $BreakGlass -IsBreakGlassPolicy $IsBreakGlassPolicy
     $plan.breakGlass = [ordered]@{ ok = $bg.Ok; exempt = [bool]$bg.Exempt; text = $bg.Text; missing = @($bg.Missing) }
-    if ($Mode -eq 'Edit' -and $plan.stateAfter -ne 'disabled' -and $bg.Ok -ne $true) { return & $refuse "the break-glass check refuses it: $($bg.Text)" }
+    if ($Mode -eq 'Edit' -and "$($plan.stateAfter)" -notin $script:EpsCaNoBlockStates -and $bg.Ok -ne $true) { return & $refuse "the break-glass check refuses it: $($bg.Text)" }
     if ($Mode -eq 'Clone' -and $bg.Ok -eq $false) { return & $refuse "the break-glass check refuses it: the copy $($bg.Text)" }
     $plan
 }
@@ -749,7 +793,7 @@ function Get-EpsCaDeployPlan {
     $acc = @($Ctx.BreakGlass.Accounts | Where-Object { $_ } | ForEach-Object { "$($_.Upn)".ToLowerInvariant() })
     $xg = @(Get-EpsCaList $body 'conditions.users.excludeGroups' | ForEach-Object { "$_".ToLowerInvariant() }); $xu = @(Get-EpsCaList $body 'conditions.users.excludeUsers' | ForEach-Object { "$_".ToLowerInvariant() })
     $bgOk = [bool]$t.breakGlassPolicy -or @($xg | Where-Object { $bgNames -contains $_ }).Count -or ($acc.Count -and -not @($acc | Where-Object { $xu -notcontains $_ }).Count)
-    $plan.breakGlass = [ordered]@{ ok = [bool]$bgOk; exempt = [bool]$t.breakGlassPolicy; text = $(if ($t.breakGlassPolicy) { 'the break-glass policy itself (it targets the break-glass accounts)' } elseif ($bgOk) { 'excludes the break-glass group / accounts' } else { 'does NOT exclude the break-glass group or accounts - a lock-out risk' }) }
+    $plan.breakGlass = [ordered]@{ ok = [bool]$bgOk; exempt = [bool]$t.breakGlassPolicy; text = $(if ($t.breakGlassPolicy) { 'a break-glass template - the engine checks the result before it writes: it may target only the break-glass accounts and groups' } elseif ($bgOk) { 'excludes the break-glass group / accounts' } else { 'does NOT exclude the break-glass group or accounts - a lock-out risk' }) }
     if (-not $bgOk) { return & $no "the break-glass check refuses it: the new policy $($plan.breakGlass.text)" }
     $plan.rows = @(Compare-EpsCaCanonical -Before ([ordered]@{}) -After (ConvertTo-EpsCaCanonical $body) | ForEach-Object { [ordered]@{ path = $_.path; value = $_.after } })
     $plan.notes.Add($(if ($Stage -eq 'Initial') { 'It is created OFF (v1''s Initial_Setup): nobody is affected until you move it to Pilot1.' } else { 'It is created report-only for the pilot group (Pilot1): evaluated and logged, nothing enforced.' }))
@@ -1139,23 +1183,23 @@ function Get-EpsCaContext {
     $tg = $s.TargetGroups
     $ctx = @{ Method = $s.Method; TargetGroups = $tg; AuthStrength = $s.AuthStrength; NamedLocation = $s.NamedLocation }
     # the break-glass group(s): the target group the templates exclude, both its Dynamic and its Assigned name
-    $bgNames = @{}; $relNames = @{}
+    $bgNames = @{}; $relNames = @{}; $mfaNames = @{}; $fidoNames = @{}
     foreach ($role in @($Catalog.groupRoles.Keys) + @($tg.Keys) | Select-Object -Unique) {
         if ($role -notlike 'BreakGlassAccounts*') { continue }
         $g = if ($tg[$role]) { $tg[$role] } else { $Catalog.groupRoles[$role] }
-        foreach ($n in @($g.Dynamic, $g.Assigned) | Where-Object { $_ }) { $relNames[$n] = 1; if ($role -eq $Catalog.breakGlassGroupRole) { $bgNames[$n] = 1 } }
+        foreach ($n in @($g.Dynamic, $g.Assigned) | Where-Object { $_ }) { $relNames[$n] = 1; if ($role -eq $Catalog.breakGlassGroupRole) { $bgNames[$n] = 1 }; if ($role -like '*_MFA_*') { $mfaNames[$n] = 1 }; if ($role -like '*_FIDO_*') { $fidoNames[$n] = 1 } }
     }
-    $gids = [System.Collections.Generic.List[string]]::new(); $rel = [System.Collections.Generic.List[string]]::new()
+    $gids = [System.Collections.Generic.List[string]]::new(); $rel = [System.Collections.Generic.List[string]]::new(); $mfa = [System.Collections.Generic.List[string]]::new(); $fido = [System.Collections.Generic.List[string]]::new()
     foreach ($n in @($relNames.Keys)) {
         if ($NoGraph) {
             # CA-EDIT: the preview knows the break-glass group(s) by the names the engine stored (no Graph)
-            foreach ($k in @($Names.Keys)) { $x = $Names[$k]; if ($x.Kind -eq 'group' -and "$($x.Name)" -ieq $n) { $gid = ($k -split '\|', 2)[1]; $rel.Add($gid); if ($bgNames.ContainsKey($n)) { $gids.Add($gid) } } }
+            foreach ($k in @($Names.Keys)) { $x = $Names[$k]; if ($x.Kind -eq 'group' -and "$($x.Name)" -ieq $n) { $gid = ($k -split '\|', 2)[1]; $rel.Add($gid); if ($bgNames.ContainsKey($n)) { $gids.Add($gid) }; if ($mfaNames.ContainsKey($n)) { $mfa.Add($gid) }; if ($fidoNames.ContainsKey($n)) { $fido.Add($gid) } } }
             continue
         }
         try {
             foreach ($g in @(Invoke-EpsGraph -Path "v1.0/groups?`$filter=displayName eq '$($n.Replace("'", "''"))'&`$select=id,displayName,membershipRule" -All)) {
                 $Names["group|$("$($g.id)".ToLowerInvariant())"] = @{ Kind = 'group'; Name = [string]$g.displayName; Detail = $(if ($g.membershipRule) { [string]$g.membershipRule }) }
-                $rel.Add([string]$g.id); if ($bgNames.ContainsKey($n)) { $gids.Add([string]$g.id) }
+                $rel.Add([string]$g.id); if ($bgNames.ContainsKey($n)) { $gids.Add([string]$g.id) }; if ($mfaNames.ContainsKey($n)) { $mfa.Add([string]$g.id) }; if ($fidoNames.ContainsKey($n)) { $fido.Add([string]$g.id) }
             }
         } catch { & $note "break-glass group '$n' could not be read: $($_.Exception.Message)" }
     }
@@ -1167,8 +1211,38 @@ function Get-EpsCaContext {
         $acc.Add(@{ Upn = $a.Upn; Method = $a.Method; Id = $id })
     }
     if (-not $acc.Count) { & $note 'no break-glass account is configured (eps.BreakGlassAccount): the break-glass check uses the group only' }
-    $ctx.BreakGlass = @{ GroupIds = @($gids); RelatedGroupIds = @($rel); Accounts = @($acc) }
+    # EPS full review 2026-11-26 (2.1.73 two-agent check, reviewer B #1): the PILOT groups of the break-glass templates, by
+    # id - the only other groups a break-glass template may target and stay exempt. Known from the names already read (the
+    # policy being judged has its groups resolved); a pilot group not known by id is simply not allowed (stricter, never looser)
+    # MfaGroupIds (2.1.73 two-agent check B #1): the MFA-method break-glass group(s) - the only groups CA095's block may name
+    $ctx.BreakGlass = @{ GroupIds = @($gids); RelatedGroupIds = @($rel); Accounts = @($acc); PilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $Names -Catalog $Catalog); MfaGroupIds = @($mfa)
+                         BlockPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $Names -Catalog $Catalog -ForBlock)
+                         FidoGroupIds = @($fido); StrengthPilotGroupIds = @(Get-EpsCaBreakGlassPilotIds -Names $Names -Catalog $Catalog -ForStrength) }
     $ctx
+}
+
+function Get-EpsCaBreakGlassPilotIds {
+    # PURE. The ids (from -Names: "group|<id>" -> @{ Name }) of the break-glass templates' own pilot groups - for every
+    # targeting method. The catalog is read with -AsHashtable, so groups.pilot is a dictionary: its ENTRIES are walked
+    # (2.1.73 two-agent check A #1: .PSObject.Properties listed the dictionary's own properties - a 3-name pilot list never
+    # matched). A plain object is walked by its properties.
+    # -ForBlock (2.1.73 two-agent check A #1 scenario B): only the pilot groups of the break-glass templates that BLOCK
+    # (CA095), minus any pilot group a non-blocking break-glass template shares (Manual_Assignment_Simple's shared
+    # Entra-CA-BreakGlassAccounts-Pilot1/2/3-Assigned also holds the FIDO accounts piloting CA098 / CA099)
+    # -ForStrength (final round B #1): the same for the templates that ask for an authentication strength (CA098 / CA099)
+    param([hashtable]$Names = @{}, $Catalog = (Get-EpsCaTemplateCatalog), [switch]$ForBlock, [switch]$ForStrength)
+    $namesOf = { param($t) $p = $t.groups.pilot
+        $lists = if ($p -is [System.Collections.IDictionary]) { @($p.Values) } elseif ($p) { @($p.PSObject.Properties | ForEach-Object { $_.Value }) } else { @() }
+        @(foreach ($list in $lists) { foreach ($n in @($list)) { if ("$n".Trim()) { "$n".Trim().ToLowerInvariant() } } }) }
+    $kind = { param($t) if (@(@($t.body.grantControls.builtInControls) | ForEach-Object { "$_".ToLowerInvariant() }) -contains 'block') { 'block' } elseif ($t.body.grantControls.authenticationStrength) { 'strength' } else { 'other' } }
+    $want = if ($ForBlock) { 'block' } elseif ($ForStrength) { 'strength' } else { '' }
+    $pilotNames = @{}; $shared = @{}
+    foreach ($t in @($Catalog.ById.Values | Where-Object { $_.breakGlassPolicy })) {
+        $k = & $kind $t
+        foreach ($n in (& $namesOf $t)) { if (-not $want -or $k -eq $want) { $pilotNames[$n] = 1 } elseif ($want) { $shared[$n] = 1 } }
+    }
+    foreach ($n in @($shared.Keys)) { $pilotNames.Remove($n) }
+    @(foreach ($k in @($Names.Keys)) { $x = $Names[$k]; if ($x.Kind -eq 'group' -and $pilotNames.ContainsKey("$($x.Name)".ToLowerInvariant())) { ($k -split '\|', 2)[1] } })
 }
 
 function Update-EpsCaInventory {

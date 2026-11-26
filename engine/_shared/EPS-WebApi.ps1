@@ -1496,10 +1496,11 @@ FROM eps.PendingChange p WHERE p.Status = 'Applied' AND p.CommitId IS NOT NULL G
         @{ Method = 'POST'; Pattern = '^/api/mail/test$'; Summary = 'Ask the engine to send one test mail to the alert recipients.'; Public = $true
            Role = 'Admin'; Action = 'mail.test.request'; NeedsReason = $true; Handler = { param($c, $m)
             $cfg = Get-EpsMailConfig -ConnectionString $c.Ctx.ConnectionString
-            # V1-PARITY P12: an SMTP relay (Mail.Mode = smtp) is a set-up mail too - its server and from address must be set
-            $smtpOk = $cfg.Mode -eq 'smtp' -and $cfg.SmtpServer -and $cfg.SmtpFrom
-            if (-not $smtpOk -and ($cfg.Mode -ne 'sharedMailbox' -or -not $cfg.Sender)) { return New-EpsWebResponse -Status 400 -Body @{ error = 'alert mail is not set up (Mail.Mode / Mail.Sender) - run Initialize-EpsMailSender.ps1, or set Mail.Mode = smtp with Mail.SmtpServer and Mail.SmtpFrom' } -Audit @{ Target = 'Mail'; Outcome = 'refused'; OutcomeText = 'mail not set up' } }
-            $from = if ($smtpOk) { $cfg.SmtpFrom } else { $cfg.Sender }
+            # V1-PARITY P12: an SMTP relay (Mail.Mode = smtp) is a set-up mail too - its server must be set; the From is
+            # Mail.Sender in both modes (ONE-SENDER-1 A)
+            $smtpOk = $cfg.Mode -eq 'smtp' -and $cfg.SmtpServer -and $cfg.Sender
+            if (-not $smtpOk -and ($cfg.Mode -ne 'sharedMailbox' -or -not $cfg.Sender)) { return New-EpsWebResponse -Status 400 -Body @{ error = 'alert mail is not set up (Mail.Mode / Mail.Sender) - run Initialize-EpsMailSender.ps1 (with -SmtpRelay for an SMTP relay)' } -Audit @{ Target = 'Mail'; Outcome = 'refused'; OutcomeText = 'mail not set up' } }
+            $from = $cfg.Sender
             $rq = New-EpsSignedJobRequest -Ctx $c -Job 'TamperMonitor' -Mode 'Preview' -Scope @{ testMail = $true }
             New-EpsWebResponse -Status 202 -Body @{ requestId = $rq; text = "Requested: the engine sends a test mail from $from to $(@($cfg.Recipients) -join ', ') within 5 minutes (Jobs > Requests shows the result)." } -Audit @{ Target = "Mail|$from"; After = @{ requestId = $rq; recipients = @($cfg.Recipients) } } } }
         # ---- the commit queue (owner 2026-10-31, PIM's setup): staged tagging-config changes, committed by hand ----
@@ -1837,13 +1838,18 @@ function Invoke-EpsWebReplay {
     $route = $null; $m = $null
     foreach ($r in Get-EpsWebRoutes) { if ($r.Method -eq $Row.Method -and $Row.Path -match $r.Pattern) { $route = $r; $m = $Matches; break } }
     if (-not $route) { return @{ Status = 500; Body = @{ error = "no route for $($Row.Method) $($Row.Path)" } } }
+    # EPS full review 2026-11-26 (sql-flow reviewer 2 #1, SEC-AUDIT-1 S1): the engine replays a queued row through its route
+    # AS THE COMMITTER - so it checks again here, never trusting the row: (a) only a route that can be queued (it has a Stage
+    # handler) runs from the queue - a row naming any other route (a SuperAdmin route the web identity wrote) is refused;
+    # (b) EVERY row needs the committer to hold the route's own role, whoever staged it (before: only application-staged rows)
+    #     (the one other kind the queue holds: an application's HELD setting - §12.31 - on the setting route, always a SuperAdmin's)
+    $heldSetting = "$($Row.Entity)" -eq 'Setting' -and "$($route.Action)" -eq 'setting.change'
+    if (-not $route.Stage -and -not $heldSetting) { return @{ Status = 403; Body = @{ error = "$($Row.Method) $($Row.Path) is not a change the queue can hold - refused" } } }
     # §12.31: a change an APPLICATION staged is committed by a PERSON (never an application), with the route's own role; a
-    # setting it staged was HELD for a SuperAdmin (mass / weakening / a SuperAdmin setting)
-    if ("$($Row.StagedBy)" -like 'app:*') {
-        if ("$($Commit.Caller.identity)" -like 'app:*') { return @{ Status = 403; Body = @{ error = 'a change an application proposed is committed by a person' } } }
-        $needR = if ("$($Row.Entity)" -eq 'Setting') { 'SuperAdmin' } else { $route.Role }
-        if (-not (Test-EpsWebRole -Have $Commit.Role -Need $needR)) { return @{ Status = 403; Body = @{ error = "this change from an application needs a $needR to commit it" } } }
-    }
+    # setting in the queue was HELD for a SuperAdmin (mass / weakening / a SuperAdmin setting) - whoever the row says staged it
+    if ("$($Row.StagedBy)" -like 'app:*' -and "$($Commit.Caller.identity)" -like 'app:*') { return @{ Status = 403; Body = @{ error = 'a change an application proposed is committed by a person' } } }
+    $needR = if ($heldSetting) { 'SuperAdmin' } else { $route.Role }
+    if (-not (Test-EpsWebRole -Have $Commit.Role -Need $needR)) { return @{ Status = 403; Body = @{ error = "this change needs a $needR to commit it ($($Commit.Caller.identity) is $($Commit.Role))" } } }
     $body = if ($Row.BodyJson) { $Row.BodyJson | ConvertFrom-Json } else { [pscustomobject]@{} }
     $why = "$($Row.StageReason) (committed from the queue, #$($Row.Id), staged by $($Row.StagedBy): $CommitReason)"
     $body | Add-Member -NotePropertyName reason -NotePropertyValue $why -Force

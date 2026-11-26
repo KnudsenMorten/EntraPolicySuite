@@ -125,6 +125,7 @@ function Get-EpsIntuneReadVerdict {
     @{ Partial = $Approved; Kind = $(if ($Approved) { 'missing-right' } else { 'not-applicable' }) }
 }
 
+$script:EpsPimGroupReadMax = 500   # PIM for Groups: at most this many groups read per run (role groups + nested chains)
 function Get-EpsIdentityAdminMap {
     <#
       IDREPORT-VALIDATE (owner 2026-11-09 "also looks wrong" on Admins without MFA = 0; the live check found the registration
@@ -160,12 +161,27 @@ function Get-EpsIdentityAdminMap {
         # without them (403) the run says so and the rest stands.
         $pimNote = $null
         try {
-            $pim = @{}
-            foreach ($kind in 'eligibilitySchedules', 'assignmentSchedules') {
-                foreach ($s in @(Invoke-EpsGraph -Path "v1.0/identityGovernance/privilegedAccess/group/$($kind)?`$filter=accessId eq 'member'&`$select=principalId,groupId" -All)) {
-                    $p = [string]$s.principalId; if (-not $pim[$p]) { $pim[$p] = [System.Collections.Generic.List[string]]::new() }; $pim[$p].Add([string]$s.groupId)
+            # IDREPORT-PIM400 (owner 2026-11-25, the Identity report: "PIM for Groups could not be read (... 400: The required
+            # parameters GroupId or PrincipalId is missing.)"): Graph reads these schedules only BY GROUP (or by principal),
+            # never for the whole tenant. So: per role group, and upward through nested groups - a group that is itself a
+            # PIM member of a group on the chain is read the same way (each group once, at most $script:EpsPimGroupReadMax).
+            # Reads only; the rights are unchanged.
+            $pim = @{}; $isGroup = @{}
+            $todo = [System.Collections.Generic.Queue[string]]::new(); foreach ($g in @($roleGroups.Keys)) { $todo.Enqueue([string]$g) }
+            $asked = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            while ($todo.Count -and $asked.Count -lt $script:EpsPimGroupReadMax) {
+                $g = $todo.Dequeue(); if (-not $asked.Add($g)) { continue }
+                foreach ($kind in 'eligibilitySchedules', 'assignmentSchedules') {
+                    foreach ($s in @(Invoke-EpsGraph -Path "v1.0/identityGovernance/privilegedAccess/group/$($kind)?`$filter=groupId eq '$g'&`$select=principalId,groupId,accessId" -All)) {
+                        if ("$($s.accessId)" -and "$($s.accessId)" -ne 'member') { continue }   # an owner of the group is not a member
+                        $p = [string]$s.principalId; if (-not $pim[$p]) { $pim[$p] = [System.Collections.Generic.List[string]]::new() }; if (-not $pim[$p].Contains($g)) { $pim[$p].Add($g) }
+                        # a principal that is a GROUP: its own PIM members reach this chain too - read it next
+                        if (-not $isGroup.ContainsKey($p)) { $isGroup[$p] = $(if ($groupMembers.ContainsKey($p)) { $null -ne $groupMembers[$p] } else { try { [void](Invoke-EpsGraph -Path "v1.0/groups/$($p)?`$select=id"); $true } catch { if ("$_" -match '-> 404') { $false } else { throw } } }) }
+                        if ($isGroup[$p]) { $todo.Enqueue($p) }
+                    }
                 }
             }
+            if ($todo.Count) { & $Log 'Warn' "PIM for Groups: more than $($script:EpsPimGroupReadMax) groups on the chains - the rest is not read this run" }
             $walk = $null
             $walk = { param([string[]]$gids, $seen, $found) foreach ($g in $gids) { if (-not $seen.Add($g)) { continue }; if ($roleGroups[$g]) { foreach ($x in $roleGroups[$g]) { [void]$found.Add($x) } }; if ($pim[$g]) { & $walk @($pim[$g]) $seen $found } } }
             $viaPim = 0

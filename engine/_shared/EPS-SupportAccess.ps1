@@ -7,7 +7,8 @@
 #   2. converges ONE contained database user for the Support app (WITH SID = its client id), named invardia-support:
 #        none          -> no user (dropped)
 #        read          -> the user in eps_support_read (SELECT on schema eps, nothing else)
-#        troubleshoot  -> read, plus db_owner ONLY while Invardia reports an open support session for it, at most 8 h
+#        troubleshoot  -> read only (the shared levels, Invardia 2026-11-24: the old 'read' is troubleshoot)
+#        setup         -> read, plus db_owner ONLY while Invardia reports an open support session for it, at most 8 h
 #                         ahead; dropped from db_owner when the session closes or its time passes
 #   3. reads the result back, writes eps.SupportAccess (no product role has any grant on it) and audits every change.
 # Dot-source EPS-SqlStore, EPS-Install (ConvertTo-EpsSqlSid), EPS-Audit and EPS-Uplink (Get-EpsUplinkKey) first.
@@ -21,7 +22,7 @@ function Get-EpsSupportConsentFromInvardia {
     <#
       GET <base>/api/support/consent with the install key -> { environmentId, product, supportConsent: { level, appId? },
       support?: { state, maxUntil, ticketNumber, openedBy } }. Returns @{ Ok; Level; AppId; Session; Reason } - Level:
-      setup | troubleshoot -> troubleshoot, read -> read, anything else -> none; Session only for an OPEN session with a
+      setup -> setup, troubleshoot | read -> troubleshoot (read only), anything else -> none; Session only for an OPEN session with a
       valid maxUntil. Never throws; the key is never in Reason.
     #>
     param([AllowEmptyString()][string]$Key, [scriptblock]$Http, [string]$BaseUrl = 'https://invardia.com', [datetime]$NowUtc = [datetime]::UtcNow)
@@ -35,7 +36,7 @@ function Get-EpsSupportConsentFromInvardia {
     if (-not $b -or -not $b.supportConsent) { return (& $no 'the answer carries no supportConsent') }
     if ("$($b.product)" -and "$($b.product)".ToLowerInvariant() -ne 'entrapolicysuite') { return (& $no "the answer is for another product ($($b.product))") }
     $l = "$($b.supportConsent.level)".Trim().ToLowerInvariant()
-    $level = if ($l -in 'troubleshoot', 'setup') { 'troubleshoot' } elseif ($l -eq 'read') { 'read' } else { 'none' }
+    $level = if ($l -eq 'setup') { 'setup' } elseif ($l -in 'troubleshoot', 'read') { 'troubleshoot' } else { 'none' }
     $app = "$($b.supportConsent.appId)".Trim().ToLowerInvariant(); if ($app -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { $app = '' }
     $sess = $null
     if ($b.support -and "$($b.support.state)".ToLowerInvariant() -eq 'open') {
@@ -50,16 +51,16 @@ function Get-EpsSupportAccessPlan {
     <#
       PURE. What to do. -Level / -AppId: the consent to apply; -SessionUntil: an open session's end ($null = none);
       -Current: @{ Exists; Sid; InRead; InOwner } of the user today. Returns @{ Want (none | read | admin); Sql (statements,
-      in order); Lines (plain words); AdminUntil }. Admin only with troubleshoot AND an open session that ends in the future
+      in order); Lines (plain words); AdminUntil }. Admin only with setup AND an open session that ends in the future
       and at most 8 h ahead (a longer one is refused, said); no Support app id = no user at all.
     #>
     param([string]$Level, [string]$AppId, [AllowNull()]$SessionUntil, [Parameter(Mandatory)]$Current, [datetime]$NowUtc = [datetime]::UtcNow)
     $u = $script:EpsSupportUser; $role = $script:EpsSupportRole
     $lines = [System.Collections.Generic.List[string]]::new(); $sql = [System.Collections.Generic.List[string]]::new()
-    $want = if ($Level -in 'read', 'troubleshoot' -and $AppId -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { 'read' } else { 'none' }
-    if ($Level -in 'read', 'troubleshoot' -and $want -eq 'none') { $lines.Add("the consent is $Level but no Support app id is known: no user") }
+    $want = if ($Level -in 'read', 'troubleshoot', 'setup' -and $AppId -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { 'read' } else { 'none' }
+    if ($Level -in 'read', 'troubleshoot', 'setup' -and $want -eq 'none') { $lines.Add("the consent is $Level but no Support app id is known: no user") }
     $adminUntil = $null
-    if ($want -eq 'read' -and $Level -eq 'troubleshoot' -and $SessionUntil) {
+    if ($want -eq 'read' -and $Level -eq 'setup' -and $SessionUntil) {
         $su = [datetime]$SessionUntil
         if ($su -le $NowUtc) { $lines.Add("the support session ended at $($su.ToString('u')): no admin") }
         elseif ($su -gt $NowUtc.AddHours($script:EpsSupportMaxHours)) { $lines.Add("the support session asks for admin until $($su.ToString('u')), more than $($script:EpsSupportMaxHours) h ahead: refused") }

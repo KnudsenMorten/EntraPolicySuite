@@ -67,7 +67,8 @@ function Read-EpsDbInitInput {
 function Read-EpsDbInitSettings {
     <#
       PURE. SEC-08 row 9: per execution, settings a setup script asks the job to write (EPS_DBINIT_SETTINGS, a JSON object).
-      ONLY these keys, each checked: Mail.Mode (sharedMailbox | none), Mail.Sender (one mail address), Mail.Recipients (a
+      ONLY these keys, each checked: Mail.Mode (sharedMailbox | smtp | none), Mail.Sender (one mail address), Mail.ProbeMailbox,
+      the relay's Mail.SmtpServer / SmtpPort / SmtpUseTls / SmtpUser / SmtpCredentialSecret, Mail.Recipients (a
       JSON list of 1-20 mail addresses), Platform.EnvironmentName (plain text, at most 120), IdentityReport.LogAnalytics.Target
       (Test-EpsLaTarget). Anything else refuses the whole input. Returns @{ Ok; Reason; Settings (ordered) }.
     #>
@@ -80,8 +81,17 @@ function Read-EpsDbInitSettings {
     foreach ($k in @($o.Keys)) {
         $v = $o[$k]
         switch ($k) {
-            'Mail.Mode' { if ("$v" -notin 'sharedMailbox', 'none') { return @{ Ok = $false; Reason = "Mail.Mode '$v' is not sharedMailbox or none" } }; $s[$k] = "$v" }
+            # ONE-SENDER-1 A (2.1.72): Initialize-EpsMailSender is the ONE writer of the sender - for a shared mailbox and for
+            # an SMTP relay (-SmtpRelay): smtp mode and the relay's settings come through here too
+            'Mail.Mode' { if ("$v" -notin 'sharedMailbox', 'smtp', 'none') { return @{ Ok = $false; Reason = "Mail.Mode '$v' is not sharedMailbox, smtp or none" } }; $s[$k] = "$v" }
             'Mail.Sender' { if ("$v" -notmatch $mail) { return @{ Ok = $false; Reason = 'Mail.Sender is not a mail address' } }; $s[$k] = "$v" }
+            'Mail.ProbeMailbox' { if ("$v" -and "$v" -notmatch $mail) { return @{ Ok = $false; Reason = 'Mail.ProbeMailbox is not a mail address' } }; $s[$k] = "$v" }
+            'Mail.SmtpServer' { if ("$v" -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]{0,251}$') { return @{ Ok = $false; Reason = 'Mail.SmtpServer is not a host name' } }; $s[$k] = "$v" }
+            'Mail.SmtpPort' { if ("$v" -notmatch '^\d{1,5}$' -or [int]"$v" -notin 1..65535) { return @{ Ok = $false; Reason = 'Mail.SmtpPort is not a port (1-65535)' } }; $s[$k] = "$([int]"$v")" }
+            'Mail.SmtpUseTls' { if ("$v" -notin 'true', 'false') { return @{ Ok = $false; Reason = 'Mail.SmtpUseTls is not true or false' } }; $s[$k] = "$v" }
+            # the relay's SIGN-IN user name - a credential, never a From (Invardia 2026-11-25); empty = the relay is anonymous
+            'Mail.SmtpUser' { if ("$v" -notmatch '^[^\x00-\x1f\s<>''";,]{0,320}$') { return @{ Ok = $false; Reason = 'Mail.SmtpUser is not a user name of at most 320 characters' } }; $s[$k] = "$v" }
+            'Mail.SmtpCredentialSecret' { if ("$v" -and "$v" -notmatch '^https://[A-Za-z0-9-]{3,24}\.vault\.azure\.net/secrets/[A-Za-z0-9-]{1,127}(/[0-9a-f]{32})?/?$') { return @{ Ok = $false; Reason = 'Mail.SmtpCredentialSecret is not a Key Vault secret address' } }; $s[$k] = "$v" }
             'Mail.Recipients' {
                 $l = @($v | ForEach-Object { "$_" }); if (-not $l.Count -or $l.Count -gt 20 -or @($l | Where-Object { $_ -notmatch $mail }).Count) { return @{ Ok = $false; Reason = 'Mail.Recipients is not a list of 1-20 mail addresses' } }
                 $s[$k] = (ConvertTo-Json -InputObject @($l) -Compress)
@@ -238,7 +248,7 @@ function Invoke-EpsDbInit {
     $seed = "$(& $e 'EPS_DBINIT_SUPPORT')".Trim().ToLowerInvariant()
     $seedSql = ''
     if ($seed) {
-        if ($seed -notmatch '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|(troubleshoot|read|none)$') { & $Log "refused: EPS_DBINIT_SUPPORT is not '<client id>|troubleshoot|read|none'"; return 2 }
+        if ($seed -notmatch '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\|(setup|troubleshoot|read|none)$') { & $Log "refused: EPS_DBINIT_SUPPORT is not '<client id>|setup|troubleshoot|read|none'"; return 2 }
         $seedSql = "IF NOT EXISTS (SELECT 1 FROM eps.SupportAccess) INSERT INTO eps.SupportAccess (Id, Level, AppId, Applied) VALUES (1, N'$($Matches[2])', N'$($Matches[1])', N'the starting level from the install (-SupportAppId)');"
     }
     $set = Read-EpsDbInitSettings -Json (& $e 'EPS_DBINIT_SETTINGS')

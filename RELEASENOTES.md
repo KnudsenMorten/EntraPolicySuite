@@ -2,6 +2,68 @@
 
 v1 (the scripts) stays on the `v1` branch with its releases v1.0.1 and v1.0.2.
 
+## 2.1.74 - Mail through an SMTP relay keeps the From address the relay accepts
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "Fix all 3, next release" (2026-11-25)
+- Fix: with an SMTP relay, the From address the relay already accepts stays the From. Since 2.1.72, an install that also had a different sender saved could send from that sender instead, which the relay may refuse. The saved sender becomes the From only when its test mail passes (Settings > Alert mail > Send a test mail).
+- The status report this installation sends to Invardia support now shows whether mail goes through Microsoft Graph or an SMTP relay, and when the last mail was sent or could not be sent.
+- Nothing else changes: no permission, setting or database change. Your installation updates by itself.
+
+## 2.1.73 - Break-glass accounts can always sign in, and a mail sender change is proven before it switches
+Builds on the owner's decision: "Test tenant, ship 2.1.73" (2026-11-26, relayed by Invardia; with his rule "break glass must access from any locations" and "ca095 blocks mfa auth from outside, that is by design. no chg")
+- Security: a Conditional Access change that would stop a break-glass account from signing in is refused - when it is deployed, moved to a stage, edited, copied, promoted or rolled back. Only the break-glass templates may include the break-glass accounts, and only with a control they can meet: MFA for the MFA accounts, the FIDO authentication strength for the FIDO accounts. CA095 - the block of the MFA break-glass accounts outside your trusted locations - is unchanged, as designed. A policy that is off or report-only is never refused, so CA095 deploys in every group method.
+- Security: changes the web app hands to the engine are checked again by the engine - who may make them and what they change - before they run.
+- Security: Initialize-EpsMailSender.ps1 switches the sender only after Entra Policy Suite itself may send as the new mailbox, and puts the old rights back when anything fails (also a send right for the whole tenant it removed). The daily report to Invardia support shows a change still waiting for Exchange as pending, and names the sender.
+- No new permission, setting or database change. Your installation updates by itself.
+
+## 2.1.72 - Every mail comes from one sender, changing the sender works, and the send right is checked every day
+Builds on the owner's decision: "Fix all 3, next release" (2026-11-25, relayed by Invardia: framework ONE-SENDER-1, the one standard for SI, PIM and Entra Policy Suite)
+- Security: every mail from Entra Policy Suite now comes from the one sender mailbox (Mail.Sender) - also through an SMTP relay. The separate SMTP from address is gone from the settings and the v1 import; an existing one is moved into the sender once (and, when the relay signs in, into the new setting SMTP user name), so no install stops sending.
+- Security: changing the sender works. Initialize-EpsMailSender.ps1 gives the right for the new mailbox first, checks with Exchange that it works (Exchange can take up to 2 hours), and only then switches the sender and removes the right for the old mailbox. If the new right does not work in time, it is removed again and the old sender stays. With -SmtpRelay it sets up mail through your SMTP relay.
+- Security: once a day, and before the first mail of each run, Entra Policy Suite checks - without sending anything - that it may send as the sender mailbox and as no other one, and that it holds no tenant-wide send right. The result is in the daily report to Invardia support.
+- No new permission: the check uses the send right the engine already has. The settings change (one sender, the SMTP user name, the check mailbox); the database changes once (the move above). Your installation updates by itself.
+
+## 2.1.71 - A quieter change notice, and admins through PIM for Groups are counted again
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "the popup that comes up when i make a change in EPS is anonynoying and worthless" (2026-11-24, his choice: Quiet bar)
+- Fix: after you make a change, the notice bar shows one plain line - "Sent - the engine applies it within 5 minutes" - and never technical request text. Once you close it, it stays closed until your next change; the result is shown in the status line at the bottom.
+- Fix: the Identity report reads Privileged Identity Management for Groups per role group, as Microsoft Graph requires. Before, the read failed ("PIM for Groups could not be read") and people who reach an admin role only through PIM for Groups were not counted as admins.
+- Nothing else changes: no permission, setting or database change. Your installation updates by itself.
+
+## 2.1.70 - Copying, deploying and removing a Conditional Access policy no longer reports a false error
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "we need to make sure, that we dont kill things" (2026-11-25, relayed by Invardia: SEC-CHANGE-1 - a defect found by the live check before release is fixed at once)
+- Fix: right after Entra Policy Suite creates a Conditional Access policy (Clone, Deploy from a template), Microsoft can take a few seconds before the new policy can be read. The check that reads it back now waits for it, up to a minute, instead of reporting an error - before, the copy was created (off) but not recorded, and the page showed an error.
+- Fix: after Remove, the check that the policy is gone waits up to a minute for Microsoft to confirm it, so a removed policy is no longer reported as still there.
+- Fix: Edit and moving a policy between stages also wait for Microsoft before they report.
+- Nothing else changes: no permission, setting or database change. Your installation updates by itself.
+
+## 2.1.68 - The support access check completes again
+Builds on the owner's decision: "customers cannot trust it" (2026-11-24, relayed by Invardia: tickets SUP-2026-00688 / -00689 from the automatic run monitor)
+- Fix: since 2.1.66 the support access check stored the level Setup in a database field that did not yet allow it, so every check ended as failed. The support access itself was applied as you chose. The database now allows the level; the update makes that change by itself.
+- Nothing else changes: no feature or permission change. Your installation updates by itself.
+
+## 2.1.67 - A first install is checked against Invardia's signature, and every page states the same security facts
+Builds on the owner's decision: "customers cannot trust it" (2026-11-24, relayed by Invardia: the three-reviewer check, round 2)
+- Fix (security): the Community launcher installs only the release Invardia signed for your ring and checks its size and SHA-256 against the signed ones, as every update does. A -Version that is not that release is refused; leave it out, and the installation updates by itself.
+- Docs: the security page, the security pack, the settings and the product pages now state the same facts as the architecture page - the highly privileged rights (also the update job's and the database setup job's), the support levels Troubleshoot and Setup, what the Key Vault holds and who reads it, the append-only audit trail and its limit, and one sentence on updates: a security update within 15 minutes, other releases at the nightly run.
+- Nothing else changes: no feature, permission or database change, and no setting is added or changed - only the description of the Updates settings group says when an update installs. Your installation updates by itself.
+
+## 2.1.66 - Invardia support uses the shared levels: Troubleshoot reads only, Setup adds a time-boxed admin session
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "customers cannot trust it" (2026-11-24, relayed by Invardia: the three-reviewer check; the shared support levels decided by Invardia)
+- Fix (security): an installation that chose Troubleshoot for Invardia's Support app now gives it read access only; to let Invardia support use database admin during a support session, choose Setup in the Invardia customer portal. Setup gives read, plus database admin only during a session you open, for at most 8 hours.
+- Docs: the support pages, the architecture page and the install parameters use the levels Troubleshoot and Setup; two wording fixes in the install guide; the architecture page names the Support app's credential plainly.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
+## 2.1.65 - The architecture page lists the highly privileged rights and says where each claim stops
+FIX-ONLY: defects only - no feature, right, setting or schema change
+Builds on the owner's decision: "it must be checked as agreed upon by 3 agents" (2026-11-24, relayed by Invardia: the three-reviewer check of the product pages)
+- Docs: the architecture page has a section on the highly privileged rights - the engine's Conditional Access, group, administrative unit and authentication method write rights, the update job's Contributor right on the resource group and the database setup job's admin role - with what each could do and how it is limited. The Conditional Access gate is enforced by the engine.
+- Docs: the append-only audit trail says its limit (the database server's admin is outside it) and points to Azure SQL auditing; the managed-identity sign-in names the two keys that do exist (the Invardia connection key and the Support app's credential); support access says who can ask for a read, what it reads and how you stop it.
+- Docs: the architecture page covers Community and Pro and says that a security update installs within 15 minutes; the database network (firewall, private network); the install ring is 0-3; the docs overview no longer says Community only; a Pro Business line says nothing stops working above the user limit.
+- Nothing else changes: no feature, setting, permission or database change. Your installation updates by itself.
+
 ## 2.1.64 - Security updates install within 15 minutes, not at night
 FIX-ONLY: defects only - no feature, right, setting or schema change
 Builds on the owner's decision: "goal is to get img upd faster when security cve detected in img" (2026-11-24, relayed by Invardia, framework IMAGE-30MIN-1)

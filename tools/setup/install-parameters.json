@@ -126,7 +126,7 @@
       "page": "advanced",
       "type": "string",
       "default": "",
-      "help": "The update ring this install belongs to (0-10), reported on the heartbeat. Invardia tells you the ring. Empty: a re-run keeps the install's ring."
+      "help": "The update ring this install belongs to (0-3), reported on the heartbeat. Invardia tells you the ring. Empty: a re-run keeps the install's ring."
     },
     {
       "key": "excludeGraphRole",
@@ -350,7 +350,7 @@
       ],
       "required": false,
       "default": "troubleshoot",
-      "help": "The Support app's starting level: troubleshoot or setup (read, plus admin only during an open support session of at most 8 hours), read, or none. Used only with -SupportAppId."
+      "help": "The Support app's starting level: troubleshoot (read only), setup (read, plus admin only during an open support session of at most 8 hours), or none. Used only with -SupportAppId."
     },
     {
       "key": "connectToInvardia",

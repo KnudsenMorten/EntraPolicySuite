@@ -375,8 +375,10 @@ function Invoke-EpsOnboardingCheck {
     & $add 'tags' 'syncaccount' 'The AD Connect sync account is left out of tagging' $(if ($exo -match [regex]::Escape($d.syncAccountName) -or $exo -match '(?i)Sync_') { 'ok' } else { 'check' }) $(if ($exo -match [regex]::Escape($d.syncAccountName) -or $exo -match '(?i)Sync_') { 'left out (UserTagging.ExcludeObjects)' } else { "v1 skipped '$($d.syncAccountName)' - add it to UserTagging.ExcludeObjects" })
 
     # 10 mail
-    $mm = & $set 'Mail.Mode' 'none'; $ms = & $set 'Mail.Sender'; $mr = & $set 'Mail.Recipients' '[]'
-    & $add 'mail' 'sender' 'Alert mail sender' $(if ($mm -ne 'none' -and $ms) { 'ok' } else { 'missing' }) $(if ($mm -ne 'none' -and $ms) { "$ms ($mm)" } else { 'no mail is sent - set it up with Initialize-EpsMailSender.ps1 (an Exchange admin), then Settings > Mail' })
+    # ONE-SENDER-1 A (2.1.72): Mail.Sender is the sender in both modes; an SMTP relay also needs its server
+    $mm = & $set 'Mail.Mode' 'none'; $ms = & $set 'Mail.Sender'; $mr = & $set 'Mail.Recipients' '[]'; $mx = & $set 'Mail.SmtpServer'
+    $mailOk = $mm -ne 'none' -and $ms -and ($mm -ne 'smtp' -or $mx)
+    & $add 'mail' 'sender' 'Alert mail sender' $(if ($mailOk) { 'ok' } else { 'missing' }) $(if ($mailOk) { "$ms ($(if ($mm -eq 'smtp') { "through $mx" } else { $mm }))" } elseif ($mm -eq 'smtp' -and $ms) { 'the SMTP relay is not set - Settings > Mail.SmtpServer' } else { 'no mail is sent - set it up with Initialize-EpsMailSender.ps1 (an Exchange admin; -SmtpRelay for a relay), then Settings > Mail' })
     & $add 'mail' 'recipients' 'Alert recipients' $(if ($mr -match '@') { 'ok' } else { 'missing' }) $(if ($mr -match '@') { $mr } else { 'nobody receives the alerts - Settings > Mail.Recipients' })
 
     # 11 hybrid

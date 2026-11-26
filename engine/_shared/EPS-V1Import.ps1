@@ -79,11 +79,11 @@ function ConvertFrom-EpsV1DefaultVariables {
     if ("$($g['SMTPserver'])" -match '^[A-Za-z0-9][A-Za-z0-9.-]{0,251}$') { $s['Mail.SmtpServer'] = "$($g['SMTPserver'])" }
     if ("$($g['SMTPPort'])" -match '^\d{1,5}$' -and [int]"$($g['SMTPPort'])" -in 1..65535) { $s['Mail.SmtpPort'] = "$([int]"$($g['SMTPPort'])")" }
     if ($g['SMTP_UseSSL'] -is [bool]) { $s['Mail.SmtpUseTls'] = $(if ($g['SMTP_UseSSL']) { 'true' } else { 'false' }) }
-    if ("$($g['SMTPUser'])" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { $s['Mail.SmtpFrom'] = "$($g['SMTPUser'])" }
+    # ONE-SENDER-1 A (2.1.72): the sender is never imported - Initialize-EpsMailSender.ps1 -SmtpRelay is its one writer (below)
     foreach ($p in @(@('IdentityReporter_UserADSynced_AD_OU_Match', 'User'), @('IdentityReporter_ServiceAccountADSynced_AD_OU_Match', 'ServiceAccount'), @('IdentityReporter_SharedUserADSynced_AD_OU_Match', 'SharedUser'), @('IdentityReporter_SharedMailboxADSynced_AD_OU_Match', 'SharedMailbox'))) {
         if ("$($g[$p[0]])".Trim()) { $s["IdentityReport.AdOu.$($p[1])"] = "$($g[$p[0]])".Trim() }
     }
-    if ($s.Contains('Mail.SmtpServer')) { $nm.Add("v1's mail relay $($s['Mail.SmtpServer']) is imported as the SMTP settings; Alert mail is not switched to smtp - choose it in Settings > Alert mail") }
+    if ($s.Contains('Mail.SmtpServer')) { $nm.Add("v1's mail relay $($s['Mail.SmtpServer']) is imported as the SMTP settings (server, port, TLS); the sender is not - run Initialize-EpsMailSender.ps1 -SmtpRelay $($s['Mail.SmtpServer']) -Sender <address>$(if ("$($g['SMTPUser'])".Trim()) { " (v1 used $($g['SMTPUser']))" }), which sets the sender and switches Alert mail to smtp") }
     if ($g['Mail_SendAnonymous'] -eq $false) { $nm.Add("v1 signed in to its mail relay with its stored credential (`$global:SecureCredentials): a password is never imported - put it in a Key Vault secret and set 'SMTP password (Key Vault secret)'") }
     if ("$($g['IdentityReporter_AD_Searchbase'])".Trim()) { $nm.Add("IdentityReporter_AD_Searchbase ($($g['IdentityReporter_AD_Searchbase'])): the hybrid worker reads its own domain - no setting needed") }
     @{ Settings = $s; NotMigrated = @($nm) }

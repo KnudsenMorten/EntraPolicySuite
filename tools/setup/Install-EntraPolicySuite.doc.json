@@ -385,7 +385,7 @@
       "name": "SupportAccess",
       "required": false,
       "default": "troubleshoot",
-      "help": "the Support app's starting level: troubleshoot or setup (read, plus admin only during an open support session), read, or none"
+      "help": "the Support app's starting level: troubleshoot (read only), setup (read, plus admin only during an open support session), or none"
     },
     {
       "name": "Resume",

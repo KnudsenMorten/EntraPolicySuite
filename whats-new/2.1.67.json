@@ -1,0 +1,13 @@
+{
+  "version": "2.1.67",
+  "date": "2026-11-24",
+  "type": "security",
+  "summary": "A first install is checked against Invardia's signature, and every page states the same security facts.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Signed first install, one set of facts",
+      "text": "The first install of the Community edition now takes only the release signed for your ring and checks it like every update. The security pages, the security pack and the product pages state the same rights and limits."
+    }
+  ]
+}

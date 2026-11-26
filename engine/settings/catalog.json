@@ -434,14 +434,14 @@
       }
     },
     {
-      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox", "smtp"], "valueLabels": { "none": "Off - no mail", "sharedMailbox": "From a mailbox of yours (Microsoft Graph)", "smtp": "Through your SMTP relay" }, "default": "none", "role": "SuperAdmin", "dependsOnByValue": { "sharedMailbox": ["Mail.Sender"], "smtp": ["Mail.SmtpServer", "Mail.SmtpFrom"] }, "offValue": "none",
+      "key": "Mail.Mode", "group": "Mail", "label": "Alert mail", "type": "enum", "values": ["none", "sharedMailbox", "smtp"], "valueLabels": { "none": "Off - no mail", "sharedMailbox": "From a mailbox of yours (Microsoft Graph)", "smtp": "Through your SMTP relay" }, "default": "none", "role": "SuperAdmin", "dependsOnByValue": { "sharedMailbox": ["Mail.Sender"], "smtp": ["Mail.SmtpServer", "Mail.Sender"] }, "offValue": "none",
       "confirm": [ { "when": "value", "value": "none", "title": "Stop sending alert mail?", "body": "Tamper alerts are then no longer mailed. They stay on the Tamper page, and are mailed once mail is switched on again." } ],
       "info": {
         "what": "Whether the engine mails alerts and reports, and how: as one mailbox of yours that the engine may send as (sharedMailbox), or through your SMTP relay (smtp, as v1 sent its mail).",
-        "enabled": "sharedMailbox: mail goes from the sender mailbox through Microsoft Graph. smtp: mail goes through the SMTP relay in 'SMTP server', from 'SMTP from address'. From the next run either way.",
+        "enabled": "sharedMailbox: mail goes from the sender mailbox through Microsoft Graph. smtp: mail goes through the SMTP relay in 'SMTP server'. Either way it comes from the sender mailbox, from the next run.",
         "disabled": "none (the default): no mail is sent; events wait on the Tamper page and are mailed later if mail is switched on.",
         "risk": "With mail off, nobody is told about a foreign change unless they look at the Tamper page. sharedMailbox only works after Initialize-EpsMailSender.ps1 has given the engine the right to send as the sender mailbox; smtp only works when the relay accepts the engine (its outbound address, or the credential in Key Vault). Reversible.",
-        "requires": "SuperAdmin. sharedMailbox: 'Sender mailbox' set by Initialize-EpsMailSender.ps1. smtp: 'SMTP server' and 'SMTP from address'.",
+        "requires": "SuperAdmin. sharedMailbox: 'Sender mailbox' set by Initialize-EpsMailSender.ps1. smtp: 'SMTP server', and the sender set by Initialize-EpsMailSender.ps1 -SmtpRelay.",
         "recommended": "sharedMailbox, set up with Initialize-EpsMailSender.ps1 (no password to keep). smtp when your mail must go through your own relay, as in v1.",
         "docUrl": "https://invardia.com/docs/eps/settings/Mail.Mode/"
       }
@@ -449,13 +449,25 @@
     {
       "key": "Mail.Sender", "group": "Mail", "label": "Sender mailbox", "type": "text", "maxLength": 320, "default": "", "role": "SuperAdmin", "editable": false, "setBy": "tools/setup/Initialize-EpsMailSender.ps1",
       "info": {
-        "what": "The mailbox the alert mails come from. The engine's identity may send as this one mailbox only (an Exchange scope for exactly it), never as anyone else.",
-        "enabled": "Set by Initialize-EpsMailSender.ps1 together with the right to send as it.",
+        "what": "The one address every mail from Entra Policy Suite comes from - also through an SMTP relay. Through Microsoft Graph, the engine's identity may send as this one mailbox only (an Exchange scope for exactly it), never as anyone else; Entra Policy Suite checks that once a day.",
+        "enabled": "Set by Initialize-EpsMailSender.ps1 together with the right to send as it (with -SmtpRelay for a relay).",
         "disabled": "Empty: no mail can be sent.",
-        "risk": "It is not editable here: a new sender without the Exchange right would stop every alert mail. Run Initialize-EpsMailSender.ps1 with the new mailbox instead; it moves the right too.",
+        "risk": "It is not editable here: a new sender without the Exchange right would stop every alert mail. Run Initialize-EpsMailSender.ps1 with the new mailbox instead: it gives the right for the new mailbox, checks it works (Exchange can take up to 2 hours), and only then switches the sender and removes the right for the old one. If it does not work in time, the old sender stays.",
         "requires": "An Exchange administrator to run Initialize-EpsMailSender.ps1.",
         "recommended": "A shared mailbox used only for Entra Policy Suite.",
         "docUrl": "https://invardia.com/docs/eps/settings/Mail.Sender/"
+      }
+    },
+    {
+      "key": "Mail.ProbeMailbox", "group": "Mail", "label": "Check mailbox", "type": "text", "maxLength": 320, "default": "", "role": "SuperAdmin", "editable": false, "setBy": "tools/setup/Initialize-EpsMailSender.ps1",
+      "info": {
+        "what": "A mailbox Entra Policy Suite must NOT be able to send as. The daily check tries to send as it, with no recipient (nothing is ever delivered), to prove the engine's right is limited to the sender mailbox.",
+        "enabled": "Set by Initialize-EpsMailSender.ps1 (the person who ran it, unless another is named).",
+        "disabled": "Empty: the daily check still proves the engine holds no tenant-wide send right, without this extra test.",
+        "risk": "None: nothing is ever sent to or from it. Reversible.",
+        "requires": "An Exchange administrator to run Initialize-EpsMailSender.ps1.",
+        "recommended": "Leave it as the setup set it.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.ProbeMailbox/"
       }
     },
     {
@@ -508,22 +520,22 @@
       }
     },
     {
-      "key": "Mail.SmtpFrom", "group": "Mail", "label": "SMTP from address", "type": "text", "maxLength": 320, "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "default": "", "role": "SuperAdmin",
+      "key": "Mail.SmtpUser", "group": "Mail", "label": "SMTP user name", "type": "text", "maxLength": 320, "pattern": "^[^\\s<>'\";,]{0,320}$", "default": "", "role": "SuperAdmin",
       "info": {
-        "what": "The address the mail comes from through the relay, and the user name the relay signs in with when a credential is set (v1: $global:SMTPUser).",
-        "enabled": "Used by the next mail when Alert mail is smtp.",
-        "disabled": "Empty (the default): Alert mail cannot be smtp.",
-        "risk": "Recipients see this as the sender. Reversible.",
+        "what": "The user name the engine signs in to the relay with, when the relay needs a sign-in (v1: $global:SMTPUser). It is only a sign-in name: the mail always comes from the sender mailbox.",
+        "enabled": "Used with 'SMTP password' by the next mail when Alert mail is smtp.",
+        "disabled": "Empty (the default): the relay is used without a sign-in.",
+        "risk": "A wrong name stops every mail through the relay until it is right; the run log says why. Reversible.",
         "requires": "SuperAdmin.",
-        "recommended": "A service address used only for Entra Policy Suite.",
-        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpFrom/"
+        "recommended": "A service account used only for Entra Policy Suite.",
+        "docUrl": "https://invardia.com/docs/eps/settings/Mail.SmtpUser/"
       }
     },
     {
       "key": "Mail.SmtpCredentialSecret", "group": "Mail", "label": "SMTP password (Key Vault secret)", "type": "text", "maxLength": 300, "pattern": "^https://[A-Za-z0-9-]{3,24}\\.vault\\.azure\\.net/secrets/[A-Za-z0-9-]{1,127}(/[0-9a-f]{32})?/?$", "default": "", "role": "SuperAdmin",
       "info": {
         "what": "Where the relay's password is kept: the address of a Key Vault secret (https://<vault>.vault.azure.net/secrets/<name>). The engine reads it at send time; the password itself is never stored, shown or logged by Entra Policy Suite.",
-        "enabled": "The engine signs in to the relay as the SMTP from address with the secret's value.",
+        "enabled": "The engine signs in to the relay as the SMTP user name with the secret's value.",
         "disabled": "Empty (the default): the mail is sent anonymously (v1: $global:Mail_SendAnonymous).",
         "risk": "The engine identity needs 'Key Vault Secrets User' on that one secret. Whoever can change the secret can change what the engine signs in with. Reversible.",
         "requires": "SuperAdmin; a Key Vault administrator to create the secret and give the engine read on it.",
@@ -899,7 +911,7 @@
     {
       "key": "Update.Enabled", "group": "Update", "label": "Install new versions", "type": "boolean", "default": "true", "role": "SuperAdmin",
       "info": {
-        "what": "Every night the update job asks Invardia which Entra Policy Suite version is approved for this install's update ring and checks that the answer is genuine and complete. When a newer version is approved and no job is running, it installs it: it downloads the release and checks it against the signed size and SHA-256, builds the new image in your own container registry, updates the database with the database setup job, and moves the jobs and the web app to the new image. When a job is running it tries again the next night. With the per-install key it also reports each stage to Invardia.",
+        "what": "Every 15 minutes the engine asks invardia.com whether a security update (a new base image on the version you run) is approved for your ring and installs it at once; other approved releases are installed at the nightly run. The answer is checked to be genuine and complete first. To install a release it waits until no job is working: it downloads the release and checks it against the signed size and SHA-256, builds the new image in your own container registry, updates the database with the database setup job, and moves the jobs and the web app to the new image. A job run that has stopped working is stopped so the update can go on; a run that still writes to its log is never stopped. With the per-install key it also reports each stage to Invardia.",
         "enabled": "On (the default): the update job runs every night at 03:00 (Platform.TimeZone).",
         "disabled": "Off: the update job does not run, so no new version is installed. Nothing else changes.",
         "risk": "An update changes the images and the database of this install, never the directory. A stage that fails stops the update before the jobs move; the next night tries again. Reversible.",

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.74",
+  "date": "2026-11-26",
+  "type": "fix-only",
+  "summary": "Mail through an SMTP relay keeps the From address the relay accepts.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "SMTP mail keeps its accepted From",
+      "text": "With an SMTP relay, the From address the relay already accepts stays the From. A different saved sender becomes the From only when its test mail passes."
+    }
+  ]
+}

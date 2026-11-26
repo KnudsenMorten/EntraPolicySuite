@@ -1,0 +1,21 @@
+{
+  "version": "2.1.73",
+  "date": "2026-11-26",
+  "type": "security",
+  "summary": "Break-glass accounts can always sign in, and a mail sender change is proven before it switches.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "Break-glass accounts can always sign in",
+      "text": "A Conditional Access change that would stop a break-glass account from signing in is refused. Only the break-glass templates may include them, with a control they can meet: MFA or the FIDO strength. CA095 is unchanged."
+    },
+    {
+      "title": "Queued changes checked again",
+      "text": "Changes the web app hands to the engine are checked again by the engine - who may make them and what they change - before they run."
+    },
+    {
+      "title": "A sender change proven first",
+      "text": "The mail setup switches the sender only after Entra Policy Suite itself may send as the new mailbox. If anything fails, the old rights are put back."
+    }
+  ]
+}

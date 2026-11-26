@@ -1,0 +1,21 @@
+{
+  "version": "2.1.70",
+  "date": "2026-11-25",
+  "type": "fix-only",
+  "summary": "Copying, deploying and removing a Conditional Access policy no longer reports a false error.",
+  "new": [],
+  "fixes": [
+    {
+      "title": "No false error after a copy or deploy",
+      "text": "A new policy can take Microsoft a few seconds to show. Entra Policy Suite now waits for it (up to a minute) instead of reporting an error while the policy was in fact created."
+    },
+    {
+      "title": "Remove checks again before it reports",
+      "text": "After removing a policy, Entra Policy Suite waits up to a minute for Microsoft to confirm it is gone, so a removed policy is no longer reported as still there."
+    },
+    {
+      "title": "Edit and stage moves wait too",
+      "text": "Edit and moving a policy between stages also wait for Microsoft before they report."
+    }
+  ]
+}

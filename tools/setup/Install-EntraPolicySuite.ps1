@@ -74,7 +74,7 @@
 .PARAMETER SqlAdminGroupName
     The display name of that group (shown as the SQL admin).
 .PARAMETER Ring
-    The update ring this install belongs to (0-10; framework §3), reported on the heartbeat (TEL-01). Invardia tells you
+    The update ring this install belongs to (0-3 in use; framework §3 allows up to 10), reported on the heartbeat (TEL-01). Invardia tells you
     the ring. Empty: a re-run keeps the ring the install has; a first install reports none.
 .PARAMETER ExcludeGraphRole
     A Graph role of the engine your approver did not approve. It is never granted; the feature that needs it reports
@@ -168,7 +168,7 @@ param(
     [ValidateSet('User.ReadWrite.All', 'Device.ReadWrite.All', 'GroupMember.Read.All', 'Organization.Read.All', 'AuditLog.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'DeviceManagementManagedDevices.Read.All', 'Application.Read.All', 'Policy.ReadWrite.ConditionalAccess', 'Group.ReadWrite.All', 'AdministrativeUnit.ReadWrite.All', 'Policy.ReadWrite.AuthenticationMethod')][string[]]$ExcludeGraphRole = @(),
     [switch]$Quiet,
     # the Invardia Support app, named by its client id - never found by name (as SI / PIM). It then starts with
-    # -SupportAccess (default troubleshoot: read, plus admin only during an open support session); without it nothing is
+    # -SupportAccess (default troubleshoot: read only; setup: read, plus admin only during an open support session); without it nothing is
     # granted at the install. From then on the level your organization sets in the Invardia portal applies.
     [ValidatePattern('^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')][string]$SupportAppId = '',
     [ValidateSet('troubleshoot', 'setup', 'read', 'none')][string]$SupportAccess = 'troubleshoot',
@@ -290,7 +290,7 @@ if (Test-Path -LiteralPath $stateFile) {
 # -Resume (as SI / PIM): only when an interrupted install of THIS version and resource group is there to continue
 if ($Resume -and -not $completed.Count) { Write-Host "Nothing to resume: no interrupted install of $version in $ResourceGroup ($stateFile). Run the same command without -Resume to install." -ForegroundColor Red; exit 2 }
 # the Invardia Support app's starting level (the database setup job writes it once, only when no level is there yet)
-if ($SupportAppId) { $ctx.SupportSeed = @{ AppId = $SupportAppId.ToLowerInvariant(); Level = $(if ($SupportAccess -eq 'setup') { 'troubleshoot' } else { $SupportAccess }) } }
+if ($SupportAppId) { $ctx.SupportSeed = @{ AppId = $SupportAppId.ToLowerInvariant(); Level = $(if ($SupportAccess -eq 'read') { 'troubleshoot' } else { $SupportAccess }) } }
 
 Write-Host ''
 Write-Host "Entra Policy Suite $version -> subscription $($subInfo.displayName) ($SubscriptionId), $ResourceGroup, $Location" -ForegroundColor Cyan
